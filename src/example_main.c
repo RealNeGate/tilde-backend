@@ -5,7 +5,7 @@ void test_add_i8(TB_Function* func);
 void test_add_i16(TB_Function* func);
 void test_add_i32(TB_Function* func);
 void test_add_i64(TB_Function* func);
-void test_add_i128(TB_Function* func);
+void test_add_f32(TB_Function* func);
 void test_locals_1(TB_Function* func);
 void test_params_1(TB_Function* func);
 void test_params_2(TB_Function* func);
@@ -16,7 +16,7 @@ int main(int argc, char** argv) {
 	TB_FeatureSet features = { 0 };
     
 	// Currently it only supports binary output
-	FILE* f = fopen("./test/out_x64.obj", "wb");
+	FILE* f = fopen("./test_x64.obj", "wb");
 	do_tests(f, TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features);
 	fclose(f);
     
@@ -26,7 +26,7 @@ int main(int argc, char** argv) {
 void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
 	TB_Module* m = tb_module_create(arch, system, features);
     
-#if 0
+#if 1
 	typedef void(*TestFunction)(TB_Function* func);
     
 	static const TestFunction test_functions[] = {
@@ -34,6 +34,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_add_i16,
 		test_add_i32,
 		test_add_i64,
+		//test_add_f32,
 		test_locals_1,
 		test_params_1,
 		test_params_2,
@@ -46,6 +47,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		"test_add_i16",
 		"test_add_i32",
 		"test_add_i64",
+		//"test_add_f32",
 		"test_locals_1",
 		"test_params_1",
 		"test_params_2",
@@ -61,9 +63,9 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_functions[i](func);
         
 		tb_function_print(func);
-		tb_function_compile(m, func, arch, features);
+		printf("\n\n\n");
 	}
-#elif 1
+#elif 0
 	{
 		TB_Function* func = tb_function_create(m, "test");
         
@@ -108,9 +110,6 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		
 		tb_function_print(func);
 		printf("\n\n\n");
-		tb_function_optimize(func);
-		printf("\n\n\n");
-		tb_function_print(func);
 	}
 #else
 	{
@@ -156,7 +155,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 	}
 #endif
     
-	tb_module_compile(m, TB_OPT_O0, 1);
+	tb_module_compile(m, TB_OPT_O1, 1);
 	tb_module_export(m, f);
 	tb_module_destroy(m);
 }
@@ -193,12 +192,12 @@ void test_add_i64(TB_Function* func) {
 	tb_inst_ret(func, TB_TYPE_I64(1), sum);
 }
 
-void test_add_i128(TB_Function* func) {
-	TB_Register a = tb_inst_iconst128(func, TB_TYPE_I128(1), (TB_Int128) { 64 });
-	TB_Register b = tb_inst_iconst128(func, TB_TYPE_I128(1), (TB_Int128) { 32 });
-	TB_Register sum = tb_inst_add(func, TB_TYPE_I128(1), a, b, TB_NO_WRAP);
+void test_add_f32(TB_Function* func) {
+	TB_Register a = tb_inst_fconst(func, TB_TYPE_F32(1), 1.0);
+	TB_Register b = tb_inst_fconst(func, TB_TYPE_F32(1), 2.0);
+	TB_Register sum = tb_inst_fadd(func, TB_TYPE_F32(1), a, b);
     
-	tb_inst_ret(func, TB_TYPE_I128(1), sum);
+	tb_inst_ret(func, TB_TYPE_F32(1), sum);
 }
 
 void test_locals_1(TB_Function* func) {

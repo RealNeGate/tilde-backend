@@ -196,7 +196,7 @@ TB_Register tb_find_reg_from_label(TB_Function* f, TB_Label id) {
 	return TB_NULL_REG;
 }
 
-static bool tb_can_reach(TB_Function* f, TB_Register label, TB_Register end) {
+bool tb_can_reach(TB_Function* f, TB_Register label, TB_Register end) {
 	if (label == end) return true;
     
 	TB_Register terminator = f->nodes[label].label.terminator;
@@ -215,32 +215,12 @@ static bool tb_can_reach(TB_Function* f, TB_Register label, TB_Register end) {
 	else abort();
 }
 
-typedef enum TB_DataflowPattern {
-	TB_DataflowPattern_Unknown,
-	TB_DataflowPattern_IntConstant,
-	TB_DataflowPattern_IntStep // y = mx + b
-} TB_DataflowPattern;
-
-typedef struct TB_RegisterDataflow {
-	TB_DataflowPattern pattern;
-	union {
-		struct {
-			uint64_t v;
-		} iconst;
-		struct {
-			TB_Register loop_label;
-			bool pre_iterator; // or post if false
-			uint64_t m, b;
-		} istep;
-	};
-} TB_RegisterDataflow;
-
-static TB_RegisterDataflow tb_analyze_register_dataflow(TB_Function* f, TB_Register label_reg, TB_Register reg) {
+TB_RegisterDataflow tb_analyze_register_dataflow(TB_Function* f, TB_Register label_reg, TB_Register reg) {
 	if (f->nodes[reg].type == TB_INT_CONST) {
 		assert(f->nodes[reg].i_const.hi == 0);
 		return (TB_RegisterDataflow) {
 			.pattern = TB_DataflowPattern_IntConstant,
-            .iconst = f->nodes[reg].i_const.lo
+            .iconst = { f->nodes[reg].i_const.lo }
 		};
 	}
 	else if (f->nodes[reg].type == TB_PHI2) {
@@ -284,7 +264,7 @@ static TB_RegisterDataflow tb_analyze_register_dataflow(TB_Function* f, TB_Regis
 }
 
 // Results are in the temp storage
-static size_t tb_loop_analysis(TB_TemporaryStorage* tls, TB_Function* f) {
+size_t tb_loop_analysis(TB_TemporaryStorage* tls, TB_Function* f) {
 	size_t loop_count = 0;
     
 	size_t i = 0;

@@ -7,8 +7,8 @@
 //                   __/ |                                      
 //                  |___/
 // 
-//    It's a relatively small compiler backend all behind a simple 
-//    C API! To get started:
+//    It's a relatively small compiler backend all behind a
+//    simple C API! To get started:
 //
 #ifndef _TINYBACKEND_H_
 #define _TINYBACKEND_H_
@@ -426,6 +426,26 @@ struct TB_Module {
 	} compiled_functions;
 };
 
+typedef enum TB_DataflowPattern {
+	TB_DataflowPattern_Unknown,
+	TB_DataflowPattern_IntConstant,
+	TB_DataflowPattern_IntStep // y = mx + b
+} TB_DataflowPattern;
+
+typedef struct TB_RegisterDataflow {
+	TB_DataflowPattern pattern;
+	union {
+		struct {
+			uint64_t v;
+		} iconst;
+		struct {
+			TB_Register loop_label;
+			bool pre_iterator; // or post if false
+			uint64_t m, b;
+		} istep;
+	};
+} TB_RegisterDataflow;
+
 typedef struct TB_TemporaryStorage {
 	uint32_t used;
 	uint8_t data[];
@@ -480,6 +500,14 @@ void tb_out8b(TB_Emitter* o, uint64_t i);
 void tb_outstr_UNSAFE(TB_Emitter* o, const char* str);
 
 void tb_outs_UNSAFE(TB_Emitter* o, size_t len, const uint8_t* str);
+
+//
+// IR ANALYSIS
+//
+TB_Register tb_find_reg_from_label(TB_Function* f, TB_Label id);
+bool tb_can_reach(TB_Function* f, TB_Register label, TB_Register end);
+TB_RegisterDataflow tb_analyze_register_dataflow(TB_Function* f, TB_Register label_reg, TB_Register reg);
+size_t tb_loop_analysis(TB_TemporaryStorage* tls, TB_Function* f);
 
 //
 // OPTIMIZATION FUNCTIONS

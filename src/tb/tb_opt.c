@@ -11,6 +11,7 @@ TB_API void tb_find_live_intervals(size_t intervals[], const TB_Function* f) {
 		switch (f->nodes[i].type) {
             case TB_NULL:
             case TB_INT_CONST:
+            case TB_FLOAT_CONST:
             case TB_LOCAL:
             case TB_PARAM:
             case TB_LABEL:
@@ -40,6 +41,13 @@ TB_API void tb_find_live_intervals(size_t intervals[], const TB_Function* f) {
             case TB_SDIV:
 			intervals[f->nodes[i].i_arith.a] = i;
 			intervals[f->nodes[i].i_arith.b] = i;
+			break;
+            case TB_FADD:
+            case TB_FSUB:
+            case TB_FMUL:
+            case TB_FDIV:
+			intervals[f->nodes[i].f_arith.a] = i;
+			intervals[f->nodes[i].f_arith.b] = i;
 			break;
             case TB_CMP_EQ:
             case TB_CMP_NE:

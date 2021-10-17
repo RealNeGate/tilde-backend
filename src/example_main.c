@@ -26,7 +26,7 @@ int main(int argc, char** argv) {
 void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
 	TB_Module* m = tb_module_create(arch, system, features);
     
-#if 0
+#if 1
 	typedef void(*TestFunction)(TB_Function* func);
     
 	static const TestFunction test_functions[] = {
@@ -55,9 +55,9 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		"test_add_sub_i32"
 	};
     
-	size_t count = sizeof(test_functions) / sizeof(test_functions[0]);
+	//size_t count = sizeof(test_functions) / sizeof(test_functions[0]);
     
-	for (size_t i = 0; i < count; i++) {
+	for (size_t i = 4; i < 5; i++) {
 		TB_Function* func = tb_function_create(m, test_function_names[i]);
         
 		test_functions[i](func);
@@ -65,7 +65,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		tb_function_print(func);
 		printf("\n\n\n");
 	}
-#elif 1
+#elif 0
 	{
 		TB_Function* func = tb_function_create(m, "test");
         
@@ -142,16 +142,6 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		}
         
 		tb_inst_ret(func, TB_TYPE_I64(1), tb_inst_load(func, TB_TYPE_I64(1), a, 8));
-        
-		/*tb_function_print(func);
-		printf("\n\n\n");
-
-		tb_function_optimize(func);
-
-		tb_function_print(func);
-		printf("\n\n\n");*/
-		
-		tb_function_compile(m, func, arch, features);
 	}
 #endif
     

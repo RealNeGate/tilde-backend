@@ -17,7 +17,7 @@ typedef enum X64_ValueType {
     X64_VALUE_XMM,
     
     X64_VALUE_FLAGS,
-    X64_VALUE_GPR_PAIR,
+    X64_VALUE_GPR_PAIR
 } X64_ValueType;
 
 typedef enum X64_Scale {
@@ -54,6 +54,12 @@ typedef struct X64_LabelPatch {
     TB_Label target_lbl;
 } X64_LabelPatch;
 
+typedef struct X64_F32Patch {
+    TB_Register src;
+	int base;
+    float value;
+} X64_F32Patch;
+
 typedef struct X64_PhiValue {
 	TB_Register reg;
 	TB_Register storage_a;
@@ -71,12 +77,13 @@ typedef struct X64_LocalDesc {
 } X64_LocalDesc;
 
 typedef struct X64_Context {
-	size_t phi_count, locals_count;
+	size_t phi_count, locals_count, f32_patch_count;
     size_t cached_value_start, cached_value_end;
     
 	size_t* intervals;
 	X64_PhiValue* phis;
 	X64_LocalDesc* locals;
+    X64_F32Patch* f32_patches;
     
 	X64_RegisterDesc gpr_desc[16];
 	X64_RegisterDesc xmm_desc[16];
@@ -172,6 +179,7 @@ static int32_t x64_find_local(X64_Context* ctx, TB_Register r);
 // Machine code generation
 static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, TB_Register next);
 static X64_Value x64_eval_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, const TB_Int128* imm);
+static X64_Value x64_eval_float_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, float imm);
 static X64_Value x64_as_memory_operand(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_DataType dt, TB_Register r);
 static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register dst_reg, TB_Register a_reg, TB_Register b_reg, TB_Register next_reg, const X64_ISel_Pattern patterns[], size_t pattern_count);
 
@@ -188,14 +196,16 @@ static void x64_inst_nop(TB_Emitter* out, int count);
 #define x64_emit_normal64(out, op, a, b) x64_inst_op(out, TB_I64, &insts[X64_ ## op], a, b)
 
 // Register allocation
-static X64_Value x64_allocate_gpr(X64_Context* ctx, TB_Register reg, TB_DataType dt);
 static X64_Value x64_allocate_gpr_pair(X64_Context* ctx, TB_Register reg, TB_DataType dt);
-static void x64_free_gpr(X64_Context* ctx, uint8_t gpr);
+static X64_Value x64_allocate_gpr(X64_Context* ctx, TB_Register reg, TB_DataType dt);
+static X64_Value x64_allocate_xmm(X64_Context* ctx, TB_Register reg, TB_DataType dt);
+static void x64_free_xmm(X64_Context* ctx, X64_XMM gpr);
+static void x64_free_gpr(X64_Context* ctx, X64_GPR gpr);
 
 TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* features) {
     TB_TemporaryStorage* tls = tb_tls_allocate();
     
-    tb_function_print(f);
+    //tb_function_print(f);
     
     // Allocate all the TLS memory for the function
 	X64_Context* ctx;
@@ -206,11 +216,12 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 	uint32_t ret_patch_count = 0;
 	uint32_t label_patch_count = 0;
     {
-		size_t phi_count = 0;
-		size_t locals_count = 0;
+		uint32_t phi_count = 0;
+		uint32_t locals_count = 0;
 		uint32_t ir_return_count = 0;
 		uint32_t ir_label_count = 0;
 		uint32_t ir_label_patch_count = 0;
+        uint32_t ir_float_consts = 0;
         
 		for (size_t i = 1; i < f->count; i++) {
 			// Not counting the PHI1 because they aren't real PHI nodes
@@ -220,6 +231,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 			else if (f->nodes[i].type == TB_LABEL) ir_label_count++;
 			else if (f->nodes[i].type == TB_IF) ir_label_patch_count += 2;
 			else if (f->nodes[i].type == TB_GOTO) ir_label_patch_count++;
+            else if (f->nodes[i].type == TB_FLOAT_CONST) ir_float_consts++;
 		}
         
 		ctx = (X64_Context*)tb_tls_push(tls, sizeof(X64_Context) + (phi_count * sizeof(X64_PhiValue)));
@@ -228,6 +240,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
         ctx->intervals = tb_tls_push(tls, f->count * sizeof(size_t));
         ctx->phis = tb_tls_push(tls, phi_count * sizeof(size_t));
         ctx->locals = tb_tls_push(tls, locals_count * sizeof(X64_LocalDesc));
+        ctx->f32_patches = tb_tls_push(tls, ir_float_consts * sizeof(X64_LocalDesc));
         
         ret_patches = (uint32_t*)tb_tls_push(tls, ir_return_count * sizeof(uint32_t));
 		labels = (uint32_t*)tb_tls_push(tls, ir_label_count * sizeof(uint32_t));
@@ -269,7 +282,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
         TB_Register bb_end = f->nodes[bb].label.terminator;
         
         // Clear and initialize new cache
-        printf("Process BB: r%llu-r%llu\n", bb, bb_end);
+        //printf("Process BB: r%llu-r%llu\n", bb, bb_end);
         labels[label_id] = out.count;
         
         // Evaluate all side effect instructions
@@ -280,12 +293,19 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
             switch (f->nodes[i].type) {
                 case TB_LOCAL: // the allocation is handled beforehand
                 case TB_LOAD:
+                case TB_PARAM:
+                case TB_PARAM_ADDR:
                 case TB_INT_CONST:
+                case TB_FLOAT_CONST:
                 case TB_ADD:
                 case TB_SUB:
                 case TB_MUL:
                 case TB_SDIV:
                 case TB_UDIV:
+                case TB_FADD:
+                case TB_FSUB:
+                case TB_FMUL:
+                case TB_FDIV:
                 case TB_CMP_EQ:
                 case TB_CMP_NE:
                 case TB_CMP_ULT:
@@ -381,6 +401,17 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
                 if (value.type != X64_VALUE_GPR || (value.type == X64_VALUE_GPR && value.gpr != X64_RAX)) {
                     x64_emit_normal(&out, value.dt.type, MOV, &dst, &value);
                 }
+            } else if (value.dt.type == TB_F32) {
+                // Float results use XMM0
+                X64_Value dst = (X64_Value){
+                    .type = X64_VALUE_XMM,
+                    .dt = value.dt,
+                    .xmm = X64_XMM0
+                };
+                
+                if (value.type != X64_VALUE_XMM || (value.type == X64_VALUE_XMM && value.gpr != X64_XMM0)) {
+                    x64_emit_normal(&out, value.dt.type, MOV, &dst, &value);
+                }
             } else abort();
             
             // Only jump if we aren't literally about to end the function
@@ -442,11 +473,30 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
     
     tb_out1b(&out, 0xC3); // ret
     
-    // the written size of the function taking into account the prologue skipping
+    // align to 16 bytes
     size_t actual_size = out.count;
     if (f->locals_stack_usage <= 8) actual_size -= 7; // prologue is 7 bytes long
+    x64_inst_nop(&out, 16 - (actual_size % 16));
     
-    // align functions to 16bytes
+    // patch floats
+    tb_out_reserve(&out, ctx->f32_patch_count * 4);
+    
+    for (size_t i = 0; i < ctx->f32_patch_count; i++) {
+        int pos = ctx->f32_patches[i].base;
+        
+        *((uint32_t*)&out.data[pos]) = out.count - (pos + 4);
+        
+        struct {
+            uint32_t u;
+            float f;
+        } flt_to_bits = { .f = ctx->f32_patches[i].value };
+        
+        tb_out4b_UNSAFE(&out, flt_to_bits.u);
+    }
+    
+    // align to 16 bytes
+    actual_size = out.count;
+    if (f->locals_stack_usage <= 8) actual_size -= 7; // prologue is 7 bytes long
     x64_inst_nop(&out, 16 - (actual_size % 16));
     
     // Trim code output memory
@@ -470,6 +520,9 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
         case TB_INT_CONST: {
             return x64_eval_immediate(f, ctx, out, r, &reg->i_const);
         }
+        case TB_FLOAT_CONST: {
+            return x64_eval_float_immediate(f, ctx, out, r, reg->f_const);
+        }
         case TB_ADD: {
             return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, 
                                 (X64_ISel_Pattern[]) {
@@ -483,6 +536,58 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
                                     { 4, "rmi", (uint8_t[]){ X64_MOV, 0, 1, X64_ADD, 0, 2, 0x7F }, false }
                                 }, 8);
         }
+        case TB_SUB: {
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, (X64_ISel_Pattern[]) {
+                                    { 1, "rrr", (uint8_t[]){ X64_SUB, 0, 2, 0x7F }, true },
+                                    { 2, "rri", (uint8_t[]){ X64_SUB, 0, 2, 0x7F }, true },
+                                    { 3, "rrm", (uint8_t[]){ X64_SUB, 0, 2, 0x7F }, true },
+                                    { 4, "rrm", (uint8_t[]){ X64_MOV, 0, 1, X64_SUB, 0, 2, 0x7F }, false },
+                                    { 4, "rmr", (uint8_t[]){ X64_MOV, 0, 1, X64_SUB, 0, 2, 0x7F }, false },
+                                    { 4, "rmi", (uint8_t[]){ X64_MOV, 0, 1, X64_SUB, 0, 2, 0x7F }, false }
+                                }, 6);
+        }
+        case TB_MUL: {
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, (X64_ISel_Pattern[]) {
+                                    { 1, "rrr", (uint8_t[]){ X64_IMUL, 0, 2, 0x7F }, true },
+                                    { 2, "rri", (uint8_t[]){ X64_IMUL, 0, 2, 0x7F }, true },
+                                    { 3, "rrm", (uint8_t[]){ X64_IMUL, 0, 2, 0x7F }, true },
+                                    { 4, "rrm", (uint8_t[]){ X64_MOV, 0, 1, X64_IMUL, 0, 2, 0x7F }, false },
+                                    { 4, "rmr", (uint8_t[]){ X64_MOV, 0, 1, X64_IMUL, 0, 2, 0x7F }, false },
+                                    { 4, "rmi", (uint8_t[]){ X64_MOV, 0, 1, X64_IMUL, 0, 2, 0x7F }, false }
+                                }, 6);
+        }
+        case TB_FADD: {
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, 
+                                (X64_ISel_Pattern[]) {
+                                    { 1, "xxx", (uint8_t[]){ X64_ADDSS, 0, 2, 0x7F }, true },
+                                    { 2, "xxm", (uint8_t[]){ X64_ADDSS, 0, 2, 0x7F }, true },
+                                    { 3, "xmm", (uint8_t[]){ X64_MOVSS, 0, 1, X64_ADDSS, 0, 2, 0x7F }, false }
+                                }, 3);
+        }
+        case TB_FSUB: {
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, 
+                                (X64_ISel_Pattern[]) {
+                                    { 1, "xxx", (uint8_t[]){ X64_SUBSS, 0, 2, 0x7F }, true },
+                                    { 2, "xxm", (uint8_t[]){ X64_SUBSS, 0, 2, 0x7F }, true },
+                                    { 3, "xmm", (uint8_t[]){ X64_MOVSS, 0, 1, X64_SUBSS, 0, 2, 0x7F }, false }
+                                }, 3);
+        }
+        case TB_FMUL: {
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, 
+                                (X64_ISel_Pattern[]) {
+                                    { 1, "xxx", (uint8_t[]){ X64_MULSS, 0, 2, 0x7F }, true },
+                                    { 2, "xxm", (uint8_t[]){ X64_MULSS, 0, 2, 0x7F }, true },
+                                    { 3, "xmm", (uint8_t[]){ X64_MOVSS, 0, 1, X64_MULSS, 0, 2, 0x7F }, false }
+                                }, 3);
+        }
+        case TB_FDIV: {
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, 
+                                (X64_ISel_Pattern[]) {
+                                    { 1, "xxx", (uint8_t[]){ X64_DIVSS, 0, 2, 0x7F }, true },
+                                    { 2, "xxm", (uint8_t[]){ X64_DIVSS, 0, 2, 0x7F }, true },
+                                    { 3, "xmm", (uint8_t[]){ X64_MOVSS, 0, 1, X64_DIVSS, 0, 2, 0x7F }, false }
+                                }, 3);
+        }
         case TB_LOCAL: {
             return (X64_Value) {
                 .type = X64_VALUE_MEM,
@@ -492,6 +597,21 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
                     .index = X64_GPR_NONE,
                     .scale = X64_SCALE_X1,
                     .disp = x64_find_local(ctx, r)
+                }
+            };
+        }
+        case TB_PARAM_ADDR: {
+            TB_DataType param_dt = f->nodes[reg->param_addr.param].dt;
+            int id = f->nodes[reg->param_addr.param].param.id;
+            
+            return (X64_Value) {
+                .type = X64_VALUE_MEM,
+				.dt = param_dt,
+                .mem = {
+                    .base = X64_RSP,
+                    .index = X64_GPR_NONE,
+                    .scale = X64_SCALE_X1,
+                    .disp = (1 + id) * 8
                 }
             };
         }
@@ -591,6 +711,30 @@ static X64_Value x64_eval_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter
     };
 }
 
+static X64_Value x64_eval_float_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, float imm) {
+    TB_DataType dt = f->nodes[r].dt;
+    X64_Value dst = x64_allocate_xmm(ctx, r, dt);
+    
+    // Load from RIP
+    // TODO(NeGate): Implement a better float immediate system
+    // zeroes can be dealt with XORPS
+    uint8_t* out_buffer = tb_out_reserve(out, 8);
+    *out_buffer++ = 0xF3;
+    *out_buffer++ = 0x0F;
+    *out_buffer++ = 0x10;
+    *out_buffer++ = ((dst.gpr & 7) << 3) | X64_RBP;
+    
+    *((uint32_t*)out_buffer) = 0;
+    tb_out_commit(out, 8);
+    
+    X64_F32Patch* patch = &ctx->f32_patches[ctx->f32_patch_count++];
+    patch->src = r;
+    patch->base = out->count - 4;
+    patch->value = imm;
+    
+    return dst;
+}
+
 static X64_Value x64_allocate_gpr(X64_Context* ctx, TB_Register reg, TB_DataType dt) {
 	for (unsigned int i = 0; i < 14; i++) {
 		X64_GPR gpr = GPR_PRIORITY_LIST[i];
@@ -621,7 +765,28 @@ static X64_Value x64_allocate_gpr_pair(X64_Context* ctx, TB_Register reg, TB_Dat
 	};
 }
 
-static void x64_free_gpr(X64_Context* ctx, uint8_t gpr) {
+static X64_Value x64_allocate_xmm(X64_Context* ctx, TB_Register reg, TB_DataType dt) {
+    for (unsigned int i = 0; i < 16; i++) {
+		if (ctx->xmm_desc[i].bound_value == 0) {
+			ctx->xmm_desc[i].bound_value = reg;
+            
+			return (X64_Value) {
+				.type = X64_VALUE_XMM,
+                .dt = dt,
+                .xmm = i
+			};
+		}
+	}
+    
+	// Spill XMMs
+	abort();
+}
+
+static void x64_free_xmm(X64_Context* ctx, X64_XMM xmm) {
+	ctx->xmm_desc[xmm].bound_value = 0;
+}
+
+static void x64_free_gpr(X64_Context* ctx, X64_GPR gpr) {
 	ctx->gpr_desc[gpr].bound_value = 0;
 }
 
@@ -707,15 +872,16 @@ void x64_inst_op(TB_Emitter* out, int dt_type, const X64_NormalInst* inst, const
         assert(b->type != X64_VALUE_IMM32);
         assert(dt_type == TB_F32 || dt_type == TB_F64);
         
-        // REX
-        if (a->xmm >= 8) {
-            *out_buffer++ = x64_inst_rex(true, rx, a->xmm, 0);
+        rx = b->xmm;
+        base = a->xmm;
+        
+        if (rx >= 8 || base >= 8) {
+            *out_buffer++ = x64_inst_rex(true, rx, base, 0);
         }
         
         *out_buffer++ = 0xF3;
         *out_buffer++ = 0x0F;
-        
-        *out_buffer++ = inst->op | sz | (dir ? 2 : 0);
+        *out_buffer++ = inst->op | (dir ? 2 : 0);
     }
     else __builtin_unreachable();
     
@@ -916,7 +1082,7 @@ static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out,
     
 	// Identify the pattern of the input
 	char pattern_str[4] = {};
-	pattern_str[0] = 'r';
+	pattern_str[0] = (dst_dt.type == TB_F32 || dst_dt.type == TB_F64) ? 'x' : 'r';
 	pattern_str[1] = x64_value_type_to_pattern_char(a.type);
 	pattern_str[2] = x64_value_type_to_pattern_char(b.type);
 	pattern_str[3] = '\0';
@@ -1007,7 +1173,7 @@ static int32_t x64_allocate_locals(TB_Function* f, X64_Context* ctx) {
         stack_usage += size;
         stack_usage += (align - (stack_usage % align)) % align;
         
-        printf("Stack alloc: %u bytes (%u align)\n", size, align);
+        //printf("Stack alloc: %u bytes (%u align)\n", size, align);
         
         ctx->locals[ctx->locals_count++] = (X64_LocalDesc) {
             .address = i,

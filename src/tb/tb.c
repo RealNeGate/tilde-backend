@@ -703,6 +703,11 @@ TB_API void tb_function_print(TB_Function* f) {
 				printf(" %lld\n", f->nodes[i].i_const.lo);
 			}
 			break;
+            case TB_FLOAT_CONST:
+			printf("  r%llu\t=\t", i);
+			tb_print_type(dt);
+            printf(" %f\n", f->nodes[i].f_const);
+			break;
             case TB_ADD:
             case TB_SUB:
             case TB_MUL:
@@ -722,6 +727,24 @@ TB_API void tb_function_print(TB_Function* f) {
 			}
             
 			printf(" r%llu\n", f->nodes[i].i_arith.b);
+			break;
+            case TB_FADD:
+            case TB_FSUB:
+            case TB_FMUL:
+            case TB_FDIV:
+			printf("  r%llu\t=\t", i);
+			tb_print_type(dt);
+			printf(" r%llu ", f->nodes[i].f_arith.a);
+            
+			switch (type) {
+                case TB_FADD: printf("+"); break;
+                case TB_FSUB: printf("-"); break;
+                case TB_FMUL: printf("*"); break;
+                case TB_FDIV: printf("/"); break;
+                default: abort();
+			}
+            
+			printf(" r%llu\n", f->nodes[i].f_arith.b);
 			break;
             case TB_CMP_EQ:
             case TB_CMP_NE:

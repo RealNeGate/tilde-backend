@@ -112,7 +112,9 @@ enum {
 	TB_F32, TB_F64,
 	// Pointers
 	// NOTE(NeGate): consider support for multiple address spaces
-	TB_PTR
+	TB_PTR,
+    
+    TB_MAX_TYPES
 };
 
 #define TB_IS_INTEGER_TYPE(x) ((x) >= TB_I8 && (x) <= TB_I128)
@@ -128,6 +130,10 @@ typedef struct TB_Int128 {
 	uint64_t lo;
 	uint64_t hi;
 } TB_Int128;
+
+typedef struct TB_FeatureConstraints {
+	int max_vector_width[TB_MAX_TYPES];
+} TB_FeatureConstraints;
 
 typedef struct TB_FeatureSet {
 	struct {
@@ -181,6 +187,8 @@ typedef struct TB_FunctionOutput TB_FunctionOutput;
 // *******************************
 // Public functions
 // *******************************
+TB_API void tb_get_constraints(TB_Arch target_arch, const TB_FeatureSet* features, TB_FeatureConstraints* constraints);
+
 TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, const TB_FeatureSet* features);
 TB_API void tb_module_destroy(TB_Module* m);
 
@@ -485,21 +493,27 @@ void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f);
 void tb_export_elf64(TB_Module* m, TB_Arch arch, FILE* f);
 // Writes out ELF object file with the compiled functions
 
-void tb_out_reserve(TB_Emitter* o, size_t count);
+uint8_t* tb_out_reserve(TB_Emitter* o, size_t count);
+// The return value is the start of the empty region after
+// the data, this is where you can start appending new data
+// and you're guarenteed `count` bytes. if this function is
+// called again assume this pointer is invalid because it
+// might be reallocated.
+
+void tb_out_commit(TB_Emitter* o, size_t count);
+// Commits `count` bytes to the emitter, increments the size 
+// of the data, you should have used `tb_out_reserve` to get
+// that data pointer and thus guarentee the space was available
 
 void tb_out1b_UNSAFE(TB_Emitter* o, uint8_t i);
+void tb_out4b_UNSAFE(TB_Emitter* o, uint32_t i);
+void tb_outstr_UNSAFE(TB_Emitter* o, const char* str);
+void tb_outs_UNSAFE(TB_Emitter* o, size_t len, const uint8_t* str);
 
 void tb_out1b(TB_Emitter* o, uint8_t i);
-
 void tb_out2b(TB_Emitter* o, uint16_t i);
-
 void tb_out4b(TB_Emitter* o, uint32_t i);
-
 void tb_out8b(TB_Emitter* o, uint64_t i);
-
-void tb_outstr_UNSAFE(TB_Emitter* o, const char* str);
-
-void tb_outs_UNSAFE(TB_Emitter* o, size_t len, const uint8_t* str);
 
 //
 // IR ANALYSIS
@@ -522,7 +536,7 @@ TB_FunctionOutput aarch64_compile_function(TB_Function* f, const TB_FeatureSet* 
 // Machine code converter for Aarch64
 
 TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* features);
-// Machine code converter for x64
+// Machine code converter for x64 built for fast compilation
 
 #endif /* TB_INTERNAL */
 #endif /* _TINYBACKEND_H_ */

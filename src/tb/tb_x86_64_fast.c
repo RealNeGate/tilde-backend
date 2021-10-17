@@ -1,7 +1,6 @@
 #define TB_INTERNAL
 #include "tb.h"
-
-#define GPR_NONE 0xFF
+#include "tb_x86_64.h"
 
 typedef enum X64_Scale {
 	X64_Scale_X1,
@@ -9,21 +8,6 @@ typedef enum X64_Scale {
 	X64_Scale_X4,
 	X64_Scale_X8
 } X64_Scale;
-
-typedef enum X64_Cond {
-	X64_O, X64_NO, X64_B, X64, X64_E, X64_NE, X64_BE, X64_A,
-	X64_S, X64_NS, X64_P, X64_NP, X64_L, X64_GE, X64_LE, X64_G,
-} X64_Cond;
-
-typedef enum X64_GPR {
-	X64_RAX, X64_RCX, X64_RDX, X64_RBX, X64_RSP, X64_RBP, X64_RSI, X64_RDI,
-	X64_R8, X64_R9, X64_R10, X64_R11, X64_R12, X64_R13, X64_R14, X64_R15
-} X64_GPR;
-
-typedef enum X64_XMM {
-	X64_XMM0, X64_XMM1, X64_XMM2, X64_XMM3, X64_XMM4, X64_XMM5, X64_XMM6, X64_XMM7,  
-    X64_XMM8, X64_XMM9, X64_XMM10, X64_XMM11, X64_XMM12, X64_XMM13, X64_XMM14, X64_XMM15  
-} X64_XMM;
 
 typedef enum X64_ValueType {
 	X64_None,
@@ -106,11 +90,26 @@ typedef struct X64_NormalInst {
 	uint8_t op_i;
 	uint8_t rx_i;
     
-	bool ext;
+    uint8_t ext;
 } X64_NormalInst;
 
 enum {
-	X64_ADD, X64_AND, X64_SUB, X64_XOR, X64_CMP, X64_MOV, X64_LEA, X64_IMUL, X64_MOVSX, X64_MOVZX,
+	X64_ADD, X64_AND, X64_SUB, X64_XOR, X64_CMP, X64_MOV,
+    X64_LEA, X64_IMUL, X64_MOVSX, X64_MOVZX,
+    
+    X64_MOVSS, X64_ADDSS, X64_MULSS, X64_SUBSS, X64_DIVSS,
+    X64_CMPSS
+};
+
+enum {
+    // Normal
+	X64_EXT_NONE,
+    
+    // DEF instructions have a 0F prefix
+	X64_EXT_DEF,
+    
+    // SSE instructions have a F3 0F prefix
+    X64_EXT_SSE,
 };
 
 static const X64_NormalInst insts[] = {
@@ -120,12 +119,19 @@ static const X64_NormalInst insts[] = {
 	[X64_XOR] = { 0x30, 0x80, 0x06 },
 	[X64_CMP] = { 0x38, 0x80, 0x07 },
 	[X64_MOV] = { 0x88, 0xC6, 0x00 },
-	[X64_LEA] = { 0x8C, 0x00, 0x00 },
     
-	[X64_IMUL] = { 0xAE, 0x00, 0x00, true },
+	[X64_LEA] = { 0x8C },
     
-	[X64_MOVSX] = { 0xBE, 0x00, 0x00, true },
-	[X64_MOVZX] = { 0xB6, 0x00, 0x00, true },
+	[X64_IMUL] = { 0xAE, .ext = X64_EXT_DEF },
+	[X64_MOVSX] = { 0xBE, .ext = X64_EXT_DEF },
+	[X64_MOVZX] = { 0xB6, .ext = X64_EXT_DEF },
+    
+	[X64_MOVSS] = { 0x10, .ext = X64_EXT_SSE },
+	[X64_ADDSS] = { 0x58, .ext = X64_EXT_SSE },
+	[X64_MULSS] = { 0x59, .ext = X64_EXT_SSE },
+	[X64_SUBSS] = { 0x5C, .ext = X64_EXT_SSE },
+	[X64_DIVSS] = { 0x5E, .ext = X64_EXT_SSE },
+	[X64_CMPSS] = { 0xC2, .ext = X64_EXT_SSE }
 };
 
 static const X64_GPR GPR_PARAMETERS[] = {
@@ -268,8 +274,6 @@ static void x64_inst_op64_ri32(TB_Emitter* out, uint8_t opcode, uint8_t rx, uint
 }
 
 static void x64_inst_op(TB_Emitter* out, int dt_type, const X64_NormalInst* inst, X64_Value* a, X64_Value* b) {
-	assert((dt_type == TB_I8 || dt_type == TB_I16 || dt_type == TB_I32 || dt_type == TB_I64 || dt_type == TB_PTR));
-    
 	bool dir = x64_is_mem_op(b);
 	// Both arguments cannot be memory operands
 	assert(!x64_is_mem_op(a) || !x64_is_mem_op(b));
@@ -281,23 +285,38 @@ static void x64_inst_op(TB_Emitter* out, int dt_type, const X64_NormalInst* inst
 	uint8_t sz = (dt_type != TB_I8);
 	bool is_64bit = (dt_type == TB_I64 || dt_type == TB_PTR);
     
-	if (dt_type == TB_I8 || dt_type == TB_I16) tb_out1b_UNSAFE(out, 0x66);
+    if (inst->ext == X64_EXT_NONE) {
+        assert((dt_type == TB_I8 || dt_type == TB_I16 || dt_type == TB_I32 || dt_type == TB_I64 || dt_type == TB_PTR));
+        
+        if (dt_type == TB_I8 || dt_type == TB_I16) tb_out1b_UNSAFE(out, 0x66);
+    } 
+    else if (inst->ext == X64_EXT_DEF) {
+        assert(dt_type == TB_I32 || dt_type == TB_I64 || dt_type == TB_PTR);
+        
+        tb_out1b_UNSAFE(out, 0x0F);
+    } 
+    else if (inst->ext == X64_EXT_SSE) {
+        assert(dt_type == TB_F32 || dt_type == TB_F64);
+        
+        tb_out1b_UNSAFE(out, 0xF3);
+        tb_out1b_UNSAFE(out, 0x0F);
+    }
+    else abort();
     
 	if (a->type == X64_CachedGPR && b->type == X64_CachedGPR) {
 		// SPECIAL CASE IMUL
 		if (b->gpr >= 8 || is_64bit) tb_out1b_UNSAFE(out, x64_inst_rex(is_64bit, b->gpr, a->gpr, 0));
         
-		if (inst->ext) tb_out1b_UNSAFE(out, 0x0F);
-		// SPECIAL CASE IMUL
-		if (inst->op == 0xAE) {
-			assert(!dir);
-			tb_out1b_UNSAFE(out, inst->op | sz);
-		}
-		else {
-			tb_out1b_UNSAFE(out, inst->op | sz | (dir ? 2 : 0));
-		}
+        // SPECIAL CASE IMUL
+        if (inst->op == 0xAE) {
+            assert(!dir);
+            tb_out1b_UNSAFE(out, inst->op | sz);
+        }
+        else {
+            tb_out1b_UNSAFE(out, inst->op | sz | (dir ? 2 : 0));
+        }
         
-		tb_out1b_UNSAFE(out, x64_inst_mod_rx_rm(X64_Direct, b->gpr, a->gpr));
+        tb_out1b_UNSAFE(out, x64_inst_mod_rx_rm(X64_Direct, b->gpr, a->gpr));
 	}
 	else if (a->type == X64_CachedGPR && b->type == X64_Integer) {
 		assert(inst->op_i != 0 || inst->rx_i != 0); // Doesn't support immediates
@@ -437,7 +456,11 @@ static void x64_inst_op(TB_Emitter* out, int dt_type, const X64_NormalInst* inst
 		tb_out1b_UNSAFE(out, (b->num >> 16) & 0xFF);
 		tb_out1b_UNSAFE(out, (b->num >> 24) & 0xFF);
 	}
-	else abort();
+    else if (a->type == X64_CACHED_XMM && b->type == X64_CACHED_XMM) {
+        tb_out1b_UNSAFE(out, inst->op);
+        tb_out1b_UNSAFE(out, x64_inst_mod_rx_rm(X64_Direct, a->xmm, b->xmm));
+    }
+    else abort();
 }
 
 #if 0
@@ -459,20 +482,6 @@ static void x64_inst_ret(TB_Emitter* out) {
 
 static void x64_inst_nop(TB_Emitter* out, int count) {
 	if (count == 0) return;
-    
-	/*
-	NOPS lol
-	90H                             nop
-	66 90H                          data16 nop
-	0F 1F 00H                       nop dword [rax]
-	0F 1F 40 00H                    nop dword [rax + 0x00]
-	0F 1F 44 00 00H                 nop dword [rax + rax + 0x00]
-	66 0F 1F 44 00 00H              nop  word [rax + rax + 0x00]
-	0F 1F 80 00 00 00 00H           nop dword [rax + 0x00000000]
-	0F 1F 84 00 00 00 00 00H        nop dword [rax + rax + 0x00000000]
-	66 0F 1F 84 00 00 00 00 00H     nop  word [rax + rax + 0x00000000]
-	66 2E 0F 1F 84 00 00 00 00 00H  nop  word cs:[rax + rax + 0x00000000]
-	*/
     
 	tb_out_reserve(out, count);
 	do {
@@ -1095,7 +1104,7 @@ static void x64_terminate_bb(TB_Function* f, TB_Emitter* out, X64_Context* ctx, 
 	}
 }
 
-static TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* features) {
+static TB_FunctionOutput x64_fast_compile_function(TB_Function* f, const TB_FeatureSet* features) {
 	TB_TemporaryStorage* tls = tb_tls_allocate();
     
     //
@@ -1171,12 +1180,25 @@ static TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSe
 	//
 	x64_reserve_parameters(f, ctx, &out);
     
-	TB_Register current_label = 1;
-	for (size_t i = 2; i < f->count; i++) {
-		enum TB_RegisterType type = f->nodes[i].type;
-		TB_DataType dt = f->nodes[i].dt;
+    X64_Value test_l = {
+        .type = X64_CACHED_XMM,
+        .dt = TB_TYPE_F32(1),
+        .xmm = X64_XMM0
+    };
+    X64_Value test_r = {
+        .type = X64_CACHED_XMM,
+        .dt = TB_TYPE_F32(1),
+        .xmm = X64_XMM1
+    };
+    x64_inst_op(&out, TB_F32, &insts[X64_MOVSS], &test_l, &test_r);
+    x64_inst_op(&out, TB_F32, &insts[X64_ADDSS], &test_l, &test_r);
+    
+    TB_Register current_label = 1;
+    for (size_t i = 2; i < f->count; i++) {
+        enum TB_RegisterType type = f->nodes[i].type;
+        TB_DataType dt = f->nodes[i].dt;
         
-		switch (type) {
+        switch (type) {
             case TB_NULL:
             case TB_INT_CONST:
             case TB_ADD:
@@ -1191,7 +1213,7 @@ static TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSe
             case TB_CMP_ULE:
             case TB_PHI1:
             case TB_PHI2:
-			break;
+            break;
             case TB_LOCAL: {
                 uint32_t size = f->nodes[i].local.size;
                 uint32_t alignment = f->nodes[i].local.alignment;
@@ -1370,62 +1392,62 @@ static TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSe
                 break;
             }
             default: abort();
-		}
-	}
+        }
+    }
     
-	f->locals_stack_usage += (16 - (f->locals_stack_usage % 16)) % 16;
-	assert((f->locals_stack_usage & 15) == 0);
-	f->locals_stack_usage += 8;
+    f->locals_stack_usage += (16 - (f->locals_stack_usage % 16)) % 16;
+    assert((f->locals_stack_usage & 15) == 0);
+    f->locals_stack_usage += 8;
     
-	// patch labels
-	for (size_t i = 0; i < label_patch_count; i++) {
-		uint32_t pos = label_patches[i].pos;
-		uint32_t target_lbl = label_patches[i].target_lbl;
+    // patch labels
+    for (size_t i = 0; i < label_patch_count; i++) {
+        uint32_t pos = label_patches[i].pos;
+        uint32_t target_lbl = label_patches[i].target_lbl;
         
-		int32_t rel32 = labels[target_lbl] - (pos + 4);
+        int32_t rel32 = labels[target_lbl] - (pos + 4);
         
-		*((uint32_t*)&out.data[pos]) = rel32;
-	}
+        *((uint32_t*)&out.data[pos]) = rel32;
+    }
     
-	// patch return
-	for (int i = 0; i < ret_patch_count; i++) {
-		uint32_t pos = ret_patches[i];
+    // patch return
+    for (int i = 0; i < ret_patch_count; i++) {
+        uint32_t pos = ret_patches[i];
         
-		*((uint32_t*)&out.data[pos]) = out.count - (pos + 4);
-	}
+        *((uint32_t*)&out.data[pos]) = out.count - (pos + 4);
+    }
     
-	// only patch the prologue and epilogue if we even need one
-	if (f->locals_stack_usage > 8) {
-		// patch prologue
-		*((uint32_t*)&out.data[stack_sub_patch]) = f->locals_stack_usage;
+    // only patch the prologue and epilogue if we even need one
+    if (f->locals_stack_usage > 8) {
+        // patch prologue
+        *((uint32_t*)&out.data[stack_sub_patch]) = f->locals_stack_usage;
         
-		x64_inst_op64_ri32(&out, insts[X64_ADD].op_i, insts[X64_ADD].rx_i, X64_RSP, f->locals_stack_usage);
-	}
+        x64_inst_op64_ri32(&out, insts[X64_ADD].op_i, insts[X64_ADD].rx_i, X64_RSP, f->locals_stack_usage);
+    }
     
-	x64_inst_ret(&out);
+    x64_inst_ret(&out);
     
-	// the written size of the function taking into account the prologue skipping
-	size_t actual_size = out.count;
-	if (f->locals_stack_usage <= 8) actual_size -= 7; // prologue is 7 bytes long
+    // the written size of the function taking into account the prologue skipping
+    size_t actual_size = out.count;
+    if (f->locals_stack_usage <= 8) actual_size -= 7; // prologue is 7 bytes long
     
-	// align function to 16bytes
-	// this is actually helpful to the branch predictor
-	// since it has hard limits on how many branches it
-	// can keep track of in the same small regions, we'd 
-	// wanna avoid getting two functions mixed together
-	// in it's perspective.
-	x64_inst_nop(&out, 16 - (actual_size % 16));
+    // align function to 16bytes
+    // this is actually helpful to the branch predictor
+    // since it has hard limits on how many branches it
+    // can keep track of in the same small regions, we'd 
+    // wanna avoid getting two functions mixed together
+    // in it's perspective.
+    x64_inst_nop(&out, 16 - (actual_size % 16));
     
-	// trim memory
-	out.capacity = out.count;
-	out.data = realloc(out.data, out.capacity);
-	if (!out.data) abort(); // I don't know if this can even fail...
+    // trim memory
+    out.capacity = out.count;
+    out.data = realloc(out.data, out.capacity);
+    if (!out.data) abort(); // I don't know if this can even fail...
     
-	return (TB_FunctionOutput) {
-		.name = f->name,
-		.has_no_prologue = (f->locals_stack_usage <= 8),
-		.emitter = out
-	};
+    return (TB_FunctionOutput) {
+        .name = f->name,
+        .has_no_prologue = (f->locals_stack_usage <= 8),
+        .emitter = out
+    };
 }
 
 static void x64_reserve_parameters(TB_Function* f, X64_Context* ctx, TB_Emitter* out) {

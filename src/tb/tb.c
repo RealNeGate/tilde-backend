@@ -5,6 +5,33 @@ static uint8_t tb_temporary_storage[TB_TEMPORARY_STORAGE_SIZE * TB_MAX_THREADS];
 static uint8_t* tb_thread_storage;
 static atomic_uint tb_used_tls_slots;
 
+TB_API void tb_get_constraints(TB_Arch target_arch, const TB_FeatureSet* features, TB_FeatureConstraints* constraints) {
+    *constraints = (TB_FeatureConstraints){};
+    
+    if (target_arch == TB_ARCH_X86_64) {
+        // void and pointers dont get vector types
+        constraints->max_vector_width[TB_VOID] = 1;
+        constraints->max_vector_width[TB_PTR] = 1;
+        
+        // Basic stuff that x64 and SSE guarentee
+        constraints->max_vector_width[TB_I8] = 16;
+        constraints->max_vector_width[TB_I16] = 8;
+        constraints->max_vector_width[TB_I32] = 4;
+        constraints->max_vector_width[TB_I64] = 2;
+        
+        constraints->max_vector_width[TB_F32] = 4;
+        constraints->max_vector_width[TB_F64] = 2;
+        
+        // NOTE(NeGate): Booleans aren't a fixed idea
+        // in x64 vectors it's generally represented 
+        // as the same bit size as the operation that
+        // creates it so 16 is picked because of vector
+        // byte comparisons being the most you can get
+        // from vector bools.
+        constraints->max_vector_width[TB_BOOL] = 16;
+    } else abort();
+}
+
 TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, const TB_FeatureSet* features) {
 	TB_Module* m = malloc(sizeof(TB_Module));
     
@@ -772,7 +799,7 @@ TB_API void tb_function_print(TB_Function* f) {
 // 
 // Simple linear allocation for the backend's to output code with
 //
-static void tb_out_reserve(TB_Emitter* o, size_t count) {
+uint8_t* tb_out_reserve(TB_Emitter* o, size_t count) {
 	if (o->count + count >= o->capacity) {
 		if (o->capacity == 0) {
 			o->capacity = 64;
@@ -785,48 +812,62 @@ static void tb_out_reserve(TB_Emitter* o, size_t count) {
 		o->data = realloc(o->data, o->capacity);
 		if (o->data == NULL) abort();
 	}
+    
+    return &o->data[o->count];
 }
 
-static void tb_out1b_UNSAFE(TB_Emitter* o, uint8_t i) {
+void tb_out_commit(TB_Emitter* o, size_t count) {
+	assert(o->count + count < o->capacity);
+    o->count += count;
+}
+
+void tb_out1b_UNSAFE(TB_Emitter* o, uint8_t i) {
 	assert(o->count + 1 < o->capacity);
     
 	o->data[o->count] = i;
 	o->count += 1;
 }
 
-static void tb_out1b(TB_Emitter* o, uint8_t i) {
-	tb_out_reserve(o, 1);
-    
-	o->data[o->count] = i;
-	o->count += 1;
-}
-
-static void tb_out2b(TB_Emitter* o, uint16_t i) {
-	tb_out_reserve(o, 2);
-    
-	*((uint16_t*)&o->data[o->count]) = i;
-	o->count += 2;
-}
-
-static void tb_out4b(TB_Emitter* o, uint32_t i) {
+void tb_out4b_UNSAFE(TB_Emitter* o, uint32_t i) {
 	tb_out_reserve(o, 4);
     
 	*((uint32_t*)&o->data[o->count]) = i;
 	o->count += 4;
 }
 
-static void tb_out8b(TB_Emitter* o, uint64_t i) {
+void tb_out1b(TB_Emitter* o, uint8_t i) {
+	tb_out_reserve(o, 1);
+    
+	o->data[o->count] = i;
+	o->count += 1;
+}
+
+void tb_out2b(TB_Emitter* o, uint16_t i) {
+	tb_out_reserve(o, 2);
+    
+	*((uint16_t*)&o->data[o->count]) = i;
+	o->count += 2;
+}
+
+void tb_out4b(TB_Emitter* o, uint32_t i) {
+	tb_out_reserve(o, 4);
+    
+	*((uint32_t*)&o->data[o->count]) = i;
+	o->count += 4;
+}
+
+void tb_out8b(TB_Emitter* o, uint64_t i) {
 	tb_out_reserve(o, 8);
     
 	*((uint64_t*)&o->data[o->count]) = i;
 	o->count += 8;
 }
 
-static void tb_outstr_UNSAFE(TB_Emitter* o, const char* str) {
+void tb_outstr_UNSAFE(TB_Emitter* o, const char* str) {
 	while (*str) o->data[o->count++] = *str++;
 }
 
-static void tb_outs_UNSAFE(TB_Emitter* o, size_t len, const uint8_t* str) {
+void tb_outs_UNSAFE(TB_Emitter* o, size_t len, const uint8_t* str) {
 	for (size_t i = 0; i < len; i++) o->data[o->count + i] = str[i];
 	o->count += len;
 }

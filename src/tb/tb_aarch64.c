@@ -463,7 +463,7 @@ static TB_FunctionOutput aarch64_compile_function(TB_Function* f, const TB_Featu
 			TB_DataType dt = f->nodes[f->nodes[i].param_addr.param].dt;
             
 			// TODO(NeGate): Implement the vector parameters
-			assert(dt.count == 1);
+			if (dt.count != 1) assert(0);
             
 			uint32_t size = f->nodes[i].param_addr.size;
 			uint32_t align = f->nodes[i].param_addr.alignment;

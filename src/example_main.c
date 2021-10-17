@@ -26,7 +26,7 @@ int main(int argc, char** argv) {
 void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
 	TB_Module* m = tb_module_create(arch, system, features);
     
-#if 1
+#if 0
 	typedef void(*TestFunction)(TB_Function* func);
     
 	static const TestFunction test_functions[] = {
@@ -34,7 +34,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_add_i16,
 		test_add_i32,
 		test_add_i64,
-		//test_add_f32,
+		test_add_f32,
 		test_locals_1,
 		test_params_1,
 		test_params_2,
@@ -47,7 +47,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		"test_add_i16",
 		"test_add_i32",
 		"test_add_i64",
-		//"test_add_f32",
+		"test_add_f32",
 		"test_locals_1",
 		"test_params_1",
 		"test_params_2",
@@ -65,7 +65,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		tb_function_print(func);
 		printf("\n\n\n");
 	}
-#elif 0
+#elif 1
 	{
 		TB_Function* func = tb_function_create(m, "test");
         
@@ -155,7 +155,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 	}
 #endif
     
-	tb_module_compile(m, TB_OPT_O1, 1);
+	tb_module_compile(m, TB_OPT_O0, 1);
 	tb_module_export(m, f);
 	tb_module_destroy(m);
 }

@@ -154,11 +154,9 @@ typedef struct X64_ISel_Pattern {
 	bool forced_64bit;
 } X64_ISel_Pattern;
 
-#if 0
 static const X64_GPR GPR_PARAMETERS[] = {
 	X64_RCX, X64_RDX, X64_R8, X64_R9
 };
-#endif
 
 static const X64_GPR GPR_PRIORITY_LIST[] = {
 	X64_RAX, X64_RCX, X64_RDX, X64_R8,
@@ -511,6 +509,18 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
     };
 }
 
+// LEA addition only works in NO_WRAP and CAN_WRAP
+static const X64_ISel_Pattern IADD_PATTERNS[] = {
+    { 1, "rrr", (uint8_t[]){ X64_LEA, 0, '[', 1, 2, 0x7F }, false, true },
+    { 1, "rri", (uint8_t[]){ X64_LEA, 0, '[', 1, 2, 0x7F }, false, true },
+    { 2, "rrr", (uint8_t[]){ X64_ADD, 0, 2, 0x7F }, true },
+    { 2, "rri", (uint8_t[]){ X64_ADD, 0, 2, 0x7F }, true },
+    { 3, "rrm", (uint8_t[]){ X64_ADD, 0, 2, 0x7F }, true },
+    { 4, "rrm", (uint8_t[]){ X64_MOV, 0, 1, X64_ADD, 0, 2, 0x7F }, false },
+    { 4, "rmr", (uint8_t[]){ X64_MOV, 0, 1, X64_ADD, 0, 2, 0x7F }, false },
+    { 4, "rmi", (uint8_t[]){ X64_MOV, 0, 1, X64_ADD, 0, 2, 0x7F }, false }
+};
+
 static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, TB_Register next) {
     TB_Node* reg = &f->nodes[r];
     //TB_DataType dt = reg->dt;
@@ -524,17 +534,51 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
             return x64_eval_float_immediate(f, ctx, out, r, reg->f_const);
         }
         case TB_ADD: {
-            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, 
-                                (X64_ISel_Pattern[]) {
-                                    { 1, "rrr", (uint8_t[]){ X64_LEA, 0, '[', 1, 2, 0x7F }, false, true },
-                                    { 1, "rri", (uint8_t[]){ X64_LEA, 0, '[', 1, 2, 0x7F }, false, true },
-                                    { 2, "rrr", (uint8_t[]){ X64_ADD, 0, 2, 0x7F }, true },
-                                    { 2, "rri", (uint8_t[]){ X64_ADD, 0, 2, 0x7F }, true },
-                                    { 3, "rrm", (uint8_t[]){ X64_ADD, 0, 2, 0x7F }, true },
-                                    { 4, "rrm", (uint8_t[]){ X64_MOV, 0, 1, X64_ADD, 0, 2, 0x7F }, false },
-                                    { 4, "rmr", (uint8_t[]){ X64_MOV, 0, 1, X64_ADD, 0, 2, 0x7F }, false },
-                                    { 4, "rmi", (uint8_t[]){ X64_MOV, 0, 1, X64_ADD, 0, 2, 0x7F }, false }
-                                }, 8);
+            bool can_lea_add = reg->i_arith.arith_behavior == TB_NO_WRAP 
+                || reg->i_arith.arith_behavior == TB_CAN_WRAP;
+            
+            X64_Value result = x64_std_isel(
+                                            f, ctx, out, r,
+                                            reg->i_arith.a, reg->i_arith.b, next,
+                                            IADD_PATTERNS + (can_lea_add ? 0 : 2),
+                                            8 - (can_lea_add ? 0 : 2)
+                                            );
+            
+            switch (reg->i_arith.arith_behavior) {
+                case TB_NO_WRAP: break;
+                case TB_CAN_WRAP: break;
+                case TB_WRAP_CHECK: {
+                    // INTO, trap if overflow
+                    tb_out1b(out, 0xCE);
+                    break;
+                }
+                case TB_SATURATED_UNSIGNED: {
+                    X64_Value temp = x64_allocate_gpr(ctx, TB_NULL_REG, TB_TYPE_I64(1));
+                    
+                    uint8_t* out_buffer = tb_out_reserve(out, 11);
+                    
+                    // mov temp, -1 
+                    *out_buffer++ = x64_inst_rex(true, 0x00, temp.gpr, 0x00);
+                    *out_buffer++ = 0xC7;
+                    *out_buffer++ = x64_inst_mod_rx_rm(X64_MOD_DIRECT, 0x00, temp.gpr);
+                    *((uint32_t*)out_buffer) = 0xFFFFFFFF;
+                    out_buffer += 4;
+                    
+                    // cmovae result, temp
+                    *out_buffer++ = x64_inst_rex(true, result.gpr, temp.gpr, 0x00);
+                    *out_buffer++ = 0x0F;
+                    *out_buffer++ = 0x43;
+                    *out_buffer++ = x64_inst_mod_rx_rm(X64_MOD_DIRECT, result.gpr, temp.gpr);
+                    
+                    tb_out_commit(out, 11);
+                    
+                    x64_free_gpr(ctx, temp.gpr);
+                    break;
+                }
+                case TB_SATURATED_SIGNED: abort();
+            }
+            
+            return result;
         }
         case TB_SUB: {
             return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, (X64_ISel_Pattern[]) {
@@ -614,6 +658,40 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
                     .disp = (1 + id) * 8
                 }
             };
+        }
+        case TB_PARAM: {
+            TB_DataType param_dt = reg->dt;
+            
+            if (reg->param.id < 4) {
+                // TODO(NeGate): Implement floats
+                assert(param_dt.type != TB_F32 && param_dt.type != TB_F64);
+                
+                return (X64_Value) {
+                    .type = X64_VALUE_GPR,
+                    .dt = param_dt,
+                    .gpr = GPR_PARAMETERS[reg->param.id]
+                };
+            }
+            else {
+                // TODO(NeGate): Implement floats
+                assert(param_dt.type != TB_F32 && param_dt.type != TB_F64);
+                
+                int id = reg->param.id;
+                X64_Value mem = (X64_Value) {
+                    .type = X64_VALUE_MEM,
+                    .dt = param_dt,
+                    .mem = {
+                        .base = X64_RSP,
+                        .index = X64_GPR_NONE,
+                        .scale = X64_SCALE_X1,
+                        .disp = (1 + id) * 8
+                    }
+                };
+                X64_Value result = x64_allocate_gpr(ctx, r, param_dt);
+                
+                x64_emit_normal(out, param_dt.type, MOV, &result, &mem);
+                return result;
+            }
         }
         case TB_CMP_EQ:
         case TB_CMP_NE:
@@ -919,11 +997,18 @@ void x64_inst_op(TB_Emitter* out, int dt_type, const X64_NormalInst* inst, const
     } else __builtin_unreachable();
     
     if (b->type == X64_VALUE_IMM32) {
-        // TODO(NeGate): Implement short immediate operands
-        assert(dt_type == TB_I32 || dt_type == TB_I64 || dt_type == TB_PTR);
-        
-        *((uint32_t*)out_buffer) = b->imm32;
-        out_buffer += 4;
+        if (dt_type == TB_I8) {
+            assert(b->imm32 == (int8_t)b->imm32);
+            *out_buffer++ = (int8_t)b->imm32;
+        } else if (dt_type == TB_I16) {
+            assert(b->imm32 == (int16_t)b->imm32);
+            *((uint16_t*)out_buffer) = (int16_t)b->imm32;
+            out_buffer += 2;
+        } else {
+            assert(dt_type == TB_I32 || dt_type == TB_I64 || dt_type == TB_PTR);
+            *((uint32_t*)out_buffer) = b->imm32;
+            out_buffer += 4;
+        }
     }
     
     tb_out_commit(out, out_buffer - out_buffer_start);
@@ -1109,7 +1194,7 @@ static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out,
 	else if (f->nodes[next_reg].type == TB_RET) {
         // It doesn't matter if something was using RAX before
         // since we're about to exit
-        dst = (X64_Value){ .type = X64_VALUE_GPR, .gpr = X64_RAX };
+        dst = (X64_Value){ .type = X64_VALUE_GPR, .dt = dst_dt, .gpr = X64_RAX };
     } else dst = x64_allocate_gpr(ctx, dst_reg, dst_dt);
     
 	const X64_Value operands[3] = { dst, a, b };

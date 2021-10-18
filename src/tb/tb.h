@@ -71,8 +71,10 @@ typedef enum TB_Arch {
 
 typedef enum TB_System {
 	TB_SYSTEM_WINDOWS,
-	TB_SYSTEM_MACOS,
 	TB_SYSTEM_LINUX,
+    
+    // TODO(NeGate): Actually implement these lol
+	TB_SYSTEM_MACOS,
 	TB_SYSTEM_ANDROID
 } TB_System;
 
@@ -247,16 +249,12 @@ TB_API void tb_function_print(TB_Function* f);
 TB_API void tb_function_optimize(TB_Function* f);
 TB_API void tb_find_live_intervals(size_t intervals[], const TB_Function* f);
 
-//
 // These emulator functions have the same semantics as
 // their equivalent IR operations.
-//
 TB_API TB_Int128 tb_emulate_add(TB_Function* f, TB_ArithmaticBehavior arith_behavior, TB_DataType dt, TB_Int128 a, TB_Int128 b);
 
-//
 // Private header stuff, don't include TB_INTERNAL into your code,
 // it's for the other implementation files of TB
-//
 #ifdef TB_INTERNAL
 
 typedef struct TB_Emitter {
@@ -315,7 +313,10 @@ typedef struct TB_Node {
 		TB_PARAM_ADDR,
         
 		// Control flow
-		TB_PASS, // only used internally, if you see one in normal IR things went wrong in a stage 
+        // NOTE(NeGate): only used internally, if you
+        // see one in normal IR things went wrong in
+        // an optimization pass
+		TB_PASS,
 		TB_PHI1,
 		TB_PHI2,
         

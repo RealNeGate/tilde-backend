@@ -100,7 +100,10 @@ TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_thre
                    tb_opt_dce(f) ||
                    tb_opt_cse(f)) {
 			}
-		}
+            
+            tb_function_print(f);
+            printf("\n\n\n");
+        }
 	}
 	clock_t t2 = clock();
 	double delta_ms = 1000.0 * ((t2 - t1) / CLOCKS_PER_SEC);

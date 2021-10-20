@@ -869,6 +869,7 @@ bool tb_opt_dce(TB_Function* f) {
 				break;
 				// delete:
                 case TB_INT_CONST:
+                case TB_LOCAL:
                 case TB_ADD:
                 case TB_SUB:
                 case TB_MUL:

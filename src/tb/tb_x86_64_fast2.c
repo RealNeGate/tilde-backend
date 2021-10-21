@@ -205,8 +205,6 @@ static void x64_free_gpr(X64_Context* ctx, X64_GPR gpr);
 TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* features) {
     TB_TemporaryStorage* tls = tb_tls_allocate();
     
-    //tb_function_print(f);
-    
     // Allocate all the TLS memory for the function
 	X64_Context* ctx;
 	uint32_t* ret_patches;
@@ -247,12 +245,18 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 		label_patches = (X64_LabelPatch*)tb_tls_push(tls, ir_label_patch_count * sizeof(X64_LabelPatch));
     }
     
+#if 0
+    printf("Compiling %s...\n", f->name);
+    printf("  IR space: %d nodes (%zu kB)\n", f->capacity, (f->capacity * sizeof(TB_Node)) / 1024);
+    printf("  TLS usage: %d\n", tls->used);
+#endif
+    
 	tb_find_live_intervals(ctx->intervals, f);
     x64_create_phi_lookup(f, ctx);
     
     // Reserve stack
-	ctx->gpr_desc[X64_RSP].bound_value = SIZE_MAX; // reserved
-	if (!features->x64.omit_frame_pointer) ctx->gpr_desc[X64_RBP].bound_value = SIZE_MAX; // reserved
+	ctx->gpr_desc[X64_RSP].bound_value = TB_REG_MAX; // reserved
+	if (!features->x64.omit_frame_pointer) ctx->gpr_desc[X64_RBP].bound_value = TB_REG_MAX; // reserved
     
     TB_Emitter out = { 0 };
     
@@ -299,6 +303,8 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
                 case TB_PARAM_ADDR:
                 case TB_INT_CONST:
                 case TB_FLOAT_CONST:
+                case TB_SIGN_EXT:
+                case TB_ZERO_EXT:
                 case TB_ADD:
                 case TB_SUB:
                 case TB_MUL:
@@ -317,7 +323,6 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
                 break;
                 case TB_STORE: {
                     // TODO(NeGate): Allow for patterns such as:
-                    // *p = *p + a  => add Xword [p], a
                     TB_Register address_reg = f->nodes[i].store.address;
                     TB_Register value_reg = f->nodes[i].store.value;
                     
@@ -325,11 +330,24 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
                     X64_Value address = x64_eval(f, ctx, &out, address_reg, i);
                     if (address.dt.type != TB_PTR) abort();
                     
-                    X64_Value value = x64_eval(f, ctx, &out, value_reg, i);
-                    
                     // TODO(NeGate): Cast to store type
-                    
-                    x64_emit_normal(&out, dt.type, MOV, &address, &value);
+                    if (f->nodes[value_reg].type == TB_ADD 
+                        && f->nodes[f->nodes[value_reg].i_arith.a].type == TB_LOAD
+                        && f->nodes[f->nodes[value_reg].i_arith.a].load.address == address_reg) {
+                        // *p = *p + a  => add Xword [p], a
+                        X64_Value value = x64_eval(f, ctx, &out, f->nodes[value_reg].i_arith.b, i);
+                        x64_emit_normal(&out, dt.type, ADD, &address, &value);
+                    } else if (f->nodes[value_reg].type == TB_SUB 
+                               && f->nodes[f->nodes[value_reg].i_arith.a].type == TB_LOAD
+                               && f->nodes[f->nodes[value_reg].i_arith.a].load.address == address_reg) {
+                        // *p = *p - a  => sub Xword [p], a
+                        X64_Value value = x64_eval(f, ctx, &out, f->nodes[value_reg].i_arith.b, i);
+                        x64_emit_normal(&out, dt.type, SUB, &address, &value);
+                    } else {
+                        X64_Value value = x64_eval(f, ctx, &out, value_reg, i);
+                        
+                        x64_emit_normal(&out, dt.type, MOV, &address, &value);
+                    }
                     break;
                 }
                 default: 
@@ -367,11 +385,24 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
                 // Implicit convert into FLAGS
                 cond = x64_as_bool(f, ctx, &out, cond);
                 
+                bool fallthrough = f->nodes[bb_end + 1].type == TB_LABEL 
+                    && f->nodes[bb_end + 1].label.id == if_false;
+                
+                X64_Cond cc = cond.cond;
+                if (f->nodes[bb_end + 1].type == TB_LABEL &&
+                    f->nodes[bb_end + 1].label.id == if_true) {
+                    tb_swap(if_true, if_false);
+                    
+                    cc ^= 1;
+                    
+                    fallthrough = true;
+                }
+                
                 // JCC .true
                 // JMP .false # elidable if it points to the next instruction
                 uint8_t* out_buffer = tb_out_reserve(&out, 11);
                 out_buffer[0] = 0x0F;
-                out_buffer[1] = 0x80 + (uint8_t)cond.cond;
+                out_buffer[1] = 0x80 + (uint8_t)cc;
                 out_buffer[2] = 0x00;
                 out_buffer[3] = 0x00;
                 out_buffer[4] = 0x00;
@@ -381,7 +412,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
                     .base = out.count, .pos = out.count + 2, .target_lbl = if_true
                 };
                 
-                if (!(f->nodes[bb_end + 1].type == TB_LABEL && f->nodes[bb_end + 1].label.id == if_false)) {
+                if (!fallthrough) {
                     label_patches[label_patch_count++] = (X64_LabelPatch){
                         .base = out.count + 6, .pos = out.count + 7, .target_lbl = if_false
                     };
@@ -447,6 +478,20 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
             bb = bb_end + 1;
         } else if (f->nodes[bb_end].type == TB_LABEL) {
             bb = bb_end;
+        } else if (f->nodes[bb_end].type == TB_GOTO) {
+            label_patches[label_patch_count++] = (X64_LabelPatch){
+                .base = out.count, .pos = out.count + 1, .target_lbl = f->nodes[bb_end].goto_.label
+            };
+            
+            uint8_t* out_buffer = tb_out_reserve(&out, 5);
+            out_buffer[0] = 0xE9;
+            out_buffer[1] = 0x00;
+            out_buffer[2] = 0x00;
+            out_buffer[3] = 0x00;
+            out_buffer[4] = 0x00;
+            tb_out_commit(&out, 5);
+            
+            bb = bb_end + 1;
         } else {
             abort(); // TODO
         }
@@ -458,6 +503,13 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
     local_stack_usage += 8;
     
     bool has_stack_setup = (local_stack_usage > 8);
+    
+    // patch return
+    for (int i = 0; i < ret_patch_count; i++) {
+        uint32_t pos = ret_patches[i];
+        
+        *((uint32_t*)&out.data[pos]) = out.count - (pos + 4);
+    }
     
     // Patch prologue (or just omit it)
     // and emit epilogue (or dont)
@@ -472,13 +524,6 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
         out_buffer[2] = x64_inst_mod_rx_rm(X64_MOD_DIRECT, 0x00, X64_RSP);
         *((uint32_t*)&out_buffer[3]) = local_stack_usage;
         tb_out_commit(&out, 7);
-    }
-    
-    // patch return
-    for (int i = 0; i < ret_patch_count; i++) {
-        uint32_t pos = ret_patches[i];
-        
-        *((uint32_t*)&out.data[pos]) = out.count - (pos + 4);
     }
     
     // patch labels
@@ -555,6 +600,24 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
         case TB_FLOAT_CONST: {
             return x64_eval_float_immediate(f, ctx, out, r, reg->f_const);
         }
+        case TB_SIGN_EXT: {
+            X64_Value v = x64_eval(f, ctx, out, reg->ext, r);
+            X64_Value dst = x64_allocate_gpr(ctx, r, reg->dt);
+            
+            // TODO(NeGate): Implement a sign extend recycle case e.g.
+            // movsx eax, ax
+            x64_emit_normal(out, reg->dt.type, MOVSX, &dst, &v);
+            return dst;
+        }
+        case TB_ZERO_EXT: {
+            X64_Value v = x64_eval(f, ctx, out, reg->ext, r);
+            X64_Value dst = x64_allocate_gpr(ctx, r, reg->dt);
+            
+            // TODO(NeGate): Implement a zero extend recycle case e.g.
+            // movzx eax, ax
+            x64_emit_normal(out, reg->dt.type, MOVZX, &dst, &v);
+            return dst;
+        }
         case TB_ADD: {
             bool can_lea_add = reg->i_arith.arith_behavior == TB_NO_WRAP 
                 || reg->i_arith.arith_behavior == TB_CAN_WRAP;
@@ -613,6 +676,9 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
                                 }, 6);
         }
         case TB_MUL: {
+            // Must be promoted up before it's multiplied
+            assert(reg->dt.type == TB_I32 || reg->dt.type == TB_I64 || reg->dt.type == TB_PTR);
+            
             return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, (X64_ISel_Pattern[]) {
                                     { 1, "rrr", (uint8_t[]){ X64_IMUL, 0, 2, 0x7F }, true },
                                     { 2, "rri", (uint8_t[]){ X64_IMUL, 0, 2, 0x7F }, true },
@@ -751,10 +817,7 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
                 default: abort();
             }
             
-            if (invert) {
-                if (cc & 1) cc &= ~1;
-                else cc |= 1;
-            }
+            cc ^= invert;
             
             // TODO(NeGate): Implement the case where the value is converted 
             // into a byte, IF nodes don't require it but it may come up in 
@@ -769,9 +832,51 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
                 f->nodes[reg->load.address].type == TB_PARAM_ADDR) {
                 return addr;
             }
+            else if (f->nodes[reg->load.address].type == TB_LOAD) {
+                assert(addr.type == X64_VALUE_MEM);
+                
+                X64_Value dst;
+                if (addr.mem.index != X64_GPR_NONE || addr.mem.base == X64_RSP || addr.mem.base == X64_RBP) {
+                    dst = x64_allocate_gpr(ctx, r, addr.dt);
+                } else {
+                    // We can reuse the source base register
+                    // as the destination instead of allocating
+                    // a new register:
+                    // mov rax, qword [rax]
+                    X64_GPR base_gpr = addr.mem.base;
+                    TB_Register base_ir_reg = ctx->gpr_desc[base_gpr].bound_value;
+                    
+                    if (base_ir_reg && ctx->intervals[base_ir_reg] == r) {
+                        dst = (X64_Value) {
+                            .type = X64_VALUE_GPR,
+                            .dt = addr.dt,
+                            .gpr = base_gpr
+                        };
+                        
+                        // the register was recycled and thus `r` owns it now
+                        ctx->gpr_desc[base_gpr].bound_value = r;
+                    } else {
+                        dst = x64_allocate_gpr(ctx, r, addr.dt);
+                    }
+                }
+                
+                x64_emit_normal(out, addr.dt.type, MOV, &dst, &addr);
+                return (X64_Value) {
+                    .type = X64_VALUE_MEM,
+                    .dt = reg->dt,
+                    .mem = {
+                        .base = dst.gpr,
+                        .index = X64_GPR_NONE,
+                        .scale = X64_SCALE_X1,
+                        .disp = 0
+                    }
+                };
+            }
             else {
+                // Load `addr` into register
                 X64_Value dst = x64_allocate_gpr(ctx, r, reg->dt);
                 x64_emit_normal(out, reg->dt.type, MOV, &dst, &addr);
+                
                 return dst;
             }
         }
@@ -1158,15 +1263,12 @@ static X64_Value x64_legalize(TB_Function* f, X64_Context* ctx, TB_Emitter* out,
 	}
     
     // This only needs to worry about 8 and 16bit GPRs
-	if (v.type != X64_VALUE_GPR) return v;
-    if (dt.type == TB_I32 || dt.type == TB_I64 || dt.type == TB_PTR) return v;
+    if (v.dt.type == TB_I8 || v.dt.type == TB_I16) {
+        // Types should have been promoted out
+        abort();
+    }
     
-    X64_Value dst = x64_allocate_gpr(ctx, reg, TB_TYPE_I32(1));
-    
-    // TODO(NeGate): Implement sign extend case
-    __debugbreak(); // Test this case
-    x64_emit_normal(out, dt.type, MOVZX, &dst, &v);
-    return dst;
+    return v;
 }
 
 static char x64_value_type_to_pattern_char(X64_ValueType type) {
@@ -1183,11 +1285,14 @@ static char x64_value_type_to_pattern_char(X64_ValueType type) {
 // Maybe it will be one day?
 // if `next_reg` is not 0, then it's the register which we expect the `dst_reg` to go into
 static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register dst_reg, TB_Register a_reg, TB_Register b_reg, TB_Register next_reg, const X64_ISel_Pattern patterns[], size_t pattern_count) {
-	TB_DataType dst_dt = f->nodes[dst_reg].dt;
+    TB_DataType dst_dt = f->nodes[dst_reg].dt;
 	assert(dst_dt.count == 1);
     
+    X64_Value b;
 	X64_Value a = x64_legalize(f, ctx, out, dst_dt, a_reg, dst_reg);
-	X64_Value b = x64_legalize(f, ctx, out, dst_dt, b_reg, dst_reg);
+    
+    if (a_reg == b_reg) b = a;
+    else b = x64_legalize(f, ctx, out, dst_dt, b_reg, dst_reg);
     
 	bool can_recycle = (ctx->intervals[a_reg] == dst_reg);
 	if (f->nodes[next_reg].type == TB_RET &&
@@ -1317,7 +1422,7 @@ static int32_t x64_allocate_locals(TB_Function* f, X64_Context* ctx, TB_Emitter*
             int id = f->nodes[param].param.id;
             
             if (id < 4) {
-                if (TB_IS_INTEGER_TYPE(dt.type)) {
+                if (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR) {
                     X64_Value dst = (X64_Value) {
                         .type = X64_VALUE_MEM,
                         .dt = TB_TYPE_I64(1),

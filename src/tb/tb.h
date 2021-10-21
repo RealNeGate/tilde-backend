@@ -44,6 +44,7 @@
 #define TB_API extern
 
 #define TB_NULL_REG ((TB_Register)0)
+#define TB_REG_MAX ((TB_Register)UINT32_MAX)
 
 typedef enum TB_ArithmaticBehavior {
 	// No overflow will assume the value does not 
@@ -110,7 +111,7 @@ enum {
 	TB_BOOL,
 	// Integers
 	TB_I8, TB_I16, TB_I32, TB_I64, TB_I128,
-	// Floating point
+	// IEEE 754 Floating point
 	TB_F32, TB_F64,
 	// Pointers
 	// NOTE(NeGate): consider support for multiple address spaces
@@ -166,13 +167,13 @@ typedef int TB_Label;
 
 typedef struct TB_Module TB_Module;
 typedef struct TB_Function TB_Function;
-typedef size_t TB_Register;
+typedef uint32_t TB_Register;
 typedef struct TB_FunctionOutput TB_FunctionOutput;
 
 // *******************************
 // Public macros
 // *******************************
-#define TB_TYPE_VOID(c) (TB_DataType){ .type = TB_VOID }
+#define TB_TYPE_VOID() (TB_DataType){ .type = TB_VOID }
 
 #define TB_TYPE_I8(c) (TB_DataType){ .type = TB_I8, .count = c }
 #define TB_TYPE_I16(c) (TB_DataType){ .type = TB_I16, .count = c }
@@ -202,6 +203,9 @@ TB_API TB_Function* tb_function_create(TB_Module* m, const char* name);
 TB_API TB_Register tb_inst_param(TB_Function* f, TB_DataType dt);
 TB_API TB_Register tb_inst_param_addr(TB_Function* f, TB_Register param);
 
+TB_API TB_Register tb_inst_sxt(TB_Function* f, TB_Register src, TB_DataType dt);
+TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt);
+
 TB_API TB_Register tb_inst_local(TB_Function* f, uint32_t size, uint32_t alignment);
 TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr, uint32_t alignment);
 TB_API TB_Register tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_Register val, uint32_t alignment);
@@ -214,8 +218,7 @@ TB_API TB_Register tb_inst_fconst(TB_Function* f, TB_DataType dt, double imm);
 TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
 TB_API TB_Register tb_inst_sub(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
 TB_API TB_Register tb_inst_mul(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
-TB_API TB_Register tb_inst_udiv(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-TB_API TB_Register tb_inst_sdiv(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
+TB_API TB_Register tb_inst_div(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness);
 
 TB_API TB_Register tb_inst_fadd(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
 TB_API TB_Register tb_inst_fsub(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
@@ -241,9 +244,9 @@ TB_API TB_Register tb_inst_cmp_fgt(TB_Function* f, TB_DataType dt, TB_Register a
 TB_API TB_Register tb_inst_cmp_fge(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
 
 TB_API TB_Register tb_inst_label(TB_Function* f, TB_Label id);
-TB_API TB_Register tb_inst_goto(TB_Function* f, TB_Label id);
+TB_API void tb_inst_goto(TB_Function* f, TB_Label id);
 TB_API TB_Register tb_inst_if(TB_Function* f, TB_Register cond, TB_Label if_true, TB_Label if_false);
-TB_API TB_Register tb_inst_ret(TB_Function* f, TB_DataType dt, TB_Register value);
+TB_API void tb_inst_ret(TB_Function* f, TB_DataType dt, TB_Register value);
 
 TB_API void tb_function_print(TB_Function* f);
 TB_API void tb_function_optimize(TB_Function* f);
@@ -268,67 +271,78 @@ struct TB_FunctionOutput {
 	TB_Emitter emitter;
 };
 
+enum TB_RegisterType {
+    TB_NULL,
+    
+    // Immediates
+    TB_INT_CONST,
+    TB_FLOAT_CONST,
+    TB_STRING_CONST,
+    
+    // Casts
+    TB_SIGN_EXT,
+    TB_ZERO_EXT,
+    
+    // Integer arithmatic
+    TB_ADD,
+    TB_SUB,
+    TB_MUL,
+    TB_UDIV,
+    TB_SDIV,
+    
+    // Float arithmatic
+    TB_FADD,
+    TB_FSUB,
+    TB_FMUL,
+    TB_FDIV,
+    
+    // Comparisons
+    TB_CMP_EQ,
+    TB_CMP_NE,
+    TB_CMP_SLT,
+    TB_CMP_SLE,
+    TB_CMP_ULT,
+    TB_CMP_ULE,
+    TB_CMP_FLT,
+    TB_CMP_FLE,
+    
+    // Conversions
+    TB_CVT_INT2PTR,
+    TB_CVT_PTR2INT,
+    
+    // Memory
+    TB_LOAD,
+    TB_STORE,
+    
+    TB_LOCAL,
+    TB_PARAM,
+    TB_PARAM_ADDR,
+    
+    // NOTE(NeGate): only used internally, if you
+    // see one in normal IR things went wrong in
+    // an optimization pass
+    TB_PASS,
+    
+    // Control flow
+    TB_PHI1,
+    TB_PHI2,
+    
+    TB_LABEL,
+    TB_GOTO,
+    TB_IF,
+    TB_RET
+};
+
 typedef struct TB_Node {
-	enum TB_RegisterType {
-		TB_NULL,
-        
-		// Immediates
-		TB_INT_CONST,
-		TB_FLOAT_CONST,
-		TB_STRING_CONST,
-        
-		// Integer arithmatic
-		TB_ADD,
-		TB_SUB,
-		TB_MUL,
-		TB_UDIV,
-		TB_SDIV,
-        
-		// Float arithmatic
-		TB_FADD,
-		TB_FSUB,
-		TB_FMUL,
-		TB_FDIV,
-        
-		// Comparisons
-		TB_CMP_EQ,
-		TB_CMP_NE,
-		TB_CMP_SLT,
-		TB_CMP_SLE,
-		TB_CMP_ULT,
-		TB_CMP_ULE,
-		TB_CMP_FLT,
-		TB_CMP_FLE,
-        
-		// Conversions
-		TB_CVT_INT2PTR,
-		TB_CVT_PTR2INT,
-        
-		// Memory
-		TB_LOAD,
-		TB_STORE,
-        
-		TB_LOCAL,
-		TB_PARAM,
-		TB_PARAM_ADDR,
-        
-		// Control flow
-        // NOTE(NeGate): only used internally, if you
-        // see one in normal IR things went wrong in
-        // an optimization pass
-		TB_PASS,
-		TB_PHI1,
-		TB_PHI2,
-        
-		TB_LABEL,
-		TB_GOTO,
-		TB_IF,
-		TB_RET
-	} type;
 	TB_DataType dt;
+    enum TB_RegisterType type;
 	union {
+        // NOTE(NeGate): Shouldn't exceed 128bits for any option
+		uint32_t raw[4];
+        
 		TB_Int128 i_const;
 		double f_const;
+        TB_Register ext;
 		struct {
 			uint32_t id;
 			uint32_t size;
@@ -405,8 +419,8 @@ typedef struct TB_Node {
 struct TB_Function {
 	char* name;
     
-	size_t capacity;
-	size_t count;
+    TB_Register capacity;
+    TB_Register count;
 	TB_Node* nodes;
     
 	TB_Register current_label;
@@ -467,10 +481,10 @@ a = b; \
 b = temp; \
 } while(0)
 
-#define loop(iterator, count) for (size_t iterator = 0, end__ = (count); iterator != end__; ++iterator)
-#define loop_range(iterator, start, count) for (size_t iterator = (start), end__ = (count); iterator != end__; ++iterator)
-#define loop_range_step(iterator, start, count, step) for (size_t iterator = (start), end__ = (count); iterator != end__; iterator += step)
-#define loop_reverse(iterator, count) for (size_t iterator = (count); iterator--;)
+#define loop(iterator, count) for (typeof(count) iterator = 0, end__ = (count); iterator != end__; ++iterator)
+#define loop_range(iterator, start, count) for (typeof(count) iterator = (start), end__ = (count); iterator != end__; ++iterator)
+#define loop_range_step(iterator, start, count, step) for (typeof(count) iterator = (start), end__ = (count); iterator != end__; iterator += step)
+#define loop_reverse(iterator, count) for (typeof(count) iterator = (count); iterator--;)
 
 inline static uint64_t tb_next_pow2(uint64_t x) {
 	return x == 1 ? 1 : 1 << (64 - __builtin_clzl(x - 1));

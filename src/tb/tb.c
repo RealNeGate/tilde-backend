@@ -1,9 +1,18 @@
 #define TB_INTERNAL
 #include "tb.h"
 
+#define TB_TIMING 1
+
 static uint8_t tb_temporary_storage[TB_TEMPORARY_STORAGE_SIZE * TB_MAX_THREADS];
 static uint8_t* tb_thread_storage;
 static atomic_uint tb_used_tls_slots;
+
+static size_t tb_get_ptr_size(TB_Arch target_arch) {
+    if (target_arch == TB_ARCH_X86_64) return 8;
+    if (target_arch == TB_ARCH_AARCH64) return 8;
+    
+    abort();
+}
 
 TB_API void tb_get_constraints(TB_Arch target_arch, const TB_FeatureSet* features, TB_FeatureConstraints* constraints) {
     *constraints = (TB_FeatureConstraints){};
@@ -66,9 +75,19 @@ TB_API void tb_module_destroy(TB_Module* m) {
 TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_threads) {
 	m->compiled_functions.count = m->functions.count;
     
+    loop(i, m->functions.count) {
+        TB_Function* f = &m->functions.data[i];
+        
+        tb_function_print(f);
+        printf("\n\n\n");
+    }
+    
+#if TB_TIMING
 	clock_t t1 = clock();
+#endif
+    
 	if (optimization_level == TB_OPT_O0) {}
-	else if (optimization_level == TB_OPT_O1) {
+    else if (optimization_level == TB_OPT_O1) {
 		loop(i, m->functions.count) {
 			TB_Function* f = &m->functions.data[i];
             
@@ -100,14 +119,16 @@ TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_thre
                    tb_opt_dce(f) ||
                    tb_opt_cse(f)) {
 			}
-            
-            tb_function_print(f);
-            printf("\n\n\n");
         }
 	}
+    
+#if TB_TIMING
 	clock_t t2 = clock();
-	double delta_ms = 1000.0 * ((t2 - t1) / CLOCKS_PER_SEC);
+	double delta_ms = ((t2 - t1) * 1000.0) / CLOCKS_PER_SEC;
 	printf("optimizations took %f ms\n", delta_ms);
+    
+    t1 = clock();
+#endif
     
 	switch (m->target_arch) {
         case TB_ARCH_X86_64:
@@ -124,6 +145,12 @@ TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 		printf("TinyBackend error: Unknown target!\n");
 		abort();
 	}
+    
+#if TB_TIMING
+    t2 = clock();
+	delta_ms = ((t2 - t1) * 1000.0) / CLOCKS_PER_SEC;
+	printf("machine code gen took %f ms\n", delta_ms);
+#endif
 }
 
 TB_API void tb_module_export(TB_Module* m, FILE* f) {
@@ -209,14 +236,12 @@ static void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance) {
 	return &store->data[store->used - distance];
 }
 
-//
 // IR BUILDER
 // 
 // Handles generating the TB_Function IR via C functions. 
 // Note that these functions can perform certain simple
 // optimizations while the generation happens to improve
 // the machine code output or later analysis stages.
-//
 static TB_Register tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
 	// Cannot add registers to terminated basic blocks
 	assert(f->current_label);
@@ -293,15 +318,50 @@ static TB_Register tb_cse_arith(TB_Function* f, int type, TB_DataType dt, TB_Ari
 	return r;
 }
 
+TB_API TB_Register tb_inst_sxt(TB_Function* f, TB_Register src, TB_DataType dt) {
+	size_t label_start = f->current_label;
+    
+	for (size_t i = label_start; i < f->count; i++) {
+		if (f->nodes[i].type == TB_SIGN_EXT 
+			&& f->nodes[i].ext == src
+            && memcmp(&f->nodes[i].dt, &dt, sizeof(TB_DataType)) == 0) {
+			return i;
+		}
+	}
+    
+    TB_Register r = tb_make_reg(f, TB_SIGN_EXT, dt);
+	f->nodes[r].ext = src;
+	return r;
+}
+
+TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt) {
+    size_t label_start = f->current_label;
+    
+	for (size_t i = label_start; i < f->count; i++) {
+		if (f->nodes[i].type == TB_ZERO_EXT 
+			&& f->nodes[i].ext == src
+            && memcmp(&f->nodes[i].dt, &dt, sizeof(TB_DataType)) == 0) {
+			return i;
+		}
+	}
+    
+	TB_Register r = tb_make_reg(f, TB_ZERO_EXT, dt);
+	f->nodes[r].ext = src;
+	return r;
+}
+
 TB_API TB_Register tb_inst_param(TB_Function* f, TB_DataType dt) {
 	TB_Register r = tb_make_reg(f, TB_PARAM, dt);
 	f->nodes[r].param.id = f->parameter_count++;
     
+    // TODO(NeGate): It's currently assuming that all pointers are 8bytes big,
+    // which is untrue for some platforms.
 	switch (dt.type) {
         case TB_I8:  f->nodes[r].param.size = 1; break;
         case TB_I16: f->nodes[r].param.size = 2; break;
         case TB_I32: f->nodes[r].param.size = 4; break;
         case TB_I64: f->nodes[r].param.size = 8; break;
+        case TB_PTR: f->nodes[r].param.size = 8; break;
         default: abort();
 	}
     
@@ -452,19 +512,11 @@ TB_API TB_Register tb_inst_sub(TB_Function* f, TB_DataType dt, TB_Register a, TB
 }
 
 TB_API TB_Register tb_inst_mul(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
-	return tb_cse_arith(f, TB_MUL, dt, arith_behavior, a, b);
+    return tb_cse_arith(f, TB_MUL, dt, arith_behavior, a, b);
 }
 
-TB_API TB_Register tb_inst_udiv(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_UDIV, dt);
-	f->nodes[r].i_arith.arith_behavior = TB_NO_WRAP;
-	f->nodes[r].i_arith.a = a;
-	f->nodes[r].i_arith.b = b;
-	return r;
-}
-
-TB_API TB_Register tb_inst_sdiv(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_SDIV, dt);
+TB_API TB_Register tb_inst_div(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness) {
+	TB_Register r = tb_make_reg(f, signedness ? TB_SDIV : TB_UDIV, dt);
 	f->nodes[r].i_arith.arith_behavior = TB_NO_WRAP;
 	f->nodes[r].i_arith.a = a;
 	f->nodes[r].i_arith.b = b;
@@ -632,18 +684,27 @@ TB_API TB_Register tb_inst_label(TB_Function* f, TB_Label id) {
 	return r;
 }
 
-TB_API TB_Register tb_inst_goto(TB_Function* f, TB_Label id) {
-	TB_Register r = tb_make_reg(f, TB_GOTO, TB_TYPE_VOID(0));
+TB_API void tb_inst_goto(TB_Function* f, TB_Label id) {
+    if (f->current_label == TB_NULL_REG) {
+        // Was placed after a terminator instruction,
+        // just omit this to avoid any issues it's not
+        // a big deal for example:
+        // RET x
+        // ~~GOTO .L5~~
+        // .L4:
+        return;
+    }
+    
+	TB_Register r = tb_make_reg(f, TB_GOTO, TB_TYPE_VOID());
 	f->nodes[r].goto_.label = id;
     
 	assert(f->current_label);
 	f->nodes[f->current_label].label.terminator = r;
 	f->current_label = TB_NULL_REG;
-	return r;
 }
 
 TB_API TB_Register tb_inst_if(TB_Function* f, TB_Register cond, TB_Label if_true, TB_Label if_false) {
-	TB_Register r = tb_make_reg(f, TB_IF, TB_TYPE_VOID(0));
+	TB_Register r = tb_make_reg(f, TB_IF, TB_TYPE_VOID());
 	f->nodes[r].if_.cond = cond;
 	f->nodes[r].if_.if_true = if_true;
 	f->nodes[r].if_.if_false = if_false;
@@ -654,15 +715,13 @@ TB_API TB_Register tb_inst_if(TB_Function* f, TB_Register cond, TB_Label if_true
 	return r;
 }
 
-TB_API TB_Register tb_inst_ret(TB_Function* f, TB_DataType dt, TB_Register value) {
+TB_API void tb_inst_ret(TB_Function* f, TB_DataType dt, TB_Register value) {
 	TB_Register r = tb_make_reg(f, TB_RET, dt);
 	f->nodes[r].ret.value = value;
     
 	assert(f->current_label);
 	f->nodes[f->current_label].label.terminator = r;
 	f->current_label = TB_NULL_REG;
-    
-	return r;
 }
 
 //
@@ -696,7 +755,7 @@ TB_API void tb_function_print(TB_Function* f) {
 			//printf(" ???\n");
 			break;
             case TB_INT_CONST:
-			printf("  r%llu\t=\t", i);
+			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
             
 			if (f->nodes[i].i_const.hi) {
@@ -707,18 +766,28 @@ TB_API void tb_function_print(TB_Function* f) {
 			}
 			break;
             case TB_FLOAT_CONST:
-			printf("  r%llu\t=\t", i);
+			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
             printf(" %f\n", f->nodes[i].f_const);
+			break;
+            case TB_ZERO_EXT:
+			printf("  r%u\t=\t", i);
+			tb_print_type(dt);
+			printf(" ZXT r%u\n", f->nodes[i].ext);
+			break;
+            case TB_SIGN_EXT:
+			printf("  r%u\t=\t", i);
+			tb_print_type(dt);
+			printf(" SXT r%u\n", f->nodes[i].ext);
 			break;
             case TB_ADD:
             case TB_SUB:
             case TB_MUL:
             case TB_UDIV:
             case TB_SDIV:
-			printf("  r%llu\t=\t", i);
+			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" r%llu ", f->nodes[i].i_arith.a);
+			printf(" r%u ", f->nodes[i].i_arith.a);
             
 			switch (type) {
                 case TB_ADD: printf("+"); break;
@@ -729,15 +798,15 @@ TB_API void tb_function_print(TB_Function* f) {
                 default: abort();
 			}
             
-			printf(" r%llu\n", f->nodes[i].i_arith.b);
+			printf(" r%u\n", f->nodes[i].i_arith.b);
 			break;
             case TB_FADD:
             case TB_FSUB:
             case TB_FMUL:
             case TB_FDIV:
-			printf("  r%llu\t=\t", i);
+			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" r%llu ", f->nodes[i].f_arith.a);
+			printf(" r%u ", f->nodes[i].f_arith.a);
             
 			switch (type) {
                 case TB_FADD: printf("+"); break;
@@ -747,15 +816,15 @@ TB_API void tb_function_print(TB_Function* f) {
                 default: abort();
 			}
             
-			printf(" r%llu\n", f->nodes[i].f_arith.b);
+			printf(" r%u\n", f->nodes[i].f_arith.b);
 			break;
             case TB_CMP_EQ:
             case TB_CMP_NE:
             case TB_CMP_ULT:
             case TB_CMP_ULE:
-			printf("  r%llu\t=\t", i);
+			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" r%llu ", f->nodes[i].cmp.a);
+			printf(" r%u ", f->nodes[i].cmp.a);
             
 			switch (type) {
                 case TB_CMP_NE: printf("!="); break;
@@ -765,55 +834,55 @@ TB_API void tb_function_print(TB_Function* f) {
                 default: abort();
 			}
             
-			printf(" r%llu\n", f->nodes[i].cmp.b);
+			printf(" r%u\n", f->nodes[i].cmp.b);
 			break;
             case TB_LOCAL:
-			printf("  r%llu\t=\tLOCAL %d (%d align)\n", i, f->nodes[i].local.size, f->nodes[i].local.alignment);
+			printf("  r%u\t=\tLOCAL %d (%d align)\n", i, f->nodes[i].local.size, f->nodes[i].local.alignment);
 			break;
             case TB_PARAM:
-			printf("  r%llu\t=\tPARAM %u\n", i, f->nodes[i].param.id);
+			printf("  r%u\t=\tPARAM %u\n", i, f->nodes[i].param.id);
 			break;
             case TB_PARAM_ADDR:
-			printf("  r%llu\t=\t&PARAM %u\n", i, f->nodes[f->nodes[i].param_addr.param].param.id);
+			printf("  r%u\t=\t&PARAM %u\n", i, f->nodes[f->nodes[i].param_addr.param].param.id);
 			break;
             case TB_LOAD:
-			printf("  r%llu\t=\t", i);
+			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" *r%llu (%d align)\n", f->nodes[i].load.address, f->nodes[i].load.alignment);
+			printf(" *r%u (%d align)\n", f->nodes[i].load.address, f->nodes[i].load.alignment);
 			break;
             case TB_STORE:
-			printf(" *r%llu \t=\t", f->nodes[i].store.address);
+			printf(" *r%u \t=\t", f->nodes[i].store.address);
 			tb_print_type(dt);
-			printf(" r%llu (%d align)\n", f->nodes[i].store.value, f->nodes[i].store.alignment);
+			printf(" r%u (%d align)\n", f->nodes[i].store.value, f->nodes[i].store.alignment);
 			break;
             case TB_LABEL:
-			printf("L%d: # r%llu terminates at r%llu\n", f->nodes[i].label.id, i, f->nodes[i].label.terminator);
+			printf("L%d: # r%u terminates at r%u\n", f->nodes[i].label.id, i, f->nodes[i].label.terminator);
 			break;
             case TB_GOTO:
 			printf("  goto L%d\n", f->nodes[i].goto_.label);
 			break;
             case TB_IF:
-			printf("  if (r%llu)\tL%d else L%d\n", f->nodes[i].if_.cond, f->nodes[i].if_.if_true, f->nodes[i].if_.if_false);
+			printf("  if (r%u)\tL%d else L%d\n", f->nodes[i].if_.cond, f->nodes[i].if_.if_true, f->nodes[i].if_.if_false);
 			break;
             case TB_PASS:
-			printf("  r%llu\t=\t", i);
+			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" PASS r%llu\n", f->nodes[i].pass);
+			printf(" PASS r%u\n", f->nodes[i].pass);
 			break;
             case TB_PHI1:
-			printf("  r%llu\t=\t", i);
+			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" PHI L%d:r%llu\n", f->nodes[f->nodes[i].phi1.a_label].label.id, f->nodes[i].phi1.a);
+			printf(" PHI L%d:r%u\n", f->nodes[f->nodes[i].phi1.a_label].label.id, f->nodes[i].phi1.a);
 			break;
             case TB_PHI2:
-			printf("  r%llu\t=\t", i);
+			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" PHI L%d:r%llu, L%d:r%llu\n", f->nodes[f->nodes[i].phi2.a_label].label.id, f->nodes[i].phi2.a, f->nodes[f->nodes[i].phi2.b_label].label.id, f->nodes[i].phi2.b);
+			printf(" PHI L%d:r%u, L%d:r%u\n", f->nodes[f->nodes[i].phi2.a_label].label.id, f->nodes[i].phi2.a, f->nodes[f->nodes[i].phi2.b_label].label.id, f->nodes[i].phi2.b);
 			break;
             case TB_RET:
 			printf("  ret\t \t");
 			tb_print_type(dt);
-			printf(" r%llu\n", f->nodes[i].i_arith.a);
+			printf(" r%u\n", f->nodes[i].i_arith.a);
 			break;
             default: abort();
 		}

@@ -34,6 +34,10 @@ TB_API void tb_find_live_intervals(size_t intervals[], const TB_Function* f) {
 			intervals[f->nodes[i].store.address] = i;
 			intervals[f->nodes[i].store.value] = i;
 			break;
+            case TB_ZERO_EXT:
+            case TB_SIGN_EXT:
+			intervals[f->nodes[i].ext] = i;
+			break;
             case TB_ADD:
             case TB_SUB:
             case TB_MUL:
@@ -138,9 +142,11 @@ static void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Re
 	for (size_t i = 0; i < f->count; i++) {
 		switch (f->nodes[i].type) {
             case TB_NULL:
+            case TB_GOTO:
             case TB_INT_CONST:
             case TB_LOCAL:
             case TB_PARAM:
+            break;
             case TB_LABEL:
 			f_n_r(f->nodes[i].label.terminator);
 			break;
@@ -211,8 +217,11 @@ bool tb_can_reach(TB_Function* f, TB_Register label, TB_Register end) {
     
 	if (f->nodes[terminator].type == TB_LABEL) {
 		return tb_can_reach(f, terminator, end);
-	}
-	else if (f->nodes[terminator].type == TB_IF) {
+	} else if (f->nodes[terminator].type == TB_GOTO) {
+        TB_Register dst = tb_find_reg_from_label(f, f->nodes[terminator].goto_.label);
+        
+        return tb_can_reach(f, dst, end);
+	} else if (f->nodes[terminator].type == TB_IF) {
 		if (tb_can_reach(f, tb_find_reg_from_label(f, f->nodes[terminator].if_.if_true), end)) return true;
         
 		return tb_can_reach(f, tb_find_reg_from_label(f, f->nodes[terminator].if_.if_false), end);
@@ -485,7 +494,7 @@ bool tb_opt_loop_unroll(TB_Function* f) {
 				else if (!loops_on_true && !loops_on_false) { /* Not a loop */ }
 				else {
 					TB_Register exit = loops_on_true ? if_true_pos : if_false_pos;
-					enum TB_RegisterType cond_type = f->nodes[f->nodes[terminator].if_.cond].type;
+                    enum TB_RegisterType cond_type = f->nodes[f->nodes[terminator].if_.cond].type;
                     
 					bool loop_count_known = false;
 					uint64_t loop_count = 0;
@@ -774,6 +783,47 @@ bool tb_opt_mem2reg(TB_Function* f) {
 							f->nodes[first_use].phi2.b = f->nodes[j].store.value;
 						}
 					}
+                    else if (f->nodes[terminator].type == TB_LABEL) {
+                        VarRevision* last_rev = (VarRevision*)tb_tls_peek(tls, sizeof(VarRevision));
+                        
+						// Check both paths for any loads of the register `i`
+						TB_Register path = terminator;
+						TB_Register path_end = f->nodes[terminator].label.terminator;
+                        
+						TB_Register first_use = tb_find_first_use(f, last_rev->reg, path, path_end);
+						if (first_use) {
+							// Append to phi node
+							//printf("Append PHI to L%u:r%u\n", f->nodes[current_label].label.id, f->nodes[j].store.value);
+							assert(f->nodes[first_use].type == TB_PHI1);
+                            
+							
+                            f->nodes[first_use].type = TB_PHI2;
+							f->nodes[first_use].phi2.b_label = current_label;
+							f->nodes[first_use].phi2.b = f->nodes[j].store.value;
+						}
+                    }
+                    else if (f->nodes[terminator].type == TB_GOTO) {
+                        VarRevision* last_rev = (VarRevision*)tb_tls_peek(tls, sizeof(VarRevision));
+                        
+						// Check both paths for any loads of the register `i`
+						TB_Register path = f->nodes[terminator].goto_.label;
+						TB_Register path_end = f->nodes[path].label.terminator;
+                        
+						TB_Register first_use = tb_find_first_use(f, last_rev->reg, path, path_end);
+						if (first_use) {
+							// Append to phi node
+							//printf("Append PHI to L%u:r%u\n", f->nodes[current_label].label.id, f->nodes[j].store.value);
+							assert(f->nodes[first_use].type == TB_PHI1);
+                            
+                            f->nodes[first_use].type = TB_PHI2;
+							f->nodes[first_use].phi2.b_label = current_label;
+							f->nodes[first_use].phi2.b = f->nodes[j].store.value;
+						}
+                    }
+                    else if (f->nodes[terminator].type == TB_RET) {
+                        // TODO(NeGate): Double-check that return nodes don't need to perform
+                        // any PHI insertions
+                    }
 					else abort();
                     
 					// Mark this as the latest

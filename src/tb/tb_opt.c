@@ -17,6 +17,10 @@ TB_API void tb_find_live_intervals(size_t intervals[], const TB_Function* f) {
             case TB_LABEL:
             case TB_GOTO:
 			break;
+            case TB_ARRAY_ACCESS:
+			intervals[f->nodes[i].array_access.base] = i;
+			intervals[f->nodes[i].array_access.index] = i;
+			break;
             case TB_PARAM_ADDR:
 			intervals[f->nodes[i].param_addr.param] = i;
 			break;
@@ -75,7 +79,7 @@ TB_API void tb_find_live_intervals(size_t intervals[], const TB_Function* f) {
 	}
 }
 
-TB_API TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t start, size_t end) {
+TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t start, size_t end) {
 #define ffu(r) if (r == find) return i
     
 	for (size_t i = start; i < end; i++) {
@@ -92,6 +96,14 @@ TB_API TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, siz
             case TB_PHI2:
 			ffu(f->nodes[i].phi2.a);
 			ffu(f->nodes[i].phi2.b);
+			break;
+            case TB_ARRAY_ACCESS:
+			ffu(f->nodes[i].array_access.base);
+			ffu(f->nodes[i].array_access.index);
+			break;
+            case TB_SIGN_EXT:
+            case TB_ZERO_EXT:
+			ffu(f->nodes[i].ext);
 			break;
             case TB_PARAM_ADDR:
 			ffu(f->nodes[i].param_addr.param);
@@ -159,6 +171,14 @@ static void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Re
             case TB_PHI2:
 			f_n_r(f->nodes[i].phi2.a);
 			f_n_r(f->nodes[i].phi2.b);
+			break;
+            case TB_ARRAY_ACCESS:
+			f_n_r(f->nodes[i].array_access.base);
+			f_n_r(f->nodes[i].array_access.index);
+			break;
+            case TB_SIGN_EXT:
+            case TB_ZERO_EXT:
+			f_n_r(f->nodes[i].ext);
 			break;
             case TB_PARAM_ADDR:
 			f_n_r(f->nodes[i].param_addr.param);

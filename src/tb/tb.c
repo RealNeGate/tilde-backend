@@ -1,8 +1,6 @@
 #define TB_INTERNAL
 #include "tb.h"
 
-#define TB_TIMING 1
-
 static uint8_t tb_temporary_storage[TB_TEMPORARY_STORAGE_SIZE * TB_MAX_THREADS];
 static uint8_t* tb_thread_storage;
 static atomic_uint tb_used_tls_slots;
@@ -82,10 +80,6 @@ TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_thre
         printf("\n\n\n");
     }
     
-#if TB_TIMING
-	clock_t t1 = clock();
-#endif
-    
 	if (optimization_level == TB_OPT_O0) {}
     else if (optimization_level == TB_OPT_O1) {
 		loop(i, m->functions.count) {
@@ -122,14 +116,6 @@ TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_thre
         }
 	}
     
-#if TB_TIMING
-	clock_t t2 = clock();
-	double delta_ms = ((t2 - t1) * 1000.0) / CLOCKS_PER_SEC;
-	printf("optimizations took %f ms\n", delta_ms);
-    
-    t1 = clock();
-#endif
-    
 	switch (m->target_arch) {
         case TB_ARCH_X86_64:
 		loop(i, m->functions.count) {
@@ -145,12 +131,6 @@ TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 		printf("TinyBackend error: Unknown target!\n");
 		abort();
 	}
-    
-#if TB_TIMING
-    t2 = clock();
-	delta_ms = ((t2 - t1) * 1000.0) / CLOCKS_PER_SEC;
-	printf("machine code gen took %f ms\n", delta_ms);
-#endif
 }
 
 TB_API void tb_module_export(TB_Module* m, FILE* f) {
@@ -492,6 +472,14 @@ TB_API TB_Register tb_inst_fconst(TB_Function* f, TB_DataType dt, double imm) {
 	return r;
 }
 
+TB_API TB_Register tb_inst_array_access(TB_Function* f, TB_Register base, TB_Register index, uint32_t stride) {
+	TB_Register r = tb_make_reg(f, TB_ARRAY_ACCESS, TB_TYPE_PTR());
+	f->nodes[r].array_access.base = base;
+	f->nodes[r].array_access.index = index;
+	f->nodes[r].array_access.stride = stride;
+	return r;
+}
+
 TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
 	if (f->nodes[a].type == TB_INT_CONST) tb_swap(a, b);
     
@@ -521,6 +509,20 @@ TB_API TB_Register tb_inst_div(TB_Function* f, TB_DataType dt, TB_Register a, TB
 	f->nodes[r].i_arith.a = a;
 	f->nodes[r].i_arith.b = b;
 	return r;
+}
+
+TB_API TB_Register tb_inst_shl(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
+    return tb_cse_arith(f, TB_SHL, dt, arith_behavior, a, b);
+}
+
+TB_API TB_Register tb_inst_sar(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
+    // shift right can't wrap or overflow
+    return tb_cse_arith(f, TB_SAR, dt, TB_NO_WRAP, a, b);
+}
+
+TB_API TB_Register tb_inst_shr(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
+    // shift right can't wrap or overflow
+    return tb_cse_arith(f, TB_SHR, dt, TB_NO_WRAP, a, b);
 }
 
 TB_API TB_Register tb_inst_fadd(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
@@ -780,7 +782,12 @@ TB_API void tb_function_print(TB_Function* f) {
 			tb_print_type(dt);
 			printf(" SXT r%u\n", f->nodes[i].ext);
 			break;
-            case TB_ADD:
+			case TB_ARRAY_ACCESS:
+			printf("  r%u\t=\t", i);
+			tb_print_type(dt);
+			printf(" &r%u[r%u * %u]\n", f->nodes[i].array_access.base, f->nodes[i].array_access.index, f->nodes[i].array_access.stride);
+			break;
+			case TB_ADD:
             case TB_SUB:
             case TB_MUL:
             case TB_UDIV:

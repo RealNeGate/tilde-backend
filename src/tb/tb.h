@@ -215,10 +215,16 @@ TB_API TB_Register tb_inst_iconst128(TB_Function* f, TB_DataType dt, TB_Int128 i
 
 TB_API TB_Register tb_inst_fconst(TB_Function* f, TB_DataType dt, double imm);
 
+TB_API TB_Register tb_inst_array_access(TB_Function* f, TB_Register base, TB_Register index, uint32_t stride);
+
 TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
 TB_API TB_Register tb_inst_sub(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
 TB_API TB_Register tb_inst_mul(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
 TB_API TB_Register tb_inst_div(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness);
+
+TB_API TB_Register tb_inst_shl(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
+TB_API TB_Register tb_inst_sar(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
+TB_API TB_Register tb_inst_shr(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
 
 TB_API TB_Register tb_inst_fadd(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
 TB_API TB_Register tb_inst_fsub(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
@@ -289,6 +295,9 @@ enum TB_RegisterType {
     TB_MUL,
     TB_UDIV,
     TB_SDIV,
+    TB_SHL,
+    TB_SHR,
+    TB_SAR,
     
     // Float arithmatic
     TB_FADD,
@@ -317,6 +326,9 @@ enum TB_RegisterType {
     TB_LOCAL,
     TB_PARAM,
     TB_PARAM_ADDR,
+	
+	// Pointer math
+    TB_ARRAY_ACCESS,
     
     // NOTE(NeGate): only used internally, if you
     // see one in normal IR things went wrong in
@@ -343,6 +355,11 @@ typedef struct TB_Node {
 		TB_Int128 i_const;
 		double f_const;
         TB_Register ext;
+		struct {
+			TB_Register base;
+			TB_Register index;
+			uint32_t stride;
+		} array_access;
 		struct {
 			uint32_t id;
 			uint32_t size;
@@ -537,6 +554,7 @@ TB_Register tb_find_reg_from_label(TB_Function* f, TB_Label id);
 bool tb_can_reach(TB_Function* f, TB_Register label, TB_Register end);
 TB_RegisterDataflow tb_analyze_register_dataflow(TB_Function* f, TB_Register label_reg, TB_Register reg);
 size_t tb_loop_analysis(TB_TemporaryStorage* tls, TB_Function* f);
+TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t start, size_t end);
 
 //
 // OPTIMIZATION FUNCTIONS

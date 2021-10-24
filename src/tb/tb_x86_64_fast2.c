@@ -172,6 +172,16 @@ static const X64_GPR GPR_PRIORITY_LIST[] = {
 	X64_R14, X64_R15
 };
 
+// Used to quickly reorder the basic blocks
+typedef struct X64_BBQueue {
+	TB_Register start, end;
+	TB_Register capacity;
+	
+	TB_Register queue[];
+} X64_BBQueue;
+
+static void x64_enqueue_bb(X64_BBQueue* queue, TB_Register bb);
+
 // Preprocessing stuff
 static void x64_create_phi_lookup(TB_Function* f, X64_Context* ctx);
 static int32_t x64_allocate_locals(TB_Function* f, X64_Context* ctx, TB_Emitter* out);
@@ -182,6 +192,7 @@ static X64_PhiValue* x64_find_phi_values(X64_Context* ctx, TB_Register r);
 static int32_t x64_find_local(X64_Context* ctx, TB_Register r);
 
 // Machine code generation
+static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register bb, TB_Register bb_end);
 static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, TB_Register next);
 static X64_Value x64_eval_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, const TB_Int128* imm);
 static X64_Value x64_eval_float_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, float imm);
@@ -217,6 +228,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 	X64_Context* ctx;
 	uint32_t* ret_patches;
 	uint32_t* labels;
+	X64_BBQueue* bb_queue;
 	X64_LabelPatch* label_patches;
     
 	uint32_t ret_patch_count = 0;
@@ -254,6 +266,9 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
         ret_patches = (uint32_t*)tb_tls_push(tls, ir_return_count * sizeof(uint32_t));
 		labels = (uint32_t*)tb_tls_push(tls, ir_label_count * sizeof(uint32_t));
 		label_patches = (X64_LabelPatch*)tb_tls_push(tls, ir_label_patch_count * sizeof(X64_LabelPatch));
+		
+		bb_queue = (X64_BBQueue*)tb_tls_push(tls, sizeof(X64_BBQueue) + (ir_label_count * sizeof(TB_Register)));
+		bb_queue->capacity = ir_label_count;
     }
     
 #if 0
@@ -287,130 +302,39 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
     }
     
     int32_t local_stack_usage = x64_allocate_locals(f, ctx, &out);
-    
-    // Go through each basic block:
-    // Generate instructions from the side-effect nodes using
-    // all the other nodes and then terminate the basic block
-    TB_Register bb = 1; // The initial label is always at r1
+	
+	// the queue starts with just the entry BB
+	// then just follows it's terminators
+	bb_queue->queue[0] = 1;
+	bb_queue->start = 0;
+	bb_queue->end = 1;
+	
     do {
+		TB_Register bb = bb_queue->queue[bb_queue->start++];
+		
         assert(f->nodes[bb].type == TB_LABEL);
         TB_Label label_id = f->nodes[bb].label.id;
         TB_Register bb_end = f->nodes[bb].label.terminator;
         
         // Clear and initialize new cache
-        //printf("Process BB: r%llu-r%llu\n", bb, bb_end);
+        printf("Process BB: r%u-r%u\n", bb, bb_end);
         labels[label_id] = out.count;
         
-        // Evaluate all side effect instructions
-        // Don't eval if the basic block is empty
-        if (bb != bb_end) loop_range(i, bb + 1, bb_end) {
-            TB_DataType dt = f->nodes[i].dt;
-            
-            switch (f->nodes[i].type) {
-                case TB_NULL:
-                case TB_LOCAL: // the allocation is handled beforehand
-                case TB_PARAM:
-                case TB_PARAM_ADDR:
-                case TB_INT_CONST:
-                case TB_FLOAT_CONST:
-				case TB_ARRAY_ACCESS:
-                case TB_SIGN_EXT:
-                case TB_ZERO_EXT:
-                case TB_ADD:
-                case TB_SUB:
-                case TB_MUL:
-                case TB_SDIV:
-                case TB_UDIV:
-                case TB_FADD:
-                case TB_FSUB:
-                case TB_FMUL:
-                case TB_FDIV:
-                case TB_CMP_EQ:
-                case TB_CMP_NE:
-                case TB_CMP_ULT:
-                case TB_CMP_ULE:
-                case TB_CMP_SLT:
-                case TB_CMP_SLE:
-                break;
-                case TB_LOAD: {
-                    TB_Register addr_reg = f->nodes[i].load.address;
-                    
-                    bool explicit_load = true;
-                    if (f->nodes[addr_reg].type == TB_LOCAL ||
-                        f->nodes[addr_reg].type == TB_PARAM_ADDR) {
-                        explicit_load = false;
-                        
-                        // If this load out-lives the next store it must be explicitly 
-                        // loaded now since it'll deviate from the memory
-                        loop_range(j, i + 1, bb_end) {
-                            if (f->nodes[j].type == TB_STORE 
-                                && f->nodes[j].store.address == addr_reg) {
-                                explicit_load = (ctx->intervals[i] > j);
-                                break;
-                            }
-                        }
-                    }
-                    
-                    if (explicit_load) {
-                        X64_Value addr = x64_eval(f, ctx, &out, addr_reg, i);
-                        
-                        ctx->mem_caches[ctx->mem_cache_count++] = (X64_MemCacheDesc){
-                            .address = addr_reg,
-                            .value = x64_explicit_load(f, ctx, &out, addr, i, addr_reg)
-                        };
-                    }
-                    break;
-                }
-                case TB_STORE: {
-                    // TODO(NeGate): Allow for patterns such as:
-                    TB_Register address_reg = f->nodes[i].store.address;
-                    TB_Register value_reg = f->nodes[i].store.value;
-                    
-                    // Eval address and cast to the correct type for the store
-                    X64_Value address = x64_eval(f, ctx, &out, address_reg, i);
-                    //if (address.dt.type != TB_PTR) abort();
-                    
-                    // TODO(NeGate): Cast to store type
-                    if (f->nodes[value_reg].type == TB_ADD 
-                        && f->nodes[f->nodes[value_reg].i_arith.a].type == TB_LOAD
-                        && f->nodes[f->nodes[value_reg].i_arith.a].load.address == address_reg) {
-                        // *p = *p + a  => add Xword [p], a
-                        X64_Value value = x64_eval(f, ctx, &out, f->nodes[value_reg].i_arith.b, i);
-                        
-						x64_inst_bin_op(ctx, &out, dt, &insts[X64_ADD], &address, &value, f->nodes[value_reg].i_arith.b);
-                    } else if (f->nodes[value_reg].type == TB_SUB &&
-							   f->nodes[f->nodes[value_reg].i_arith.a].type == TB_LOAD &&
-							   f->nodes[f->nodes[value_reg].i_arith.a].load.address == address_reg) {
-                        // *p = *p - a  => sub Xword [p], a
-                        X64_Value value = x64_eval(f, ctx, &out, f->nodes[value_reg].i_arith.b, i);
-						
-						x64_inst_bin_op(ctx, &out, dt, &insts[X64_SUB], &address, &value, f->nodes[value_reg].i_arith.b);
-                    } else {
-                        X64_Value value = x64_eval(f, ctx, &out, value_reg, i);
-						if (value.type == X64_VALUE_MEM && f->nodes[value_reg].type != TB_LOAD) {
-							// passing address, not value
-							X64_Value value_addr = x64_allocate_gpr(ctx, value_reg, TB_TYPE_PTR());
-							
-							x64_emit_normal(&out, TB_I64, LEA, &value_addr, &value);
-							x64_emit_normal(&out, dt.type, MOV, &address, &value_addr);
-						} else {
-							x64_inst_bin_op(ctx, &out, dt, &insts[X64_MOV], &address, &value, value_reg);
-						}
-					}
-                    break;
-                }
-                default: 
-                abort();
-            }
-        }
+		// Generate instructions from the side-effect nodes using
+		// all the other nodes and then terminate the basic block
+        x64_eval_bb(f, ctx, &out, bb, bb_end);
         
         // Handle the terminator node
         if (f->nodes[bb_end].type == TB_IF) {
             TB_Register cond_reg = f->nodes[bb_end].if_.cond;
             X64_Value cond = x64_eval(f, ctx, &out, cond_reg, bb_end);
             
-            TB_Register if_true = f->nodes[bb_end].if_.if_true;
-            TB_Register if_false = f->nodes[bb_end].if_.if_false;
+            TB_Label if_true = f->nodes[bb_end].if_.if_true;
+            TB_Label if_false = f->nodes[bb_end].if_.if_false;
+            
+			// Queue up it's branch targets
+			x64_enqueue_bb(bb_queue, tb_find_reg_from_label(f, if_false));
+			x64_enqueue_bb(bb_queue, tb_find_reg_from_label(f, if_true));
             
             if (cond.type == X64_VALUE_IMM32) {
                 TB_Label dst = (cond.imm32 ? if_true : if_false);
@@ -429,17 +353,20 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
                 // Implicit convert into FLAGS
                 cond = x64_as_bool(f, ctx, &out, cond, f->nodes[cond_reg].dt);
                 
-                bool fallthrough = f->nodes[bb_end + 1].type == TB_LABEL 
-                    && f->nodes[bb_end + 1].label.id == if_false;
-                
+				// Reorder the targets to avoid an extra JMP
+				TB_Label fallthrough_label = 0;
+				if (bb_queue->start != bb_queue->end) {
+					fallthrough_label = f->nodes[bb_queue->queue[bb_queue->start]].label.id;
+				}
+				bool has_fallthrough = fallthrough_label == if_false;
+				
                 X64_Cond cc = cond.cond;
-                if (f->nodes[bb_end + 1].type == TB_LABEL &&
-                    f->nodes[bb_end + 1].label.id == if_true) {
+                if (fallthrough_label == if_true) {
+					// flip the condition and the labels
                     tb_swap(if_true, if_false);
-                    
                     cc ^= 1;
                     
-                    fallthrough = true;
+					has_fallthrough = true;
                 }
                 
                 // JCC .true
@@ -456,7 +383,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
                     .base = out.count, .pos = out.count + 2, .target_lbl = if_true
                 };
                 
-                if (!fallthrough) {
+                if (!has_fallthrough) {
                     label_patches[label_patch_count++] = (X64_LabelPatch){
                         .base = out.count + 6, .pos = out.count + 7, .target_lbl = if_false
                     };
@@ -472,8 +399,6 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
                     tb_out_commit(&out, 6);
                 }
             }
-            
-            bb = bb_end + 1;
         } else if (f->nodes[bb_end].type == TB_RET) {
             if (f->nodes[bb_end].dt.type != TB_VOID) {
 				X64_Value value = x64_eval(f, ctx, &out, f->nodes[bb_end].ret.value, bb_end);
@@ -520,30 +445,38 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
                 tb_out_commit(&out, 5);
             }
             
-            bb = bb_end + 1;
+            if (bb_end + 1 < f->count) x64_enqueue_bb(bb_queue, bb_end + 1);
         } else if (f->nodes[bb_end].type == TB_LABEL) {
-            bb = bb_end;
+			x64_enqueue_bb(bb_queue, bb_end);
         } else if (f->nodes[bb_end].type == TB_GOTO) {
-            label_patches[label_patch_count++] = (X64_LabelPatch){
-                .base = out.count, .pos = out.count + 1, .target_lbl = f->nodes[bb_end].goto_.label
-            };
-            
-            uint8_t* out_buffer = tb_out_reserve(&out, 5);
-            out_buffer[0] = 0xE9;
-            out_buffer[1] = 0x00;
-            out_buffer[2] = 0x00;
-            out_buffer[3] = 0x00;
-            out_buffer[4] = 0x00;
-            tb_out_commit(&out, 5);
-            
-            bb = bb_end + 1;
-        } else {
+			x64_enqueue_bb(bb_queue, tb_find_reg_from_label(f, f->nodes[bb_end].goto_.label));
+			
+			TB_Label fallthrough_label = 0;
+			if (bb_queue->start != bb_queue->end) {
+				fallthrough_label = f->nodes[bb_queue->queue[bb_queue->start]].label.id;
+			}
+			
+			TB_Label target_lbl = f->nodes[bb_end].goto_.label;
+			if (fallthrough_label != target_lbl) {
+				label_patches[label_patch_count++] = (X64_LabelPatch){
+					.base = out.count, .pos = out.count + 1, .target_lbl = target_lbl
+				};
+				
+				uint8_t* out_buffer = tb_out_reserve(&out, 5);
+				out_buffer[0] = 0xE9;
+				out_buffer[1] = 0x00;
+				out_buffer[2] = 0x00;
+				out_buffer[3] = 0x00;
+				out_buffer[4] = 0x00;
+				tb_out_commit(&out, 5);
+			}
+		} else {
             abort(); // TODO
         }
         
         // Terminate any cached values
         ctx->mem_cache_count = 0;
-    } while (bb != f->count);
+    } while (bb_queue->start != bb_queue->end);
     
     // Align stack usage to 16bytes and add 8 bytes for the return address
     local_stack_usage += (16 - (local_stack_usage % 16)) % 16;
@@ -624,6 +557,133 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
     };
 }
 
+static void x64_enqueue_bb(X64_BBQueue* queue, TB_Register bb) {
+	assert(bb);
+	
+	// Don't enqueue if it already got compiled
+	loop(i, queue->end) {
+		if (queue->queue[i] == bb) return;
+	}
+	
+	assert(queue->end < queue->capacity);
+	
+	// put `bb` next in line and just swap whatever into the back
+	int next_in_line = queue->start;
+	int last = queue->end++;
+	
+	if (next_in_line == last) {
+		queue->queue[next_in_line] = bb;
+	} else {
+		queue->queue[last] = queue->queue[next_in_line];
+		queue->queue[next_in_line] = bb;
+	}
+}
+
+static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register bb, TB_Register bb_end) {
+	// Evaluate all side effect instructions
+	// Don't eval if the basic block is empty
+	if (bb != bb_end) loop_range(i, bb + 1, bb_end) {
+		TB_DataType dt = f->nodes[i].dt;
+		
+		switch (f->nodes[i].type) {
+			case TB_NULL:
+			case TB_LOCAL: // the allocation is handled beforehand
+			case TB_PARAM:
+			case TB_PARAM_ADDR:
+			case TB_INT_CONST:
+			case TB_FLOAT_CONST:
+			case TB_ARRAY_ACCESS:
+			case TB_SIGN_EXT:
+			case TB_ZERO_EXT:
+			case TB_ADD:
+			case TB_SUB:
+			case TB_MUL:
+			case TB_SDIV:
+			case TB_UDIV:
+			case TB_FADD:
+			case TB_FSUB:
+			case TB_FMUL:
+			case TB_FDIV:
+			case TB_CMP_EQ:
+			case TB_CMP_NE:
+			case TB_CMP_ULT:
+			case TB_CMP_ULE:
+			case TB_CMP_SLT:
+			case TB_CMP_SLE:
+			break;
+			case TB_LOAD: {
+				TB_Register addr_reg = f->nodes[i].load.address;
+				
+				bool explicit_load = true;
+				if (f->nodes[addr_reg].type == TB_LOCAL ||
+					f->nodes[addr_reg].type == TB_PARAM_ADDR) {
+					explicit_load = false;
+					
+					// If this load out-lives the next store it must be explicitly 
+					// loaded now since it'll deviate from the memory
+					loop_range(j, i + 1, bb_end) {
+						if (f->nodes[j].type == TB_STORE 
+							&& f->nodes[j].store.address == addr_reg) {
+							explicit_load = (ctx->intervals[i] > j);
+							break;
+						}
+					}
+				}
+				
+				if (explicit_load) {
+					X64_Value addr = x64_eval(f, ctx, out, addr_reg, i);
+					
+					ctx->mem_caches[ctx->mem_cache_count++] = (X64_MemCacheDesc){
+						.address = addr_reg,
+						.value = x64_explicit_load(f, ctx, out, addr, i, addr_reg)
+					};
+				}
+				break;
+			}
+			case TB_STORE: {
+				// TODO(NeGate): Allow for patterns such as:
+				TB_Register address_reg = f->nodes[i].store.address;
+				TB_Register value_reg = f->nodes[i].store.value;
+				
+				// Eval address and cast to the correct type for the store
+				X64_Value address = x64_eval(f, ctx, out, address_reg, i);
+				//if (address.dt.type != TB_PTR) abort();
+				
+				// TODO(NeGate): Cast to store type
+				if (f->nodes[value_reg].type == TB_ADD 
+					&& f->nodes[f->nodes[value_reg].i_arith.a].type == TB_LOAD
+					&& f->nodes[f->nodes[value_reg].i_arith.a].load.address == address_reg) {
+					// *p = *p + a  => add Xword [p], a
+					X64_Value value = x64_eval(f, ctx, out, f->nodes[value_reg].i_arith.b, i);
+					
+					x64_inst_bin_op(ctx, out, dt, &insts[X64_ADD], &address, &value, f->nodes[value_reg].i_arith.b);
+				} else if (f->nodes[value_reg].type == TB_SUB &&
+						   f->nodes[f->nodes[value_reg].i_arith.a].type == TB_LOAD &&
+						   f->nodes[f->nodes[value_reg].i_arith.a].load.address == address_reg) {
+					// *p = *p - a  => sub Xword [p], a
+					X64_Value value = x64_eval(f, ctx, out, f->nodes[value_reg].i_arith.b, i);
+					
+					x64_inst_bin_op(ctx, out, dt, &insts[X64_SUB], &address, &value, f->nodes[value_reg].i_arith.b);
+				} else {
+					X64_Value value = x64_eval(f, ctx, out, value_reg, i);
+					if (value.type == X64_VALUE_MEM && f->nodes[value_reg].type != TB_LOAD) {
+						// passing address, not value
+						X64_Value value_addr = x64_allocate_gpr(ctx, value_reg, TB_TYPE_PTR());
+						
+						x64_emit_normal(out, TB_I64, LEA, &value_addr, &value);
+						x64_emit_normal(out, dt.type, MOV, &address, &value_addr);
+					} else {
+						x64_inst_bin_op(ctx, out, dt, &insts[X64_MOV], &address, &value, value_reg);
+					}
+				}
+				break;
+			}
+			default: 
+			abort();
+		}
+	}
+}
+
 #include "tb_x86_64_patterns.h"
 
 static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, TB_Register next) {
@@ -678,6 +738,20 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 					.mem = {
 						.base = base_reg,
 						.index = idx_as_gpr.gpr,
+						.scale = scale,
+						.disp = 0
+					}
+				};
+			} else if (index.type == X64_VALUE_GPR) {
+				assert(stride == 1 || stride == 2 || stride == 4 || stride == 8);
+				X64_Scale scale = __builtin_ffs(stride) - 1;
+				
+				return (X64_Value) {
+					.type = X64_VALUE_MEM,
+					.dt = reg->dt,
+					.mem = {
+						.base = base_reg,
+						.index = index.gpr,
 						.scale = scale,
 						.disp = 0
 					}

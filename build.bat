@@ -7,8 +7,7 @@ set tb_source_files=src/tb/tb.c ^
 	src/tb/tb_x86_64_fast2.c ^
 	src/tb/tb_coff.c ^
 	src/tb/tb_elf64.c ^
-	src/tb/tb_opt.c
-
+	src/tb/tb_helper.c
 
 mkdir build
 clang %clang_settings% src/example_main.c %tb_source_files% -o build/example.exe

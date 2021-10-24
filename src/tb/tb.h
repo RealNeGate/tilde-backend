@@ -44,7 +44,7 @@
 #define TB_API extern
 
 #define TB_NULL_REG ((TB_Register)0)
-#define TB_REG_MAX ((TB_Register)UINT32_MAX)
+#define TB_REG_MAX ((TB_Register)INT32_MAX)
 
 typedef enum TB_ArithmaticBehavior {
 	// No overflow will assume the value does not 
@@ -167,7 +167,7 @@ typedef int TB_Label;
 
 typedef struct TB_Module TB_Module;
 typedef struct TB_Function TB_Function;
-typedef uint32_t TB_Register;
+typedef int32_t TB_Register;
 typedef struct TB_FunctionOutput TB_FunctionOutput;
 
 // *******************************
@@ -345,6 +345,8 @@ enum TB_RegisterType {
     TB_RET
 };
 
+#define TB_DATA_TYPE_EQUALS(a, b) (memcmp(&(a), &(b), sizeof(TB_DataType)) == 0)
+
 typedef struct TB_Node {
 	TB_DataType dt;
     enum TB_RegisterType type;
@@ -367,13 +369,10 @@ typedef struct TB_Node {
 		struct {
 			TB_Register param;
             
-			uint32_t position;
 			uint32_t size;
 			uint32_t alignment;
 		} param_addr;
 		struct {
-			// NOTE(NeGate): The position value provided here are only hints, they can be ignored.
-			uint32_t position;
 			uint32_t size;
 			uint32_t alignment;
 		} local;
@@ -498,6 +497,8 @@ a = b; \
 b = temp; \
 } while(0)
 
+#define tb_arrlen(a) (sizeof(a) / sizeof(a[0]))
+
 #define loop(iterator, count) for (typeof(count) iterator = 0, end__ = (count); iterator != end__; ++iterator)
 #define loop_range(iterator, start, count) for (typeof(count) iterator = (start), end__ = (count); iterator != end__; ++iterator)
 #define loop_range_step(iterator, start, count, step) for (typeof(count) iterator = (start), end__ = (count); iterator != end__; iterator += step)
@@ -551,10 +552,8 @@ void tb_out8b(TB_Emitter* o, uint64_t i);
 // IR ANALYSIS
 //
 TB_Register tb_find_reg_from_label(TB_Function* f, TB_Label id);
-bool tb_can_reach(TB_Function* f, TB_Register label, TB_Register end);
-TB_RegisterDataflow tb_analyze_register_dataflow(TB_Function* f, TB_Register label_reg, TB_Register reg);
-size_t tb_loop_analysis(TB_TemporaryStorage* tls, TB_Function* f);
 TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t start, size_t end);
+void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Register replace);
 
 //
 // OPTIMIZATION FUNCTIONS
@@ -564,8 +563,9 @@ bool tb_opt_mem2reg(TB_Function* f);
 bool tb_opt_phi_cleanup(TB_Function* f);
 bool tb_opt_cse(TB_Function* f);
 bool tb_opt_dce(TB_Function* f);
+bool tb_opt_dom_tree(TB_Function* f, TB_TemporaryStorage* tls);
 
-TB_FunctionOutput aarch64_compile_function(TB_Function* f, const TB_FeatureSet* features);
+//TB_FunctionOutput aarch64_compile_function(TB_Function* f, const TB_FeatureSet* features);
 // Machine code converter for Aarch64
 
 TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* features);

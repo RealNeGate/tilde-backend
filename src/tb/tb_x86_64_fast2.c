@@ -189,6 +189,7 @@ static X64_Value x64_as_memory_operand(TB_Function* f, X64_Context* ctx, TB_Emit
 static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register dst_reg, TB_Register a_reg, TB_Register b_reg, TB_Register next_reg, const X64_ISel_Pattern patterns[], size_t pattern_count);
 static X64_Value x64_as_bool(TB_Function* f, X64_Context* ctx, TB_Emitter* out, X64_Value src, TB_DataType src_dt);
 static X64_Value x64_explicit_load(TB_Function* f, X64_Context* ctx, TB_Emitter* out, X64_Value addr, TB_Register r, TB_Register addr_reg);
+static void x64_inst_bin_op(X64_Context* ctx, TB_Emitter* out, TB_DataType dt, const X64_NormalInst* inst, const X64_Value* a, const X64_Value* b, TB_Register b_reg);
 
 // x64 instruction emitter
 static void x64_inst_mov_ri64(TB_Emitter* out, X64_GPR dst, uint64_t imm);
@@ -375,18 +376,27 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
                         && f->nodes[f->nodes[value_reg].i_arith.a].load.address == address_reg) {
                         // *p = *p + a  => add Xword [p], a
                         X64_Value value = x64_eval(f, ctx, &out, f->nodes[value_reg].i_arith.b, i);
-                        x64_emit_normal(&out, dt.type, ADD, &address, &value);
-                    } else if (f->nodes[value_reg].type == TB_SUB 
-                               && f->nodes[f->nodes[value_reg].i_arith.a].type == TB_LOAD
-                               && f->nodes[f->nodes[value_reg].i_arith.a].load.address == address_reg) {
+                        
+						x64_inst_bin_op(ctx, &out, dt, &insts[X64_ADD], &address, &value, f->nodes[value_reg].i_arith.b);
+                    } else if (f->nodes[value_reg].type == TB_SUB &&
+							   f->nodes[f->nodes[value_reg].i_arith.a].type == TB_LOAD &&
+							   f->nodes[f->nodes[value_reg].i_arith.a].load.address == address_reg) {
                         // *p = *p - a  => sub Xword [p], a
                         X64_Value value = x64_eval(f, ctx, &out, f->nodes[value_reg].i_arith.b, i);
-                        x64_emit_normal(&out, dt.type, SUB, &address, &value);
+						
+						x64_inst_bin_op(ctx, &out, dt, &insts[X64_SUB], &address, &value, f->nodes[value_reg].i_arith.b);
                     } else {
                         X64_Value value = x64_eval(f, ctx, &out, value_reg, i);
-                        
-                        x64_emit_normal(&out, dt.type, MOV, &address, &value);
-                    }
+						if (value.type == X64_VALUE_MEM && f->nodes[value_reg].type != TB_LOAD) {
+							// passing address, not value
+							X64_Value value_addr = x64_allocate_gpr(ctx, value_reg, TB_TYPE_PTR());
+							
+							x64_emit_normal(&out, TB_I64, LEA, &value_addr, &value);
+							x64_emit_normal(&out, dt.type, MOV, &address, &value_addr);
+						} else {
+							x64_inst_bin_op(ctx, &out, dt, &insts[X64_MOV], &address, &value, value_reg);
+						}
+					}
                     break;
                 }
                 default: 
@@ -396,11 +406,6 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
         
         // Handle the terminator node
         if (f->nodes[bb_end].type == TB_IF) {
-            //TB_Register true_label_reg = tb_find_reg_from_label(f, f->nodes[i].if_.if_true);
-            //TB_Register false_label_reg = tb_find_reg_from_label(f, f->nodes[i].if_.if_false);
-            //TB_Register true_label_end = f->nodes[true_label_reg].label.terminator;
-            //TB_Register false_label_end = f->nodes[false_label_reg].label.terminator;
-            
             TB_Register cond_reg = f->nodes[bb_end].if_.cond;
             X64_Value cond = x64_eval(f, ctx, &out, cond_reg, bb_end);
             
@@ -470,36 +475,37 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
             
             bb = bb_end + 1;
         } else if (f->nodes[bb_end].type == TB_RET) {
-            assert(f->nodes[bb_end].dt.type != TB_VOID);
-            X64_Value value = x64_eval(f, ctx, &out, f->nodes[bb_end].ret.value, bb_end);
-            
-            if (value.dt.type == TB_I8 ||
-                value.dt.type == TB_I16 ||
-                value.dt.type == TB_I32 ||
-                value.dt.type == TB_I64 ||
-                value.dt.type == TB_PTR) {
-                // Integer results use RAX and if result is extended RDX
-                X64_Value dst = (X64_Value){
-                    .type = X64_VALUE_GPR,
-                    .dt = value.dt,
-                    .gpr = X64_RAX
-                };
-                
-                if (value.type != X64_VALUE_GPR || (value.type == X64_VALUE_GPR && value.gpr != X64_RAX)) {
-                    x64_emit_normal(&out, value.dt.type, MOV, &dst, &value);
-                }
-            } else if (value.dt.type == TB_F32) {
-                // Float results use XMM0
-                X64_Value dst = (X64_Value){
-                    .type = X64_VALUE_XMM,
-                    .dt = value.dt,
-                    .xmm = X64_XMM0
-                };
-                
-                if (value.type != X64_VALUE_XMM || (value.type == X64_VALUE_XMM && value.gpr != X64_XMM0)) {
-                    x64_emit_normal(&out, value.dt.type, MOV, &dst, &value);
-                }
-            } else abort();
+            if (f->nodes[bb_end].dt.type != TB_VOID) {
+				X64_Value value = x64_eval(f, ctx, &out, f->nodes[bb_end].ret.value, bb_end);
+				
+				if (value.dt.type == TB_I8 ||
+					value.dt.type == TB_I16 ||
+					value.dt.type == TB_I32 ||
+					value.dt.type == TB_I64 ||
+					value.dt.type == TB_PTR) {
+					// Integer results use RAX and if result is extended RDX
+					X64_Value dst = (X64_Value){
+						.type = X64_VALUE_GPR,
+						.dt = value.dt,
+						.gpr = X64_RAX
+					};
+					
+					if (value.type != X64_VALUE_GPR || (value.type == X64_VALUE_GPR && value.gpr != X64_RAX)) {
+						x64_emit_normal(&out, value.dt.type, MOV, &dst, &value);
+					}
+				} else if (value.dt.type == TB_F32) {
+					// Float results use XMM0
+					X64_Value dst = (X64_Value){
+						.type = X64_VALUE_XMM,
+						.dt = value.dt,
+						.xmm = X64_XMM0
+					};
+					
+					if (value.type != X64_VALUE_XMM || (value.type == X64_VALUE_XMM && value.gpr != X64_XMM0)) {
+						x64_emit_normal(&out, value.dt.type, MOV, &dst, &value);
+					}
+				} else abort();
+			}
             
             // Only jump if we aren't literally about to end the function
             if (bb_end + 1 != f->count) {
@@ -618,17 +624,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
     };
 }
 
-// LEA addition only works in NO_WRAP and CAN_WRAP
-static const X64_ISel_Pattern IADD_PATTERNS[] = {
-    { 1, "rrr", (uint8_t[]){ X64_LEA, 0, '[', 1, 2, 0x7F }, false, true },
-    { 1, "rri", (uint8_t[]){ X64_LEA, 0, '[', 1, 2, 0x7F }, false, true },
-    { 2, "rrr", (uint8_t[]){ X64_ADD, 0, 2, 0x7F }, true },
-    { 2, "rri", (uint8_t[]){ X64_ADD, 0, 2, 0x7F }, true },
-    { 3, "rrm", (uint8_t[]){ X64_ADD, 0, 2, 0x7F }, true },
-    { 4, "rrm", (uint8_t[]){ X64_MOV, 0, 1, X64_ADD, 0, 2, 0x7F }, false },
-    { 4, "rmr", (uint8_t[]){ X64_MOV, 0, 1, X64_ADD, 0, 2, 0x7F }, false },
-    { 4, "rmi", (uint8_t[]){ X64_MOV, 0, 1, X64_ADD, 0, 2, 0x7F }, false }
-};
+#include "tb_x86_64_patterns.h"
 
 static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, TB_Register next) {
     TB_Node* reg = &f->nodes[r];
@@ -712,11 +708,14 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
             bool can_lea_add = reg->i_arith.arith_behavior == TB_NO_WRAP 
                 || reg->i_arith.arith_behavior == TB_CAN_WRAP;
             
+			// LEA addition is only allowed on NO_WRAP and CAN_WRAP
+			// because the other options require compare flags and
+			// LEA doesn't make them
             X64_Value result = x64_std_isel(
                                             f, ctx, out, r,
                                             reg->i_arith.a, reg->i_arith.b, next,
                                             IADD_PATTERNS + (can_lea_add ? 0 : 2),
-                                            8 - (can_lea_add ? 0 : 2)
+											tb_arrlen(IADD_PATTERNS) - (can_lea_add ? 0 : 2)
                                             );
             
             switch (reg->i_arith.arith_behavior) {
@@ -756,59 +755,25 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
             return result;
         }
         case TB_SUB: {
-            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, (X64_ISel_Pattern[]) {
-                                    { 1, "rrr", (uint8_t[]){ X64_SUB, 0, 2, 0x7F }, true },
-                                    { 2, "rri", (uint8_t[]){ X64_SUB, 0, 2, 0x7F }, true },
-                                    { 3, "rrm", (uint8_t[]){ X64_SUB, 0, 2, 0x7F }, true },
-                                    { 4, "rrm", (uint8_t[]){ X64_MOV, 0, 1, X64_SUB, 0, 2, 0x7F }, false },
-                                    { 4, "rmr", (uint8_t[]){ X64_MOV, 0, 1, X64_SUB, 0, 2, 0x7F }, false },
-                                    { 4, "rmi", (uint8_t[]){ X64_MOV, 0, 1, X64_SUB, 0, 2, 0x7F }, false }
-                                }, 6);
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, ISUB_PATTERNS, tb_arrlen(ISUB_PATTERNS));
         }
         case TB_MUL: {
             // Must be promoted up before it's multiplied
             assert(reg->dt.type == TB_I32 || reg->dt.type == TB_I64 || reg->dt.type == TB_PTR);
             
-            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, (X64_ISel_Pattern[]) {
-                                    { 1, "rrr", (uint8_t[]){ X64_IMUL, 0, 2, 0x7F }, true },
-                                    { 2, "rri", (uint8_t[]){ X64_IMUL, 0, 2, 0x7F }, true },
-                                    { 3, "rrm", (uint8_t[]){ X64_IMUL, 0, 2, 0x7F }, true },
-                                    { 4, "rrm", (uint8_t[]){ X64_MOV, 0, 1, X64_IMUL, 0, 2, 0x7F }, false },
-                                    { 4, "rmr", (uint8_t[]){ X64_MOV, 0, 1, X64_IMUL, 0, 2, 0x7F }, false },
-                                    { 4, "rmi", (uint8_t[]){ X64_MOV, 0, 1, X64_IMUL, 0, 2, 0x7F }, false }
-                                }, 6);
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, IMUL_PATTERNS, tb_arrlen(IMUL_PATTERNS));
         }
         case TB_FADD: {
-            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, 
-                                (X64_ISel_Pattern[]) {
-                                    { 1, "xxx", (uint8_t[]){ X64_ADDSS, 0, 2, 0x7F }, true },
-                                    { 2, "xxm", (uint8_t[]){ X64_ADDSS, 0, 2, 0x7F }, true },
-                                    { 3, "xmm", (uint8_t[]){ X64_MOVSS, 0, 1, X64_ADDSS, 0, 2, 0x7F }, false }
-                                }, 3);
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, F32ADD_PATTERNS, tb_arrlen(F32ADD_PATTERNS));
         }
         case TB_FSUB: {
-            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, 
-                                (X64_ISel_Pattern[]) {
-                                    { 1, "xxx", (uint8_t[]){ X64_SUBSS, 0, 2, 0x7F }, true },
-                                    { 2, "xxm", (uint8_t[]){ X64_SUBSS, 0, 2, 0x7F }, true },
-                                    { 3, "xmm", (uint8_t[]){ X64_MOVSS, 0, 1, X64_SUBSS, 0, 2, 0x7F }, false }
-                                }, 3);
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, F32SUB_PATTERNS, tb_arrlen(F32SUB_PATTERNS));
         }
         case TB_FMUL: {
-            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, 
-                                (X64_ISel_Pattern[]) {
-                                    { 1, "xxx", (uint8_t[]){ X64_MULSS, 0, 2, 0x7F }, true },
-                                    { 2, "xxm", (uint8_t[]){ X64_MULSS, 0, 2, 0x7F }, true },
-                                    { 3, "xmm", (uint8_t[]){ X64_MOVSS, 0, 1, X64_MULSS, 0, 2, 0x7F }, false }
-                                }, 3);
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, F32MUL_PATTERNS, tb_arrlen(F32MUL_PATTERNS));
         }
         case TB_FDIV: {
-            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, 
-                                (X64_ISel_Pattern[]) {
-                                    { 1, "xxx", (uint8_t[]){ X64_DIVSS, 0, 2, 0x7F }, true },
-                                    { 2, "xxm", (uint8_t[]){ X64_DIVSS, 0, 2, 0x7F }, true },
-                                    { 3, "xmm", (uint8_t[]){ X64_MOVSS, 0, 1, X64_DIVSS, 0, 2, 0x7F }, false }
-                                }, 3);
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, F32DIV_PATTERNS, tb_arrlen(F32DIV_PATTERNS));
         }
         case TB_LOCAL: {
             return (X64_Value) {
@@ -1120,6 +1085,19 @@ static void x64_inst_mov_ri64(TB_Emitter* out, X64_GPR dst, uint64_t imm) {
     out_buffer += 8;
     
     tb_out_commit(out, 10);
+}
+
+// performs an OP a, b
+// if both operands are memory, `a` is promoted to a GPR
+static void x64_inst_bin_op(X64_Context* ctx, TB_Emitter* out, TB_DataType dt, const X64_NormalInst* inst, const X64_Value* a, const X64_Value* b, TB_Register b_reg) {
+	if (a->type == X64_VALUE_MEM && b->type == X64_VALUE_MEM) {
+		X64_Value b_gpr = x64_allocate_gpr(ctx, b_reg, dt);
+		
+		x64_emit_normal64(out, MOV, &b_gpr, b);
+		x64_inst_op(out, dt.type, inst, a, &b_gpr);
+	} else {
+		x64_inst_op(out, dt.type, inst, a, b);
+	}
 }
 
 // NOTE(NeGate): Both arguments cannot be memory operands

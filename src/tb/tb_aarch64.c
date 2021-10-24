@@ -1,3 +1,8 @@
+// TODO(NeGate): Re-do this entire thing
+// TODO(NeGate): Re-do this entire thing
+// TODO(NeGate): Re-do this entire thing
+// TODO(NeGate): Re-do this entire thing
+#if 0
 #define TB_INTERNAL
 #include "tb.h"
 
@@ -570,3 +575,4 @@ static TB_FunctionOutput aarch64_compile_function(TB_Function* f, const TB_Featu
         .emitter = out
 	};
 }
+#endif

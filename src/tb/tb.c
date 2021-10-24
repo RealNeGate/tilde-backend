@@ -79,52 +79,13 @@ TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_thre
         tb_function_print(f);
         printf("\n\n\n");
     }
-    
-	if (optimization_level == TB_OPT_O0) {}
-    else if (optimization_level == TB_OPT_O1) {
-		loop(i, m->functions.count) {
-			TB_Function* f = &m->functions.data[i];
-            
-			while (tb_opt_mem2reg(f) ||
-                   tb_opt_phi_cleanup(f) ||
-                   tb_opt_dce(f) ||
-                   tb_opt_cse(f)) {
-			}
-		}
-	}
-	else if (optimization_level == TB_OPT_SIZE) {
-		loop(i, m->functions.count) {
-			TB_Function* f = &m->functions.data[i];
-            
-			while (tb_opt_mem2reg(f) ||
-                   tb_opt_phi_cleanup(f) ||
-                   tb_opt_dce(f) ||
-                   tb_opt_cse(f)) {
-			}
-		}
-	}
-	else if (optimization_level == TB_OPT_SPEED) {
-		loop(i, m->functions.count) {
-			TB_Function* f = &m->functions.data[i];
-            
-			while (tb_opt_mem2reg(f) ||
-                   tb_opt_phi_cleanup(f) ||
-                   tb_opt_loop_unroll(f) ||
-                   tb_opt_dce(f) ||
-                   tb_opt_cse(f)) {
-			}
-        }
-	}
+	
+	// TODO(NeGate): Implement the optimization passes
     
 	switch (m->target_arch) {
         case TB_ARCH_X86_64:
 		loop(i, m->functions.count) {
 			m->compiled_functions.data[i] = x64_compile_function(&m->functions.data[i], &m->features);
-		}
-		break;
-        case TB_ARCH_AARCH64:
-		loop(i, m->functions.count) {
-			m->compiled_functions.data[i] = aarch64_compile_function(&m->functions.data[i], &m->features);
 		}
 		break;
         default:
@@ -279,10 +240,8 @@ TB_API TB_Int128 tb_emulate_add(TB_Function* f, TB_ArithmaticBehavior arith_beha
 
 static TB_Register tb_cse_arith(TB_Function* f, int type, TB_DataType dt, TB_ArithmaticBehavior arith_behavior, TB_Register a, TB_Register b) {
 	assert(f->current_label);
-	size_t label_start = f->current_label;
-    
-	for (size_t i = label_start; i < f->count; i++) {
-		if (memcmp(&f->nodes[i].dt, &dt, sizeof(TB_DataType)) == 0
+	loop_range(i, f->current_label, f->count) {
+		if (TB_DATA_TYPE_EQUALS(f->nodes[i].dt, dt)
 			&& f->nodes[i].type == type
 			&& f->nodes[i].i_arith.arith_behavior == arith_behavior
 			&& f->nodes[i].i_arith.a == a
@@ -299,12 +258,10 @@ static TB_Register tb_cse_arith(TB_Function* f, int type, TB_DataType dt, TB_Ari
 }
 
 TB_API TB_Register tb_inst_sxt(TB_Function* f, TB_Register src, TB_DataType dt) {
-	size_t label_start = f->current_label;
-    
-	for (size_t i = label_start; i < f->count; i++) {
+	loop_range(i, f->current_label, f->count) {
 		if (f->nodes[i].type == TB_SIGN_EXT 
 			&& f->nodes[i].ext == src
-            && memcmp(&f->nodes[i].dt, &dt, sizeof(TB_DataType)) == 0) {
+			&& TB_DATA_TYPE_EQUALS(f->nodes[i].dt, dt)) {
 			return i;
 		}
 	}
@@ -315,12 +272,11 @@ TB_API TB_Register tb_inst_sxt(TB_Function* f, TB_Register src, TB_DataType dt) 
 }
 
 TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt) {
-    size_t label_start = f->current_label;
-    
-	for (size_t i = label_start; i < f->count; i++) {
+    assert(f->current_label);
+	loop_range(i, f->current_label, f->count) {
 		if (f->nodes[i].type == TB_ZERO_EXT 
 			&& f->nodes[i].ext == src
-            && memcmp(&f->nodes[i].dt, &dt, sizeof(TB_DataType)) == 0) {
+			&& TB_DATA_TYPE_EQUALS(f->nodes[i].dt, dt)) {
 			return i;
 		}
 	}
@@ -363,22 +319,13 @@ TB_API TB_Register tb_inst_param_addr(TB_Function* f, TB_Register param) {
 TB_API TB_Register tb_inst_local(TB_Function* f, uint32_t size, uint32_t alignment) {
 	TB_Register r = tb_make_reg(f, TB_LOCAL, TB_TYPE_PTR());
 	f->nodes[r].local.alignment = alignment;
-    
-	// NOTE(NeGate): The position value provided here are only hints, they can be ignored.
-	f->nodes[r].local.position = f->locals_stack_usage;
 	f->nodes[r].local.size = size;
-    
-	f->locals_stack_usage += size;
-    
-	uint32_t padding = (alignment - (f->locals_stack_usage % alignment)) % alignment;
-	f->locals_stack_usage += padding;
-    
 	return r;
 }
 
 TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr, uint32_t alignment) {
 	assert(f->current_label);
-	for (size_t i = f->current_label; i < f->count; i++) {
+	loop_range(i, f->current_label, f->count) {
 		if (f->nodes[i].type == TB_LOAD &&
 			memcmp(&f->nodes[i].dt, &dt, sizeof(TB_DataType)) == 0 &&
 			f->nodes[i].load.address == addr &&
@@ -394,7 +341,8 @@ TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr
 }
 
 TB_API TB_Register tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_Register val, uint32_t alignment) {
-	for (size_t i = f->current_label; i < f->count; i++) {
+    assert(f->current_label);
+	loop_range(i, f->current_label, f->count) {
 		if (f->nodes[i].type == TB_STORE &&
 			memcmp(&f->nodes[i].dt, &dt, sizeof(TB_DataType)) == 0 &&
 			f->nodes[i].store.address == addr &&
@@ -413,7 +361,7 @@ TB_API TB_Register tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register add
 
 TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) {
 	assert(f->current_label);
-	for (size_t i = f->current_label; i < f->count; i++) {
+	loop_range(i, f->current_label, f->count) {
 		if (f->nodes[i].type == TB_INT_CONST &&
 			memcmp(&f->nodes[i].dt, &dt, sizeof(TB_DataType)) == 0 &&
 			f->nodes[i].i_const.lo == imm &&
@@ -492,11 +440,7 @@ TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB
 }
 
 TB_API TB_Register tb_inst_sub(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
-	TB_Register r = tb_make_reg(f, TB_SUB, dt);
-	f->nodes[r].i_arith.arith_behavior = arith_behavior;
-	f->nodes[r].i_arith.a = a;
-	f->nodes[r].i_arith.b = b;
-	return r;
+	return tb_cse_arith(f, TB_SUB, dt, arith_behavior, a, b);
 }
 
 TB_API TB_Register tb_inst_mul(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
@@ -504,11 +448,8 @@ TB_API TB_Register tb_inst_mul(TB_Function* f, TB_DataType dt, TB_Register a, TB
 }
 
 TB_API TB_Register tb_inst_div(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness) {
-	TB_Register r = tb_make_reg(f, signedness ? TB_SDIV : TB_UDIV, dt);
-	f->nodes[r].i_arith.arith_behavior = TB_NO_WRAP;
-	f->nodes[r].i_arith.a = a;
-	f->nodes[r].i_arith.b = b;
-	return r;
+	// division can't wrap or overflow
+    return tb_cse_arith(f, signedness ? TB_SDIV : TB_UDIV, dt, TB_NO_WRAP, a, b);
 }
 
 TB_API TB_Register tb_inst_shl(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
@@ -731,13 +672,14 @@ TB_API void tb_inst_ret(TB_Function* f, TB_DataType dt, TB_Register value) {
 //
 static void tb_print_type(TB_DataType dt) {
 	switch (dt.type) {
+        case TB_VOID:   printf("[void]   \t"); break;
         case TB_BOOL:   printf("[bool x %d]\t", dt.count); break;
         case TB_I8:     printf("[i8 x %d]\t", dt.count); break;
         case TB_I16:    printf("[i16 x %d]\t", dt.count); break;
         case TB_I32:    printf("[i32 x %d]\t", dt.count); break;
         case TB_I64:    printf("[i64 x %d]\t", dt.count); break;
         case TB_I128:   printf("[i128 x %d]\t", dt.count); break;
-        case TB_PTR:    printf("[ptr x %d]\t", dt.count); break;
+        case TB_PTR:    printf("[ptr]    \t"); break;
         case TB_F32:    printf("[f32 x %d]\t", dt.count); break;
         case TB_F64:    printf("[f64 x %d]\t", dt.count); break;
         default:        abort();

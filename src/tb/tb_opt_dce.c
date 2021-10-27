@@ -1,0 +1,53 @@
+#define TB_INTERNAL
+#include "tb.h"
+
+bool tb_opt_dce(TB_Function* f) {
+	int changes = 0;
+	TB_TemporaryStorage* tls = tb_tls_allocate();
+    
+	size_t* intervals = tb_tls_push(tls, f->count * sizeof(size_t));
+	tb_find_live_intervals(intervals, f);
+    
+	for (TB_Register i = 1; i < f->count; i++) {
+		if (intervals[i] == 0) {
+			switch (f->nodes[i].type) {
+				// keep
+                case TB_NULL:
+                case TB_LABEL:
+                case TB_PHI1:
+                case TB_PHI2:
+                case TB_GOTO:
+                case TB_IF:
+                case TB_RET:
+				break;
+				// delete:
+                case TB_INT_CONST:
+                case TB_LOCAL:
+                case TB_ADD:
+                case TB_SUB:
+                case TB_MUL:
+                case TB_SDIV:
+                case TB_UDIV:
+                case TB_STORE:
+                case TB_LOAD:
+                case TB_PARAM:
+                case TB_PARAM_ADDR:
+                case TB_CMP_EQ:
+                case TB_CMP_NE:
+                case TB_CMP_SLT:
+                case TB_CMP_SLE:
+                case TB_CMP_ULT:
+                case TB_CMP_ULE:
+                case TB_CMP_FLT:
+                case TB_CMP_FLE:
+				f->nodes[i] = (TB_Node){ 0 };
+				changes++;
+				break;
+                default:
+				abort();
+			}
+		}
+	}
+    
+	return (changes > 0);
+}

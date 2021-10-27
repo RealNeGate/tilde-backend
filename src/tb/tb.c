@@ -73,22 +73,40 @@ TB_API void tb_module_destroy(TB_Module* m) {
 TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_threads) {
 	m->compiled_functions.count = m->functions.count;
     
-    loop(i, m->functions.count) {
-        TB_Function* f = &m->functions.data[i];
-        
-        tb_function_print(f);
-        printf("\n\n\n");
-    }
+	if (optimization_level == TB_OPT_O0) {
+		// Don't optimize
+	} else if (optimization_level == TB_OPT_O1) {
+		// Perform basic optimizations, mem2reg, dce, cse
+		// No complex loop transforms, minor inlining allowed
+		
+		loop(i, m->functions.count) {
+			TB_Function* f = &m->functions.data[i];
+			
+			bool changes;
+			do {
+				changes = false;
+				
+				tb_function_print(f);
+				printf("\n\n\n");
+				
+				changes |= tb_opt_mem2reg(f);
+				changes |= tb_opt_dce(f);
+			} while (changes);
+		}
+	} else {
+		// TODO(NeGate): Implement this!
+		abort();
+	}
 	
 	// TODO(NeGate): Implement the optimization passes
-    
+	
 	switch (m->target_arch) {
-        case TB_ARCH_X86_64:
+		case TB_ARCH_X86_64:
 		loop(i, m->functions.count) {
 			m->compiled_functions.data[i] = x64_compile_function(&m->functions.data[i], &m->features);
 		}
 		break;
-        default:
+		default:
 		printf("TinyBackend error: Unknown target!\n");
 		abort();
 	}
@@ -603,6 +621,15 @@ TB_API TB_Register tb_inst_cmp_fge(TB_Function* f, TB_DataType dt, TB_Register a
 	f->nodes[r].cmp.a = b;
 	f->nodes[r].cmp.b = a;
 	f->nodes[r].cmp.dt = dt;
+	return r;
+}
+
+TB_API TB_Register tb_inst_phi2(TB_Function* f, TB_DataType dt, TB_Label a_label, TB_Register a, TB_Label b_label, TB_Register b) {
+	TB_Register r = tb_make_reg(f, TB_PHI2, dt);
+	f->nodes[r].phi2.a_label = tb_find_reg_from_label(f, a_label);
+	f->nodes[r].phi2.a = a;
+	f->nodes[r].phi2.b_label = tb_find_reg_from_label(f, b_label);
+	f->nodes[r].phi2.b = b;
 	return r;
 }
 

@@ -82,6 +82,79 @@ void tb_find_live_intervals(size_t intervals[], const TB_Function* f) {
 	}
 }
 
+size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_t end) {
+#define ffu(r) count += (r == find);
+    size_t count = 0;
+	
+	for (size_t i = start; i < end; i++) {
+		switch (f->nodes[i].type) {
+            case TB_NULL:
+            case TB_INT_CONST:
+            case TB_LOCAL:
+            case TB_PARAM:
+            case TB_LABEL:
+			break;
+            case TB_PHI1:
+			ffu(f->nodes[i].phi1.a);
+			ffu(f->nodes[i].phi1.a_label);
+			break;
+            case TB_PHI2:
+			ffu(f->nodes[i].phi2.a);
+			ffu(f->nodes[i].phi2.b);
+			ffu(f->nodes[i].phi2.a_label);
+			ffu(f->nodes[i].phi2.b_label);
+			break;
+            case TB_ARRAY_ACCESS:
+			ffu(f->nodes[i].array_access.base);
+			ffu(f->nodes[i].array_access.index);
+			break;
+            case TB_SIGN_EXT:
+            case TB_ZERO_EXT:
+			ffu(f->nodes[i].ext);
+			break;
+            case TB_PARAM_ADDR:
+			ffu(f->nodes[i].param_addr.param);
+			break;
+            case TB_LOAD:
+			ffu(f->nodes[i].load.address);
+			break;
+            case TB_STORE:
+			ffu(f->nodes[i].store.address);
+			ffu(f->nodes[i].store.value);
+			break;
+            case TB_ADD:
+            case TB_SUB:
+            case TB_MUL:
+            case TB_UDIV:
+            case TB_SDIV:
+			ffu(f->nodes[i].i_arith.a);
+			ffu(f->nodes[i].i_arith.b);
+			break;
+            case TB_CMP_EQ:
+            case TB_CMP_NE:
+            case TB_CMP_SLT:
+            case TB_CMP_SLE:
+            case TB_CMP_ULT:
+            case TB_CMP_ULE:
+            case TB_CMP_FLT:
+            case TB_CMP_FLE:
+			ffu(f->nodes[i].cmp.a);
+			ffu(f->nodes[i].cmp.b);
+			break;
+            case TB_IF:
+			ffu(f->nodes[i].if_.cond);
+			break;
+            case TB_RET:
+			ffu(f->nodes[i].ret.value);
+			break;
+            default: abort();
+		}
+	}
+    
+	return count;
+#undef ffu
+}
+
 TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t start, size_t end) {
 #define ffu(r) if (r == find) return i
     

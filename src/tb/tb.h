@@ -249,13 +249,13 @@ TB_API TB_Register tb_inst_cmp_fle(TB_Function* f, TB_DataType dt, TB_Register a
 TB_API TB_Register tb_inst_cmp_fgt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
 TB_API TB_Register tb_inst_cmp_fge(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
 
+TB_API TB_Register tb_inst_phi2(TB_Function* f, TB_DataType dt, TB_Label a_label, TB_Register a, TB_Label b_label, TB_Register b);
 TB_API TB_Register tb_inst_label(TB_Function* f, TB_Label id);
 TB_API void tb_inst_goto(TB_Function* f, TB_Label id);
 TB_API TB_Register tb_inst_if(TB_Function* f, TB_Register cond, TB_Label if_true, TB_Label if_false);
 TB_API void tb_inst_ret(TB_Function* f, TB_DataType dt, TB_Register value);
 
 TB_API void tb_function_print(TB_Function* f);
-TB_API void tb_function_optimize(TB_Function* f);
 TB_API void tb_find_live_intervals(size_t intervals[], const TB_Function* f);
 
 // These emulator functions have the same semantics as
@@ -554,16 +554,13 @@ void tb_out8b(TB_Emitter* o, uint64_t i);
 TB_Register tb_find_reg_from_label(TB_Function* f, TB_Label id);
 TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t start, size_t end);
 void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Register replace);
+size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_t end);
 
 //
 // OPTIMIZATION FUNCTIONS
 //
-bool tb_opt_loop_unroll(TB_Function* f);
 bool tb_opt_mem2reg(TB_Function* f);
-bool tb_opt_phi_cleanup(TB_Function* f);
-bool tb_opt_cse(TB_Function* f);
 bool tb_opt_dce(TB_Function* f);
-bool tb_opt_dom_tree(TB_Function* f, TB_TemporaryStorage* tls);
 
 //TB_FunctionOutput aarch64_compile_function(TB_Function* f, const TB_FeatureSet* features);
 // Machine code converter for Aarch64

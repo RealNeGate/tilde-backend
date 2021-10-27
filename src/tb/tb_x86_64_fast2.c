@@ -173,14 +173,15 @@ static const X64_GPR GPR_PRIORITY_LIST[] = {
 };
 
 // Used to quickly reorder the basic blocks
-typedef struct X64_BBQueue {
-	TB_Register start, end;
+typedef struct X64_BBStack {
+	TB_Register top;
 	TB_Register capacity;
 	
-	TB_Register queue[];
-} X64_BBQueue;
+    bool* completed;
+	TB_Register data[];
+} X64_BBStack;
 
-static void x64_enqueue_bb(X64_BBQueue* queue, TB_Register bb);
+static void x64_enqueue_bb(TB_Function* f, X64_BBStack* queue, TB_Register bb);
 
 // Preprocessing stuff
 static void x64_create_phi_lookup(TB_Function* f, X64_Context* ctx);
@@ -188,11 +189,11 @@ static int32_t x64_allocate_locals(TB_Function* f, X64_Context* ctx, TB_Emitter*
 
 // IR -> Machine IR Lookups
 static X64_PhiValue* x64_find_phi(X64_Context* ctx, TB_Register r);
-static X64_PhiValue* x64_find_phi_values(X64_Context* ctx, TB_Register r);
 static int32_t x64_find_local(X64_Context* ctx, TB_Register r);
 
 // Machine code generation
 static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register bb, TB_Register bb_end);
+static void x64_terminate_path(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register from_label, TB_Register label, TB_Register terminator);
 static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, TB_Register next);
 static X64_Value x64_eval_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, const TB_Int128* imm);
 static X64_Value x64_eval_float_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, float imm);
@@ -220,6 +221,7 @@ static X64_Value x64_allocate_gpr(X64_Context* ctx, TB_Register reg, TB_DataType
 static X64_Value x64_allocate_xmm(X64_Context* ctx, TB_Register reg, TB_DataType dt);
 static void x64_free_xmm(X64_Context* ctx, X64_XMM gpr);
 static void x64_free_gpr(X64_Context* ctx, X64_GPR gpr);
+static bool x64_is_temporary_of_bb(TB_Function* f, X64_Context* ctx, X64_GPR gpr, TB_Register bb, TB_Register bb_end);
 
 TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* features) {
     TB_TemporaryStorage* tls = tb_tls_allocate();
@@ -228,7 +230,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 	X64_Context* ctx;
 	uint32_t* ret_patches;
 	uint32_t* labels;
-	X64_BBQueue* bb_queue;
+    X64_BBStack* bb_stack;
 	X64_LabelPatch* label_patches;
     
 	uint32_t ret_patch_count = 0;
@@ -243,8 +245,8 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
         uint32_t ir_float_consts = 0;
         
 		for (size_t i = 1; i < f->count; i++) {
-			// Not counting the PHI1 because they aren't real PHI nodes
-			if (f->nodes[i].type == TB_PHI2) phi_count++;
+			if (f->nodes[i].type == TB_PHI1) phi_count++;
+			else if (f->nodes[i].type == TB_PHI2) phi_count++;
 			else if (f->nodes[i].type == TB_LOCAL) locals_count++;
 			else if (f->nodes[i].type == TB_RET) ir_return_count++;
 			else if (f->nodes[i].type == TB_LABEL) ir_label_count++;
@@ -254,21 +256,25 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 			else if (f->nodes[i].type == TB_LOAD) mem_cache_count++;
 		}
         
-		ctx = (X64_Context*)tb_tls_push(tls, sizeof(X64_Context) + (phi_count * sizeof(X64_PhiValue)));
+        ir_label_patch_count += ir_label_count; // just in case
+
+		ctx = (X64_Context*)tb_tls_push(tls, sizeof(X64_Context));
         memset(ctx, 0, sizeof(X64_Context));
 		
         ctx->intervals = tb_tls_push(tls, f->count * sizeof(size_t));
-        ctx->phis = tb_tls_push(tls, phi_count * sizeof(size_t));
+        ctx->phis = tb_tls_push(tls, phi_count * sizeof(X64_PhiValue));
         ctx->locals = tb_tls_push(tls, locals_count * sizeof(X64_LocalDesc));
-        ctx->f32_patches = tb_tls_push(tls, ir_float_consts * sizeof(X64_LocalDesc));
+        ctx->f32_patches = tb_tls_push(tls, ir_float_consts * sizeof(X64_F32Patch));
         ctx->mem_caches = tb_tls_push(tls, mem_cache_count * sizeof(X64_MemCacheDesc));
         
         ret_patches = (uint32_t*)tb_tls_push(tls, ir_return_count * sizeof(uint32_t));
 		labels = (uint32_t*)tb_tls_push(tls, ir_label_count * sizeof(uint32_t));
 		label_patches = (X64_LabelPatch*)tb_tls_push(tls, ir_label_patch_count * sizeof(X64_LabelPatch));
 		
-		bb_queue = (X64_BBQueue*)tb_tls_push(tls, sizeof(X64_BBQueue) + (ir_label_count * sizeof(TB_Register)));
-		bb_queue->capacity = ir_label_count;
+		bb_stack = (X64_BBStack*)tb_tls_push(tls, sizeof(X64_BBStack) + (ir_label_count * sizeof(TB_Register)));
+        bb_stack->capacity = ir_label_count;
+        bb_stack->completed = tb_tls_push(tls, ir_label_count * sizeof(bool));
+        memset(bb_stack->completed, 0, ir_label_count * sizeof(bool));
     }
     
 #if 0
@@ -305,12 +311,11 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 	
 	// the queue starts with just the entry BB
 	// then just follows it's terminators
-	bb_queue->queue[0] = 1;
-	bb_queue->start = 0;
-	bb_queue->end = 1;
+    bb_stack->top = 1;
+    bb_stack->data[0] = 1;
 	
     do {
-		TB_Register bb = bb_queue->queue[bb_queue->start++];
+		TB_Register bb = bb_stack->data[--bb_stack->top];
 		
         assert(f->nodes[bb].type == TB_LABEL);
         TB_Label label_id = f->nodes[bb].label.id;
@@ -318,23 +323,32 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
         
         // Clear and initialize new cache
         printf("Process BB: r%u-r%u\n", bb, bb_end);
+        bb_stack->completed[label_id] = true;
         labels[label_id] = out.count;
         
 		// Generate instructions from the side-effect nodes using
 		// all the other nodes and then terminate the basic block
         x64_eval_bb(f, ctx, &out, bb, bb_end);
-        
+
         // Handle the terminator node
         if (f->nodes[bb_end].type == TB_IF) {
-            TB_Register cond_reg = f->nodes[bb_end].if_.cond;
-            X64_Value cond = x64_eval(f, ctx, &out, cond_reg, bb_end);
-            
             TB_Label if_true = f->nodes[bb_end].if_.if_true;
             TB_Label if_false = f->nodes[bb_end].if_.if_false;
             
-			// Queue up it's branch targets
-			x64_enqueue_bb(bb_queue, tb_find_reg_from_label(f, if_false));
-			x64_enqueue_bb(bb_queue, tb_find_reg_from_label(f, if_true));
+			TB_Register if_true_reg = tb_find_reg_from_label(f, if_true);
+			TB_Register if_false_reg = tb_find_reg_from_label(f, if_false);
+			TB_Register if_true_reg_end = f->nodes[if_true_reg].label.terminator;
+			TB_Register if_false_reg_end = f->nodes[if_false_reg].label.terminator;
+			
+			x64_terminate_path(f, ctx, &out, bb, if_true_reg, if_true_reg_end);
+			x64_terminate_path(f, ctx, &out, bb, if_false_reg, if_false_reg_end);
+
+            x64_enqueue_bb(f, bb_stack, bb_end + 1);
+            //x64_enqueue_bb(f, bb_stack, if_true_reg);
+            //x64_enqueue_bb(f, bb_stack, if_false_reg);
+
+            TB_Register cond_reg = f->nodes[bb_end].if_.cond;
+            X64_Value cond = x64_eval(f, ctx, &out, cond_reg, bb_end);
             
             if (cond.type == X64_VALUE_IMM32) {
                 TB_Label dst = (cond.imm32 ? if_true : if_false);
@@ -355,9 +369,9 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
                 
 				// Reorder the targets to avoid an extra JMP
 				TB_Label fallthrough_label = 0;
-				if (bb_queue->start != bb_queue->end) {
-					fallthrough_label = f->nodes[bb_queue->queue[bb_queue->start]].label.id;
-				}
+                if (bb_stack->top > 0) {
+                    fallthrough_label = f->nodes[bb_stack->data[bb_stack->top - 1]].label.id;
+                }
 				bool has_fallthrough = fallthrough_label == if_false;
 				
                 X64_Cond cc = cond.cond;
@@ -431,9 +445,16 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 					}
 				} else abort();
 			}
-            
+
+            x64_enqueue_bb(f, bb_stack, bb_end + 1);
+
+            TB_Label fallthrough_label_reg = 0;
+            if (bb_stack->top > 0) {
+                fallthrough_label_reg = bb_stack->data[bb_stack->top - 1];
+            }
+
             // Only jump if we aren't literally about to end the function
-            if (bb_end + 1 != f->count) {
+            if (fallthrough_label_reg != TB_NULL_REG) {
                 ret_patches[ret_patch_count++] = out.count + 1;
                 
                 uint8_t* out_buffer = tb_out_reserve(&out, 5);
@@ -444,16 +465,40 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
                 out_buffer[4] = 0x00;
                 tb_out_commit(&out, 5);
             }
-            
-            if (bb_end + 1 < f->count) x64_enqueue_bb(bb_queue, bb_end + 1);
         } else if (f->nodes[bb_end].type == TB_LABEL) {
-			x64_enqueue_bb(bb_queue, bb_end);
+			x64_terminate_path(f, ctx, &out, bb, bb_end, f->nodes[bb_end].label.terminator);
+			x64_enqueue_bb(f, bb_stack, bb_end);
+
+            TB_Label fallthrough_label = 0;
+            if (bb_stack->top > 0) {
+                fallthrough_label = f->nodes[bb_stack->data[bb_stack->top - 1]].label.id;
+            }
+
+            TB_Label target_lbl = f->nodes[bb_end].label.id;
+            if (fallthrough_label != target_lbl) {
+                label_patches[label_patch_count++] = (X64_LabelPatch){
+                    .base = out.count, .pos = out.count + 1, .target_lbl = target_lbl
+                };
+
+                uint8_t* out_buffer = tb_out_reserve(&out, 5);
+                out_buffer[0] = 0xE9;
+                out_buffer[1] = 0x00;
+                out_buffer[2] = 0x00;
+                out_buffer[3] = 0x00;
+                out_buffer[4] = 0x00;
+                tb_out_commit(&out, 5);
+            }
         } else if (f->nodes[bb_end].type == TB_GOTO) {
-			x64_enqueue_bb(bb_queue, tb_find_reg_from_label(f, f->nodes[bb_end].goto_.label));
+			TB_Register target_reg = tb_find_reg_from_label(f, f->nodes[bb_end].goto_.label);
+			x64_terminate_path(f, ctx, &out, bb, target_reg, f->nodes[target_reg].label.terminator);
 			
+			// Try to compile it's target next
+			//x64_enqueue_bb(f, bb_stack, target_reg);
+            x64_enqueue_bb(f, bb_stack, bb_end + 1);
+
 			TB_Label fallthrough_label = 0;
-			if (bb_queue->start != bb_queue->end) {
-				fallthrough_label = f->nodes[bb_queue->queue[bb_queue->start]].label.id;
+			if (bb_stack->top > 0) {
+				fallthrough_label = f->nodes[bb_stack->data[bb_stack->top - 1]].label.id;
 			}
 			
 			TB_Label target_lbl = f->nodes[bb_end].goto_.label;
@@ -469,14 +514,14 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 				out_buffer[3] = 0x00;
 				out_buffer[4] = 0x00;
 				tb_out_commit(&out, 5);
-			}
+		    }
 		} else {
             abort(); // TODO
         }
         
         // Terminate any cached values
         ctx->mem_cache_count = 0;
-    } while (bb_queue->start != bb_queue->end);
+    } while (bb_stack->top > 0);
     
     // Align stack usage to 16bytes and add 8 bytes for the return address
     local_stack_usage += (16 - (local_stack_usage % 16)) % 16;
@@ -550,6 +595,8 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
     out.data = realloc(out.data, out.capacity);
     if (!out.data) abort(); // I don't know if this can even fail...
     
+    printf("\n\n\n");
+
     return (TB_FunctionOutput) {
         .name = f->name,
         .has_no_prologue = !has_stack_setup,
@@ -557,26 +604,20 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
     };
 }
 
-static void x64_enqueue_bb(X64_BBQueue* queue, TB_Register bb) {
+static void x64_enqueue_bb(TB_Function* f, X64_BBStack* stack, TB_Register bb) {
+    if (bb >= f->count) return;
+
 	assert(bb);
+    TB_Label id = f->nodes[bb].label.id;
 	
 	// Don't enqueue if it already got compiled
-	loop(i, queue->end) {
-		if (queue->queue[i] == bb) return;
-	}
+    if (stack->completed[id]) return;
 	
-	assert(queue->end < queue->capacity);
-	
-	// put `bb` next in line and just swap whatever into the back
-	int next_in_line = queue->start;
-	int last = queue->end++;
-	
-	if (next_in_line == last) {
-		queue->queue[next_in_line] = bb;
-	} else {
-		queue->queue[last] = queue->queue[next_in_line];
-		queue->queue[next_in_line] = bb;
-	}
+	assert(stack->top < stack->capacity);
+    stack->data[stack->top++] = bb;
+
+    bool is_ret = f->nodes[f->nodes[bb].label.terminator].type == TB_RET;
+    printf("Pushed! r%d : RET %d\n", bb, is_ret);
 }
 
 static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register bb, TB_Register bb_end) {
@@ -610,6 +651,8 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 			case TB_CMP_ULE:
 			case TB_CMP_SLT:
 			case TB_CMP_SLE:
+			case TB_PHI1:
+			case TB_PHI2:
 			break;
 			case TB_LOAD: {
 				TB_Register addr_reg = f->nodes[i].load.address;
@@ -697,6 +740,13 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
         }
         case TB_FLOAT_CONST: {
             return x64_eval_float_immediate(f, ctx, out, r, reg->f_const);
+        }
+        case TB_PHI2: {
+            return x64_find_phi(ctx, r)->value;
+        }
+        case TB_PHI1: {
+			// PHI1 just points to an owner PHI2
+            return x64_find_phi(ctx, f->nodes[r].phi1.a)->value;
         }
 		case TB_ARRAY_ACCESS: {
             X64_Value base = x64_eval(f, ctx, out, reg->array_access.base, r);
@@ -878,37 +928,36 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
         }
         case TB_PARAM: {
             TB_DataType param_dt = reg->dt;
-            
-            if (reg->param.id < 4) {
-                // TODO(NeGate): Implement floats
-                assert(param_dt.type != TB_F32 && param_dt.type != TB_F64);
-                
-                return (X64_Value) {
-                    .type = X64_VALUE_GPR,
-                    .dt = param_dt,
-                    .gpr = GPR_PARAMETERS[reg->param.id]
-                };
-            }
-            else {
-                // TODO(NeGate): Implement floats
-                assert(param_dt.type != TB_F32 && param_dt.type != TB_F64);
-                
-                int id = reg->param.id;
-                X64_Value mem = (X64_Value) {
-                    .type = X64_VALUE_MEM,
-                    .dt = param_dt,
-                    .mem = {
-                        .base = X64_RSP,
-                        .index = X64_GPR_NONE,
-                        .scale = X64_SCALE_X1,
-                        .disp = (1 + id) * 8
-                    }
-                };
-                X64_Value result = x64_allocate_gpr(ctx, r, param_dt);
-                
-                x64_emit_normal(out, param_dt.type, MOV, &result, &mem);
-                return result;
-            }
+			assert(TB_IS_INTEGER_TYPE(param_dt.type) || param_dt.type == TB_PTR);
+			
+			// Check if it's in registers
+			for (int i = 0; i < 16; i++) {
+				TB_Register bound = ctx->gpr_desc[i].bound_value;
+				
+				if (r == bound) {
+					return (X64_Value) {
+						.type = X64_VALUE_GPR,
+						.dt = param_dt,
+						.gpr = i
+					};
+				}
+			}
+			
+			int id = reg->param.id;
+			X64_Value mem = (X64_Value) {
+				.type = X64_VALUE_MEM,
+				.dt = param_dt,
+				.mem = {
+					.base = X64_RSP,
+					.index = X64_GPR_NONE,
+					.scale = X64_SCALE_X1,
+					.disp = (1 + id) * 8
+				}
+			};
+			X64_Value result = x64_allocate_gpr(ctx, r, param_dt);
+			
+			x64_emit_normal(out, param_dt.type, MOV, &result, &mem);
+			return result;
         }
         case TB_CMP_EQ:
         case TB_CMP_NE:
@@ -968,6 +1017,69 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
         }
         default: abort();
     }
+}
+
+// Is this a phi node? does it can the register `reg`?
+static bool x64_is_phi_that_contains(TB_Function* f, TB_Register phi, TB_Register reg) {
+	if (f->nodes[phi].type == TB_PHI1) return f->nodes[phi].phi1.a == reg;
+	else if (f->nodes[phi].type == TB_PHI2) return f->nodes[phi].phi2.a == reg || f->nodes[phi].phi2.b == reg;
+	else return false;
+}
+
+static void x64_phi_store_into(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_DataType dt, X64_Value dst, TB_Register src_reg) {
+	if (f->nodes[src_reg].type == TB_ADD && x64_is_phi_that_contains(f, f->nodes[src_reg].i_arith.a, src_reg)) {
+		X64_Value b = x64_eval(f, ctx, out, f->nodes[src_reg].i_arith.b, 0);
+		x64_inst_bin_op(ctx, out, dt, &insts[X64_ADD], &dst, &b, f->nodes[src_reg].i_arith.b);
+	}
+	else {
+		X64_Value value = x64_eval(f, ctx, out, src_reg, 0);
+		if (memcmp(&dst, &value, sizeof(X64_Value)) != 0) {
+			x64_inst_bin_op(ctx, out, dt, &insts[X64_MOV], &dst, &value, src_reg);
+		}
+	}
+}
+
+// Prepares to enter the basic block [label:terminator] from [from_label:from_label.terminator],
+// This means saving any value that are accessed via PHI nodes.
+static void x64_terminate_path(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register from_label, TB_Register label, TB_Register terminator) {
+	for (size_t i = label; i <= terminator; i++) {
+		if (f->nodes[i].type == TB_PHI1 && f->nodes[i].phi1.a_label == from_label) {
+			X64_PhiValue* phi = x64_find_phi(ctx, f->nodes[i].phi1.a);
+            assert(f->nodes[f->nodes[i].phi1.a].type == TB_PHI2);
+			assert(phi->value.type != X64_NONE);
+			
+			x64_phi_store_into(f, ctx, out, f->nodes[i].dt, phi->value, f->nodes[i].phi1.a);
+		}
+		else if (f->nodes[i].type == TB_PHI2) {
+			assert(f->nodes[i].phi2.a_label != f->nodes[i].phi2.b_label);
+			X64_PhiValue* phi = x64_find_phi(ctx, i);
+            
+			TB_Register src = 0;
+			if (f->nodes[i].phi2.a_label == from_label) src = f->nodes[i].phi2.a;
+			else if (f->nodes[i].phi2.b_label == from_label) src = f->nodes[i].phi2.b;
+			else abort();
+			
+			if (phi->value.type == X64_NONE) {
+				// Attempt to recycle
+				X64_Value src_value = x64_eval(f, ctx, out, src, 0);
+				
+				// if the value is a temporary from the initial BB then just convert it into
+				// the PHI node storage
+				if (src_value.type == X64_VALUE_GPR &&
+					x64_is_temporary_of_bb(f, ctx, src_value.gpr, from_label, f->nodes[from_label].label.terminator)) {
+					// Recycle old value as PHI node
+					phi->value = src_value;
+				} else {
+					// Initialize the new PHI node
+					phi->value = x64_allocate_gpr(ctx, i, f->nodes[i].dt);
+					
+					x64_inst_bin_op(ctx, out, f->nodes[i].dt, &insts[X64_MOV], &phi->value, &src_value, src);
+				}
+			} else {
+				x64_phi_store_into(f, ctx, out, f->nodes[i].dt, phi->value, src);
+			}
+		}
+	}
 }
 
 static X64_Value x64_explicit_load(TB_Function* f, X64_Context* ctx, TB_Emitter* out, X64_Value addr, TB_Register r, TB_Register addr_reg) {
@@ -1548,8 +1660,8 @@ static void x64_micro_assemble(TB_Emitter* out, int dt_type, const uint8_t* form
 
 static int32_t x64_allocate_locals(TB_Function* f, X64_Context* ctx, TB_Emitter* out) {
     int32_t stack_usage = 0;
-    
-    loop(i, f->count) {
+	
+	loop(i, f->count) {
         if (f->nodes[i].type == TB_LOCAL) {
             uint32_t size = f->nodes[i].local.size;
             uint32_t align = f->nodes[i].local.alignment;
@@ -1588,14 +1700,25 @@ static int32_t x64_allocate_locals(TB_Function* f, X64_Context* ctx, TB_Emitter*
                         .gpr = GPR_PARAMETERS[id]
                     };
                     
+					// don't keep reference to GPR, we'll be using the memory
+					// version only
+					ctx->gpr_desc[GPR_PARAMETERS[id]].bound_value = 0;
+					
                     // save the shadow space into the stack
                     x64_emit_normal(out, dt.type, MOV, &dst, &src);
                 } else abort();
             }
-        }
+        } else if (f->nodes[i].type == TB_PARAM) {
+            int id = f->nodes[i].param.id;
+            TB_DataType dt = f->nodes[i].dt;
+			
+			if (id < 4 && (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR)) {
+				ctx->gpr_desc[GPR_PARAMETERS[id]].bound_value = i;
+			}
+		}
     }
-    
-    return stack_usage;
+	
+	return stack_usage;
 }
 
 static void x64_create_phi_lookup(TB_Function* f, X64_Context* ctx) {
@@ -1630,11 +1753,15 @@ static X64_PhiValue* x64_find_phi(X64_Context* ctx, TB_Register r) {
 	return NULL;
 }
 
-// Searches by the values the PHI node could have
-static X64_PhiValue* x64_find_phi_values(X64_Context* ctx, TB_Register r) {
-    loop(i, ctx->phi_count) {
-		if (ctx->phis[i].storage_a == r || ctx->phis[i].storage_b == r) return &ctx->phis[i];
+static bool x64_is_temporary_of_bb(TB_Function* f, X64_Context* ctx, X64_GPR gpr, TB_Register bb, TB_Register bb_end) {
+    TB_Register r = ctx->gpr_desc[gpr].bound_value;
+	
+	if (r >= bb &&
+		r <= bb_end &&
+		f->nodes[r].type != TB_PHI1 &&
+		f->nodes[r].type != TB_PHI2) {
+		return true;
 	}
-    
-	return NULL;
+	
+	return false;
 }

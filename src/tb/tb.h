@@ -8,7 +8,7 @@
 //                  |___/
 // 
 //    It's a relatively small compiler backend all behind a
-//    simple C API! To get started:
+//    simple C API! To get started: TODO
 //
 #ifndef _TINYBACKEND_H_
 #define _TINYBACKEND_H_
@@ -432,10 +432,19 @@ typedef struct TB_Node {
 	};
 } TB_Node;
 
+typedef struct TB_ConstPool32Patch {
+	uint32_t func_id;
+	uint32_t pos; // relative to the start of the function
+	uint32_t raw_data;
+} TB_ConstPool32Patch;
+
 struct TB_Function {
 	char* name;
-    
-    TB_Register capacity;
+	
+	// It's kinda a weird circular but still
+	struct TB_Module* module;
+	
+	TB_Register capacity;
     TB_Register count;
 	TB_Node* nodes;
     
@@ -452,6 +461,12 @@ struct TB_Module {
 	TB_Arch target_arch;
 	TB_System target_system;
 	TB_FeatureSet features;
+	
+	struct {
+		size_t count;
+		size_t capacity;
+		TB_ConstPool32Patch* data;
+	} const32_patches;
     
 	struct {
 		size_t count;
@@ -463,6 +478,11 @@ struct TB_Module {
 		size_t count;
 		TB_FunctionOutput* data;
 	} compiled_functions;
+    
+	struct {
+		size_t count;
+		TB_FunctionOutput* data;
+	} patches;
 };
 
 typedef enum TB_DataflowPattern {
@@ -561,6 +581,11 @@ size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_
 //
 bool tb_opt_mem2reg(TB_Function* f);
 bool tb_opt_dce(TB_Function* f);
+
+//
+// BACKEND UTILITIES
+//
+uint32_t tb_emit_const32_patch(TB_Module* m, uint32_t func_id, size_t pos, uint32_t data);
 
 //TB_FunctionOutput aarch64_compile_function(TB_Function* f, const TB_FeatureSet* features);
 // Machine code converter for Aarch64

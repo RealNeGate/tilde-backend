@@ -46,6 +46,10 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
 	m->target_system = target_system;
 	m->features = *features;
     
+	m->const32_patches.count = 0;
+	m->const32_patches.capacity = 64;
+	m->const32_patches.data = malloc(64 * sizeof(TB_ConstPool32Patch));
+    
 	m->functions.count = 0;
 	m->functions.data = malloc(TB_MAX_FUNCTIONS * sizeof(TB_Function));
     
@@ -75,6 +79,10 @@ TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_thre
     
 	if (optimization_level == TB_OPT_O0) {
 		// Don't optimize
+		loop(i, m->functions.count) {
+			TB_Function* f = &m->functions.data[i];
+			tb_function_print(f);
+		}
 	} else if (optimization_level == TB_OPT_O1) {
 		// Perform basic optimizations, mem2reg, dce, cse
 		// No complex loop transforms, minor inlining allowed
@@ -132,6 +140,8 @@ TB_API TB_Function* tb_function_create(TB_Module* m, const char* name) {
 	TB_Function* f = &m->functions.data[m->functions.count++];
 	f->name = malloc(strlen(name) + 1);
 	strcpy(f->name, name);
+	
+	f->module = m;
     
 	f->capacity = 64;
 	f->count = 0;
@@ -692,6 +702,23 @@ TB_API void tb_inst_ret(TB_Function* f, TB_DataType dt, TB_Register value) {
 	assert(f->current_label);
 	f->nodes[f->current_label].label.terminator = r;
 	f->current_label = TB_NULL_REG;
+}
+
+uint32_t tb_emit_const32_patch(TB_Module* m, uint32_t func_id, size_t pos, uint32_t data) {
+	assert(pos < UINT32_MAX);
+	if (m->const32_patches.count + 1 >= m->const32_patches.capacity) {
+		m->const32_patches.capacity *= 2;
+		m->const32_patches.data = realloc(m->const32_patches.data, m->const32_patches.capacity * sizeof(TB_ConstPool32Patch));
+	}
+    
+	size_t r = m->const32_patches.count++;
+	m->const32_patches.data[r] = (TB_ConstPool32Patch){
+		.func_id = func_id,
+		.pos = pos,
+		.raw_data = data
+	};
+	
+	return r * 4;
 }
 
 //

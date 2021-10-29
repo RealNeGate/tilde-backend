@@ -1273,7 +1273,7 @@ void x64_inst_op(TB_Emitter* out, int dt_type, const X64_NormalInst* inst, const
 	bool dir = b->type == X64_VALUE_MEM;
 	if (dir || inst->op == 0xAF) tb_swap(a, b);
 	
-	bool dir_flag = (dir != is_gpr_only_dst);
+	bool dir_flag = inst->ext == X64_EXT_SSE ? dir : (dir != is_gpr_only_dst);
 	
 	// operand size
 	uint8_t sz = (dt_type != TB_I8);
@@ -1336,8 +1336,12 @@ void x64_inst_op(TB_Emitter* out, int dt_type, const X64_NormalInst* inst, const
 		assert(b->type != X64_VALUE_IMM32);
 		assert(dt_type == TB_F32 || dt_type == TB_F64);
 		
-		rx = a->xmm;
-		base = b->xmm;
+		// TODO(NeGate): normal SSE instructions don't support store mode, except MOV__
+		if (inst->op != 0x10) assert(dir_flag); 
+		
+		if (a->type == X64_VALUE_MEM) base = a->mem.base;
+		else base = a->xmm;
+		rx = b->xmm;
 		
 		if (rx >= 8 || base >= 8) {
 			*out_buffer++ = x64_inst_rex(true, rx, base, 0);
@@ -1345,7 +1349,7 @@ void x64_inst_op(TB_Emitter* out, int dt_type, const X64_NormalInst* inst, const
 		
 		*out_buffer++ = 0xF3;
 		*out_buffer++ = 0x0F;
-		*out_buffer++ = inst->op | (dir_flag ? 2 : 0);
+		*out_buffer++ = inst->op == 0x10 ? inst->op + !dir : inst->op;
 	}
 	else __builtin_unreachable();
 	
@@ -1544,9 +1548,17 @@ static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out,
 	
 	// If both source operands are memory addresses, change one into a register
 	if (a.type == X64_VALUE_MEM && b.type == X64_VALUE_MEM) {
-		X64_Value temp = x64_allocate_gpr(ctx, a_reg, a.dt);
-		x64_emit_normal(out, dst_dt.type, MOV, &temp, &a);
-		a = temp;
+		if (TB_IS_FLOAT_TYPE(dst_dt.type)) {
+			assert(dst_dt.type != TB_F64); // TODO(NeGate): Implement movsd
+			
+			X64_Value temp = x64_allocate_xmm(ctx, a_reg, a.dt);
+			x64_emit_normal(out, dst_dt.type, MOVSS, &temp, &a);
+			a = temp;
+		} else {
+			X64_Value temp = x64_allocate_gpr(ctx, a_reg, a.dt);
+			x64_emit_normal(out, dst_dt.type, MOV, &temp, &a);
+			a = temp;
+		}
 	}
 	
 	bool will_try_recycle = can_recycle && a.type != X64_VALUE_IMM32;
@@ -1681,14 +1693,43 @@ static int32_t x64_allocate_locals(TB_Function* f, X64_Context* ctx, TB_Emitter*
 					
 					// save the shadow space into the stack
 					x64_emit_normal(out, dt.type, MOV, &dst, &src);
+				} else if (TB_IS_FLOAT_TYPE(dt.type)) {
+					X64_Value dst = (X64_Value) {
+						.type = X64_VALUE_MEM,
+						.dt = dt,
+						.mem = {
+							.base = X64_RSP,
+							.index = X64_GPR_NONE,
+							.scale = X64_SCALE_X1,
+							.disp = (1 + id) * 8
+						}
+					};
+					
+					X64_Value src = (X64_Value) {
+						.type = X64_VALUE_XMM,
+						.dt = dt,
+						.xmm = id // the parameters map to XMM0-XMM3
+					};
+					
+					// don't keep reference to XMM, we'll be using the memory
+					// version only
+					ctx->xmm_desc[id].bound_value = 0;
+					
+					// save the shadow space into the stack
+					if (dt.type == TB_F32) x64_emit_normal(out, dt.type, MOVSS, &dst, &src);
+					else abort(); // TODO(NeGate): Implement movsd
 				} else abort();
 			}
 		} else if (f->nodes[i].type == TB_PARAM) {
 			int id = f->nodes[i].param.id;
 			TB_DataType dt = f->nodes[i].dt;
 			
-			if (id < 4 && (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR)) {
-				ctx->gpr_desc[GPR_PARAMETERS[id]].bound_value = i;
+			if (id < 4) {
+				if (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR) {
+					ctx->gpr_desc[GPR_PARAMETERS[id]].bound_value = i;
+				} else if (TB_IS_FLOAT_TYPE(dt.type)) {
+					ctx->xmm_desc[GPR_PARAMETERS[id]].bound_value = i;
+				}
 			}
 		}
 	}

@@ -325,6 +325,8 @@ TB_API TB_Register tb_inst_param(TB_Function* f, TB_DataType dt) {
         case TB_I16: f->nodes[r].param.size = 2; break;
         case TB_I32: f->nodes[r].param.size = 4; break;
         case TB_I64: f->nodes[r].param.size = 8; break;
+        case TB_F32: f->nodes[r].param.size = 4; break;
+        case TB_F64: f->nodes[r].param.size = 8; break;
         case TB_PTR: f->nodes[r].param.size = 8; break;
         default: abort();
 	}

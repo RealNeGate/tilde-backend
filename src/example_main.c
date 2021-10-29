@@ -148,7 +148,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 	}
 #endif
     
-	tb_module_compile(m, TB_OPT_O0, 1);
+	tb_module_compile(m, TB_OPT_O1, 1);
 	tb_module_export(m, f);
 	tb_module_destroy(m);
 }

@@ -31,6 +31,8 @@ static const X64_ISel_Pattern IMUL_PATTERNS[] = {
 	{ 4, "rmi", (uint8_t[]){ X64_MOV, 0, 1, X64_IMUL, 0, 2, 0x7F }, false }
 };
 
+// NOTE(NeGate): These SSE variants must take into account that they can't
+// directly store without using MOVSS
 static const X64_ISel_Pattern F32ADD_PATTERNS[] = {
 	{ 1, "xxx", (uint8_t[]){ X64_ADDSS, 0, 2, 0x7F }, true },
 	{ 2, "xxm", (uint8_t[]){ X64_ADDSS, 0, 2, 0x7F }, true },

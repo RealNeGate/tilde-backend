@@ -44,7 +44,7 @@ bool tb_opt_dce(TB_Function* f) {
 				changes++;
 				break;
                 default:
-				abort();
+				tb_unreachable();
 			}
 		}
 	}

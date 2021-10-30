@@ -197,8 +197,11 @@ TB_API void tb_module_destroy(TB_Module* m);
 
 TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_threads);
 TB_API void tb_module_export(TB_Module* m, FILE* f);
+TB_API void tb_module_export_jit(TB_Module* m);
+TB_API void* tb_module_get_jit_func_by_name(TB_Module* m, const char* name);
+TB_API void* tb_module_get_jit_func(TB_Module* m, TB_Function* f);
 
-TB_API TB_Function* tb_function_create(TB_Module* m, const char* name);
+TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataType return_dt);
 
 TB_API TB_Register tb_inst_param(TB_Function* f, TB_DataType dt);
 TB_API TB_Register tb_inst_param_addr(TB_Function* f, TB_Register param);
@@ -216,6 +219,7 @@ TB_API TB_Register tb_inst_iconst128(TB_Function* f, TB_DataType dt, TB_Int128 i
 TB_API TB_Register tb_inst_fconst(TB_Function* f, TB_DataType dt, double imm);
 
 TB_API TB_Register tb_inst_array_access(TB_Function* f, TB_Register base, TB_Register index, uint32_t stride);
+TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Register* params);
 
 TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
 TB_API TB_Register tb_inst_sub(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
@@ -279,6 +283,8 @@ struct TB_FunctionOutput {
 
 enum TB_RegisterType {
     TB_NULL,
+	
+	TB_CALL,
     
     // Immediates
     TB_INT_CONST,
@@ -429,6 +435,10 @@ typedef struct TB_Node {
 		struct {
 			TB_Label label;
 		} goto_;
+		struct {
+			const TB_Function* target;
+			int param_start, param_end;
+		} call;
 	};
 } TB_Node;
 
@@ -438,8 +448,15 @@ typedef struct TB_ConstPool32Patch {
 	uint32_t raw_data;
 } TB_ConstPool32Patch;
 
+typedef struct TB_FunctionPatch {
+	uint32_t func_id;
+	uint32_t target_id;
+	uint32_t pos; // relative to the start of the function
+} TB_FunctionPatch;
+
 struct TB_Function {
 	char* name;
+	TB_DataType return_dt;
 	
 	// It's kinda a weird circular but still
 	struct TB_Module* module;
@@ -447,6 +464,14 @@ struct TB_Function {
 	TB_Register capacity;
     TB_Register count;
 	TB_Node* nodes;
+	
+	// Used by nodes which have variable
+	// length arguements like PHI and CALL
+	struct {
+		TB_Register capacity;
+		TB_Register count;
+		TB_Register* data;
+	} vla;
     
 	TB_Register current_label;
     
@@ -470,6 +495,12 @@ struct TB_Module {
     
 	struct {
 		size_t count;
+		size_t capacity;
+		TB_FunctionPatch* data;
+	} call_patches;
+    
+	struct {
+		size_t count;
 		TB_Function* data;
 	} functions;
     
@@ -478,11 +509,13 @@ struct TB_Module {
 		size_t count;
 		TB_FunctionOutput* data;
 	} compiled_functions;
-    
-	struct {
-		size_t count;
-		TB_FunctionOutput* data;
-	} patches;
+	
+	void* jit_region;
+	size_t jit_region_size;
+	
+	// If not NULL, there's JITted functions in each 
+	// non NULL entry which map to the `compiled_functions` 
+	void** compiled_function_pos;
 };
 
 typedef enum TB_DataflowPattern {
@@ -517,6 +550,12 @@ a = b; \
 b = temp; \
 } while(0)
 
+#ifndef NDEBUG
+#define tb_unreachable() __builtin_trap()
+#else
+#define tb_unreachable() __builtin_unreachable()
+#endif
+
 #define tb_arrlen(a) (sizeof(a) / sizeof(a[0]))
 
 #define loop(iterator, count) for (typeof(count) iterator = 0, end__ = (count); iterator != end__; ++iterator)
@@ -540,9 +579,11 @@ void* tb_tls_pop(TB_TemporaryStorage* store, size_t size);
 void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance);
 // Looks back `distance` bytes in the TLS.
 
+// TODO(NeGate): remove the `arch` field, it's already provided by the module.
 void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f);
 // Writes out COFF object file with the compiled functions
 
+// TODO(NeGate): remove the `arch` field, it's already provided by the module.
 void tb_export_elf64(TB_Module* m, TB_Arch arch, FILE* f);
 // Writes out ELF object file with the compiled functions
 
@@ -586,6 +627,7 @@ bool tb_opt_dce(TB_Function* f);
 // BACKEND UTILITIES
 //
 uint32_t tb_emit_const32_patch(TB_Module* m, uint32_t func_id, size_t pos, uint32_t data);
+void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size_t pos);
 
 //TB_FunctionOutput aarch64_compile_function(TB_Function* f, const TB_FeatureSet* features);
 // Machine code converter for Aarch64

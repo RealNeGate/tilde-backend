@@ -71,13 +71,18 @@ void tb_find_live_intervals(size_t intervals[], const TB_Function* f) {
 			intervals[f->nodes[i].cmp.a] = i;
 			intervals[f->nodes[i].cmp.b] = i;
 			break;
+            case TB_CALL:
+			for (size_t j = f->nodes[i].call.param_start; j < f->nodes[i].call.param_end; j++) {
+				intervals[f->vla.data[j]] = i;
+			}
+			break;
             case TB_IF:
 			intervals[f->nodes[i].if_.cond] = i;
 			break;
             case TB_RET:
 			intervals[f->nodes[i].ret.value] = i;
 			break;
-            default: abort();
+            default: tb_unreachable();
 		}
 	}
 }
@@ -130,6 +135,13 @@ size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_
 			ffu(f->nodes[i].i_arith.a);
 			ffu(f->nodes[i].i_arith.b);
 			break;
+            case TB_FADD:
+            case TB_FSUB:
+            case TB_FMUL:
+            case TB_FDIV:
+			ffu(f->nodes[i].f_arith.a);
+			ffu(f->nodes[i].f_arith.b);
+			break;
             case TB_CMP_EQ:
             case TB_CMP_NE:
             case TB_CMP_SLT:
@@ -147,7 +159,7 @@ size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_
             case TB_RET:
 			ffu(f->nodes[i].ret.value);
 			break;
-            default: abort();
+            default: tb_unreachable();
 		}
 	}
     
@@ -202,6 +214,13 @@ TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t sta
 			ffu(f->nodes[i].i_arith.a);
 			ffu(f->nodes[i].i_arith.b);
 			break;
+            case TB_FADD:
+            case TB_FSUB:
+            case TB_FMUL:
+            case TB_FDIV:
+			ffu(f->nodes[i].f_arith.a);
+			ffu(f->nodes[i].f_arith.b);
+			break;
             case TB_CMP_EQ:
             case TB_CMP_NE:
             case TB_CMP_SLT:
@@ -219,7 +238,7 @@ TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t sta
             case TB_RET:
 			ffu(f->nodes[i].ret.value);
 			break;
-            default: abort();
+            default: tb_unreachable();
 		}
 	}
     
@@ -280,6 +299,13 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Register 
 			f_n_r(f->nodes[i].i_arith.a);
 			f_n_r(f->nodes[i].i_arith.b);
 			break;
+            case TB_FADD:
+            case TB_FSUB:
+            case TB_FMUL:
+            case TB_FDIV:
+			f_n_r(f->nodes[i].f_arith.a);
+			f_n_r(f->nodes[i].f_arith.b);
+			break;
             case TB_CMP_EQ:
             case TB_CMP_NE:
             case TB_CMP_SLT:
@@ -297,7 +323,7 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Register 
             case TB_RET:
 			f_n_r(f->nodes[i].ret.value);
 			break;
-            default: abort();
+            default: tb_unreachable();
 		}
 	}
     

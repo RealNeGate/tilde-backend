@@ -290,7 +290,7 @@ static TB_Register tb_walk_for_intermediate_phi(TB_Function* f, TB_Label label_c
 				.b = b
 			}
 		};
-	} else abort();
+	} else tb_unreachable();
 	
 	// Any PASSes which used the PHI node's inputs should be converted
 	// to PASSes to said PHI node

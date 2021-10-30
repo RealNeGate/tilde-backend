@@ -1,3 +1,5 @@
+// NOTE(NeGate): This code is only kept around for reference, it's not compiled
+// or used.
 #define TB_INTERNAL
 #include "tb.h"
 #include "tb_x86_64.h"

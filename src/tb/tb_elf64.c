@@ -95,16 +95,16 @@ typedef struct {
 	Elf64_Xword sh_entsize;
 } Elf64_Shdr;
 
-static void tb_export_elf64(TB_Module* m, TB_Arch arch, FILE* f) {
+void tb_export_elf64(TB_Module* m, TB_Arch arch, FILE* f) {
 	char strtbl[1024] = { 0 };
-
+	
 	uint16_t machine;
 	switch (arch) {
-	case TB_ARCH_X86_64: machine = EM_X86_64; break;
-	case TB_ARCH_AARCH64: machine = EM_AARCH64; break;
-	default: abort();
+		case TB_ARCH_X86_64: machine = EM_X86_64; break;
+		case TB_ARCH_AARCH64: machine = EM_AARCH64; break;
+		default: tb_unreachable();
 	}
-
+	
 	// Generate the header structs
 	const int number_of_sections = 6;
 	Elf64_Ehdr header = {
@@ -123,119 +123,119 @@ static void tb_export_elf64(TB_Module* m, TB_Arch arch, FILE* f) {
 		.e_version = 1,
 		.e_machine = machine,
 		.e_entry = 0,
-
+		
 		// section headers go right after the ELF header
 		.e_shoff = 0,
 		.e_flags = 0,
-
+		
 		.e_ehsize = sizeof(Elf64_Ehdr),
-
+		
 		.e_shentsize = sizeof(Elf64_Shdr),
 		.e_shnum = number_of_sections,
 		.e_shstrndx = 1
 	};
-
-	Elf64_Shdr null_section = {};
-
+	
+	Elf64_Shdr null_section = { 0 };
+	
 	Elf64_Shdr strtab_section = {
 		.sh_type = SHT_STRTAB,
 		.sh_flags = 0,
 		.sh_addralign = 1
 	};
-
+	
 	Elf64_Shdr code_section = {
 		.sh_type = SHT_PROGBITS,
 		.sh_flags = SHF_EXECINSTR | SHF_ALLOC,
 		.sh_addralign = 16
 	};
-
+	
 	Elf64_Shdr data_section = {
 		.sh_type = SHT_PROGBITS,
 		.sh_flags = SHF_ALLOC | SHF_WRITE,
 		.sh_addralign = 16
 	};
-
+	
 	Elf64_Shdr rodata_section = {
 		.sh_type = SHT_PROGBITS,
 		.sh_flags = SHF_ALLOC,
 		.sh_addralign = 16
 	};
-
+	
 	Elf64_Shdr bss_section = {
 		.sh_type = SHT_NOBITS,
 		.sh_flags = SHF_ALLOC | SHF_WRITE,
 		.sh_addralign = 16
 	};
-
+	
 	// Calculate some section content sizes, it's important that we can
 	// generate the final result with minimal effort so if everything
 	// is in place we are doing great.
-
+	
 	// Section string table:
 	{
 		size_t strtlb_curr = 1;
-
+		
 		strtab_section.sh_name = strtlb_curr;
 		strcpy(&strtbl[strtlb_curr], ".strtab");
 		strtlb_curr += sizeof(".strtab");
-
+		
 		code_section.sh_name = strtlb_curr;
 		strcpy(&strtbl[strtlb_curr], ".text");
 		strtlb_curr += sizeof(".text");
-
+		
 		data_section.sh_name = strtlb_curr;
 		strcpy(&strtbl[strtlb_curr], ".data");
 		strtlb_curr += sizeof(".data");
-
+		
 		rodata_section.sh_name = strtlb_curr;
 		strcpy(&strtbl[strtlb_curr], ".rodata");
 		strtlb_curr += sizeof(".rodata");
-
+		
 		bss_section.sh_name = strtlb_curr;
 		strcpy(&strtbl[strtlb_curr], ".bss");
 		strtlb_curr += sizeof(".bss");
-
+		
 		strtab_section.sh_size = strtlb_curr;
 	}
-
+	
 	// Code section:
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
 		code_section.sh_size += m->compiled_functions.data[i].emitter.count;
 	}
-
+	
 	// Data section:
 	data_section.sh_size = 16;
-
+	
 	// Read-only Data section:
 	rodata_section.sh_size = 0;
-
+	
 	// Calculate file offsets
 	strtab_section.sh_offset = sizeof(Elf64_Ehdr);
 	code_section.sh_offset = strtab_section.sh_offset + strtab_section.sh_size;
 	data_section.sh_offset = code_section.sh_offset + code_section.sh_size;
 	rodata_section.sh_offset = data_section.sh_offset + data_section.sh_size;
-
+	
 	header.e_shoff = rodata_section.sh_offset + rodata_section.sh_size;
-
+	
 	// Output file
 	fwrite(&header, sizeof(header), 1, f);
-
+	
 	assert(ftell(f) == strtab_section.sh_offset);
 	fwrite(strtbl, strtab_section.sh_size, 1, f);
-
+	
 	assert(ftell(f) == code_section.sh_offset);
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
 		fwrite(m->compiled_functions.data[i].emitter.data, m->compiled_functions.data[i].emitter.count, 1, f);
 	}
-
+	
 	assert(ftell(f) == data_section.sh_offset);
 	for (size_t i = 0; i < 4; i++) {
 		uint32_t x = 0x69696969;
 		fwrite(&x, 4, 1, f);
 	}
-
+	
 	assert(ftell(f) == rodata_section.sh_offset);
-
+	
 	assert(ftell(f) == header.e_shoff);
 	fwrite(&null_section, sizeof(null_section), 1, f);
 	fwrite(&strtab_section, sizeof(strtab_section), 1, f);

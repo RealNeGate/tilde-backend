@@ -1,16 +1,14 @@
 #define TB_INTERNAL
 #include "tb.h"
 
-enum {
-	// IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_16BYTES
-	COFF_CHARACTERISTICS_TEXT = 0x60500020,
-	// IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_READ
-	COFF_CHARACTERISTICS_DATA = 0xC0000040,
-	// IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ
-	COFF_CHARACTERISTICS_RODATA = 0x40000040,
-	// IMAGE_SCN_CNT_UNINITIALIZED_DATA | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_16BYTES
-	COFF_CHARACTERISTICS_BSS = 0xC0500080
-};
+// IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_16BYTES
+#define COFF_CHARACTERISTICS_TEXT 0x60500020u
+// IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_READ
+#define COFF_CHARACTERISTICS_DATA 0xC0000040u
+// IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ
+#define COFF_CHARACTERISTICS_RODATA 0x40000040u
+// IMAGE_SCN_CNT_UNINITIALIZED_DATA | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_16BYTES
+#define COFF_CHARACTERISTICS_BSS 0xC0500080u
 
 #define IMAGE_SYM_CLASS_EXTERNAL      0x0002
 #define IMAGE_SYM_CLASS_STATIC        0x0003
@@ -90,7 +88,7 @@ enum {
 	COFF_MACHINE_ARM64 = 0xAA64,  // ARM64 Little-Endian
 };
 
-static void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f) {
+void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f) {
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	
 	// Buffer stores all the positions of each 
@@ -115,7 +113,7 @@ static void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f) {
 	switch (arch) {
 		case TB_ARCH_X86_64: header.machine = COFF_MACHINE_AMD64; break;
 		case TB_ARCH_AARCH64: header.machine = COFF_MACHINE_ARM64; break;
-		default: abort();
+		default: tb_unreachable();
 	}
 	
 	COFF_SectionHeader text_section = {
@@ -141,6 +139,13 @@ static void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f) {
 		else {
 			text_section.raw_data_size += m->compiled_functions.data[i].emitter.count;
 		}
+	}
+	
+	for (size_t i = 0; i < m->call_patches.count; i++) {
+		TB_FunctionPatch* p = &m->call_patches.data[i];
+		uint8_t* code = m->compiled_functions.data[p->func_id].emitter.data;
+		
+		*((uint32_t*)&code[p->pos]) = func_layout[p->target_id] - (func_layout[p->func_id] + p->pos + 4);
 	}
 	
 	text_section.raw_data_pos = sizeof(COFF_FileHeader) + (number_of_sections * sizeof(COFF_SectionHeader));

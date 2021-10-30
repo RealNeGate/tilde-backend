@@ -9,7 +9,7 @@ static size_t tb_get_ptr_size(TB_Arch target_arch) {
     if (target_arch == TB_ARCH_X86_64) return 8;
     if (target_arch == TB_ARCH_AARCH64) return 8;
     
-    abort();
+    tb_unreachable();
 }
 
 TB_API void tb_get_constraints(TB_Arch target_arch, const TB_FeatureSet* features, TB_FeatureConstraints* constraints) {
@@ -36,7 +36,7 @@ TB_API void tb_get_constraints(TB_Arch target_arch, const TB_FeatureSet* feature
         // byte comparisons being the most you can get
         // from vector bools.
         constraints->max_vector_width[TB_BOOL] = 16;
-    } else abort();
+    } else tb_unreachable();
 }
 
 TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, const TB_FeatureSet* features) {
@@ -50,6 +50,10 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
 	m->const32_patches.capacity = 64;
 	m->const32_patches.data = malloc(64 * sizeof(TB_ConstPool32Patch));
     
+	m->call_patches.count = 0;
+	m->call_patches.capacity = 64;
+	m->call_patches.data = malloc(64 * sizeof(TB_FunctionPatch));
+	
 	m->functions.count = 0;
 	m->functions.data = malloc(TB_MAX_FUNCTIONS * sizeof(TB_Function));
     
@@ -79,10 +83,10 @@ TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_thre
     
 	if (optimization_level == TB_OPT_O0) {
 		// Don't optimize
-		loop(i, m->functions.count) {
+		/*loop(i, m->functions.count) {
 			TB_Function* f = &m->functions.data[i];
 			tb_function_print(f);
-		}
+		}*/
 	} else if (optimization_level == TB_OPT_O1) {
 		// Perform basic optimizations, mem2reg, dce, cse
 		// No complex loop transforms, minor inlining allowed
@@ -103,7 +107,7 @@ TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 		}
 	} else {
 		// TODO(NeGate): Implement this!
-		abort();
+		tb_unreachable();
 	}
 	
 	// TODO(NeGate): Implement the optimization passes
@@ -116,7 +120,7 @@ TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 		break;
 		default:
 		printf("TinyBackend error: Unknown target!\n");
-		abort();
+		tb_unreachable();
 	}
 }
 
@@ -130,17 +134,20 @@ TB_API void tb_module_export(TB_Module* m, FILE* f) {
 		break;
         default:
 		printf("TinyBackend error: Unknown system!\n");
-		abort();
+		tb_unreachable();
 	}
 }
 
-TB_API TB_Function* tb_function_create(TB_Module* m, const char* name) {
+TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataType return_dt) {
 	assert(m->functions.count < TB_MAX_FUNCTIONS);
     
 	TB_Function* f = &m->functions.data[m->functions.count++];
+	// TODO(NeGate): We might wanna do something better with these strings
+	// especially since they'll be packed in a string table eventually
 	f->name = malloc(strlen(name) + 1);
 	strcpy(f->name, name);
 	
+	f->return_dt = return_dt;
 	f->module = m;
     
 	f->capacity = 64;
@@ -164,6 +171,19 @@ TB_API TB_Function* tb_function_create(TB_Module* m, const char* name) {
 	return f;
 }
 
+TB_API void* tb_module_get_jit_func_by_name(TB_Module* m, const char* name) {
+	for (size_t i = 0; i < m->compiled_functions.count; i++) {
+		if (strcmp(m->compiled_functions.data[i].name, name)) return m->compiled_function_pos[i];
+	}
+	
+	return NULL;
+}
+
+TB_API void* tb_module_get_jit_func(TB_Module* m, TB_Function* f) {
+	assert(m->compiled_function_pos);
+	return m->compiled_function_pos[f - m->functions.data];
+}
+
 //
 // TLS - Thread local storage
 // 
@@ -174,7 +194,7 @@ TB_API TB_Function* tb_function_create(TB_Module* m, const char* name) {
 static TB_TemporaryStorage* tb_tls_allocate() {
 	if (tb_thread_storage == NULL) {
 		unsigned int slot = atomic_fetch_add(&tb_used_tls_slots, 1);
-		if (slot >= TB_MAX_THREADS) abort();
+		if (slot >= TB_MAX_THREADS) tb_unreachable();
         
 		tb_thread_storage = &tb_temporary_storage[slot * TB_TEMPORARY_STORAGE_SIZE];
 	}
@@ -237,7 +257,7 @@ TB_API TB_Int128 tb_emulate_add(TB_Function* f, TB_ArithmaticBehavior arith_beha
         case TB_I32:  mask = 0xFFFFFFFFull; break;
         case TB_I64:  mask = 0xFFFFFFFFFFFFFFFFull; break;
         case TB_I128: mask = 0xFFFFFFFFFFFFFFFFull; break;
-        default: abort();
+        default: tb_unreachable();
 	}
     
 	switch (arith_behavior) {
@@ -246,7 +266,7 @@ TB_API TB_Int128 tb_emulate_add(TB_Function* f, TB_ArithmaticBehavior arith_beha
         case TB_WRAP_CHECK: {
             // TODO(NeGate): Throw runtime error in this scenario 
             // if the value is out of bounds
-            abort();
+            tb_unreachable();
         }
         case TB_CAN_WRAP: {
             return (TB_Int128) { (a.lo + b.lo) & mask };
@@ -262,7 +282,7 @@ TB_API TB_Int128 tb_emulate_add(TB_Function* f, TB_ArithmaticBehavior arith_beha
             return (TB_Int128) { sum };
         }
         // TODO(NeGate): Implement this
-        default: abort();
+        default: tb_unreachable();
 	}
 }
 
@@ -328,7 +348,7 @@ TB_API TB_Register tb_inst_param(TB_Function* f, TB_DataType dt) {
         case TB_F32: f->nodes[r].param.size = 4; break;
         case TB_F64: f->nodes[r].param.size = 8; break;
         case TB_PTR: f->nodes[r].param.size = 8; break;
-        default: abort();
+        default: tb_unreachable();
 	}
     
 	assert(dt.count > 0);
@@ -441,7 +461,7 @@ TB_API TB_Register tb_inst_iconst128(TB_Function* f, TB_DataType dt, TB_Int128 i
 		f->nodes[r].i_const.hi = 0;
 		return r;
 	}
-	else abort();
+	else tb_unreachable();
 }
 
 TB_API TB_Register tb_inst_fconst(TB_Function* f, TB_DataType dt, double imm) {
@@ -455,6 +475,26 @@ TB_API TB_Register tb_inst_array_access(TB_Function* f, TB_Register base, TB_Reg
 	f->nodes[r].array_access.base = base;
 	f->nodes[r].array_access.index = index;
 	f->nodes[r].array_access.stride = stride;
+	return r;
+}
+
+TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Register* params) {
+	// Reserve space for the arguments
+	if (f->vla.count + param_count >= f->vla.capacity) {
+		// TODO(NeGate): This might be excessive for this array, idk :P
+		f->vla.capacity = tb_next_pow2(f->vla.count + param_count);
+		f->vla.data = realloc(f->vla.data, f->vla.capacity * sizeof(TB_Register));
+	}
+	
+	int param_start = f->vla.count;
+	memcpy(f->vla.data + f->vla.count, params, param_count * sizeof(TB_Register));
+	f->vla.count += param_count;
+	int param_end = f->vla.count;
+	
+	TB_Register r = tb_make_reg(f, TB_CALL, dt);
+	f->nodes[r].call.target = target;
+	f->nodes[r].call.param_start = param_start;
+	f->nodes[r].call.param_end = param_end;
 	return r;
 }
 
@@ -723,6 +763,21 @@ uint32_t tb_emit_const32_patch(TB_Module* m, uint32_t func_id, size_t pos, uint3
 	return r * 4;
 }
 
+void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size_t pos) {
+	assert(pos < UINT32_MAX);
+	if (m->call_patches.count + 1 >= m->call_patches.capacity) {
+		m->call_patches.capacity *= 2;
+		m->call_patches.data = realloc(m->call_patches.data, m->call_patches.capacity * sizeof(TB_FunctionPatch));
+	}
+    
+	size_t r = m->call_patches.count++;
+	m->call_patches.data[r] = (TB_FunctionPatch){
+		.func_id = func_id,
+		.target_id = target_id,
+		.pos = pos
+	};
+}
+
 //
 // IR PRINTER
 //
@@ -738,7 +793,7 @@ static void tb_print_type(TB_DataType dt) {
         case TB_PTR:    printf("[ptr]    \t"); break;
         case TB_F32:    printf("[f32 x %d]\t", dt.count); break;
         case TB_F64:    printf("[f64 x %d]\t", dt.count); break;
-        default:        abort();
+        default:        tb_unreachable();
 	}
 }
 
@@ -800,7 +855,7 @@ TB_API void tb_function_print(TB_Function* f) {
                 case TB_MUL: printf("*"); break;
                 case TB_UDIV: printf("/u"); break;
                 case TB_SDIV: printf("/s"); break;
-                default: abort();
+                default: tb_unreachable();
 			}
             
 			printf(" r%u\n", f->nodes[i].i_arith.b);
@@ -818,7 +873,7 @@ TB_API void tb_function_print(TB_Function* f) {
                 case TB_FSUB: printf("-"); break;
                 case TB_FMUL: printf("*"); break;
                 case TB_FDIV: printf("/"); break;
-                default: abort();
+                default: tb_unreachable();
 			}
             
 			printf(" r%u\n", f->nodes[i].f_arith.b);
@@ -827,6 +882,8 @@ TB_API void tb_function_print(TB_Function* f) {
             case TB_CMP_NE:
             case TB_CMP_ULT:
             case TB_CMP_ULE:
+            case TB_CMP_SLT:
+            case TB_CMP_SLE:
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
 			printf(" r%u ", f->nodes[i].cmp.a);
@@ -836,13 +893,27 @@ TB_API void tb_function_print(TB_Function* f) {
                 case TB_CMP_EQ: printf("=="); break;
                 case TB_CMP_ULT: printf("<"); break;
                 case TB_CMP_ULE: printf("<="); break;
-                default: abort();
+                case TB_CMP_SLT: printf("<"); break;
+                case TB_CMP_SLE: printf("<="); break;
+                default: tb_unreachable();
 			}
             
-			printf(" r%u\n", f->nodes[i].cmp.b);
+			printf(" r%u", f->nodes[i].cmp.b);
+			
+			if (type == TB_CMP_SLT || type == TB_CMP_SLE) printf(" # signed\n");
+			else printf("\n");
 			break;
             case TB_LOCAL:
 			printf("  r%u\t=\tLOCAL %d (%d align)\n", i, f->nodes[i].local.size, f->nodes[i].local.alignment);
+			break;
+            case TB_CALL:
+			printf("  r%u\t=\tCALL %s(", i, f->nodes[i].call.target->name);
+			for (size_t j = f->nodes[i].call.param_start; j < f->nodes[i].call.param_end; j++) {
+				if (j != f->nodes[i].call.param_start) printf(", ");
+				
+				printf("r%u", f->vla.data[j]);
+			}
+			printf(")\n");
 			break;
             case TB_PARAM:
 			printf("  r%u\t=\tPARAM %u\n", i, f->nodes[i].param.id);
@@ -889,7 +960,7 @@ TB_API void tb_function_print(TB_Function* f) {
 			tb_print_type(dt);
 			printf(" r%u\n", f->nodes[i].i_arith.a);
 			break;
-            default: abort();
+            default: tb_unreachable();
 		}
 	}
 }
@@ -910,7 +981,7 @@ uint8_t* tb_out_reserve(TB_Emitter* o, size_t count) {
 		}
         
 		o->data = realloc(o->data, o->capacity);
-		if (o->data == NULL) abort();
+		if (o->data == NULL) tb_unreachable();
 	}
     
     return &o->data[o->count];

@@ -12,28 +12,46 @@ TB_API void tb_module_export_jit(TB_Module* m) {
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	m->compiled_function_pos = malloc(m->compiled_functions.count * sizeof(void*));
 	
+	// The prologue and epilogue generators need some storage
+	char* mini_out_buffer = tb_tls_push(tls, 64);
+	
 	// Buffer stores all the positions of each 
 	// function relative to the .text section start.
 	uint32_t* func_layout = (uint32_t*)tb_tls_push(tls, m->compiled_functions.count * sizeof(uint32_t));
 	size_t text_section_size = 0;
 	
+#if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64)
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
 		func_layout[i] = text_section_size;
 		
-		if (m->compiled_functions.data[i].has_no_prologue) {
-			text_section_size += m->compiled_functions.data[i].emitter.count - 7;
-		}
-		else {
-			text_section_size += m->compiled_functions.data[i].emitter.count;
-		}
+		// TODO(NeGate): This data could be arranged better for streaming
+		size_t prologue = x64_get_prologue_length(m->compiled_functions.data[i].prologue_epilogue_metadata,
+												  m->compiled_functions.data[i].stack_usage);
+		
+		size_t epilogue = x64_get_epilogue_length(m->compiled_functions.data[i].prologue_epilogue_metadata,
+												  m->compiled_functions.data[i].stack_usage);
+		
+		text_section_size += prologue;
+		text_section_size += epilogue;
+		text_section_size += m->compiled_functions.data[i].emitter.count;
 	}
+#else
+#error "Cannot compile JIT for this target architecture!"
+#endif
 	
 	// Patch the function calls
 	for (size_t i = 0; i < m->call_patches.count; i++) {
 		TB_FunctionPatch* p = &m->call_patches.data[i];
+		TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
 		uint8_t* code = m->compiled_functions.data[p->func_id].emitter.data;
 		
-		*((uint32_t*)&code[p->pos]) = func_layout[p->target_id] - (func_layout[p->func_id] + p->pos + 4);
+		// TODO(NeGate): Consider caching this value if it gets expensive to calculate.
+		uint32_t actual_pos = func_layout[p->func_id] + p->pos + 4;
+		
+		actual_pos += x64_get_prologue_length(out_f->prologue_epilogue_metadata,
+											  out_f->stack_usage);
+		
+		*((uint32_t*)&code[p->pos]) = func_layout[p->target_id] - actual_pos;
 	}
 	
 	// TODO(NeGate): Implement rdata
@@ -44,20 +62,32 @@ TB_API void tb_module_export_jit(TB_Module* m) {
 	m->jit_region = VirtualAlloc(NULL, text_section_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 	
 	uint8_t* text_section = m->jit_region;
+#if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64)
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
+		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
 		m->compiled_function_pos[i] = (void*)text_section;
 		
-		// On x64, the smallest prologue is 7 bytes so if there's no prologue
-		// then just skip it :)
-		if (m->compiled_functions.data[i].has_no_prologue) {
-			memcpy(text_section, m->compiled_functions.data[i].emitter.data + 7, m->compiled_functions.data[i].emitter.count - 7);
-			text_section += (m->compiled_functions.data[i].emitter.count - 7);
-		}
-		else {
-			memcpy(text_section, m->compiled_functions.data[i].emitter.data, m->compiled_functions.data[i].emitter.count);
-			text_section += m->compiled_functions.data[i].emitter.count;
-		}
+		// prologue
+		size_t prologue_len = x64_emit_prologue(mini_out_buffer,
+												out_f->prologue_epilogue_metadata,
+												out_f->stack_usage);
+		memcpy(text_section, mini_out_buffer, prologue_len);
+		text_section += prologue_len;
+		
+		// body
+		memcpy(text_section, m->compiled_functions.data[i].emitter.data, m->compiled_functions.data[i].emitter.count);
+		text_section += m->compiled_functions.data[i].emitter.count;
+		
+		// epilogue
+		size_t epilogue_len = x64_emit_epilogue(mini_out_buffer,
+												out_f->prologue_epilogue_metadata,
+												out_f->stack_usage);
+		memcpy(text_section, mini_out_buffer, epilogue_len);
+		text_section += epilogue_len;
 	}
+#else
+#error "Cannot compile JIT for this target architecture!"
+#endif
 	
 	// convert to executable
 	DWORD old_protect;

@@ -140,8 +140,6 @@ typedef struct TB_FeatureConstraints {
 
 typedef struct TB_FeatureSet {
 	struct {
-		bool omit_frame_pointer : 1;
-        
 		bool sse3 : 1;
         
 		bool popcnt : 1;
@@ -219,6 +217,7 @@ TB_API TB_Register tb_inst_iconst128(TB_Function* f, TB_DataType dt, TB_Int128 i
 TB_API TB_Register tb_inst_fconst(TB_Function* f, TB_DataType dt, double imm);
 
 TB_API TB_Register tb_inst_array_access(TB_Function* f, TB_Register base, TB_Register index, uint32_t stride);
+TB_API TB_Register tb_inst_member_access(TB_Function* f, TB_Register base, int32_t offset);
 TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Register* params);
 
 TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
@@ -275,12 +274,6 @@ typedef struct TB_Emitter {
 	uint8_t* data;
 } TB_Emitter;
 
-struct TB_FunctionOutput {
-	const char* name;
-	bool has_no_prologue;
-	TB_Emitter emitter;
-};
-
 enum TB_RegisterType {
     TB_NULL,
 	
@@ -334,7 +327,8 @@ enum TB_RegisterType {
     TB_PARAM_ADDR,
 	
 	// Pointer math
-    TB_ARRAY_ACCESS,
+	TB_MEMBER_ACCESS,
+	TB_ARRAY_ACCESS,
     
     // NOTE(NeGate): only used internally, if you
     // see one in normal IR things went wrong in
@@ -363,6 +357,10 @@ typedef struct TB_Node {
 		TB_Int128 i_const;
 		double f_const;
         TB_Register ext;
+		struct {
+			TB_Register base;
+			int32_t offset;
+		} member_access;
 		struct {
 			TB_Register base;
 			TB_Register index;
@@ -453,6 +451,18 @@ typedef struct TB_FunctionPatch {
 	uint32_t target_id;
 	uint32_t pos; // relative to the start of the function
 } TB_FunctionPatch;
+
+struct TB_FunctionOutput {
+	const char* name;
+	
+	// NOTE(NeGate): This data is actually specific to the
+	// architecture run but generically can be thought of as
+	// 64bits which keep track of which registers to save.
+	uint64_t prologue_epilogue_metadata;
+	uint64_t stack_usage;
+	
+	TB_Emitter emitter;
+};
 
 struct TB_Function {
 	char* name;
@@ -631,6 +641,13 @@ void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size
 
 //TB_FunctionOutput aarch64_compile_function(TB_Function* f, const TB_FeatureSet* features);
 // Machine code converter for Aarch64
+
+size_t x64_get_prologue_length(uint64_t saved, uint64_t stack_usage);
+size_t x64_get_epilogue_length(uint64_t saved, uint64_t stack_usage);
+
+size_t x64_emit_prologue(char out[64], uint64_t saved, uint64_t stack_usage);
+size_t x64_emit_epilogue(char out[64], uint64_t saved, uint64_t stack_usage);
+// meta means the TB_FunctionOutput's prologue epilogue data
 
 TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* features);
 // Machine code converter for x64 built for fast compilation

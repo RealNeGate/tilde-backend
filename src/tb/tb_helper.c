@@ -17,6 +17,9 @@ void tb_find_live_intervals(size_t intervals[], const TB_Function* f) {
             case TB_LABEL:
             case TB_GOTO:
 			break;
+            case TB_MEMBER_ACCESS:
+			intervals[f->nodes[i].member_access.base] = i;
+			break;
             case TB_ARRAY_ACCESS:
 			intervals[f->nodes[i].array_access.base] = i;
 			intervals[f->nodes[i].array_access.index] = i;
@@ -109,6 +112,9 @@ size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_
 			ffu(f->nodes[i].phi2.a_label);
 			ffu(f->nodes[i].phi2.b_label);
 			break;
+            case TB_MEMBER_ACCESS:
+			ffu(f->nodes[i].member_access.base);
+			break;
             case TB_ARRAY_ACCESS:
 			ffu(f->nodes[i].array_access.base);
 			ffu(f->nodes[i].array_access.index);
@@ -191,6 +197,9 @@ TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t sta
             case TB_ARRAY_ACCESS:
 			ffu(f->nodes[i].array_access.base);
 			ffu(f->nodes[i].array_access.index);
+			break;
+            case TB_MEMBER_ACCESS:
+			ffu(f->nodes[i].member_access.base);
 			break;
             case TB_SIGN_EXT:
             case TB_ZERO_EXT:
@@ -276,6 +285,9 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Register 
             case TB_ARRAY_ACCESS:
 			f_n_r(f->nodes[i].array_access.base);
 			f_n_r(f->nodes[i].array_access.index);
+			break;
+            case TB_MEMBER_ACCESS:
+			f_n_r(f->nodes[i].member_access.base);
 			break;
             case TB_SIGN_EXT:
             case TB_ZERO_EXT:

@@ -91,9 +91,12 @@ enum {
 void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f) {
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	
+	// The prologue and epilogue generators need some storage
+	char* mini_out_buffer = tb_tls_push(tls, 64);
+	
 	// Buffer stores all the positions of each 
 	// function relative to the .text section start.
-	uint32_t* func_layout = (uint32_t*)tb_tls_push(tls, m->compiled_functions.count * sizeof(uint32_t));
+	uint32_t* func_layout = tb_tls_push(tls, m->compiled_functions.count * sizeof(uint32_t));
 	
 	// String table array, stores the strings which will be put 
 	// into the string table
@@ -110,12 +113,6 @@ void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f) {
 		.characteristics = IMAGE_FILE_LINE_NUMS_STRIPPED
 	};
 	
-	switch (arch) {
-		case TB_ARCH_X86_64: header.machine = COFF_MACHINE_AMD64; break;
-		case TB_ARCH_AARCH64: header.machine = COFF_MACHINE_ARM64; break;
-		default: tb_unreachable();
-	}
-	
 	COFF_SectionHeader text_section = {
 		.name = { '.', 't', 'e', 'x', 't' }, // .text
 		.characteristics = COFF_CHARACTERISTICS_TEXT
@@ -130,22 +127,47 @@ void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f) {
 		.raw_data_size = m->const32_patches.count * sizeof(uint32_t)
 	};
 	
-	for (size_t i = 0; i < m->compiled_functions.count; i++) {
-		func_layout[i] = text_section.raw_data_size;
-		
-		if (m->compiled_functions.data[i].has_no_prologue) {
-			text_section.raw_data_size += m->compiled_functions.data[i].emitter.count - 7;
+	switch (arch) {
+		case TB_ARCH_X86_64: {
+			header.machine = COFF_MACHINE_AMD64;
+			
+			for (size_t i = 0; i < m->compiled_functions.count; i++) {
+				TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
+				func_layout[i] = text_section.raw_data_size;
+				
+				// TODO(NeGate): This data could be arranged better for streaming
+				size_t prologue = x64_get_prologue_length(out_f->prologue_epilogue_metadata,
+														  out_f->stack_usage);
+				
+				size_t epilogue = x64_get_epilogue_length(out_f->prologue_epilogue_metadata,
+														  out_f->stack_usage);
+				
+				text_section.raw_data_size += prologue;
+				text_section.raw_data_size += epilogue;
+				text_section.raw_data_size += m->compiled_functions.data[i].emitter.count;
+			}
+			break;
 		}
-		else {
-			text_section.raw_data_size += m->compiled_functions.data[i].emitter.count;
+		case TB_ARCH_AARCH64: {
+			header.machine = COFF_MACHINE_ARM64;
+			tb_unreachable(); // TODO(NeGate): Implement prologue and epilogue stuff
+			break;
 		}
+		default: tb_unreachable();
 	}
 	
 	for (size_t i = 0; i < m->call_patches.count; i++) {
 		TB_FunctionPatch* p = &m->call_patches.data[i];
+		TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
 		uint8_t* code = m->compiled_functions.data[p->func_id].emitter.data;
 		
-		*((uint32_t*)&code[p->pos]) = func_layout[p->target_id] - (func_layout[p->func_id] + p->pos + 4);
+		// TODO(NeGate): Consider caching this value if it gets expensive to calculate.
+		uint32_t actual_pos = func_layout[p->func_id] + p->pos + 4;
+		
+		actual_pos += x64_get_prologue_length(out_f->prologue_epilogue_metadata,
+											  out_f->stack_usage);
+		
+		*((uint32_t*)&code[p->pos]) = func_layout[p->target_id] - actual_pos;
 	}
 	
 	text_section.raw_data_pos = sizeof(COFF_FileHeader) + (number_of_sections * sizeof(COFF_SectionHeader));
@@ -168,15 +190,34 @@ void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f) {
 	fwrite(&rdata_section, sizeof(rdata_section), 1, f);
 	
 	assert(ftell(f) == text_section.raw_data_pos);
-	for (size_t i = 0; i < m->compiled_functions.count; i++) {
-		// On x64, the smallest prologue is 7 bytes so if there's no prologue
-		// then just skip it :)
-		if (m->compiled_functions.data[i].has_no_prologue && arch == TB_ARCH_X86_64) {
-			fwrite(m->compiled_functions.data[i].emitter.data + 7, m->compiled_functions.data[i].emitter.count - 7, 1, f);
+	switch (arch) {
+		case TB_ARCH_X86_64: {
+			header.machine = COFF_MACHINE_AMD64;
+			for (size_t i = 0; i < m->compiled_functions.count; i++) {
+				TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
+				
+				// prologue
+				size_t prologue_len = x64_emit_prologue(mini_out_buffer,
+														out_f->prologue_epilogue_metadata,
+														out_f->stack_usage);
+				fwrite(mini_out_buffer, prologue_len, 1, f);
+				
+				// body
+				fwrite(m->compiled_functions.data[i].emitter.data, m->compiled_functions.data[i].emitter.count, 1, f);
+				
+				// epilogue
+				size_t epilogue_len = x64_emit_epilogue(mini_out_buffer,
+														out_f->prologue_epilogue_metadata,
+														out_f->stack_usage);
+				fwrite(mini_out_buffer, epilogue_len, 1, f);
+			}
+			break;
 		}
-		else {
-			fwrite(m->compiled_functions.data[i].emitter.data, m->compiled_functions.data[i].emitter.count, 1, f);
+		case TB_ARCH_AARCH64: {
+			tb_unreachable(); // TODO(NeGate)
+			break;
 		}
+		default: tb_unreachable();
 	}
 	
 	assert(ftell(f) == rdata_section.raw_data_pos);
@@ -188,11 +229,12 @@ void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f) {
 	assert(ftell(f) == text_section.pointer_to_reloc);
 	for (size_t i = 0; i < m->const32_patches.count; i++) {
 		TB_ConstPool32Patch* p = &m->const32_patches.data[i];
+		TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
 		size_t actual_pos = func_layout[p->func_id] + p->pos;
-		if (m->compiled_functions.data[i].has_no_prologue && arch == TB_ARCH_X86_64) {
-			// prologue is 7 bytes, so just skip it
-			actual_pos -= 7;
-		}
+		
+		// TODO(NeGate): Consider caching this value if it gets expensive to calculate.
+		actual_pos += x64_get_prologue_length(out_f->prologue_epilogue_metadata,
+											  out_f->stack_usage);
 		
 		fwrite(&(COFF_ImageReloc) {
 				   .Type = IMAGE_REL_AMD64_REL32,

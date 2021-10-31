@@ -83,8 +83,9 @@ typedef struct X64_MemCacheDesc {
 
 typedef struct X64_Context {
 	size_t phi_count, locals_count, f32_patch_count;
-    size_t mem_cache_count;
-	int local_stack_usage;
+    size_t mem_cache_count, local_stack_usage;
+	
+	uint64_t regs_to_save;
     
 	size_t* intervals;
 	X64_PhiValue* phis;
@@ -181,7 +182,7 @@ static const uint16_t ABI_CALLER_SAVED = (1u << X64_RAX)
 | (1u << X64_R10)
 | (1u << X64_R11);
 
-//static const uint16_t ABI_CALLEE_SAVED = ~ABI_CALLER_SAVED;
+static const uint16_t ABI_CALLEE_SAVED = ~ABI_CALLER_SAVED;
 
 // Used to quickly reorder the basic blocks
 typedef struct X64_BBStack {
@@ -234,6 +235,83 @@ static void x64_free_xmm(X64_Context* ctx, X64_XMM gpr);
 static void x64_free_gpr(X64_Context* ctx, X64_GPR gpr);
 static bool x64_is_temporary_of_bb(TB_Function* f, X64_Context* ctx, X64_GPR gpr, TB_Register bb, TB_Register bb_end);
 
+size_t x64_get_prologue_length(uint64_t saved, uint64_t stack_usage) {
+	// If the stack usage is zero we don't need a prologue
+	if (stack_usage == 8) return 0;
+	
+	bool is_stack_usage_imm8 = (stack_usage == (int8_t)stack_usage);
+	return (is_stack_usage_imm8 ? 4 : 7) + 4;
+}
+
+size_t x64_get_epilogue_length(uint64_t saved, uint64_t stack_usage) {
+	if (stack_usage == 8) return 1;
+	
+	bool is_stack_usage_imm8 = (stack_usage == (int8_t)stack_usage);
+	return (is_stack_usage_imm8 ? 5 : 8) + 1;
+}
+
+size_t x64_emit_prologue(char out[64], uint64_t saved, uint64_t stack_usage) {
+	// If the stack usage is zero we don't need a prologue
+	if (stack_usage == 8) return 0;
+	
+	size_t used = 0;
+	
+	out[used++] = 0x50 + X64_RBP;
+	
+	out[used++] = x64_inst_rex(true, X64_RSP, X64_RBP, 0);
+	out[used++] = 0x89;
+	out[used++] = x64_inst_mod_rx_rm(X64_MOD_DIRECT, X64_RSP, X64_RBP);
+	
+	if (stack_usage == (int8_t)stack_usage) {
+		out[used++] = x64_inst_rex(true, 0x00, X64_RSP, 0);
+		out[used++] = 0x83;
+		out[used++] = x64_inst_mod_rx_rm(X64_MOD_DIRECT, 0x05, X64_RSP);
+		out[used++] = (int8_t)stack_usage;
+	} else {
+		out[used++] = x64_inst_rex(true, 0x00, X64_RSP, 0);
+		out[used++] = 0x81;
+		out[used++] = x64_inst_mod_rx_rm(X64_MOD_DIRECT, 0x05, X64_RSP);
+		*((uint32_t*)&out[used]) = stack_usage;
+		used += 4;
+	}
+	
+	// TODO(NeGate): Implement saving
+	assert(saved == 0);
+	
+	return used;
+}
+
+size_t x64_emit_epilogue(char out[64], uint64_t saved, uint64_t stack_usage) {
+	// if the stack isn't used then just return
+	if (stack_usage == 8) {
+		out[0] = 0xC3;
+		return 1;
+	}
+	
+	size_t used = 0;
+	
+	if (stack_usage == (int8_t)stack_usage) {
+		out[used++] = x64_inst_rex(true, 0x00, X64_RSP, 0);
+		out[used++] = 0x83;
+		out[used++] = x64_inst_mod_rx_rm(X64_MOD_DIRECT, 0x00, X64_RSP);
+		out[used++] = (int8_t)stack_usage;
+	} else {
+		out[used++] = x64_inst_rex(true, 0x00, X64_RSP, 0);
+		out[used++] = 0x81;
+		out[used++] = x64_inst_mod_rx_rm(X64_MOD_DIRECT, 0x00, X64_RSP);
+		*((uint32_t*)&out[used]) = stack_usage;
+		used += 4;
+	}
+	
+	out[used++] = 0x58 + X64_RBP;
+	
+	// TODO(NeGate): Implement saving
+	assert(saved == 0);
+	
+	out[used++] = 0xC3;
+	return used;
+}
+
 TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* features) {
     TB_TemporaryStorage* tls = tb_tls_allocate();
     
@@ -246,6 +324,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
     
 	uint32_t ret_patch_count = 0;
 	uint32_t label_patch_count = 0;
+	uint32_t caller_usage_in_bytes = 0;
     {
 		uint32_t phi_count = 0;
 		uint32_t locals_count = 0;
@@ -258,11 +337,18 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 			if (f->nodes[i].type == TB_PHI1) phi_count++;
 			else if (f->nodes[i].type == TB_PHI2) phi_count++;
 			else if (f->nodes[i].type == TB_LOCAL) locals_count++;
+			else if (f->nodes[i].type == TB_PARAM_ADDR) locals_count++;
 			else if (f->nodes[i].type == TB_RET) ir_return_count++;
 			else if (f->nodes[i].type == TB_LABEL) ir_label_count++;
 			else if (f->nodes[i].type == TB_IF) ir_label_patch_count += 2;
 			else if (f->nodes[i].type == TB_GOTO) ir_label_patch_count++;
 			else if (f->nodes[i].type == TB_LOAD) mem_cache_count++;
+			else if (f->nodes[i].type == TB_CALL) {
+				int param_usage = (f->nodes[i].call.param_end - f->nodes[i].call.param_start);
+				if (caller_usage_in_bytes < param_usage) {
+					caller_usage_in_bytes = param_usage;
+				}
+			}
 		}
         
         ir_label_patch_count += ir_label_count; // just in case
@@ -285,6 +371,13 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
         memset(bb_stack->completed, 0, ir_label_count * sizeof(bool));
     }
     
+	// Microsoft wants at least 32bytes of parameter storage called the shadow space.
+	// This is used to store the first 4 parameters which are usually in registers but
+	// can possibly spill.
+	if (caller_usage_in_bytes > 0 && caller_usage_in_bytes < 32) {
+		caller_usage_in_bytes = 32;
+	}
+	
 #if 0
     printf("Compiling %s...\n", f->name);
     printf("  IR space: %d nodes (%zu kB)\n", f->capacity, (f->capacity * sizeof(TB_Node)) / 1024);
@@ -296,24 +389,9 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
     
     // Reserve stack
 	ctx->gpr_desc[X64_RSP].bound_value = TB_REG_MAX; // reserved
-	if (!features->x64.omit_frame_pointer) ctx->gpr_desc[X64_RBP].bound_value = TB_REG_MAX; // reserved
+	ctx->gpr_desc[X64_RBP].bound_value = TB_REG_MAX; // reserved
     
     TB_Emitter out = { 0 };
-    
-    // Emit prologue
-    // NOTE(NeGate): it might not be used but we assume
-    // it will and if not we can just skip it in the file
-    // output
-    size_t prologue_patch = out.count + 3;
-    {
-        // sub rsp, 0 # patched later
-        uint8_t* out_buffer = tb_out_reserve(&out, 7);
-        out_buffer[0] = x64_inst_rex(true, 0x00, X64_RSP, 0);
-        out_buffer[1] = 0x81;
-        out_buffer[2] = x64_inst_mod_rx_rm(X64_MOD_DIRECT, 0x05, X64_RSP);
-        *((uint32_t*)&out_buffer[3]) = 0;
-        tb_out_commit(&out, 7);
-    }
     
     ctx->local_stack_usage = x64_allocate_locals(f, ctx, &out);
 	
@@ -336,7 +414,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
         
 		// Generate instructions from the side-effect nodes using
 		// all the other nodes and then terminate the basic block
-        x64_eval_bb(f, ctx, &out, bb, bb_end);
+        if (bb < bb_end) x64_eval_bb(f, ctx, &out, bb, bb_end);
 		
         // Handle the terminator node
         if (f->nodes[bb_end].type == TB_IF) {
@@ -532,7 +610,8 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
     } while (bb_stack->top > 0);
     
     // Align stack usage to 16bytes and add 8 bytes for the return address
-	int local_stack_usage = ctx->local_stack_usage;
+	int local_stack_usage = ctx->local_stack_usage + caller_usage_in_bytes;
+	
     local_stack_usage += (16 - (local_stack_usage % 16)) % 16;
     assert((local_stack_usage & 15) == 0);
     local_stack_usage += 8;
@@ -542,21 +621,6 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
         uint32_t pos = ret_patches[i];
         
         *((uint32_t*)&out.data[pos]) = out.count - (pos + 4);
-    }
-    
-    // Patch prologue (or just omit it)
-    // and emit epilogue (or dont)
-    {
-        // patch prologue
-        *((uint32_t*)&out.data[prologue_patch]) = local_stack_usage;
-        
-        // add rsp, stack_usage
-        uint8_t* out_buffer = tb_out_reserve(&out, 7);
-        out_buffer[0] = x64_inst_rex(true, 0x00, X64_RSP, 0);
-        out_buffer[1] = 0x81;
-        out_buffer[2] = x64_inst_mod_rx_rm(X64_MOD_DIRECT, 0x00, X64_RSP);
-        *((uint32_t*)&out_buffer[3]) = local_stack_usage;
-        tb_out_commit(&out, 7);
     }
     
     // patch labels
@@ -569,11 +633,6 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
         *((uint32_t*)&out.data[pos]) = rel32;
     }
     
-    tb_out1b(&out, 0xC3); // ret
-    
-    // align to 16 bytes
-    x64_inst_nop(&out, 16 - (out.count % 16));
-    
     // Trim code output memory
     out.capacity = out.count;
     out.data = realloc(out.data, out.capacity);
@@ -581,7 +640,9 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
     
     return (TB_FunctionOutput) {
         .name = f->name,
-        .emitter = out
+        .emitter = out,
+		.stack_usage = local_stack_usage,
+		.prologue_epilogue_metadata = ctx->regs_to_save
     };
 }
 
@@ -603,8 +664,7 @@ static void x64_enqueue_bb(TB_Function* f, X64_BBStack* stack, TB_Register bb) {
 
 static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register bb, TB_Register bb_end) {
 	// Evaluate all side effect instructions
-	// Don't eval if the basic block is empty
-	if (bb != bb_end) loop_range(i, bb + 1, bb_end) {
+	loop_range(i, bb + 1, bb_end) {
 		TB_DataType dt = f->nodes[i].dt;
 		
 		switch (f->nodes[i].type) {
@@ -615,6 +675,7 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 			case TB_INT_CONST:
 			case TB_FLOAT_CONST:
 			case TB_ARRAY_ACCESS:
+			case TB_MEMBER_ACCESS:
 			case TB_SIGN_EXT:
 			case TB_ZERO_EXT:
 			case TB_ADD:
@@ -637,7 +698,6 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 			break;
 			case TB_CALL: {
 				int param_count = f->nodes[i].call.param_end - f->nodes[i].call.param_start;
-				
 				int saved_local_stack_usage = ctx->local_stack_usage; 
 				
 				// identify which registers to save
@@ -674,7 +734,7 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 					};
 					X64_Value dst = (X64_Value){
 						.type = X64_VALUE_MEM, .dt = dt, .mem = {
-							.base = X64_RSP,
+							.base = X64_RBP,
 							.index = X64_GPR_NONE,
 							.scale = X64_SCALE_X1,
 							.disp = -pos
@@ -683,6 +743,9 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 					
 					x64_emit_normal(out, dt.type, MOV, &dst, &src);
 				}
+				
+				// don't let anything allocate this while generating the parameters
+				if (param_count > 4) ctx->gpr_desc[X64_RAX].bound_value = 0;
 				
 				// evaluate parameters
 				for (size_t j = f->nodes[i].call.param_start; j < f->nodes[i].call.param_end; j++) {
@@ -703,15 +766,12 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 							x64_emit_normal(out, dt.type, MOV, &dst, &param);
 						}
 						
-						// kill this parameter register now since it's value is mutated
-						ctx->gpr_desc[GPR_PARAMETERS[id]].bound_value = 0;
+						// don't let anything allocate this while generating the parameters
+						ctx->gpr_desc[GPR_PARAMETERS[id]].bound_value = TB_REG_MAX;
 					} else {
 						// parameter is in memory
 						tb_unreachable();
 						//x64_emit_normal(out, dt.type, MOV, &dst, &src);
-						
-						// This is used as a temporary in transfers so it's mutated.
-						ctx->gpr_desc[X64_RAX].bound_value = 0;
 					}
 				}
 				
@@ -726,49 +786,16 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 				// Emit stack movements, CALL instruction and CALL patch
 				int target_func_id = f->nodes[i].call.target - f->module->functions.data;
 				int source_func_id = f - f->module->functions.data;
-				if (stack_alloc == (int8_t)stack_alloc) {
-					tb_emit_call_patch(f->module, source_func_id, target_func_id, out->count + 5);
-					
-					uint8_t* out_buffer = tb_out_reserve(out, 13);
-					
-					// SUB rsp, stack_alloc
-					out_buffer[0] = x64_inst_rex(true, 0x00, X64_RSP, 0);
-					out_buffer[1] = 0x83;
-					out_buffer[2] = x64_inst_mod_rx_rm(X64_MOD_DIRECT, 0x05, X64_RSP);
-					out_buffer[3] = (int8_t)stack_alloc;
+				
+				{
+					tb_emit_call_patch(f->module, source_func_id, target_func_id, out->count + 1);
+					uint8_t* out_buffer = tb_out_reserve(out, 5);
 					
 					// CALL rel32
-					out_buffer[4] = 0xE8;
-					*((uint32_t*)&out_buffer[5]) = 0;
+					out_buffer[0] = 0xE8;
+					*((uint32_t*)&out_buffer[1]) = 0;
 					
-					// ADD rsp, stack_alloc
-					out_buffer[9] = x64_inst_rex(true, 0x00, X64_RSP, 0);
-					out_buffer[10] = 0x83;
-					out_buffer[11] = x64_inst_mod_rx_rm(X64_MOD_DIRECT, 0x00, X64_RSP);
-					out_buffer[12] = (int8_t)stack_alloc;
-					
-					tb_out_commit(out, 13);
-				} else {
-					tb_emit_call_patch(f->module, source_func_id, target_func_id, out->count + 5);
-					uint8_t* out_buffer = tb_out_reserve(out, 19);
-					
-					// SUB rsp, stack_alloc
-					out_buffer[0] = x64_inst_rex(true, 0x00, X64_RSP, 0);
-					out_buffer[1] = 0x81;
-					out_buffer[2] = x64_inst_mod_rx_rm(X64_MOD_DIRECT, 0x05, X64_RSP);
-					*((uint32_t*)&out_buffer[3]) = stack_alloc;
-					
-					// CALL rel32
-					out_buffer[7] = 0xE8;
-					*((uint32_t*)&out_buffer[8]) = 0;
-					
-					// ADD rsp, stack_alloc
-					out_buffer[12] = x64_inst_rex(true, 0x00, X64_RSP, 0);
-					out_buffer[13] = 0x81;
-					out_buffer[14] = x64_inst_mod_rx_rm(X64_MOD_DIRECT, 0x00, X64_RSP);
-					*((uint32_t*)&out_buffer[15]) = stack_alloc;
-					
-					tb_out_commit(out, 19);
+					tb_out_commit(out, 5);
 				}
 				
 				// restore any saved registers
@@ -782,7 +809,7 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 					};
 					X64_Value src = (X64_Value){
 						.type = X64_VALUE_MEM, .dt = dt, .mem = {
-							.base = X64_RSP,
+							.base = X64_RBP,
 							.index = X64_GPR_NONE,
 							.scale = X64_SCALE_X1,
 							.disp = -pos
@@ -805,7 +832,7 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 					X64_Value dst = x64_allocate_gpr(ctx, gprs_to_save[X64_RAX], dt);
 					X64_Value src = (X64_Value){
 						.type = X64_VALUE_MEM, .dt = dt, .mem = {
-							.base = X64_RSP,
+							.base = X64_RBP,
 							.index = X64_GPR_NONE,
 							.scale = X64_SCALE_X1,
 							.disp = -savepoints[X64_RAX]
@@ -929,6 +956,28 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 			// PHI1 just points to an owner PHI2
             return x64_find_phi(ctx, f->nodes[r].phi1.a)->value;
         }
+		case TB_MEMBER_ACCESS: {
+            X64_Value base = x64_eval(f, ctx, out, reg->member_access.base, r);
+			int32_t offset = reg->member_access.offset;
+			
+			// Load value
+			if (base.type == X64_VALUE_MEM) {
+				base.mem.disp += offset;
+				
+				return base;
+			} else if (base.type == X64_VALUE_GPR) {
+				return (X64_Value) {
+					.type = X64_VALUE_MEM,
+					.dt = reg->dt,
+					.mem = {
+						.base = base.gpr,
+						.index = X64_GPR_NONE,
+						.scale = X64_SCALE_X1,
+						.disp = offset
+					}
+				};
+			} else tb_unreachable();
+		}
 		case TB_ARRAY_ACCESS: {
             X64_Value base = x64_eval(f, ctx, out, reg->array_access.base, r);
             X64_Value index = x64_eval(f, ctx, out, reg->array_access.index, r);
@@ -1085,7 +1134,7 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
                 .type = X64_VALUE_MEM,
                 .dt = TB_TYPE_PTR(),
                 .mem = {
-                    .base = X64_RSP,
+                    .base = X64_RBP,
                     .index = X64_GPR_NONE,
                     .scale = X64_SCALE_X1,
                     .disp = x64_find_local(ctx, r)
@@ -1094,16 +1143,15 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
         }
         case TB_PARAM_ADDR: {
             TB_DataType param_dt = f->nodes[reg->param_addr.param].dt;
-            int id = f->nodes[reg->param_addr.param].param.id;
-            
+			
             return (X64_Value) {
                 .type = X64_VALUE_MEM,
-				.dt = param_dt,
+                .dt = param_dt,
                 .mem = {
-                    .base = X64_RSP,
+                    .base = X64_RBP,
                     .index = X64_GPR_NONE,
                     .scale = X64_SCALE_X1,
-                    .disp = (1 + id) * 8
+                    .disp = x64_find_local(ctx, r)
                 }
             };
         }
@@ -1123,15 +1171,14 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 					}
 				}
 				
-				int id = reg->param.id;
 				X64_Value mem = (X64_Value) {
 					.type = X64_VALUE_MEM,
 					.dt = param_dt,
 					.mem = {
-						.base = X64_RSP,
+						.base = X64_RBP,
 						.index = X64_GPR_NONE,
 						.scale = X64_SCALE_X1,
-						.disp = (1 + id) * 8
+						.disp = x64_find_local(ctx, r)
 					}
 				};
 				X64_Value result = x64_allocate_gpr(ctx, r, param_dt);
@@ -1152,15 +1199,14 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 					}
 				}
 				
-				int id = reg->param.id;
 				X64_Value mem = (X64_Value) {
 					.type = X64_VALUE_MEM,
 					.dt = param_dt,
 					.mem = {
-						.base = X64_RSP,
+						.base = X64_RBP,
 						.index = X64_GPR_NONE,
 						.scale = X64_SCALE_X1,
-						.disp = (1 + id) * 8
+						.disp = x64_find_local(ctx, r)
 					}
 				};
 				X64_Value result = x64_allocate_gpr(ctx, r, param_dt);
@@ -1438,6 +1484,9 @@ static X64_Value x64_allocate_gpr(X64_Context* ctx, TB_Register reg, TB_DataType
 		
 		if (ctx->gpr_desc[gpr].bound_value == 0) {
 			ctx->gpr_desc[gpr].bound_value = reg;
+			
+			// mark register as to be saved
+			ctx->regs_to_save |= (1u << gpr) & ABI_CALLEE_SAVED;
 			
 			return (X64_Value) {
 				.type = X64_VALUE_GPR,
@@ -1922,19 +1971,30 @@ static int32_t x64_allocate_locals(TB_Function* f, X64_Context* ctx, TB_Emitter*
 			TB_DataType dt = f->nodes[param].dt;
 			int id = f->nodes[param].param.id;
 			
+			uint32_t size = f->nodes[param].param_addr.size;
+			uint32_t align = size;
+			
+			stack_usage += size;
+			stack_usage += (align - (stack_usage % align)) % align;
+			
+			ctx->locals[ctx->locals_count++] = (X64_LocalDesc) {
+				.address = i,
+				.disp = -stack_usage
+			};
+			
 			if (id < 4) {
+				X64_Value dst = (X64_Value) {
+					.type = X64_VALUE_MEM,
+					.dt = dt,
+					.mem = {
+						.base = X64_RBP,
+						.index = X64_GPR_NONE,
+						.scale = X64_SCALE_X1,
+						.disp = -stack_usage
+					}
+				};
+				
 				if (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR) {
-					X64_Value dst = (X64_Value) {
-						.type = X64_VALUE_MEM,
-						.dt = TB_TYPE_I64(1),
-						.mem = {
-							.base = X64_RSP,
-							.index = X64_GPR_NONE,
-							.scale = X64_SCALE_X1,
-							.disp = (1 + id) * 8
-						}
-					};
-					
 					X64_Value src = (X64_Value) {
 						.type = X64_VALUE_GPR,
 						.dt = TB_TYPE_I64(1),
@@ -1948,17 +2008,6 @@ static int32_t x64_allocate_locals(TB_Function* f, X64_Context* ctx, TB_Emitter*
 					// save the shadow space into the stack
 					x64_emit_normal(out, dt.type, MOV, &dst, &src);
 				} else if (TB_IS_FLOAT_TYPE(dt.type)) {
-					X64_Value dst = (X64_Value) {
-						.type = X64_VALUE_MEM,
-						.dt = dt,
-						.mem = {
-							.base = X64_RSP,
-							.index = X64_GPR_NONE,
-							.scale = X64_SCALE_X1,
-							.disp = (1 + id) * 8
-						}
-					};
-					
 					X64_Value src = (X64_Value) {
 						.type = X64_VALUE_XMM,
 						.dt = dt,

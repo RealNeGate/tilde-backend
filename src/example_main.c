@@ -7,6 +7,7 @@ TB_Function* test_add_i32(TB_Module* m);
 TB_Function* test_sat_add_i32(TB_Module* m);
 TB_Function* test_add_i64(TB_Module* m);
 TB_Function* test_add_f32(TB_Module* m);
+TB_Function* test_vadd_f32x4(TB_Module* m);
 TB_Function* test_muladd_f32(TB_Module* m);
 TB_Function* test_locals_1(TB_Module* m);
 TB_Function* test_params_1(TB_Module* m);
@@ -23,7 +24,7 @@ int main(int argc, char** argv) {
 	FILE* f = fopen("./test_x64.obj", "wb");
 	do_tests(f, TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features);
 	fclose(f);
-    
+	
 	return 0;
 }
 
@@ -53,52 +54,6 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
     
 	for (size_t i = 0; i < count; i++) {
 		test_functions[i](m);
-	}
-#elif 0
-	{
-		TB_Function* func = tb_function_create(m, "test", TB_TYPE_I32(1));
-        
-		TB_Register result = tb_inst_local(func, 4, 4);
-		TB_Register index = tb_inst_local(func, 4, 4);
-		TB_Register count = tb_inst_local(func, 4, 4);
-        
-		tb_inst_store(func, TB_TYPE_I32(1), result, tb_inst_iconst(func, TB_TYPE_I32(1), 0), 4);
-		tb_inst_store(func, TB_TYPE_I32(1), index, tb_inst_iconst(func, TB_TYPE_I32(1), 0), 4);
-		tb_inst_store(func, TB_TYPE_I32(1), count, tb_inst_iconst(func, TB_TYPE_I32(1), 4), 4);
-        
-		tb_inst_label(func, 1); // .L1:
-        
-		TB_Register sum = tb_inst_add(
-                                      func,
-                                      TB_TYPE_I32(1),
-                                      tb_inst_load(func, TB_TYPE_I32(1), result, 4),
-                                      tb_inst_iconst(func, TB_TYPE_I32(1), 0x40),
-                                      TB_NO_WRAP
-                                      );
-		tb_inst_store(func, TB_TYPE_I32(1), result, sum, 4);
-        
-		tb_inst_store(func, TB_TYPE_I32(1), index, tb_inst_add(
-                                                               func,
-                                                               TB_TYPE_I32(1),
-                                                               tb_inst_load(func, TB_TYPE_I32(1), index, 4),
-                                                               tb_inst_iconst(func, TB_TYPE_I32(1), 1),
-                                                               TB_NO_WRAP
-                                                               ), 4);
-        
-		tb_inst_if(
-                   func, 
-                   tb_inst_cmp_ne(
-                                  func, TB_TYPE_I32(1),
-                                  tb_inst_load(func, TB_TYPE_I32(1), index, 4),
-                                  tb_inst_load(func, TB_TYPE_I32(1), count, 4)
-                                  ), 1, 2
-                   );
-        
-		tb_inst_label(func, 2); // .L2:
-		tb_inst_ret(func, TB_TYPE_I32(1), tb_inst_load(func, TB_TYPE_I32(1), result, 4));
-		
-		tb_function_print(func);
-		printf("\n\n\n");
 	}
 #else
 	{

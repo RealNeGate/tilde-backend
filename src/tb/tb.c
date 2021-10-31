@@ -478,6 +478,13 @@ TB_API TB_Register tb_inst_array_access(TB_Function* f, TB_Register base, TB_Reg
 	return r;
 }
 
+TB_API TB_Register tb_inst_member_access(TB_Function* f, TB_Register base, int32_t offset) {
+	TB_Register r = tb_make_reg(f, TB_MEMBER_ACCESS, TB_TYPE_PTR());
+	f->nodes[r].member_access.base = base;
+	f->nodes[r].member_access.offset = offset;
+	return r;
+}
+
 TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Register* params) {
 	// Reserve space for the arguments
 	if (f->vla.count + param_count >= f->vla.capacity) {

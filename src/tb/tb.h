@@ -557,6 +557,14 @@ typedef struct TB_TemporaryStorage {
 	uint8_t data[];
 } TB_TemporaryStorage;
 
+typedef struct ICodeGen {
+	size_t(*get_prologue_length)(uint64_t saved, uint64_t stack_usage);
+	size_t(*get_epilogue_length)(uint64_t saved, uint64_t stack_usage);
+	size_t(*emit_prologue)(char out[64], uint64_t saved, uint64_t stack_usage);
+	size_t(*emit_epilogue)(char out[64], uint64_t saved, uint64_t stack_usage);
+	TB_FunctionOutput(*compile_function)(TB_Function* f, const TB_FeatureSet* features);
+} ICodeGen;
+
 // Used internally for some optimizations
 #define tb_swap(a, b) do { \
 typeof(a) temp = a; \
@@ -593,13 +601,8 @@ void* tb_tls_pop(TB_TemporaryStorage* store, size_t size);
 void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance);
 // Looks back `distance` bytes in the TLS.
 
-// TODO(NeGate): remove the `arch` field, it's already provided by the module.
-void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f);
-// Writes out COFF object file with the compiled functions
-
-// TODO(NeGate): remove the `arch` field, it's already provided by the module.
-void tb_export_elf64(TB_Module* m, TB_Arch arch, FILE* f);
-// Writes out ELF object file with the compiled functions
+void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f);
+void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f);
 
 uint8_t* tb_out_reserve(TB_Emitter* o, size_t count);
 // The return value is the start of the empty region after
@@ -643,18 +646,8 @@ bool tb_opt_dce(TB_Function* f);
 uint32_t tb_emit_const32_patch(TB_Module* m, uint32_t func_id, size_t pos, uint32_t data);
 void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size_t pos);
 
-//TB_FunctionOutput aarch64_compile_function(TB_Function* f, const TB_FeatureSet* features);
-// Machine code converter for Aarch64
-
-size_t x64_get_prologue_length(uint64_t saved, uint64_t stack_usage);
-size_t x64_get_epilogue_length(uint64_t saved, uint64_t stack_usage);
-
-size_t x64_emit_prologue(char out[64], uint64_t saved, uint64_t stack_usage);
-size_t x64_emit_epilogue(char out[64], uint64_t saved, uint64_t stack_usage);
-// meta means the TB_FunctionOutput's prologue epilogue data
-
-TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* features);
-// Machine code converter for x64 built for fast compilation
+extern ICodeGen aarch64_fast_code_gen;
+extern ICodeGen x64_fast_code_gen;
 
 #endif /* TB_INTERNAL */
 #endif /* _TINYBACKEND_H_ */

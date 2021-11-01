@@ -1082,7 +1082,12 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
                 case TB_CAN_WRAP: break;
                 case TB_WRAP_CHECK: {
                     // INTO, trap if overflow
-                    tb_out1b(out, 0xCE);
+					// NOTE(NeGate): 
+                    uint8_t* out_buffer = tb_out_reserve(out, 3);
+					*out_buffer++ = 0x71;
+					*out_buffer++ = 0x01;
+					*out_buffer++ = 0xCC;
+                    tb_out_commit(out, 3);
                     break;
                 }
                 case TB_SATURATED_UNSIGNED: {
@@ -2095,3 +2100,12 @@ static bool x64_is_temporary_of_bb(TB_Function* f, X64_Context* ctx, X64_GPR gpr
 	
 	return false;
 }
+
+// I put it down here because i can :P
+ICodeGen x64_fast_code_gen = {
+	.get_prologue_length = x64_get_prologue_length,
+	.get_epilogue_length = x64_get_epilogue_length,
+	.emit_prologue = x64_emit_prologue,
+	.emit_epilogue = x64_emit_epilogue,
+	.compile_function = x64_compile_function
+};

@@ -115,7 +115,12 @@ TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 	switch (m->target_arch) {
 		case TB_ARCH_X86_64:
 		loop(i, m->functions.count) {
-			m->compiled_functions.data[i] = x64_compile_function(&m->functions.data[i], &m->features);
+			m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
+		}
+		break;
+		case TB_ARCH_AARCH64:
+		loop(i, m->functions.count) {
+			m->compiled_functions.data[i] = aarch64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
 		}
 		break;
 		default:
@@ -125,12 +130,19 @@ TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 }
 
 TB_API void tb_module_export(TB_Module* m, FILE* f) {
+	const ICodeGen* restrict code_gen;
+	switch (m->target_arch) {
+		case TB_ARCH_X86_64: code_gen = &x64_fast_code_gen; break;
+		case TB_ARCH_AARCH64: code_gen = &aarch64_fast_code_gen; break;
+		default: tb_unreachable();
+	}
+	
 	switch (m->target_system) {
         case TB_SYSTEM_WINDOWS:
-		tb_export_coff(m, m->target_arch, f);
+		tb_export_coff(m, code_gen, f);
 		break;
         case TB_SYSTEM_LINUX:
-		tb_export_elf64(m, m->target_arch, f);
+		tb_export_elf64(m, code_gen, f);
 		break;
         default:
 		printf("TinyBackend error: Unknown system!\n");

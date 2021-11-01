@@ -95,11 +95,15 @@ typedef struct {
 	Elf64_Xword sh_entsize;
 } Elf64_Shdr;
 
-void tb_export_elf64(TB_Module* m, TB_Arch arch, FILE* f) {
+void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
+	TB_TemporaryStorage* tls = tb_tls_allocate();
 	char strtbl[1024] = { 0 };
 	
+	// The prologue and epilogue generators need some storage
+	char* mini_out_buffer = tb_tls_push(tls, 64);
+	
 	uint16_t machine;
-	switch (arch) {
+	switch (m->target_arch) {
 		case TB_ARCH_X86_64: machine = EM_X86_64; break;
 		case TB_ARCH_AARCH64: machine = EM_AARCH64; break;
 		default: tb_unreachable();
@@ -200,7 +204,18 @@ void tb_export_elf64(TB_Module* m, TB_Arch arch, FILE* f) {
 	
 	// Code section:
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
-		code_section.sh_size += m->compiled_functions.data[i].emitter.count;
+		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
+		
+		// TODO(NeGate): This data could be arranged better for streaming
+		size_t prologue = code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
+														out_f->stack_usage);
+		
+		size_t epilogue = code_gen->get_epilogue_length(out_f->prologue_epilogue_metadata,
+														out_f->stack_usage);
+		
+		code_section.sh_size += prologue;
+		code_section.sh_size += epilogue;
+		code_section.sh_size += out_f->emitter.count;
 	}
 	
 	// Data section:
@@ -225,7 +240,21 @@ void tb_export_elf64(TB_Module* m, TB_Arch arch, FILE* f) {
 	
 	assert(ftell(f) == code_section.sh_offset);
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
-		fwrite(m->compiled_functions.data[i].emitter.data, m->compiled_functions.data[i].emitter.count, 1, f);
+		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
+		
+		// prologue
+		size_t prologue_len = code_gen->emit_prologue(mini_out_buffer,
+													  out_f->prologue_epilogue_metadata,
+													  out_f->stack_usage);
+		fwrite(mini_out_buffer, prologue_len, 1, f);
+		
+		fwrite(out_f->emitter.data, out_f->emitter.count, 1, f);
+		
+		// epilogue
+		size_t epilogue_len = code_gen->emit_epilogue(mini_out_buffer,
+													  out_f->prologue_epilogue_metadata,
+													  out_f->stack_usage);
+		fwrite(mini_out_buffer, epilogue_len, 1, f);
 	}
 	
 	assert(ftell(f) == data_section.sh_offset);

@@ -8,7 +8,13 @@
 // it puts the rdata on the next 4KB page after the text section all within
 // the same memory mapping, this is actually very bad because it means that
 // read-only data is executable.
-TB_API void tb_module_export_jit(TB_Module* m) {
+void tb_module_export_jit(TB_Module* m) {
+#if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64)
+	const ICodeGen* restrict code_gen = &x64_fast_code_gen;
+#else
+#error "Cannot compile JIT for this target architecture!"
+#endif
+	
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	m->compiled_function_pos = malloc(m->compiled_functions.count * sizeof(void*));
 	
@@ -25,11 +31,11 @@ TB_API void tb_module_export_jit(TB_Module* m) {
 		func_layout[i] = text_section_size;
 		
 		// TODO(NeGate): This data could be arranged better for streaming
-		size_t prologue = x64_get_prologue_length(m->compiled_functions.data[i].prologue_epilogue_metadata,
-												  m->compiled_functions.data[i].stack_usage);
+		size_t prologue = code_gen->get_prologue_length(m->compiled_functions.data[i].prologue_epilogue_metadata,
+														m->compiled_functions.data[i].stack_usage);
 		
-		size_t epilogue = x64_get_epilogue_length(m->compiled_functions.data[i].prologue_epilogue_metadata,
-												  m->compiled_functions.data[i].stack_usage);
+		size_t epilogue = code_gen->get_epilogue_length(m->compiled_functions.data[i].prologue_epilogue_metadata,
+														m->compiled_functions.data[i].stack_usage);
 		
 		text_section_size += prologue;
 		text_section_size += epilogue;
@@ -48,8 +54,8 @@ TB_API void tb_module_export_jit(TB_Module* m) {
 		// TODO(NeGate): Consider caching this value if it gets expensive to calculate.
 		uint32_t actual_pos = func_layout[p->func_id] + p->pos + 4;
 		
-		actual_pos += x64_get_prologue_length(out_f->prologue_epilogue_metadata,
-											  out_f->stack_usage);
+		actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
+													out_f->stack_usage);
 		
 		*((uint32_t*)&code[p->pos]) = func_layout[p->target_id] - actual_pos;
 	}
@@ -68,9 +74,9 @@ TB_API void tb_module_export_jit(TB_Module* m) {
 		m->compiled_function_pos[i] = (void*)text_section;
 		
 		// prologue
-		size_t prologue_len = x64_emit_prologue(mini_out_buffer,
-												out_f->prologue_epilogue_metadata,
-												out_f->stack_usage);
+		size_t prologue_len = code_gen->emit_prologue(mini_out_buffer,
+													  out_f->prologue_epilogue_metadata,
+													  out_f->stack_usage);
 		memcpy(text_section, mini_out_buffer, prologue_len);
 		text_section += prologue_len;
 		
@@ -79,9 +85,9 @@ TB_API void tb_module_export_jit(TB_Module* m) {
 		text_section += m->compiled_functions.data[i].emitter.count;
 		
 		// epilogue
-		size_t epilogue_len = x64_emit_epilogue(mini_out_buffer,
-												out_f->prologue_epilogue_metadata,
-												out_f->stack_usage);
+		size_t epilogue_len = code_gen->emit_epilogue(mini_out_buffer,
+													  out_f->prologue_epilogue_metadata,
+													  out_f->stack_usage);
 		memcpy(text_section, mini_out_buffer, epilogue_len);
 		text_section += epilogue_len;
 	}

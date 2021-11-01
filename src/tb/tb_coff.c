@@ -88,7 +88,7 @@ enum {
 	COFF_MACHINE_ARM64 = 0xAA64,  // ARM64 Little-Endian
 };
 
-void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f) {
+void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	
 	// The prologue and epilogue generators need some storage
@@ -127,7 +127,7 @@ void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f) {
 		.raw_data_size = m->const32_patches.count * sizeof(uint32_t)
 	};
 	
-	switch (arch) {
+	switch (m->target_arch) {
 		case TB_ARCH_X86_64: {
 			header.machine = COFF_MACHINE_AMD64;
 			
@@ -136,11 +136,11 @@ void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f) {
 				func_layout[i] = text_section.raw_data_size;
 				
 				// TODO(NeGate): This data could be arranged better for streaming
-				size_t prologue = x64_get_prologue_length(out_f->prologue_epilogue_metadata,
-														  out_f->stack_usage);
+				size_t prologue = code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
+																out_f->stack_usage);
 				
-				size_t epilogue = x64_get_epilogue_length(out_f->prologue_epilogue_metadata,
-														  out_f->stack_usage);
+				size_t epilogue = code_gen->get_epilogue_length(out_f->prologue_epilogue_metadata,
+																out_f->stack_usage);
 				
 				text_section.raw_data_size += prologue;
 				text_section.raw_data_size += epilogue;
@@ -159,14 +159,16 @@ void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f) {
 	for (size_t i = 0; i < m->call_patches.count; i++) {
 		TB_FunctionPatch* p = &m->call_patches.data[i];
 		TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
-		uint8_t* code = m->compiled_functions.data[p->func_id].emitter.data;
+		uint8_t* code = out_f->emitter.data;
 		
 		// TODO(NeGate): Consider caching this value if it gets expensive to calculate.
 		uint32_t actual_pos = func_layout[p->func_id] + p->pos + 4;
 		
-		actual_pos += x64_get_prologue_length(out_f->prologue_epilogue_metadata,
-											  out_f->stack_usage);
+		actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
+													out_f->stack_usage);
 		
+		// TODO(NeGate): Figure out how big they need to be on Aarch64
+		assert(m->target_arch == TB_ARCH_X86_64);
 		*((uint32_t*)&code[p->pos]) = func_layout[p->target_id] - actual_pos;
 	}
 	
@@ -190,25 +192,25 @@ void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f) {
 	fwrite(&rdata_section, sizeof(rdata_section), 1, f);
 	
 	assert(ftell(f) == text_section.raw_data_pos);
-	switch (arch) {
+	switch (m->target_arch) {
 		case TB_ARCH_X86_64: {
 			header.machine = COFF_MACHINE_AMD64;
 			for (size_t i = 0; i < m->compiled_functions.count; i++) {
 				TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
 				
 				// prologue
-				size_t prologue_len = x64_emit_prologue(mini_out_buffer,
-														out_f->prologue_epilogue_metadata,
-														out_f->stack_usage);
+				size_t prologue_len = code_gen->emit_prologue(mini_out_buffer,
+															  out_f->prologue_epilogue_metadata,
+															  out_f->stack_usage);
 				fwrite(mini_out_buffer, prologue_len, 1, f);
 				
 				// body
-				fwrite(m->compiled_functions.data[i].emitter.data, m->compiled_functions.data[i].emitter.count, 1, f);
+				fwrite(out_f->emitter.data, out_f->emitter.count, 1, f);
 				
 				// epilogue
-				size_t epilogue_len = x64_emit_epilogue(mini_out_buffer,
-														out_f->prologue_epilogue_metadata,
-														out_f->stack_usage);
+				size_t epilogue_len = code_gen->emit_epilogue(mini_out_buffer,
+															  out_f->prologue_epilogue_metadata,
+															  out_f->stack_usage);
 				fwrite(mini_out_buffer, epilogue_len, 1, f);
 			}
 			break;
@@ -233,8 +235,8 @@ void tb_export_coff(TB_Module* m, TB_Arch arch, FILE* f) {
 		size_t actual_pos = func_layout[p->func_id] + p->pos;
 		
 		// TODO(NeGate): Consider caching this value if it gets expensive to calculate.
-		actual_pos += x64_get_prologue_length(out_f->prologue_epilogue_metadata,
-											  out_f->stack_usage);
+		actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
+													out_f->stack_usage);
 		
 		fwrite(&(COFF_ImageReloc) {
 				   .Type = IMAGE_REL_AMD64_REL32,

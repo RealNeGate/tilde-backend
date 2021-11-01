@@ -98,7 +98,7 @@ typedef struct X64_Context {
 
 typedef enum X64_InstType {
     // Integer data processing
-	X64_ADD, X64_AND, X64_SUB, X64_XOR, X64_CMP, X64_MOV,
+	X64_ADD, X64_AND, X64_OR, X64_SUB, X64_XOR, X64_CMP, X64_MOV,
     X64_TEST, X64_LEA, X64_IMUL, X64_MOVSX, X64_MOVZX,
     
     // Single Scalar
@@ -130,6 +130,7 @@ typedef struct X64_NormalInst {
 static const X64_NormalInst insts[] = {
 	[X64_ADD] = { 0x00, 0x80, 0x00 },
 	[X64_AND] = { 0x20, 0x80, 0x04 },
+	[X64_OR]  = { 0x08, 0x80, 0x00 },
 	[X64_SUB] = { 0x2A, 0x80, 0x05 },
 	[X64_XOR] = { 0x30, 0x80, 0x06 },
 	[X64_CMP] = { 0x38, 0x80, 0x07 },
@@ -678,6 +679,8 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 			case TB_MEMBER_ACCESS:
 			case TB_SIGN_EXT:
 			case TB_ZERO_EXT:
+			case TB_AND:
+			case TB_OR:
 			case TB_ADD:
 			case TB_SUB:
 			case TB_MUL:
@@ -855,10 +858,12 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 					explicit_load = false;
 					
 					// If this load out-lives the next store it must be explicitly 
-					// loaded now since it'll deviate from the memory
+					// loaded now since it might deviate from the memory.
+					// TODO(NeGate): Implement noalias, where loads are only invalidate
+					// if the load out-lives a store from the same pointer not just
+					// any pointer.
 					loop_range(j, i + 1, bb_end) {
-						if (f->nodes[j].type == TB_STORE 
-							&& f->nodes[j].store.address == addr_reg) {
+						if (f->nodes[j].type == TB_STORE) {
 							explicit_load = (ctx->intervals[i] > j);
 							break;
 						}
@@ -1107,6 +1112,12 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
             }
             
             return result;
+        }
+        case TB_AND: {
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, AND_PATTERNS, tb_arrlen(AND_PATTERNS));
+        }
+        case TB_OR: {
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, OR_PATTERNS, tb_arrlen(OR_PATTERNS));
         }
         case TB_SUB: {
             return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, ISUB_PATTERNS, tb_arrlen(ISUB_PATTERNS));

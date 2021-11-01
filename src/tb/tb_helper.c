@@ -48,6 +48,8 @@ void tb_find_live_intervals(size_t intervals[], const TB_Function* f) {
             case TB_SIGN_EXT:
 			intervals[f->nodes[i].ext] = i;
 			break;
+            case TB_AND:
+            case TB_OR:
             case TB_ADD:
             case TB_SUB:
             case TB_MUL:
@@ -133,6 +135,8 @@ size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_
 			ffu(f->nodes[i].store.address);
 			ffu(f->nodes[i].store.value);
 			break;
+            case TB_AND:
+            case TB_OR:
             case TB_ADD:
             case TB_SUB:
             case TB_MUL:
@@ -215,6 +219,8 @@ TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t sta
 			ffu(f->nodes[i].store.address);
 			ffu(f->nodes[i].store.value);
 			break;
+            case TB_AND:
+            case TB_OR:
             case TB_ADD:
             case TB_SUB:
             case TB_MUL:
@@ -303,6 +309,8 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Register 
 			f_n_r(f->nodes[i].store.address);
 			f_n_r(f->nodes[i].store.value);
 			break;
+            case TB_AND:
+            case TB_OR:
             case TB_ADD:
             case TB_SUB:
             case TB_MUL:

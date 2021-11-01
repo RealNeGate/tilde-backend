@@ -83,10 +83,10 @@ TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_thre
     
 	if (optimization_level == TB_OPT_O0) {
 		// Don't optimize
-		/*loop(i, m->functions.count) {
+		loop(i, m->functions.count) {
 			TB_Function* f = &m->functions.data[i];
 			tb_function_print(f);
-		}*/
+		}
 	} else if (optimization_level == TB_OPT_O1) {
 		// Perform basic optimizations, mem2reg, dce, cse
 		// No complex loop transforms, minor inlining allowed
@@ -505,6 +505,16 @@ TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Functio
 	return r;
 }
 
+TB_API TB_Register tb_inst_and(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
+	// bitwise operators can't wrap
+	return tb_cse_arith(f, TB_AND, dt, TB_NO_WRAP, a, b);
+}
+
+TB_API TB_Register tb_inst_or(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
+	// bitwise operators can't wrap
+	return tb_cse_arith(f, TB_OR, dt, TB_NO_WRAP, a, b);
+}
+
 TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
 	if (f->nodes[a].type == TB_INT_CONST) tb_swap(a, b);
     
@@ -842,11 +852,18 @@ TB_API void tb_function_print(TB_Function* f) {
 			tb_print_type(dt);
 			printf(" SXT r%u\n", f->nodes[i].ext);
 			break;
+			case TB_MEMBER_ACCESS:
+			printf("  r%u\t=\t", i);
+			tb_print_type(dt);
+			printf(" &r%u[r%d]\n", f->nodes[i].member_access.base, f->nodes[i].member_access.offset);
+			break;
 			case TB_ARRAY_ACCESS:
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
 			printf(" &r%u[r%u * %u]\n", f->nodes[i].array_access.base, f->nodes[i].array_access.index, f->nodes[i].array_access.stride);
 			break;
+			case TB_AND:
+            case TB_OR:
 			case TB_ADD:
             case TB_SUB:
             case TB_MUL:
@@ -857,6 +874,8 @@ TB_API void tb_function_print(TB_Function* f) {
 			printf(" r%u ", f->nodes[i].i_arith.a);
             
 			switch (type) {
+                case TB_AND: printf("&"); break;
+                case TB_OR: printf("|"); break;
                 case TB_ADD: printf("+"); break;
                 case TB_SUB: printf("-"); break;
                 case TB_MUL: printf("*"); break;

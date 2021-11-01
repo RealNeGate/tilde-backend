@@ -220,6 +220,8 @@ TB_API TB_Register tb_inst_array_access(TB_Function* f, TB_Register base, TB_Reg
 TB_API TB_Register tb_inst_member_access(TB_Function* f, TB_Register base, int32_t offset);
 TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Register* params);
 
+TB_API TB_Register tb_inst_and(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
+TB_API TB_Register tb_inst_or(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
 TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
 TB_API TB_Register tb_inst_sub(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
 TB_API TB_Register tb_inst_mul(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
@@ -289,6 +291,8 @@ enum TB_RegisterType {
     TB_ZERO_EXT,
     
     // Integer arithmatic
+    TB_AND,
+	TB_OR,
     TB_ADD,
     TB_SUB,
     TB_MUL,

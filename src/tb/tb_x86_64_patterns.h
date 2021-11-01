@@ -22,6 +22,24 @@ static const X64_ISel_Pattern ISUB_PATTERNS[] = {
 	{ 4, "rmi", (uint8_t[]){ X64_MOV, 0, 1, X64_SUB, 0, 2, 0x7F }, false }
 };
 
+static const X64_ISel_Pattern AND_PATTERNS[] = {
+	{ 1, "rrr", (uint8_t[]){ X64_AND, 0, 2, 0x7F }, true },
+	{ 2, "rri", (uint8_t[]){ X64_AND, 0, 2, 0x7F }, true },
+	{ 3, "rrm", (uint8_t[]){ X64_AND, 0, 2, 0x7F }, true },
+	{ 4, "rrm", (uint8_t[]){ X64_MOV, 0, 1, X64_AND, 0, 2, 0x7F }, false },
+	{ 4, "rmr", (uint8_t[]){ X64_MOV, 0, 1, X64_AND, 0, 2, 0x7F }, false },
+	{ 4, "rmi", (uint8_t[]){ X64_MOV, 0, 1, X64_AND, 0, 2, 0x7F }, false }
+};
+
+static const X64_ISel_Pattern OR_PATTERNS[] = {
+	{ 1, "rrr", (uint8_t[]){ X64_OR, 0, 2, 0x7F }, true },
+	{ 2, "rri", (uint8_t[]){ X64_OR, 0, 2, 0x7F }, true },
+	{ 3, "rrm", (uint8_t[]){ X64_OR, 0, 2, 0x7F }, true },
+	{ 4, "rrm", (uint8_t[]){ X64_MOV, 0, 1, X64_OR, 0, 2, 0x7F }, false },
+	{ 4, "rmr", (uint8_t[]){ X64_MOV, 0, 1, X64_OR, 0, 2, 0x7F }, false },
+	{ 4, "rmi", (uint8_t[]){ X64_MOV, 0, 1, X64_OR, 0, 2, 0x7F }, false }
+};
+
 static const X64_ISel_Pattern IMUL_PATTERNS[] = {
 	{ 1, "rrr", (uint8_t[]){ X64_IMUL, 0, 2, 0x7F }, true },
 	{ 2, "rri", (uint8_t[]){ X64_IMUL, 0, 2, 0x7F }, true },

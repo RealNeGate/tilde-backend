@@ -4,6 +4,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 TB_Function* test_add_i8(TB_Module* m);
 TB_Function* test_add_i16(TB_Module* m);
 TB_Function* test_add_i32(TB_Module* m);
+TB_Function* test_andor_i32(TB_Module* m);
 TB_Function* test_sat_add_i32(TB_Module* m);
 TB_Function* test_add_i64(TB_Module* m);
 TB_Function* test_add_f32(TB_Module* m);
@@ -41,6 +42,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_sat_add_i32,
 		test_add_i64,
 		test_add_f32,
+		test_andor_i32,
 		test_muladd_f32,
 		test_locals_1,
 		test_params_1,
@@ -89,7 +91,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 	}
 #endif
     
-	tb_module_compile(m, TB_OPT_O0, 1);
+	tb_module_compile(m, TB_OPT_O1, 1);
 	tb_module_export(m, f);
 	tb_module_destroy(m);
 }
@@ -144,6 +146,31 @@ TB_Function* test_sat_add_i32(TB_Module* m) {
                                   );
     
 	tb_inst_ret(func, TB_TYPE_I32(1), sum);
+	return func;
+}
+
+TB_Function* test_andor_i32(TB_Module* m) {
+	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I32(1));
+	
+	TB_Register a = tb_inst_param(func, TB_TYPE_I32(1));
+	TB_Register b = tb_inst_param(func, TB_TYPE_I32(1));
+	TB_Register c = tb_inst_param(func, TB_TYPE_I32(1));
+    
+	TB_Register ap = tb_inst_param_addr(func, a);
+	TB_Register bp = tb_inst_param_addr(func, b);
+	TB_Register cp = tb_inst_param_addr(func, c);
+    
+	TB_Register result = tb_inst_and(
+									 func, TB_TYPE_I32(1),
+									 tb_inst_load(func, TB_TYPE_I32(1), ap, 4),
+									 tb_inst_or(
+												func, TB_TYPE_I32(1),
+												tb_inst_load(func, TB_TYPE_I32(1), bp, 4),
+												tb_inst_load(func, TB_TYPE_I32(1), cp, 4)
+												)
+									 );
+    
+	tb_inst_ret(func, TB_TYPE_I32(1), result);
 	return func;
 }
 

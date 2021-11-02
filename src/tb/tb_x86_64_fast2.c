@@ -175,13 +175,7 @@ static const X64_GPR GPR_PRIORITY_LIST[] = {
 };
 
 // NOTE(NeGate): This is for Win64, we can handle SysV later
-static const uint16_t ABI_CALLER_SAVED = (1u << X64_RAX) 
-| (1u << X64_RCX) 
-| (1u << X64_RDX) 
-| (1u << X64_R8) 
-| (1u << X64_R9)
-| (1u << X64_R10)
-| (1u << X64_R11);
+static const uint16_t ABI_CALLER_SAVED = (1u << X64_RAX) | (1u << X64_RCX) | (1u << X64_RDX) | (1u << X64_R8) | (1u << X64_R9) | (1u << X64_R10) | (1u << X64_R11);
 
 static const uint16_t ABI_CALLEE_SAVED = ~ABI_CALLER_SAVED;
 

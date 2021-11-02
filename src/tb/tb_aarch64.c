@@ -380,7 +380,7 @@ static Aarch64_Value aarch64_compile_value(TB_Function* f, TB_Emitter* out, uint
 				.gpr = dst,
 				.is_mutated = false
             };
-        }
+        } 
         case TB_LOCAL:
 		return (Aarch64_Value) {
 			.type = Aarch64_Local,

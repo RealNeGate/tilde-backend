@@ -106,7 +106,7 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	switch (m->target_arch) {
 		case TB_ARCH_X86_64: machine = EM_X86_64; break;
 		case TB_ARCH_AARCH64: machine = EM_AARCH64; break;
-		default: tb_unreachable();
+		default: tb_todo();
 	}
 	
 	// Generate the header structs

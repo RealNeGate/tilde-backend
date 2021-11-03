@@ -54,7 +54,7 @@ bool tb_opt_dce(TB_Function* f) {
 				changes++;
 				break;
                 default:
-				tb_unreachable();
+				tb_todo();
 			}
 		}
 	}

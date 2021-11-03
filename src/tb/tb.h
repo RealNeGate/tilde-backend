@@ -261,11 +261,6 @@ TB_API TB_Register tb_inst_if(TB_Function* f, TB_Register cond, TB_Label if_true
 TB_API void tb_inst_ret(TB_Function* f, TB_DataType dt, TB_Register value);
 
 TB_API void tb_function_print(TB_Function* f);
-TB_API void tb_find_live_intervals(size_t intervals[], const TB_Function* f);
-
-// These emulator functions have the same semantics as
-// their equivalent IR operations.
-TB_API TB_Int128 tb_emulate_add(TB_Function* f, TB_ArithmaticBehavior arith_behavior, TB_DataType dt, TB_Int128 a, TB_Int128 b);
 
 // Private header stuff, don't include TB_INTERNAL into your code,
 // it's for the other implementation files of TB
@@ -575,8 +570,10 @@ b = temp; \
 
 #ifndef NDEBUG
 #define tb_unreachable() __builtin_trap()
+#define tb_todo() __builtin_trap()
 #else
 #define tb_unreachable() __builtin_unreachable()
+#define tb_todo() __builtin_unreachable()
 #endif
 
 #define tb_arrlen(a) (sizeof(a) / sizeof(a[0]))
@@ -645,6 +642,8 @@ bool tb_opt_inline(TB_Function* f);
 bool tb_opt_canonicalize(TB_Function* f);
 bool tb_opt_strength_reduction(TB_Function* f);
 bool tb_opt_compact_dead_regs(TB_Function* f);
+
+TB_API void tb_find_live_intervals(size_t intervals[], const TB_Function* f);
 
 //
 // BACKEND UTILITIES

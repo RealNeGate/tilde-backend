@@ -181,7 +181,7 @@ TB_FunctionOutput aarch64_compile_function(TB_Function* f, const TB_FeatureSet* 
         if (bb < bb_end) aarch64_eval_bb(f, ctx, &out, bb, bb_end);
 		
 		if (f->nodes[bb_end].type == TB_IF) {
-			tb_unreachable();
+			tb_todo();
 		}
 		else if (f->nodes[bb_end].type == TB_RET) {
 			TB_DataType dt = f->nodes[bb_end].dt;
@@ -196,12 +196,12 @@ TB_FunctionOutput aarch64_compile_function(TB_Function* f, const TB_FeatureSet* 
 					dt.type == TB_PTR) {
 					// Integer return values are in X0
 					if (val) tb_out4b(&out, aarch64_inst_mov(0, val, true));
-				} else tb_unreachable();
+				} else tb_todo();
 			}
 			
 			bb = bb_end + 1;
 		}
-		else tb_unreachable();
+		else tb_todo();
 		
         // Terminate any cached values
         ctx->mem_cache_count = 0;
@@ -237,7 +237,7 @@ TB_FunctionOutput aarch64_compile_function(TB_Function* f, const TB_FeatureSet* 
     // Trim code output memory
     out.capacity = out.count;
     out.data = realloc(out.data, out.capacity);
-    if (!out.data) tb_unreachable(); // I don't know if this can even fail...
+    if (!out.data) tb_todo(); // I don't know if this can even fail...
     
     return (TB_FunctionOutput) {
         .name = f->name,
@@ -274,14 +274,14 @@ static void aarch64_eval_bb(TB_Function* f, Aarch64_Context* ctx, TB_Emitter* ou
 					f->nodes[addr_reg].type == TB_PARAM_ADDR) {
 					base = GPR_SP;
 					disp = aarch64_find_local(ctx, addr_reg);
-				} else tb_unreachable();
+				} else tb_todo();
 				
 				TB_DataType dt = f->nodes[i].dt;
 				if (dt.type == TB_I8) tb_out4b(out, aarch64_inst_ldur(0, dst, base, disp));
 				else if (dt.type == TB_I16) tb_out4b(out, aarch64_inst_ldur(1, dst, base, disp));
 				else if (dt.type == TB_I32) tb_out4b(out, aarch64_inst_ldur(2, dst, base, disp));
 				else if (dt.type == TB_I64) tb_out4b(out, aarch64_inst_ldur(3, dst, base, disp));
-				else tb_unreachable();
+				else tb_todo();
 				
 				ctx->mem_caches[ctx->mem_cache_count++] = (Aarch64_MemCacheDesc){
 					.address = addr_reg,
@@ -299,7 +299,7 @@ static void aarch64_eval_bb(TB_Function* f, Aarch64_Context* ctx, TB_Emitter* ou
 					f->nodes[addr_reg].type == TB_PARAM_ADDR) {
 					base = GPR_SP;
 					disp = aarch64_find_local(ctx, addr_reg);
-				} else tb_unreachable();
+				} else tb_todo();
 				
 				int src = aarch64_eval(f, ctx, out, value_reg, i);
 				
@@ -308,10 +308,10 @@ static void aarch64_eval_bb(TB_Function* f, Aarch64_Context* ctx, TB_Emitter* ou
 				else if (dt.type == TB_I16) tb_out4b(out, aarch64_inst_stur(1, src, base, disp));
 				else if (dt.type == TB_I32) tb_out4b(out, aarch64_inst_stur(2, src, base, disp));
 				else if (dt.type == TB_I64) tb_out4b(out, aarch64_inst_stur(3, src, base, disp));
-				else tb_unreachable();
+				else tb_todo();
 				break;
 			}
-			default: tb_unreachable();
+			default: tb_todo();
 		}
 	}
 }
@@ -366,7 +366,7 @@ static int aarch64_eval(TB_Function* f, Aarch64_Context* ctx, TB_Emitter* out, T
 			else if (dt_type == TB_I16) tb_out4b(out, aarch64_inst_ldur(1, dst, GPR_SP, stack_slot));
 			else if (dt_type == TB_I32) tb_out4b(out, aarch64_inst_ldur(2, dst, GPR_SP, stack_slot));
 			else if (dt_type == TB_I64) tb_out4b(out, aarch64_inst_ldur(3, dst, GPR_SP, stack_slot));
-			else tb_unreachable();
+			else tb_todo();
 			
 			return dst;
 		}
@@ -383,9 +383,9 @@ static int aarch64_eval(TB_Function* f, Aarch64_Context* ctx, TB_Emitter* out, T
                 }
             }
             
-			tb_unreachable();
+			tb_todo();
         }
-		default: tb_unreachable();
+		default: tb_todo();
 	}
 }
 
@@ -406,7 +406,7 @@ static int aarch64_eval_bin_op(TB_Function* f, Aarch64_Context* ctx, TB_Emitter*
 	
 	if (dt_type == TB_I32) tb_out4b(out, aarch64_inst_dp_r(inst, dst, a, b, 0, 0, false));
 	else if (dt_type == TB_I64) tb_out4b(out, aarch64_inst_dp_r(inst, dst, a, b, 0, 0, true));
-	else tb_unreachable();
+	else tb_todo();
 	
 	return dst;
 }
@@ -441,7 +441,7 @@ static int aarch64_allocate_gpr(Aarch64_Context* ctx, TB_Register reg) {
 	}
 	
 	// Spill GPRs
-	tb_unreachable();
+	tb_todo();
 }
 
 static void aarch64_free_gpr(Aarch64_Context* ctx, int gpr) {
@@ -599,8 +599,8 @@ static int32_t aarch64_allocate_locals(TB_Function* f, Aarch64_Context* ctx, TB_
 					else if (dt.type == TB_I32) tb_out4b(out, aarch64_inst_stur(2, id, GPR_SP, stack_slot));
 					else if (dt.type == TB_I64) tb_out4b(out, aarch64_inst_stur(3, id, GPR_SP, stack_slot));
 					else if (dt.type == TB_PTR) tb_out4b(out, aarch64_inst_stur(3, id, GPR_SP, stack_slot));
-					else tb_unreachable();
-				} else tb_unreachable();
+					else tb_todo();
+				} else tb_todo();
 			}
 		} else if (f->nodes[i].type == TB_PARAM) {
 			int id = f->nodes[i].param.id;
@@ -609,7 +609,7 @@ static int32_t aarch64_allocate_locals(TB_Function* f, Aarch64_Context* ctx, TB_
 			if (id < 8) {
 				if (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR) {
 					ctx->gpr_desc[id].bound_value = i;
-				} else tb_unreachable();
+				} else tb_todo();
 			}
 		}
 	}
@@ -622,7 +622,7 @@ static int32_t aarch64_find_local(Aarch64_Context* ctx, TB_Register r) {
 		if (ctx->locals[i].address == r) return ctx->locals[i].disp;
 	}
 	
-	tb_unreachable();
+	tb_todo();
 }
 
 // I put it down here because i can :P

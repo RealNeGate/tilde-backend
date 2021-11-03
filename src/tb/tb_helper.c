@@ -92,7 +92,7 @@ void tb_find_live_intervals(size_t intervals[], const TB_Function* f) {
             case TB_RET:
 			intervals[f->nodes[i].ret.value] = i;
 			break;
-            default: tb_unreachable();
+            default: tb_todo();
 		}
 	}
 }
@@ -183,7 +183,7 @@ size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_
             case TB_RET:
 			ffu(f->nodes[i].ret.value);
 			break;
-            default: tb_unreachable();
+            default: tb_todo();
 		}
 	}
     
@@ -276,7 +276,7 @@ TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t sta
             case TB_RET:
 			ffu(f->nodes[i].ret.value);
 			break;
-            default: tb_unreachable();
+            default: tb_todo();
 		}
 	}
     
@@ -375,7 +375,7 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Register 
             case TB_RET:
 			f_n_r(f->nodes[i].ret.value);
 			break;
-            default: tb_unreachable();
+            default: tb_todo();
 		}
 	}
     

@@ -53,7 +53,7 @@ static TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params,
 			case TB_LABEL:
 			if (f->nodes[i].label.id != 0) {
 				// TODO(NeGate): Fix this!
-				tb_unreachable();
+				tb_todo();
 			} else {
 				f->nodes[i] = (TB_Node){ 0 };
 			}
@@ -128,14 +128,14 @@ static TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params,
 			break;
 			case TB_RET:
 			// TODO(NeGate): Implement multiple return values
-			if (ret) tb_unreachable();
+			if (ret) tb_todo();
 			
 			ffu(f->nodes[i].ret.value);
 			
 			ret = f->nodes[i].ret.value;
 			f->nodes[i] = (TB_Node){ 0 };
 			break;
-			default: tb_unreachable();
+			default: tb_todo();
 		}
 #undef ffu
 	}
@@ -184,7 +184,7 @@ static int tb_estimate_expr_pressure(const TB_Function* f, TB_Register i) {
 			else if (a > b) return a;
 			else return b;
 		}
-		default: tb_unreachable();
+		default: tb_todo();
 	}
 }
 

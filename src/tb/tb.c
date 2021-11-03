@@ -9,7 +9,7 @@ static size_t tb_get_ptr_size(TB_Arch target_arch) {
     if (target_arch == TB_ARCH_X86_64) return 8;
     if (target_arch == TB_ARCH_AARCH64) return 8;
     
-    tb_unreachable();
+    tb_todo();
 }
 
 TB_API void tb_get_constraints(TB_Arch target_arch, const TB_FeatureSet* features, TB_FeatureConstraints* constraints) {
@@ -36,7 +36,7 @@ TB_API void tb_get_constraints(TB_Arch target_arch, const TB_FeatureSet* feature
         // byte comparisons being the most you can get
         // from vector bools.
         constraints->max_vector_width[TB_BOOL] = 16;
-    } else tb_unreachable();
+    } else tb_todo();
 }
 
 TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, const TB_FeatureSet* features) {
@@ -147,7 +147,7 @@ TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 		break;
 		default:
 		printf("TinyBackend error: Unknown target!\n");
-		tb_unreachable();
+		tb_todo();
 	}
 }
 
@@ -156,7 +156,7 @@ TB_API void tb_module_export(TB_Module* m, FILE* f) {
 	switch (m->target_arch) {
 		case TB_ARCH_X86_64: code_gen = &x64_fast_code_gen; break;
 		case TB_ARCH_AARCH64: code_gen = &aarch64_fast_code_gen; break;
-		default: tb_unreachable();
+		default: tb_todo();
 	}
 	
 	switch (m->target_system) {
@@ -168,7 +168,7 @@ TB_API void tb_module_export(TB_Module* m, FILE* f) {
 		break;
         default:
 		printf("TinyBackend error: Unknown system!\n");
-		tb_unreachable();
+		tb_todo();
 	}
 }
 
@@ -228,7 +228,7 @@ TB_API void* tb_module_get_jit_func(TB_Module* m, TB_Function* f) {
 static TB_TemporaryStorage* tb_tls_allocate() {
 	if (tb_thread_storage == NULL) {
 		unsigned int slot = atomic_fetch_add(&tb_used_tls_slots, 1);
-		if (slot >= TB_MAX_THREADS) tb_unreachable();
+		if (slot >= TB_MAX_THREADS) tb_todo();
         
 		tb_thread_storage = &tb_temporary_storage[slot * TB_TEMPORARY_STORAGE_SIZE];
 	}
@@ -280,8 +280,7 @@ static TB_Register tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
 	return r;
 }
 
-// This function performs addition portable using the arithmatic behavior enum
-TB_API TB_Int128 tb_emulate_add(TB_Function* f, TB_ArithmaticBehavior arith_behavior, TB_DataType dt, TB_Int128 a, TB_Int128 b) {
+static TB_Int128 tb_fold_add(TB_ArithmaticBehavior arith_behavior, TB_DataType dt, TB_Int128 a, TB_Int128 b) {
 	assert(a.hi == 0 && b.hi == 0);
     
 	uint64_t mask;
@@ -291,7 +290,7 @@ TB_API TB_Int128 tb_emulate_add(TB_Function* f, TB_ArithmaticBehavior arith_beha
         case TB_I32:  mask = 0xFFFFFFFFull; break;
         case TB_I64:  mask = 0xFFFFFFFFFFFFFFFFull; break;
         case TB_I128: mask = 0xFFFFFFFFFFFFFFFFull; break;
-        default: tb_unreachable();
+        default: tb_todo();
 	}
     
 	switch (arith_behavior) {
@@ -300,7 +299,7 @@ TB_API TB_Int128 tb_emulate_add(TB_Function* f, TB_ArithmaticBehavior arith_beha
         case TB_WRAP_CHECK: {
             // TODO(NeGate): Throw runtime error in this scenario 
             // if the value is out of bounds
-            tb_unreachable();
+            tb_todo();
         }
         case TB_CAN_WRAP: {
             return (TB_Int128) { (a.lo + b.lo) & mask };
@@ -316,7 +315,7 @@ TB_API TB_Int128 tb_emulate_add(TB_Function* f, TB_ArithmaticBehavior arith_beha
             return (TB_Int128) { sum };
         }
         // TODO(NeGate): Implement this
-        default: tb_unreachable();
+        default: tb_todo();
 	}
 }
 
@@ -382,7 +381,7 @@ TB_API TB_Register tb_inst_param(TB_Function* f, TB_DataType dt) {
         case TB_F32: f->nodes[r].param.size = 4; break;
         case TB_F64: f->nodes[r].param.size = 8; break;
         case TB_PTR: f->nodes[r].param.size = 8; break;
-        default: tb_unreachable();
+        default: tb_todo();
 	}
     
 	assert(dt.count > 0);
@@ -495,7 +494,7 @@ TB_API TB_Register tb_inst_iconst128(TB_Function* f, TB_DataType dt, TB_Int128 i
 		f->nodes[r].i_const.hi = 0;
 		return r;
 	}
-	else tb_unreachable();
+	else tb_todo();
 }
 
 TB_API TB_Register tb_inst_fconst(TB_Function* f, TB_DataType dt, double imm) {
@@ -553,10 +552,16 @@ TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB
 	if (f->nodes[a].type == TB_INT_CONST) tb_swap(a, b);
     
 	// TODO(NeGate): Fix the constant folding to handle i128
-	if (f->nodes[a].type == TB_INT_CONST && f->nodes[b].type == TB_INT_CONST) return tb_inst_iconst128(f, dt, tb_emulate_add(f, arith_behavior, dt, f->nodes[a].i_const, f->nodes[b].i_const));
-	else if (f->nodes[b].type == TB_INT_CONST && f->nodes[b].i_const.lo == 0) return a;
-	else if (f->nodes[a].type == TB_ADD) return tb_inst_add(f, dt, f->nodes[a].i_arith.a, tb_inst_add(f, dt, f->nodes[a].i_arith.b, b, arith_behavior), arith_behavior);
-    
+	if (f->nodes[a].type == TB_INT_CONST && f->nodes[b].type == TB_INT_CONST) {
+		TB_Int128 sum = tb_fold_add(arith_behavior, dt, f->nodes[a].i_const, f->nodes[b].i_const);
+		
+		return tb_inst_iconst128(f, dt, sum);
+	} else if (f->nodes[b].type == TB_INT_CONST && f->nodes[b].i_const.lo == 0) {
+		return a;
+	} else if (f->nodes[a].type == TB_ADD) {
+		return tb_inst_add(f, dt, f->nodes[a].i_arith.a, tb_inst_add(f, dt, f->nodes[a].i_arith.b, b, arith_behavior), arith_behavior);
+    }
+	
 	return tb_cse_arith(f, TB_ADD, dt, arith_behavior, a, b);
 }
 
@@ -844,7 +849,7 @@ static void tb_print_type(TB_DataType dt) {
         case TB_PTR:    printf("[ptr]    \t"); break;
         case TB_F32:    printf("[f32 x %d]\t", dt.count); break;
         case TB_F64:    printf("[f64 x %d]\t", dt.count); break;
-        default:        tb_unreachable();
+        default:        tb_todo();
 	}
 }
 
@@ -921,7 +926,7 @@ TB_API void tb_function_print(TB_Function* f) {
 				case TB_SHL: printf("<<"); break;
 				case TB_SHR: printf(">>"); break;
 				case TB_SAR: printf(">>s"); break;
-                default: tb_unreachable();
+                default: tb_todo();
 			}
             
 			printf(" r%u\n", f->nodes[i].i_arith.b);
@@ -939,7 +944,7 @@ TB_API void tb_function_print(TB_Function* f) {
                 case TB_FSUB: printf("-"); break;
                 case TB_FMUL: printf("*"); break;
                 case TB_FDIV: printf("/"); break;
-                default: tb_unreachable();
+                default: tb_todo();
 			}
             
 			printf(" r%u\n", f->nodes[i].f_arith.b);
@@ -961,7 +966,7 @@ TB_API void tb_function_print(TB_Function* f) {
                 case TB_CMP_ULE: printf("<="); break;
                 case TB_CMP_SLT: printf("<"); break;
                 case TB_CMP_SLE: printf("<="); break;
-                default: tb_unreachable();
+                default: tb_todo();
 			}
             
 			printf(" r%u", f->nodes[i].cmp.b);
@@ -1035,7 +1040,7 @@ TB_API void tb_function_print(TB_Function* f) {
 			tb_print_type(dt);
 			printf(" r%u\n", f->nodes[i].i_arith.a);
 			break;
-            default: tb_unreachable();
+            default: tb_todo();
 		}
 	}
 }
@@ -1056,7 +1061,7 @@ uint8_t* tb_out_reserve(TB_Emitter* o, size_t count) {
 		}
         
 		o->data = realloc(o->data, o->capacity);
-		if (o->data == NULL) tb_unreachable();
+		if (o->data == NULL) tb_todo();
 	}
     
     return &o->data[o->count];

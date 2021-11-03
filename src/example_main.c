@@ -5,7 +5,8 @@ TB_Function* test_add_i8(TB_Module* m);
 TB_Function* test_add_i16(TB_Module* m);
 TB_Function* test_add_i32(TB_Module* m);
 TB_Function* test_andor_i32(TB_Module* m);
-TB_Function* test_sat_add_i32(TB_Module* m);
+TB_Function* test_sat_uadd_i32(TB_Module* m);
+TB_Function* test_sat_sadd_i32(TB_Module* m);
 TB_Function* test_safe_add_i32(TB_Module* m);
 TB_Function* test_add_i64(TB_Module* m);
 TB_Function* test_add_f32(TB_Module* m);
@@ -47,7 +48,8 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_add_i8,
 		test_add_i16,
 		test_add_i32,
-		test_sat_add_i32,
+		test_sat_uadd_i32,
+		test_sat_sadd_i32,
 		test_safe_add_i32,
 		test_add_i64,
 		test_locals_1,
@@ -139,7 +141,7 @@ TB_Function* test_add_i32(TB_Module* m) {
 	return func;
 }
 
-TB_Function* test_sat_add_i32(TB_Module* m) {
+TB_Function* test_sat_uadd_i32(TB_Module* m) {
 	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I32(1));
 	
 	TB_Register a = tb_inst_param(func, TB_TYPE_I32(1));
@@ -153,6 +155,26 @@ TB_Function* test_sat_add_i32(TB_Module* m) {
                                   tb_inst_load(func, TB_TYPE_I32(1), ap, 4),
                                   tb_inst_load(func, TB_TYPE_I32(1), bp, 4),
                                   TB_SATURATED_UNSIGNED
+                                  );
+    
+	tb_inst_ret(func, TB_TYPE_I32(1), sum);
+	return func;
+}
+
+TB_Function* test_sat_sadd_i32(TB_Module* m) {
+	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I32(1));
+	
+	TB_Register a = tb_inst_param(func, TB_TYPE_I32(1));
+	TB_Register b = tb_inst_param(func, TB_TYPE_I32(1));
+    
+	TB_Register ap = tb_inst_param_addr(func, a);
+	TB_Register bp = tb_inst_param_addr(func, b);
+    
+	TB_Register sum = tb_inst_add(
+                                  func, TB_TYPE_I32(1),
+                                  tb_inst_load(func, TB_TYPE_I32(1), ap, 4),
+                                  tb_inst_load(func, TB_TYPE_I32(1), bp, 4),
+                                  TB_SATURATED_SIGNED
                                   );
     
 	tb_inst_ret(func, TB_TYPE_I32(1), sum);

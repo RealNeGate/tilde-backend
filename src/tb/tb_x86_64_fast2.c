@@ -524,7 +524,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 					if (value.type != X64_VALUE_XMM || (value.type == X64_VALUE_XMM && value.gpr != X64_XMM0)) {
 						x64_emit_normal(&out, value.dt.type, MOVSS, &dst, &value);
 					}
-				} else tb_unreachable();
+				} else tb_todo();
 			}
 			
             x64_enqueue_bb(f, bb_stack, bb_end + 1);
@@ -597,7 +597,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 				tb_out_commit(&out, 5);
 		    }
 		} else {
-            tb_unreachable(); // TODO
+            tb_todo(); // TODO
         }
         
         // Terminate any cached values
@@ -631,7 +631,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
     // Trim code output memory
     out.capacity = out.count;
     out.data = realloc(out.data, out.capacity);
-    if (!out.data) tb_unreachable(); // I don't know if this can even fail...
+    if (!out.data) tb_todo(); // I don't know if this can even fail...
     
     return (TB_FunctionOutput) {
         .name = f->name,
@@ -770,7 +770,7 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 						ctx->gpr_desc[GPR_PARAMETERS[id]].bound_value = TB_REG_MAX;
 					} else {
 						// parameter is in memory
-						tb_unreachable();
+						tb_todo();
 						//x64_emit_normal(out, dt.type, MOV, &dst, &src);
 					}
 				}
@@ -884,7 +884,7 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 				
 				// Eval address and cast to the correct type for the store
 				X64_Value address = x64_eval(f, ctx, out, address_reg, i);
-				//if (address.dt.type != TB_PTR) tb_unreachable();
+				//if (address.dt.type != TB_PTR) tb_todo();
 				
 				// TODO(NeGate): Cast to store type
 				if (f->nodes[value_reg].type == TB_ADD 
@@ -916,7 +916,7 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 				break;
 			}
 			default: 
-			tb_unreachable();
+			tb_todo();
 		}
 	}
 }
@@ -949,7 +949,7 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 			}
 			
 			// How? Where did you lose it?
-			tb_unreachable();
+			tb_todo();
         }
         case TB_PHI2: {
             return x64_find_phi(ctx, r)->value;
@@ -978,7 +978,7 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 						.disp = offset
 					}
 				};
-			} else tb_unreachable();
+			} else tb_todo();
 		}
 		case TB_ARRAY_ACCESS: {
             X64_Value base = x64_eval(f, ctx, out, reg->array_access.base, r);
@@ -994,7 +994,7 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 				base_reg = ptr.gpr;
 			} else if (base.type == X64_VALUE_GPR) {
 				base_reg = base.gpr;
-			} else tb_unreachable();
+			} else tb_todo();
 			
 			if (index.type == X64_VALUE_IMM32) {
 				return (X64_Value) {
@@ -1038,7 +1038,7 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 						.disp = 0
 					}
 				};
-			} else tb_unreachable();
+			} else tb_todo();
 		}
         case TB_SIGN_EXT: {
             X64_Value v = x64_eval(f, ctx, out, reg->ext, r);
@@ -1086,29 +1086,29 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
                     break;
                 }
                 case TB_SATURATED_UNSIGNED: {
+					uint8_t* out_buffer = tb_out_reserve(out, 16);
+					uint8_t* out_buffer_start = out_buffer;
+                    
                     X64_Value temp = x64_allocate_gpr(ctx, TB_NULL_REG, TB_TYPE_I64(1));
-                    
-                    uint8_t* out_buffer = tb_out_reserve(out, 11);
-                    
-                    // mov temp, -1 
-                    *out_buffer++ = x64_inst_rex(true, 0x00, temp.gpr, 0x00);
-                    *out_buffer++ = 0xC7;
-                    *out_buffer++ = x64_inst_mod_rx_rm(X64_MOD_DIRECT, 0x00, temp.gpr);
-                    *((uint32_t*)out_buffer) = 0xFFFFFFFF;
-                    out_buffer += 4;
-                    
-                    // cmovae result, temp
-                    *out_buffer++ = x64_inst_rex(true, result.gpr, temp.gpr, 0x00);
-                    *out_buffer++ = 0x0F;
-                    *out_buffer++ = 0x43;
-                    *out_buffer++ = x64_inst_mod_rx_rm(X64_MOD_DIRECT, result.gpr, temp.gpr);
-                    
-                    tb_out_commit(out, 11);
-                    
+					bool is_64bit = (reg->dt.type == TB_I64 || reg->dt.type == TB_PTR);
+					
+					// mov temp, -1 
+					if (is_64bit || temp.gpr >= 8) *out_buffer++ = x64_inst_rex(false, 0x00, temp.gpr, 0x00);
+					*out_buffer++ = 0xB8 + (temp.gpr & 0x7);
+					*((uint32_t*)out_buffer) = 0xFFFFFFFF;
+					out_buffer += 4;
+					
+					// cmovae result, temp
+					if (is_64bit || result.gpr >= 8 || temp.gpr >= 8) *out_buffer++ = x64_inst_rex(false, result.gpr, temp.gpr, 0x00);
+					*out_buffer++ = 0x0F;
+					*out_buffer++ = 0x43;
+					*out_buffer++ = x64_inst_mod_rx_rm(X64_MOD_DIRECT, result.gpr, temp.gpr);
+					
+                    tb_out_commit(out, out_buffer - out_buffer_start);
                     x64_free_gpr(ctx, temp.gpr);
                     break;
                 }
-                case TB_SATURATED_SIGNED: tb_unreachable();
+                case TB_SATURATED_SIGNED: tb_todo();
             }
             
             return result;
@@ -1194,7 +1194,7 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 				}
 			}
 			
-			tb_unreachable();
+			tb_todo();
 		}
         case TB_FADD: {
             return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, F32ADD_PATTERNS, tb_arrlen(F32ADD_PATTERNS));
@@ -1292,7 +1292,7 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 				
 				x64_emit_normal(out, param_dt.type, MOV, &result, &mem);
 				return result;
-			} else tb_unreachable();
+			} else tb_todo();
         }
         case TB_CMP_EQ:
         case TB_CMP_NE:
@@ -1327,7 +1327,7 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
                 case TB_CMP_SLE: cc = X64_LE; break;
                 case TB_CMP_ULT: cc = X64_B; break;
                 case TB_CMP_ULE: cc = X64_BE; break;
-                default: tb_unreachable();
+                default: tb_todo();
             }
             
             cc ^= invert;
@@ -1350,7 +1350,7 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
             // TODO(NeGate): Test this!
             return x64_eval(f, ctx, out, addr_reg, r);
         }
-        default: tb_unreachable();
+        default: tb_todo();
     }
 }
 
@@ -1392,7 +1392,7 @@ static void x64_terminate_path(TB_Function* f, X64_Context* ctx, TB_Emitter* out
 			TB_Register src = 0;
 			if (f->nodes[i].phi2.a_label == from_label) src = f->nodes[i].phi2.a;
 			else if (f->nodes[i].phi2.b_label == from_label) src = f->nodes[i].phi2.b;
-			else tb_unreachable();
+			else tb_todo();
 			
 			if (phi->value.type == X64_NONE) {
 				// Attempt to recycle
@@ -1482,7 +1482,7 @@ static X64_Value x64_as_bool(TB_Function* f, X64_Context* ctx, TB_Emitter* out, 
         
         x64_emit_normal(out, src_dt.type, CMP, &src, &imm);
         return (X64_Value) { .type = X64_VALUE_FLAGS, .cond = X64_NE };
-    } else tb_unreachable();
+    } else tb_todo();
 }
 
 static X64_Value x64_eval_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, const TB_Int128* imm) {
@@ -1576,7 +1576,7 @@ static X64_Value x64_allocate_gpr(X64_Context* ctx, TB_Register reg, TB_DataType
 	}
 	
 	// Spill GPRs
-	tb_unreachable();
+	tb_todo();
 }
 
 static X64_Value x64_allocate_gpr_pair(X64_Context* ctx, TB_Register reg, TB_DataType dt) {
@@ -1604,7 +1604,7 @@ static X64_Value x64_allocate_xmm(X64_Context* ctx, TB_Register reg, TB_DataType
 	}
 	
 	// Spill XMMs
-	tb_unreachable();
+	tb_todo();
 }
 
 static void x64_free_xmm(X64_Context* ctx, X64_XMM xmm) {
@@ -1886,7 +1886,7 @@ static X64_Value x64_legalize(TB_Function* f, X64_Context* ctx, TB_Emitter* out,
 	// This only needs to worry about 8 and 16bit GPRs
 	if (v.dt.type == TB_I8 || v.dt.type == TB_I16) {
 		// Types should have been promoted out
-		tb_unreachable();
+		tb_todo();
 	}
 	
 	return v;
@@ -1898,7 +1898,7 @@ static char x64_value_type_to_pattern_char(X64_ValueType type) {
 		case X64_VALUE_GPR: return 'r';
 		case X64_VALUE_XMM: return 'x';
 		case X64_VALUE_MEM: return 'm';
-		default: tb_unreachable();
+		default: tb_todo();
 	}
 }
 
@@ -1967,7 +1967,7 @@ static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out,
 	}
 	
 	// Pattern matcher failed
-	if (best_match == NULL) tb_unreachable();
+	if (best_match == NULL) tb_todo();
 	
 	X64_Value dst;
 	if (best_match->recycle) dst = a;
@@ -2099,8 +2099,8 @@ static int32_t x64_allocate_locals(TB_Function* f, X64_Context* ctx, TB_Emitter*
 					
 					// save the shadow space into the stack
 					if (dt.type == TB_F32) x64_emit_normal(out, dt.type, MOVSS, &dst, &src);
-					else tb_unreachable(); // TODO(NeGate): Implement movsd
-				} else tb_unreachable();
+					else tb_todo(); // TODO(NeGate): Implement movsd
+				} else tb_todo();
 			}
 		} else if (f->nodes[i].type == TB_PARAM) {
 			int id = f->nodes[i].param.id;
@@ -2140,7 +2140,7 @@ static int32_t x64_find_local(X64_Context* ctx, TB_Register r) {
 		if (ctx->locals[i].address == r) return ctx->locals[i].disp;
 	}
 	
-	tb_unreachable();
+	tb_todo();
 }
 
 static X64_PhiValue* x64_find_phi(X64_Context* ctx, TB_Register r) {

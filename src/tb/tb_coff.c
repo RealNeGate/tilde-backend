@@ -150,10 +150,10 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		}
 		case TB_ARCH_AARCH64: {
 			header.machine = COFF_MACHINE_ARM64;
-			tb_unreachable(); // TODO(NeGate): Implement prologue and epilogue stuff
+			tb_todo(); // TODO(NeGate): Implement prologue and epilogue stuff
 			break;
 		}
-		default: tb_unreachable();
+		default: tb_todo();
 	}
 	
 	for (size_t i = 0; i < m->call_patches.count; i++) {
@@ -216,10 +216,10 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 			break;
 		}
 		case TB_ARCH_AARCH64: {
-			tb_unreachable(); // TODO(NeGate)
+			tb_todo();
 			break;
 		}
-		default: tb_unreachable();
+		default: tb_todo();
 	}
 	
 	assert(ftell(f) == rdata_section.raw_data_pos);

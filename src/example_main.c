@@ -17,13 +17,14 @@ TB_Function* test_params_2(TB_Module* m);
 TB_Function* test_locals_params_1(TB_Module* m);
 TB_Function* test_add_sub_i32(TB_Module* m);
 TB_Function* test_fib(TB_Module* m);
+TB_Function* test_foo(TB_Module* m);
 TB_Function* test_entry(TB_Module* m);
 
 int main(int argc, char** argv) {
 	TB_FeatureSet features = { 0 };
     
 	// Currently it only supports binary output
-#if 1
+#if 0
 	FILE* f = fopen("./test_aarch64.o", "wb");
 	do_tests(f, TB_ARCH_AARCH64, TB_SYSTEM_LINUX, &features);
 	fclose(f);
@@ -58,9 +59,10 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_andor_i32,
 		test_muladd_f32,
 		test_fib,
+		test_foo,
 		test_entry
 	};
-	size_t count = 11;// sizeof(test_functions) / sizeof(test_functions[0]);
+	size_t count = sizeof(test_functions) / sizeof(test_functions[0]);
     
 	for (size_t i = 0; i < count; i++) {
 		test_functions[i](m);
@@ -99,7 +101,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 	}
 #endif
     
-	tb_module_compile(m, TB_OPT_O0, 1);
+	tb_module_compile(m, TB_OPT_SIZE, 1);
 	tb_module_export(m, f);
 	tb_module_destroy(m);
 }
@@ -342,6 +344,7 @@ TB_Function* test_add_sub_i32(TB_Module* m) {
 }
 
 static TB_Function* test_fib_func_ref = NULL;
+static TB_Function* test_foo_func_ref = NULL;
 
 TB_Function* test_fib(TB_Module* m) {
 	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I32(1));
@@ -367,12 +370,41 @@ TB_Function* test_fib(TB_Module* m) {
 	return func;
 }
 
+TB_Function* test_foo(TB_Module* m) {
+	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I32(1));
+	test_foo_func_ref = func;
+	
+	TB_Register a = tb_inst_param(func, TB_TYPE_I32(1));
+	TB_Register b = tb_inst_param(func, TB_TYPE_I32(1));
+    
+	TB_Register ap = tb_inst_param_addr(func, a);
+	TB_Register bp = tb_inst_param_addr(func, b);
+	
+	TB_Register factor = tb_inst_mul(func, TB_TYPE_I32(1),
+									 tb_inst_load(func, TB_TYPE_I32(1), ap, 4),
+									 tb_inst_load(func, TB_TYPE_I32(1), bp, 4),
+									 TB_NO_WRAP
+									 );
+	
+	tb_inst_ret(func, TB_TYPE_I32(1), factor);
+	return func;
+}
+
 TB_Function* test_entry(TB_Module* m) {
 	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I32(1));
 	
-	TB_Register num = tb_inst_iconst(func, TB_TYPE_I32(1), 45);
-	TB_Register result = tb_inst_call(func, TB_TYPE_I32(1), test_fib_func_ref, 1, &num);
+	TB_Register a = tb_inst_param(func, TB_TYPE_I32(1));
+	TB_Register ap = tb_inst_param_addr(func, a);
+	
+	TB_Register al = tb_inst_load(func, TB_TYPE_I32(1), ap, 4);
+	TB_Register b = tb_inst_iconst(func, TB_TYPE_I32(1), 2);
+	
+	TB_Register result = tb_inst_call(func, TB_TYPE_I32(1), test_foo_func_ref, 2, (TB_Register[]) { al, b });
 	tb_inst_ret(func, TB_TYPE_I32(1), result);
+	
+	//TB_Register num = tb_inst_iconst(func, TB_TYPE_I32(1), 45);
+	//TB_Register result = tb_inst_call(func, TB_TYPE_I32(1), test_fib_func_ref, 1, &num);
+	//tb_inst_ret(func, TB_TYPE_I32(1), result);
 	
 	return func;
 }

@@ -19,17 +19,27 @@ bool tb_opt_dce(TB_Function* f) {
                 case TB_GOTO:
                 case TB_IF:
                 case TB_RET:
+                case TB_STORE:
+                case TB_LOAD:
+                case TB_CALL:
 				break;
 				// delete:
                 case TB_INT_CONST:
                 case TB_LOCAL:
+                case TB_AND:
+                case TB_OR:
                 case TB_ADD:
                 case TB_SUB:
                 case TB_MUL:
                 case TB_SDIV:
                 case TB_UDIV:
-                case TB_STORE:
-                case TB_LOAD:
+                case TB_SHL:
+                case TB_SHR:
+                case TB_SAR:
+                case TB_FADD:
+                case TB_FSUB:
+                case TB_FMUL:
+                case TB_FDIV:
                 case TB_PARAM:
                 case TB_PARAM_ADDR:
                 case TB_CMP_EQ:

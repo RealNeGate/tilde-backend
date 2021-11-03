@@ -1,3 +1,4 @@
+// TODO(NeGate): Consider some smart list macros for this.
 #define TB_INTERNAL
 #include "tb.h"
 
@@ -55,6 +56,9 @@ void tb_find_live_intervals(size_t intervals[], const TB_Function* f) {
             case TB_MUL:
             case TB_UDIV:
             case TB_SDIV:
+            case TB_SAR:
+            case TB_SHL:
+            case TB_SHR:
 			intervals[f->nodes[i].i_arith.a] = i;
 			intervals[f->nodes[i].i_arith.b] = i;
 			break;
@@ -77,6 +81,7 @@ void tb_find_live_intervals(size_t intervals[], const TB_Function* f) {
 			intervals[f->nodes[i].cmp.b] = i;
 			break;
             case TB_CALL:
+            case TB_ICALL:
 			for (size_t j = f->nodes[i].call.param_start; j < f->nodes[i].call.param_end; j++) {
 				intervals[f->vla.data[j]] = i;
 			}
@@ -142,6 +147,9 @@ size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_
             case TB_MUL:
             case TB_UDIV:
             case TB_SDIV:
+            case TB_SAR:
+            case TB_SHL:
+            case TB_SHR:
 			ffu(f->nodes[i].i_arith.a);
 			ffu(f->nodes[i].i_arith.b);
 			break;
@@ -162,6 +170,12 @@ size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_
             case TB_CMP_FLE:
 			ffu(f->nodes[i].cmp.a);
 			ffu(f->nodes[i].cmp.b);
+			break;
+            case TB_CALL:
+            case TB_ICALL:
+			for (size_t j = f->nodes[i].call.param_start; j < f->nodes[i].call.param_end; j++) {
+				ffu(f->vla.data[j]);
+			}
 			break;
             case TB_IF:
 			ffu(f->nodes[i].if_.cond);
@@ -226,6 +240,9 @@ TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t sta
             case TB_MUL:
             case TB_UDIV:
             case TB_SDIV:
+            case TB_SAR:
+            case TB_SHL:
+            case TB_SHR:
 			ffu(f->nodes[i].i_arith.a);
 			ffu(f->nodes[i].i_arith.b);
 			break;
@@ -246,6 +263,12 @@ TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t sta
             case TB_CMP_FLE:
 			ffu(f->nodes[i].cmp.a);
 			ffu(f->nodes[i].cmp.b);
+			break;
+			case TB_CALL:
+            case TB_ICALL:
+			for (size_t j = f->nodes[i].call.param_start; j < f->nodes[i].call.param_end; j++) {
+				ffu(f->vla.data[j]);
+			}
 			break;
             case TB_IF:
 			ffu(f->nodes[i].if_.cond);
@@ -316,6 +339,9 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Register 
             case TB_MUL:
             case TB_UDIV:
             case TB_SDIV:
+            case TB_SAR:
+            case TB_SHL:
+            case TB_SHR:
 			f_n_r(f->nodes[i].i_arith.a);
 			f_n_r(f->nodes[i].i_arith.b);
 			break;
@@ -337,6 +363,12 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Register 
 			f_n_r(f->nodes[i].cmp.a);
 			f_n_r(f->nodes[i].cmp.b);
 			break;
+			case TB_CALL:
+            case TB_ICALL:
+			for (size_t j = f->nodes[i].call.param_start; j < f->nodes[i].call.param_end; j++) {
+				f_n_r(f->vla.data[j]);
+			}
+			break;
             case TB_IF:
 			f_n_r(f->nodes[i].if_.cond);
 			break;
@@ -356,4 +388,32 @@ TB_Register tb_find_reg_from_label(TB_Function* f, TB_Label id) {
 	}
     
 	return TB_NULL_REG;
+}
+
+// NOTE(NeGate): Any previous TB_Register you have saved locally,
+// update them or at least shift over all the indices based on `at`
+static TB_Node* tb_insert_op(TB_Function* f, TB_Register at) {
+	// Reserve the space
+	if (f->count + 1 >= f->capacity) {
+		f->capacity = f->count + 1;
+		f->capacity = tb_next_pow2(f->capacity);
+        
+		f->nodes = realloc(f->nodes, f->capacity * sizeof(TB_Node));
+	}
+	
+	// Shift over registers
+	int registers_beyond_end_point = f->count - at;
+	memmove(&f->nodes[at + 1], &f->nodes[at], registers_beyond_end_point * sizeof(TB_Node));
+	f->count += 1;
+	
+	// Clear out register
+	// necessary for the find & replace not to screw up
+	f->nodes[at] = (TB_Node){ 0 };
+	
+	// Shift all references over by 1
+	while (registers_beyond_end_point--) {
+		tb_function_find_replace_reg(f, at + registers_beyond_end_point, at + registers_beyond_end_point + 1);
+	}
+	
+	return &f->nodes[at];
 }

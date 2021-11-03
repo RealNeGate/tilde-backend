@@ -3,7 +3,6 @@
 
 static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_DataType* dst_dt);
 static TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count);
-static TB_Node* tb_insert_op(TB_Function* f, TB_Register at);
 static bool tb_mem2reg_single_reg(TB_Function* f, TB_TemporaryStorage* tls, int label_count, TB_Register address, TB_Register initial_value);
 static TB_Register tb_walk_for_intermediate_phi(TB_Function* f, TB_Label label_count, TB_Label l, TB_Register* first_revision, TB_Register* last_revision, TB_Label** preds, int* pred_count);
 
@@ -212,36 +211,6 @@ static TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_Tempora
 	
 	*dst_count = count;
 	return preds;
-}
-
-// TODO(NeGate): Any previous TB_Register you have saved locally,
-// update them or at least shift over all the indices based on `at`
-//
-// TODO(NeGate): Move this out of this file once it's relevant
-static TB_Node* tb_insert_op(TB_Function* f, TB_Register at) {
-	// Reserve the space
-	if (f->count + 1 >= f->capacity) {
-		f->capacity = f->count + 1;
-		f->capacity = tb_next_pow2(f->capacity);
-        
-		f->nodes = realloc(f->nodes, f->capacity * sizeof(TB_Node));
-	}
-	
-	// Shift over registers
-	int registers_beyond_end_point = f->count - at;
-	memmove(&f->nodes[at + 1], &f->nodes[at], registers_beyond_end_point * sizeof(TB_Node));
-	f->count += 1;
-	
-	// Clear out register
-	// necessary for the find & replace not to screw up
-	f->nodes[at] = (TB_Node){ 0 };
-	
-	// Shift all references over by 1
-	while (registers_beyond_end_point--) {
-		tb_function_find_replace_reg(f, at + registers_beyond_end_point, at + registers_beyond_end_point + 1);
-	}
-	
-	return &f->nodes[at];
 }
 
 static TB_Register tb_walk_for_intermediate_phi(TB_Function* f, TB_Label label_count, TB_Label l, TB_Register* first_revision, TB_Register* last_revision, TB_Label** preds, int* pred_count) {

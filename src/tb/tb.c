@@ -78,6 +78,19 @@ TB_API void tb_module_destroy(TB_Module* m) {
 	free(m);
 }
 
+// https://create.stephan-brumme.com/fnv-hash/
+// hash a block of memory
+static uint32_t fnv1a(const void* data, size_t num_bytes) {
+	const unsigned char* ptr = (const unsigned char*)data;
+	uint32_t hash = 0x811C9DC5;
+	
+	while (num_bytes--) {
+		hash = ((*ptr++) ^ hash) * 0x01000193;
+	}
+	
+	return hash;
+}
+
 TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_threads) {
 	m->compiled_functions.count = m->functions.count;
     
@@ -87,30 +100,39 @@ TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 			TB_Function* f = &m->functions.data[i];
 			tb_function_print(f);
 		}
-	} else if (optimization_level == TB_OPT_O1) {
-		// Perform basic optimizations, mem2reg, dce, cse
-		// No complex loop transforms, minor inlining allowed
-		
+	} else {
 		loop(i, m->functions.count) {
 			TB_Function* f = &m->functions.data[i];
 			
-			bool changes;
-			do {
-				changes = false;
+			restart_opt: {
+				//tb_function_print(f);
+				//printf("\n\n\n");
 				
-				tb_function_print(f);
-				printf("\n\n\n");
-				
-				changes |= tb_opt_mem2reg(f);
-				changes |= tb_opt_dce(f);
-			} while (changes);
+				if (tb_opt_canonicalize(f)) goto restart_opt;
+				if (tb_opt_strength_reduction(f)) goto restart_opt;
+				if (tb_opt_mem2reg(f)) goto restart_opt;
+				if (tb_opt_dce(f)) goto restart_opt;
+				if (tb_opt_inline(f)) goto restart_opt;
+				if (tb_opt_compact_dead_regs(f)) goto restart_opt;
+			}
+			
+			//tb_function_print(f);
+			//printf("\n\n\n");
 		}
-	} else {
-		// TODO(NeGate): Implement this!
-		tb_unreachable();
-	}
+	} 
 	
-	// TODO(NeGate): Implement the optimization passes
+	// TODO(NeGate): Implement function deduplication,
+	// if the functions are the same merge them.
+	/*if (optimization_level == TB_OPT_SIZE) {
+		loop(i, m->functions.count) {
+			TB_Function* f = &m->functions.data[i];
+			
+			uint32_t hash = fnv1a(f->nodes, f->count * sizeof(TB_Node));
+			printf("Hash: %x\n", hash);
+			tb_function_print(f);
+			printf("\n\n\n");
+		}
+	}*/
 	
 	switch (m->target_arch) {
 		case TB_ARCH_X86_64:
@@ -835,8 +857,8 @@ TB_API void tb_function_print(TB_Function* f) {
         
 		switch (type) {
             case TB_NULL:
-			//printf("  r%u\t=\t", i);
-			//printf(" ???\n");
+			printf("  r%u\t=\t", i);
+			printf(" NOP\n");
 			break;
             case TB_INT_CONST:
 			printf("  r%u\t=\t", i);
@@ -881,6 +903,9 @@ TB_API void tb_function_print(TB_Function* f) {
             case TB_MUL:
             case TB_UDIV:
             case TB_SDIV:
+            case TB_SHL:
+            case TB_SHR:
+            case TB_SAR:
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
 			printf(" r%u ", f->nodes[i].i_arith.a);
@@ -893,6 +918,9 @@ TB_API void tb_function_print(TB_Function* f) {
                 case TB_MUL: printf("*"); break;
                 case TB_UDIV: printf("/u"); break;
                 case TB_SDIV: printf("/s"); break;
+				case TB_SHL: printf("<<"); break;
+				case TB_SHR: printf(">>"); break;
+				case TB_SAR: printf(">>s"); break;
                 default: tb_unreachable();
 			}
             
@@ -943,6 +971,15 @@ TB_API void tb_function_print(TB_Function* f) {
 			break;
             case TB_LOCAL:
 			printf("  r%u\t=\tLOCAL %d (%d align)\n", i, f->nodes[i].local.size, f->nodes[i].local.alignment);
+			break;
+            case TB_ICALL:
+			printf("  r%u\t=\tINLINE CALL %s(", i, f->nodes[i].call.target->name);
+			for (size_t j = f->nodes[i].call.param_start; j < f->nodes[i].call.param_end; j++) {
+				if (j != f->nodes[i].call.param_start) printf(", ");
+				
+				printf("r%u", f->vla.data[j]);
+			}
+			printf(")\n");
 			break;
             case TB_CALL:
 			printf("  r%u\t=\tCALL %s(", i, f->nodes[i].call.target->name);

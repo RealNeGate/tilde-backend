@@ -280,6 +280,7 @@ enum TB_RegisterType {
     TB_NULL,
 	
 	TB_CALL,
+	TB_ICALL, // inline call
     
     // Immediates
     TB_INT_CONST,
@@ -633,12 +634,17 @@ TB_Register tb_find_reg_from_label(TB_Function* f, TB_Label id);
 TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t start, size_t end);
 void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Register replace);
 size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_t end);
+TB_Node* tb_insert_op(TB_Function* f, TB_Register at);
 
 //
 // OPTIMIZATION FUNCTIONS
 //
 bool tb_opt_mem2reg(TB_Function* f);
 bool tb_opt_dce(TB_Function* f);
+bool tb_opt_inline(TB_Function* f);
+bool tb_opt_canonicalize(TB_Function* f);
+bool tb_opt_strength_reduction(TB_Function* f);
+bool tb_opt_compact_dead_regs(TB_Function* f);
 
 //
 // BACKEND UTILITIES

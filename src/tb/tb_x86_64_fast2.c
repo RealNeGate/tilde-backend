@@ -678,6 +678,9 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 			case TB_ADD:
 			case TB_SUB:
 			case TB_MUL:
+			case TB_SHL:
+			case TB_SHR:
+			case TB_SAR:
 			case TB_SDIV:
 			case TB_UDIV:
 			case TB_FADD:
@@ -1036,8 +1039,6 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 					}
 				};
 			} else tb_unreachable();
-			
-			//return dst;
 		}
         case TB_SIGN_EXT: {
             X64_Value v = x64_eval(f, ctx, out, reg->ext, r);
@@ -1127,6 +1128,74 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
             
             return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, IMUL_PATTERNS, tb_arrlen(IMUL_PATTERNS));
         }
+		case TB_SHL: {
+			TB_Register a = reg->i_arith.a;
+			TB_Register b = reg->i_arith.b;
+			TB_DataType dt = reg->dt;
+			
+            X64_Value a_value = x64_eval(f, ctx, out, a, r);
+			
+			if (f->nodes[b].type == TB_INT_CONST) {
+				assert(f->nodes[b].i_const.hi == 0);
+				assert(f->nodes[b].i_const.lo < 64);
+				
+				if (f->nodes[next].type == TB_RET) {
+					// The destination is now RAX since that'll save us a move
+					// and we can also use RAX as a temporary without allocating
+					// it.
+					X64_Value dst = (X64_Value){
+						.type = X64_VALUE_GPR,
+						.dt = dt,
+						.gpr = X64_RAX
+					};
+					
+					if (a_value.type != X64_VALUE_GPR) {
+						// move into a register
+						x64_emit_normal(out, dt.type, MOV, &dst, &a_value);
+					}
+					
+					bool is_64bit = dt.type == TB_I64 || dt.type == TB_PTR;
+					if (f->nodes[b].i_const.lo == 1) {
+						// lea _0, [_1 + _1]
+						uint8_t* out_buffer = tb_out_reserve(out, 4);
+						
+						*out_buffer++ = x64_inst_rex(is_64bit, dst.gpr, a_value.gpr, a_value.gpr);
+						*out_buffer++ = 0x8D;
+						*out_buffer++ = x64_inst_mod_rx_rm(X64_MOD_INDIRECT, dst.gpr, X64_RSP);
+						*out_buffer++ = x64_inst_mod_rx_rm(X64_SCALE_X1, (a_value.gpr & 7) == X64_RSP ? X64_RSP : a_value.gpr, a_value.gpr);
+						
+						tb_out_commit(out, 4);
+					} else {
+						uint8_t* out_buffer = tb_out_reserve(out, 5);
+						
+						*out_buffer++ = x64_inst_rex(is_64bit, 0x00, dst.gpr, 0x00);
+						*out_buffer++ = dt.type == TB_I8 ? 0xC0 : 0xC1;
+						*out_buffer++ = x64_inst_mod_rx_rm(X64_MOD_DIRECT, 0x04, dst.gpr);
+						*out_buffer++ = f->nodes[b].i_const.lo;
+						
+						tb_out_commit(out, (dt.type == TB_I16) ? 5 : 4);
+					}
+					return dst;
+				} else {
+					X64_Value dst = x64_allocate_gpr(ctx, r, dt);
+					x64_emit_normal(out, dt.type, MOV, &dst, &a_value);
+					
+					bool is_64bit = dt.type == TB_I64 || dt.type == TB_PTR;
+					uint8_t* out_buffer = tb_out_reserve(out, 5);
+					
+					if (dt.type == TB_I16) *out_buffer++ = 0x66;
+					*out_buffer++ = x64_inst_rex(is_64bit, 0x00, dst.gpr, 0x00);
+					*out_buffer++ = dt.type == TB_I8 ? 0xC0 : 0xC1;
+					*out_buffer++ = x64_inst_mod_rx_rm(X64_MOD_DIRECT, 0x04, dst.gpr);
+					*out_buffer++ = f->nodes[b].i_const.lo;
+					
+					tb_out_commit(out, (dt.type == TB_I16) ? 5 : 4);
+					return dst;
+				}
+			}
+			
+			tb_unreachable();
+		}
         case TB_FADD: {
             return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, F32ADD_PATTERNS, tb_arrlen(F32ADD_PATTERNS));
         }

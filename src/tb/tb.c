@@ -793,6 +793,33 @@ TB_API TB_Register tb_inst_if(TB_Function* f, TB_Register cond, TB_Label if_true
 	return r;
 }
 
+TB_API void tb_inst_switch(TB_Function* f, TB_DataType dt, TB_Register key, TB_Label default_label, size_t entry_count, const TB_SwitchEntry* entries) {
+	// the switch entries are 2 slots each
+	size_t param_count = entry_count * 2;
+	
+	// Reserve space for the arguments
+	if (f->vla.count + param_count >= f->vla.capacity) {
+		// TODO(NeGate): This might be excessive for this array, idk :P
+		f->vla.capacity = tb_next_pow2(f->vla.count + param_count);
+		f->vla.data = realloc(f->vla.data, f->vla.capacity * sizeof(TB_Register));
+	}
+	
+	int param_start = f->vla.count;
+	memcpy(f->vla.data + f->vla.count, entries, param_count * sizeof(TB_Register));
+	f->vla.count += param_count;
+	int param_end = f->vla.count;
+	
+	TB_Register r = tb_make_reg(f, TB_SWITCH, dt);
+	f->nodes[r].switch_.key = key;
+	f->nodes[r].switch_.default_label = default_label;
+	f->nodes[r].switch_.entries_start = param_start;
+	f->nodes[r].switch_.entries_end = param_end;
+	
+	assert(f->current_label);
+	f->nodes[f->current_label].label.terminator = r;
+	f->current_label = TB_NULL_REG;
+}
+
 TB_API void tb_inst_ret(TB_Function* f, TB_DataType dt, TB_Register value) {
 	TB_Register r = tb_make_reg(f, TB_RET, dt);
 	f->nodes[r].ret.value = value;
@@ -995,6 +1022,22 @@ TB_API void tb_function_print(TB_Function* f) {
 			}
 			printf(")\n");
 			break;
+            case TB_SWITCH: {
+				printf(" SWITCH\t");
+				tb_print_type(dt);
+				printf("\tr%u (\n", f->nodes[i].switch_.key);
+				
+				size_t entry_start = f->nodes[i].switch_.entries_start;
+				size_t entry_count = (f->nodes[i].switch_.entries_end - f->nodes[i].switch_.entries_start) / 2;
+				
+				for (size_t j = 0; j < entry_count; j++) {
+					TB_SwitchEntry* e = (TB_SwitchEntry*)&f->vla.data[entry_start + (j * 2)];
+					
+					printf("\t\t\t%u -> L%d,\n", e->key, e->value);
+				}
+				printf("\t\t\tdefault -> L%d)\n", f->nodes[i].switch_.default_label);
+				break;
+			}
             case TB_PARAM:
 			printf("  r%u\t=\tPARAM %u\n", i, f->nodes[i].param.id);
 			break;

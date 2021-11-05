@@ -11,6 +11,8 @@ typedef enum X64_ValueType {
 	X64_NONE,
     
     // Real encodable types
+	// Their order is based on which should go
+	// on the right hand side of isel(...)
     X64_VALUE_IMM32,
     X64_VALUE_MEM,
     X64_VALUE_GPR,
@@ -131,7 +133,7 @@ static const X64_NormalInst insts[] = {
 	[X64_ADD] = { 0x00, 0x80, 0x00 },
 	[X64_AND] = { 0x20, 0x80, 0x04 },
 	[X64_OR]  = { 0x08, 0x80, 0x00 },
-	[X64_SUB] = { 0x2A, 0x80, 0x05 },
+	[X64_SUB] = { 0x28, 0x80, 0x05 },
 	[X64_XOR] = { 0x30, 0x80, 0x06 },
 	[X64_CMP] = { 0x38, 0x80, 0x07 },
 	[X64_MOV] = { 0x88, 0xC6, 0x00 },
@@ -205,7 +207,7 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 static X64_Value x64_eval_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, const TB_Int128* imm);
 static X64_Value x64_eval_float_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, float imm);
 static X64_Value x64_as_memory_operand(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_DataType dt, TB_Register r);
-static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register dst_reg, TB_Register a_reg, TB_Register b_reg, TB_Register next_reg, const X64_ISel_Pattern patterns[], size_t pattern_count);
+static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register dst_reg, TB_Register a_reg, TB_Register b_reg, TB_Register next_reg, const X64_ISel_Pattern patterns[], size_t pattern_count, bool communitive);
 static X64_Value x64_as_bool(TB_Function* f, X64_Context* ctx, TB_Emitter* out, X64_Value src, TB_DataType src_dt);
 static X64_Value x64_explicit_load(TB_Function* f, X64_Context* ctx, TB_Emitter* out, X64_Value addr, TB_Register r, TB_Register addr_reg);
 static void x64_inst_bin_op(X64_Context* ctx, TB_Emitter* out, TB_DataType dt, const X64_NormalInst* inst, const X64_Value* a, const X64_Value* b, TB_Register b_reg);
@@ -229,6 +231,12 @@ static X64_Value x64_allocate_xmm(X64_Context* ctx, TB_Register reg, TB_DataType
 static void x64_free_xmm(X64_Context* ctx, X64_XMM gpr);
 static void x64_free_gpr(X64_Context* ctx, X64_GPR gpr);
 static bool x64_is_temporary_of_bb(TB_Function* f, X64_Context* ctx, X64_GPR gpr, TB_Register bb, TB_Register bb_end);
+
+static bool x64_is_value_gpr(const X64_Value* v, X64_GPR g) {
+	if (v->type != X64_VALUE_GPR) return false;
+	
+	return (v->gpr == g);
+}
 
 size_t x64_get_prologue_length(uint64_t saved, uint64_t stack_usage) {
 	// If the stack usage is zero we don't need a prologue
@@ -320,13 +328,13 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 	uint32_t ret_patch_count = 0;
 	uint32_t label_patch_count = 0;
 	uint32_t caller_usage_in_bytes = 0;
+	uint32_t ir_label_count = 0;
+	uint32_t ir_label_patch_count = 0;
     {
 		uint32_t phi_count = 0;
 		uint32_t locals_count = 0;
 		uint32_t mem_cache_count = 0;
 		uint32_t ir_return_count = 0;
-		uint32_t ir_label_count = 0;
-		uint32_t ir_label_patch_count = 0;
         
 		for (size_t i = 1; i < f->count; i++) {
 			if (f->nodes[i].type == TB_PHI1) phi_count++;
@@ -510,7 +518,24 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 						.gpr = X64_RAX
 					};
 					
-					if (value.type != X64_VALUE_GPR || (value.type == X64_VALUE_GPR && value.gpr != X64_RAX)) {
+					if (value.type == X64_VALUE_IMM32) {
+						uint8_t* out_buffer = tb_out_reserve(&out, 5);
+						
+						assert(value.imm32 < INT32_MAX);
+						if (value.imm32 == 0) {
+							*out_buffer++ = 0x31;
+							*out_buffer++ = x64_inst_mod_rx_rm(X64_MOD_DIRECT, X64_RAX, X64_RAX);
+							
+							tb_out_commit(&out, 2);
+						} else {
+							// mov eax, imm32
+							*out_buffer++ = 0xB8;
+							*((uint32_t*)out_buffer) = value.imm32;
+							out_buffer += 4;
+							
+							tb_out_commit(&out, 5);
+						}
+					} else if (value.type != X64_VALUE_GPR || (value.type == X64_VALUE_GPR && value.gpr != X64_RAX)) {
 						x64_emit_normal(&out, value.dt.type, MOV, &dst, &value);
 					}
 				} else if (value.dt.type == TB_F32) {
@@ -596,6 +621,55 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 				out_buffer[4] = 0x00;
 				tb_out_commit(&out, 5);
 		    }
+		} else if (f->nodes[bb_end].type == TB_SWITCH) {
+            x64_enqueue_bb(f, bb_stack, bb_end + 1);
+			
+			// the switch statement is possibly the most complicated single
+			// node in the IR, it matches the switch statement in C almost
+			// perfectly and can be thought of as a search function.
+			// 
+			//  goto jump_table[search(n)]
+			// 
+			// There's a variety of ways that the switch node can be evaluated.
+			// 
+			// First attempt: if the entries are mostly linear and mostly sequencial
+			// then it may be best to build a small indirect jump table and use that,
+			// pros are that it's simple and sequencial, cons are that it's takes up
+			// a lot of space when the entries are sparse.
+			TB_Node* reg = &f->nodes[bb_end];
+			size_t entry_start = reg->switch_.entries_start;
+			size_t entry_count = (reg->switch_.entries_end - reg->switch_.entries_start) / 2;
+			
+			size_t switch_range_min = UINT64_MAX;
+			size_t switch_range_max = 0;
+			size_t switch_max_case_dist = 0; // Maximum distance between any two case keys
+			size_t switch_avg_case_dist = 0;
+			
+			for (size_t j = 0; j < entry_count; j++) {
+				TB_SwitchEntry* e = (TB_SwitchEntry*)&f->vla.data[entry_start + (j * 2)];
+				
+				switch_range_min = (e->key < switch_range_min) ? e->key : switch_range_min;
+				switch_range_max = (e->key < switch_range_max) ? switch_range_max : e->key;
+				
+				if (j) {
+					TB_SwitchEntry* prev = (TB_SwitchEntry*)&f->vla.data[entry_start + (j * 2) - 2];
+					
+					size_t dist = e->key - prev->key;
+					switch_max_case_dist = (dist < switch_max_case_dist) ? switch_max_case_dist : dist;
+					switch_avg_case_dist = (dist + switch_avg_case_dist + 1) / 2;
+				}
+			}
+			
+			if (switch_avg_case_dist > 4 || switch_avg_case_dist > switch_max_case_dist) {
+				// Don't use a normal jump table, it's probably too expensive
+				uint8_t* out_buffer = tb_out_reserve(&out, 1);
+				*out_buffer++ = 0xCC;
+				tb_out_commit(&out, 1);
+			} else {
+				uint8_t* out_buffer = tb_out_reserve(&out, 1);
+				*out_buffer++ = 0xCC;
+				tb_out_commit(&out, 1);
+			}
 		} else {
             tb_todo(); // TODO
         }
@@ -612,10 +686,10 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
     local_stack_usage += 8;
     
     // patch return
-    for (int i = 0; i < ret_patch_count; i++) {
+	for (size_t i = 0; i < ret_patch_count; i++) {
         uint32_t pos = ret_patches[i];
-        
-        *((uint32_t*)&out.data[pos]) = out.count - (pos + 4);
+		
+		*((uint32_t*)&out.data[pos]) = out.count - (pos + 4);
     }
     
     // patch labels
@@ -1069,7 +1143,8 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
                                             f, ctx, out, r,
                                             reg->i_arith.a, reg->i_arith.b, next,
                                             IADD_PATTERNS + (can_lea_add ? 0 : 2),
-											tb_arrlen(IADD_PATTERNS) - (can_lea_add ? 0 : 2)
+											tb_arrlen(IADD_PATTERNS) - (can_lea_add ? 0 : 2),
+											true
                                             );
             
             switch (reg->i_arith.arith_behavior) {
@@ -1114,19 +1189,19 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
             return result;
         }
         case TB_AND: {
-            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, AND_PATTERNS, tb_arrlen(AND_PATTERNS));
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, AND_PATTERNS, tb_arrlen(AND_PATTERNS), true);
         }
         case TB_OR: {
-            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, OR_PATTERNS, tb_arrlen(OR_PATTERNS));
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, OR_PATTERNS, tb_arrlen(OR_PATTERNS), true);
         }
         case TB_SUB: {
-            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, ISUB_PATTERNS, tb_arrlen(ISUB_PATTERNS));
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, ISUB_PATTERNS, tb_arrlen(ISUB_PATTERNS), false);
         }
         case TB_MUL: {
             // Must be promoted up before it's multiplied
             assert(reg->dt.type == TB_I32 || reg->dt.type == TB_I64 || reg->dt.type == TB_PTR);
             
-            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, IMUL_PATTERNS, tb_arrlen(IMUL_PATTERNS));
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, IMUL_PATTERNS, tb_arrlen(IMUL_PATTERNS), true);
         }
 		case TB_SHL: {
 			TB_Register a = reg->i_arith.a;
@@ -1197,16 +1272,16 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 			tb_todo();
 		}
         case TB_FADD: {
-            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, F32ADD_PATTERNS, tb_arrlen(F32ADD_PATTERNS));
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, F32ADD_PATTERNS, tb_arrlen(F32ADD_PATTERNS), false);
         }
         case TB_FSUB: {
-            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, F32SUB_PATTERNS, tb_arrlen(F32SUB_PATTERNS));
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, F32SUB_PATTERNS, tb_arrlen(F32SUB_PATTERNS), false);
         }
         case TB_FMUL: {
-            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, F32MUL_PATTERNS, tb_arrlen(F32MUL_PATTERNS));
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, F32MUL_PATTERNS, tb_arrlen(F32MUL_PATTERNS), true);
         }
         case TB_FDIV: {
-            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, F32DIV_PATTERNS, tb_arrlen(F32DIV_PATTERNS));
+            return x64_std_isel(f, ctx, out, r, reg->i_arith.a, reg->i_arith.b, next, F32DIV_PATTERNS, tb_arrlen(F32DIV_PATTERNS), false);
         }
         case TB_LOCAL: {
             return (X64_Value) {
@@ -1905,28 +1980,23 @@ static char x64_value_type_to_pattern_char(X64_ValueType type) {
 // Not built for vector selection
 // Maybe it will be one day?
 // if `next_reg` is not 0, then it's the register which we expect the `dst_reg` to go into
-static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register dst_reg, TB_Register a_reg, TB_Register b_reg, TB_Register next_reg, const X64_ISel_Pattern patterns[], size_t pattern_count) {
+static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register dst_reg, TB_Register a_reg, TB_Register b_reg, TB_Register next_reg, const X64_ISel_Pattern patterns[], size_t pattern_count, bool communitive) {
 	TB_DataType dst_dt = f->nodes[dst_reg].dt;
 	assert(dst_dt.count == 1);
 	
-	X64_Value b;
 	X64_Value a = x64_legalize(f, ctx, out, dst_dt, a_reg, dst_reg);
-	
-	if (a_reg == b_reg) b = a;
-	else b = x64_legalize(f, ctx, out, dst_dt, b_reg, dst_reg);
+	X64_Value b = (a_reg == b_reg) ? a : x64_legalize(f, ctx, out, dst_dt, b_reg, dst_reg);
 	
 	bool can_recycle = (ctx->intervals[a_reg] == dst_reg);
-	if (f->nodes[next_reg].type == TB_RET &&
-		a.type == X64_VALUE_GPR &&
-		b.type == X64_VALUE_GPR &&
-		(a.gpr != X64_RAX ||
-		 b.gpr != X64_RAX)) {
+	if (f->nodes[next_reg].type == TB_RET) {
 		// If it's about to be returned and none of 
 		// the inputs are RAX, don't recycle
 		can_recycle = false;
 	}
 	
-	if (a.type == X64_VALUE_IMM32 && b.type != X64_VALUE_IMM32) tb_swap(a, b);
+	// NOTE(NeGate): The operands are ordered for this magic?
+	// TODO(NeGate): Not all operations can be swapped
+	if (communitive && a.type < b.type) tb_swap(a, b);
 	
 	// If both source operands are memory addresses, change one into a register
 	if (a.type == X64_VALUE_MEM && b.type == X64_VALUE_MEM) {
@@ -1971,9 +2041,9 @@ static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out,
 	
 	X64_Value dst;
 	if (best_match->recycle) dst = a;
-	else if (f->nodes[next_reg].type == TB_RET) {
-		// It doesn't matter if something was using RAX before
-		// since we're about to exit
+	else if (f->nodes[next_reg].type == TB_RET &&
+			 !x64_is_value_gpr(&a, X64_RAX) &&
+			 !x64_is_value_gpr(&b, X64_RAX)) {
 		dst = (X64_Value){ .type = X64_VALUE_GPR, .dt = dst_dt, .gpr = X64_RAX };
 	} else dst = x64_allocate_gpr(ctx, dst_reg, dst_dt);
 	

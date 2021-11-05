@@ -19,6 +19,7 @@ TB_Function* test_locals_params_1(TB_Module* m);
 TB_Function* test_add_sub_i32(TB_Module* m);
 TB_Function* test_fib(TB_Module* m);
 TB_Function* test_foo(TB_Module* m);
+TB_Function* test_switch_case(TB_Module* m);
 TB_Function* test_entry(TB_Module* m);
 
 int main(int argc, char** argv) {
@@ -49,7 +50,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_add_i16,
 		test_add_i32,
 		test_sat_uadd_i32,
-		test_sat_sadd_i32,
+		//test_sat_sadd_i32,
 		test_safe_add_i32,
 		test_add_i64,
 		test_locals_1,
@@ -62,6 +63,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_muladd_f32,
 		test_fib,
 		test_foo,
+		test_switch_case,
 		test_entry
 	};
 	size_t count = sizeof(test_functions) / sizeof(test_functions[0]);
@@ -350,14 +352,14 @@ TB_Function* test_add_sub_i32(TB_Module* m) {
 	TB_Register bp = tb_inst_param_addr(func, b);
 	TB_Register cp = tb_inst_param_addr(func, c);
     
-	TB_Register result = tb_inst_add(func, TB_TYPE_I32(1), 
-                                     tb_inst_sub(
+	TB_Register result = tb_inst_sub(func, TB_TYPE_I32(1), 
+                                     tb_inst_load(func, TB_TYPE_I32(1), cp, 4),
+                                     tb_inst_add(
                                                  func, TB_TYPE_I32(1),
                                                  tb_inst_load(func, TB_TYPE_I32(1), ap, 4),
                                                  tb_inst_load(func, TB_TYPE_I32(1), bp, 4),
                                                  TB_NO_WRAP
                                                  ),
-                                     tb_inst_load(func, TB_TYPE_I32(1), cp, 4),
                                      TB_NO_WRAP
                                      );
     
@@ -409,6 +411,29 @@ TB_Function* test_foo(TB_Module* m) {
 									 );
 	
 	tb_inst_ret(func, TB_TYPE_I32(1), factor);
+	return func;
+}
+
+TB_Function* test_switch_case(TB_Module* m) {
+	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I32(1));
+	
+	TB_Register n = tb_inst_param(func, TB_TYPE_I32(1));
+    tb_inst_switch(func, TB_TYPE_I32(1), n, 9, 8, (TB_SwitchEntry[]) {
+					   { 100, 1 },
+					   { 150, 2 },
+					   { 200, 3 },
+					   { 250, 4 },
+					   { 300, 5 },
+					   { 350, 6 },
+					   { 400, 7 },
+					   { 450, 8 }
+				   });
+	
+	const static int nums[9] = { 13, 3, 14, 4, 15, 5, 16, 6, 0 };
+	for (size_t i = 0; i < 9; i++) {
+		tb_inst_label(func, 1 + i);
+		tb_inst_ret(func, TB_TYPE_I32(1), tb_inst_iconst(func, TB_TYPE_I32(1), nums[i]));
+	}
 	return func;
 }
 

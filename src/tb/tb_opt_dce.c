@@ -22,6 +22,7 @@ bool tb_opt_dce(TB_Function* f) {
                 case TB_STORE:
                 case TB_LOAD:
                 case TB_CALL:
+                case TB_SWITCH:
 				break;
 				// delete:
                 case TB_INT_CONST:

@@ -86,6 +86,9 @@ void tb_find_live_intervals(size_t intervals[], const TB_Function* f) {
 				intervals[f->vla.data[j]] = i;
 			}
 			break;
+			case TB_SWITCH: 
+			intervals[f->nodes[i].switch_.key] = i;
+			break;
             case TB_IF:
 			intervals[f->nodes[i].if_.cond] = i;
 			break;
@@ -180,6 +183,9 @@ size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_
             case TB_IF:
 			ffu(f->nodes[i].if_.cond);
 			break;
+			case TB_SWITCH: 
+			ffu(f->nodes[i].switch_.key);
+			break;
             case TB_RET:
 			ffu(f->nodes[i].ret.value);
 			break;
@@ -269,6 +275,9 @@ TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t sta
 			for (size_t j = f->nodes[i].call.param_start; j < f->nodes[i].call.param_end; j++) {
 				ffu(f->vla.data[j]);
 			}
+			break;
+			case TB_SWITCH: 
+			ffu(f->nodes[i].switch_.key);
 			break;
             case TB_IF:
 			ffu(f->nodes[i].if_.cond);
@@ -368,6 +377,9 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Register 
 			for (size_t j = f->nodes[i].call.param_start; j < f->nodes[i].call.param_end; j++) {
 				f_n_r(f->vla.data[j]);
 			}
+			break;
+			case TB_SWITCH: 
+			f_n_r(f->nodes[i].switch_.key);
 			break;
             case TB_IF:
 			f_n_r(f->nodes[i].if_.cond);

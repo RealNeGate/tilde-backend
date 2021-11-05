@@ -163,6 +163,11 @@ typedef struct TB_FeatureSet {
 
 typedef int TB_Label;
 
+typedef struct TB_SwitchEntry {
+	uint32_t key;
+	TB_Label value;
+} TB_SwitchEntry;
+
 typedef struct TB_Module TB_Module;
 typedef struct TB_Function TB_Function;
 typedef int32_t TB_Register;
@@ -258,6 +263,7 @@ TB_API TB_Register tb_inst_phi2(TB_Function* f, TB_DataType dt, TB_Label a_label
 TB_API TB_Register tb_inst_label(TB_Function* f, TB_Label id);
 TB_API void tb_inst_goto(TB_Function* f, TB_Label id);
 TB_API TB_Register tb_inst_if(TB_Function* f, TB_Register cond, TB_Label if_true, TB_Label if_false);
+TB_API void tb_inst_switch(TB_Function* f, TB_DataType dt, TB_Register key, TB_Label default_label, size_t entry_count, const TB_SwitchEntry* entries);
 TB_API void tb_inst_ret(TB_Function* f, TB_DataType dt, TB_Register value);
 
 TB_API void tb_function_print(TB_Function* f);
@@ -341,6 +347,7 @@ enum TB_RegisterType {
     
     TB_LABEL,
     TB_GOTO,
+    TB_SWITCH,
     TB_IF,
     TB_RET
 };
@@ -437,6 +444,11 @@ typedef struct TB_Node {
 			const TB_Function* target;
 			int param_start, param_end;
 		} call;
+		struct {
+			TB_Register key;
+			TB_Label default_label;
+			int entries_start, entries_end;
+		} switch_;
 	};
 } TB_Node;
 
@@ -476,13 +488,15 @@ struct TB_Function {
 	TB_Node* nodes;
 	
 	// Used by nodes which have variable
-	// length arguements like PHI and CALL
+	// length arguements like PHI and CALL.
+	// SWITCH has arguments here too but they
+	// are two slots each
 	struct {
 		TB_Register capacity;
 		TB_Register count;
 		TB_Register* data;
 	} vla;
-    
+	
 	TB_Register current_label;
     
 	uint32_t parameter_count;

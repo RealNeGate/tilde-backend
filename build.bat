@@ -14,7 +14,8 @@ set tb_source_files=src/tb/tb.c ^
 	src/tb/tb_coff.c ^
 	src/tb/tb_elf64.c ^
 	src/tb/tb_jit_win32.c ^
+	src/tb/tb_validate.c ^
 	src/tb/tb_helper.c
 
 mkdir build
-clang %clang_settings% src/example_main.c %tb_source_files% -o build/example.exe
+clang %clang_settings% src/example_fuzzer.c %tb_source_files% -o build/example.exe

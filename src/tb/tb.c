@@ -91,15 +91,22 @@ static uint32_t fnv1a(const void* data, size_t num_bytes) {
 	return hash;
 }
 
-TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_threads) {
+TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_threads) {
+	// Validate the functions
+	uint32_t errors = 0;
+	loop(i, m->functions.count) {
+		errors += tb_validate(&m->functions.data[i]);
+	}
+	if (errors > 0) return false;
+	
 	m->compiled_functions.count = m->functions.count;
     
 	if (optimization_level == TB_OPT_O0) {
 		// Don't optimize
-		loop(i, m->functions.count) {
+		/*loop(i, m->functions.count) {
 			TB_Function* f = &m->functions.data[i];
 			tb_function_print(f);
-		}
+		}*/
 	} else {
 		loop(i, m->functions.count) {
 			TB_Function* f = &m->functions.data[i];
@@ -139,19 +146,19 @@ TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 		loop(i, m->functions.count) {
 			m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
 		}
-		break;
+		return true;
 		case TB_ARCH_AARCH64:
 		loop(i, m->functions.count) {
 			m->compiled_functions.data[i] = aarch64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
 		}
-		break;
+		return true;
 		default:
 		printf("TinyBackend error: Unknown target!\n");
 		tb_todo();
 	}
 }
 
-TB_API void tb_module_export(TB_Module* m, FILE* f) {
+TB_API bool tb_module_export(TB_Module* m, FILE* f) {
 	const ICodeGen* restrict code_gen;
 	switch (m->target_arch) {
 		case TB_ARCH_X86_64: code_gen = &x64_fast_code_gen; break;
@@ -170,6 +177,8 @@ TB_API void tb_module_export(TB_Module* m, FILE* f) {
 		printf("TinyBackend error: Unknown system!\n");
 		tb_todo();
 	}
+	
+	return true;
 }
 
 TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataType return_dt) {
@@ -280,42 +289,66 @@ static TB_Register tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
 	return r;
 }
 
-static TB_Int128 tb_fold_add(TB_ArithmaticBehavior arith_behavior, TB_DataType dt, TB_Int128 a, TB_Int128 b) {
+static TB_Int128 tb_fold_add(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b) {
 	assert(a.hi == 0 && b.hi == 0);
-    
-	uint64_t mask;
-	switch (dt.type) {
-        case TB_I8:   mask  = 0xFFull; break;
-        case TB_I16:  mask = 0xFFFFull; break;
-        case TB_I32:  mask = 0xFFFFFFFFull; break;
-        case TB_I64:  mask = 0xFFFFFFFFFFFFFFFFull; break;
-        case TB_I128: mask = 0xFFFFFFFFFFFFFFFFull; break;
-        default: tb_todo();
+    if (dt.type == TB_I128) {
+		tb_todo();
+	} else {
+		uint64_t shift = 64 - (8 << (dt.type - TB_I8));
+		uint64_t mask = (~0ull) >> shift;
+		
+		uint64_t sum;
+		if (__builtin_add_overflow(a.lo << shift, b.lo << shift, &sum)) {
+			sum >>= shift;
+			
+			if (ab == TB_CAN_WRAP) sum &= mask;
+			else if (ab == TB_SATURATED_UNSIGNED) sum = mask;
+			else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
+		}
+		
+		return (TB_Int128) { sum }; 
 	}
-    
-	switch (arith_behavior) {
-        case TB_NO_WRAP:
-		return (TB_Int128) { a.lo + b.lo };
-        case TB_WRAP_CHECK: {
-            // TODO(NeGate): Throw runtime error in this scenario 
-            // if the value is out of bounds
-            tb_todo();
-        }
-        case TB_CAN_WRAP: {
-            return (TB_Int128) { (a.lo + b.lo) & mask };
-        }
-        case TB_SATURATED_UNSIGNED: {
-            a.lo &= mask;
-            b.lo &= mask;
-            
-            uint64_t sum = a.lo + b.lo;
-            
-            // Overflow
-            if (sum < a.lo) return (TB_Int128) { mask };
-            return (TB_Int128) { sum };
-        }
-        // TODO(NeGate): Implement this
-        default: tb_todo();
+}
+
+static TB_Int128 tb_fold_sub(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b) {
+	assert(a.hi == 0 && b.hi == 0);
+    if (dt.type == TB_I128) {
+		tb_todo();
+	} else {
+		uint64_t shift = 64 - (8 << (dt.type - TB_I8));
+		uint64_t mask = (~0ull) >> shift;
+		
+		uint64_t sum;
+		if (__builtin_sub_overflow(a.lo << shift, b.lo << shift, &sum)) {
+			sum >>= shift;
+			
+			if (ab == TB_CAN_WRAP) sum &= mask;
+			else if (ab == TB_SATURATED_UNSIGNED) sum = 0;
+			else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
+		}
+		
+		return (TB_Int128) { sum }; 
+	}
+}
+
+static TB_Int128 tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b) {
+	assert(a.hi == 0 && b.hi == 0);
+    if (dt.type == TB_I128) {
+		tb_todo();
+	} else {
+		uint64_t shift = 64 - (8 << (dt.type - TB_I8));
+		uint64_t mask = (~0ull) >> shift;
+		
+		uint64_t sum;
+		if (__builtin_mul_overflow(a.lo << shift, b.lo << shift, &sum)) {
+			sum >>= shift;
+			
+			if (ab == TB_CAN_WRAP) sum &= mask;
+			else if (ab == TB_SATURATED_UNSIGNED) sum = mask;
+			else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
+		}
+		
+		return (TB_Int128) { sum }; 
 	}
 }
 
@@ -453,9 +486,12 @@ TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) 
 		}
 	}
     
+	assert(dt.type >= TB_I8 && dt.type <= TB_I128);
+	uint64_t mask = (~0ull) >> (64 - (8 << (dt.type - TB_I8)));
+	
 	TB_Register r = tb_make_reg(f, TB_INT_CONST, dt);
 	f->nodes[r].i_const.hi = 0;
-	f->nodes[r].i_const.lo = imm;
+	f->nodes[r].i_const.lo = imm & mask;
 	return r;
 }
 
@@ -566,11 +602,23 @@ TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB
 }
 
 TB_API TB_Register tb_inst_sub(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
+	if (f->nodes[a].type == TB_INT_CONST && f->nodes[b].type == TB_INT_CONST) {
+		TB_Int128 sum = tb_fold_sub(arith_behavior, dt, f->nodes[a].i_const, f->nodes[b].i_const);
+		
+		return tb_inst_iconst128(f, dt, sum);
+	}
+	
 	return tb_cse_arith(f, TB_SUB, dt, arith_behavior, a, b);
 }
 
 TB_API TB_Register tb_inst_mul(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
-    return tb_cse_arith(f, TB_MUL, dt, arith_behavior, a, b);
+    if (f->nodes[a].type == TB_INT_CONST && f->nodes[b].type == TB_INT_CONST) {
+		TB_Int128 sum = tb_fold_mul(arith_behavior, dt, f->nodes[a].i_const, f->nodes[b].i_const);
+		
+		return tb_inst_iconst128(f, dt, sum);
+	}
+	
+	return tb_cse_arith(f, TB_MUL, dt, arith_behavior, a, b);
 }
 
 TB_API TB_Register tb_inst_div(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness) {
@@ -1039,7 +1087,9 @@ TB_API void tb_function_print(TB_Function* f) {
 				break;
 			}
             case TB_PARAM:
-			printf("  r%u\t=\tPARAM %u\n", i, f->nodes[i].param.id);
+			printf("  r%u\t=\t", i);
+			tb_print_type(dt);
+			printf("  PARAM %u\n", f->nodes[i].param.id);
 			break;
             case TB_PARAM_ADDR:
 			printf("  r%u\t=\t&PARAM %u\n", i, f->nodes[f->nodes[i].param_addr.param].param.id);

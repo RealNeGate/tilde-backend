@@ -61,8 +61,8 @@ typedef enum TB_ArithmaticBehavior {
     
 	// Saturated arithmatic will clamp the results in the
 	// event of overflow/underflow.
-	TB_SATURATED_SIGNED,
-	TB_SATURATED_UNSIGNED
+	TB_SATURATED_UNSIGNED,
+	TB_SATURATED_SIGNED
 } TB_ArithmaticBehavior;
 
 typedef enum TB_Arch {
@@ -198,8 +198,8 @@ TB_API void tb_get_constraints(TB_Arch target_arch, const TB_FeatureSet* feature
 TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, const TB_FeatureSet* features);
 TB_API void tb_module_destroy(TB_Module* m);
 
-TB_API void tb_module_compile(TB_Module* m, int optimization_level, int max_threads);
-TB_API void tb_module_export(TB_Module* m, FILE* f);
+TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_threads);
+TB_API bool tb_module_export(TB_Module* m, FILE* f);
 TB_API void tb_module_export_jit(TB_Module* m);
 TB_API void* tb_module_get_jit_func_by_name(TB_Module* m, const char* name);
 TB_API void* tb_module_get_jit_func(TB_Module* m, TB_Function* f);
@@ -353,6 +353,7 @@ enum TB_RegisterType {
 };
 
 #define TB_DATA_TYPE_EQUALS(a, b) (memcmp(&(a), &(b), sizeof(TB_DataType)) == 0)
+#define TB_DATA_TYPE_NOT_EQUALS(a, b) (memcmp(&(a), &(b), sizeof(TB_DataType)) != 0)
 
 typedef struct TB_Node {
 	TB_DataType dt;
@@ -477,6 +478,8 @@ struct TB_FunctionOutput {
 };
 
 struct TB_Function {
+	bool validated;
+	
 	char* name;
 	TB_DataType return_dt;
 	
@@ -603,6 +606,8 @@ inline static uint64_t tb_next_pow2(uint64_t x) {
 
 TB_TemporaryStorage* tb_tls_allocate();
 // Allocates/Clears the temporary storage. It won't zero out the memory just mark the TLS as empty.
+
+int tb_validate(TB_Function* f);
 
 void* tb_tls_push(TB_TemporaryStorage* store, size_t size);
 // Reserves memory from the TLS and returns pointer to the beginning of the allocation.

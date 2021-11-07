@@ -3,6 +3,12 @@
 
 static uint32_t seed;
 
+static uint32_t gen_random_any() {
+	uint32_t v = seed = _mm_crc32_u32(0, seed);
+	
+	return v;
+}
+
 static uint32_t gen_random(uint32_t min, uint32_t max) {
 	uint32_t v = seed = _mm_crc32_u32(0, seed);
 	
@@ -47,8 +53,10 @@ int main(int argc, char** argv) {
 	int n = 0;
 	int trial_count = 100000;
 	TB_Module* m = tb_module_create(TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features);
+	seed = 764848649;
+	
 	while (n < trial_count) {
-		seed = _rdtsc();
+		seed = gen_random_any();
 		pool_size = 0;
 		var_pool_size = 0;
 		

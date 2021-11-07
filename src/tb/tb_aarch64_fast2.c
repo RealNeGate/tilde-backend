@@ -127,6 +127,9 @@ TB_FunctionOutput aarch64_compile_function(TB_Function* f, const TB_FeatureSet* 
 	
 	uint32_t ret_patch_count = 0;
 	uint32_t label_patch_count = 0;
+	
+	((void)ret_patch_count);
+	((void)label_patch_count);
     {
 		uint32_t phi_count = 0;
 		uint32_t locals_count = 0;

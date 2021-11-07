@@ -400,11 +400,11 @@ static TB_Int128 tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128
 static TB_Register tb_cse_arith(TB_Function* f, int type, TB_DataType dt, TB_ArithmaticBehavior arith_behavior, TB_Register a, TB_Register b) {
 	assert(f->current_label);
 	loop_range(i, f->current_label, f->count) {
-		if (TB_DATA_TYPE_EQUALS(f->nodes[i].dt, dt)
-			&& f->nodes[i].type == type
+		if (f->nodes[i].type == type
 			&& f->nodes[i].i_arith.arith_behavior == arith_behavior
 			&& f->nodes[i].i_arith.a == a
-			&& f->nodes[i].i_arith.b == b) {
+			&& f->nodes[i].i_arith.b == b
+			&& TB_DATA_TYPE_EQUALS(f->nodes[i].dt, dt)) {
 			return i;
 		}
 	}
@@ -502,17 +502,6 @@ TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr
 }
 
 TB_API void tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_Register val, uint32_t alignment) {
-    assert(f->current_label);
-	loop_range(i, f->current_label, f->count) {
-		if (f->nodes[i].type == TB_STORE &&
-			TB_DATA_TYPE_EQUALS(f->nodes[i].dt, dt) &&
-			f->nodes[i].store.address == addr &&
-			f->nodes[i].store.value == val &&
-			f->nodes[i].store.alignment == alignment) {
-			return;
-		}
-	}
-    
 	TB_Register r = tb_make_reg(f, TB_STORE, dt);
 	f->nodes[r].store.address = addr;
 	f->nodes[r].store.value = val;

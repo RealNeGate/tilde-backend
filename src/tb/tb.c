@@ -130,8 +130,8 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 			TB_Function* f = &m->functions.data[i];
 			
 			restart_opt: {
-				//tb_function_print(f);
-				//printf("\n\n\n");
+				tb_function_print(f);
+				printf("\n\n\n");
 				
 				if (tb_opt_canonicalize(f)) goto restart_opt;
 				if (tb_opt_strength_reduction(f)) goto restart_opt;
@@ -141,8 +141,8 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 				if (tb_opt_compact_dead_regs(f)) goto restart_opt;
 			}
 			
-			//tb_function_print(f);
-			//printf("\n\n\n");
+			tb_function_print(f);
+			printf("\n\n\n");
 		}
 	}
 	

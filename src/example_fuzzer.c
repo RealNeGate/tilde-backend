@@ -34,18 +34,18 @@ static int var_pool_size = 0;
 static TB_Register var_pool[512];
 
 int main(int argc, char** argv) {
-	int trial_count;
-	if (argc == 1) {
-		printf("Defaulting to 100000 trials\n");
-		trial_count = 100000;
-	} else {
-		trial_count = atoi(argv[1]);
+	int thread_count = 1;
+	if (argc > 1) {
+		thread_count = atoi(argv[1]);
 	}
+	
+	printf("Executing 100000 trials\n");
 	
 	clock_t t1 = clock();
 	TB_FeatureSet features = { 0 };
 	
 	int n = 0;
+	int trial_count = 100000;
 	TB_Module* m = tb_module_create(TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features);
 	while (n < trial_count) {
 		seed = _rdtsc();
@@ -110,10 +110,12 @@ int main(int argc, char** argv) {
 	}
 	
 	clock_t t2 = clock();
-	double delta_ms = ((t2 - t1) / (double)CLOCKS_PER_SEC) * 1000.0;
-	printf("IR generation took %f ms\n", delta_ms);
+	printf("IR gen took %f ms\n", ((t2 - t1) / (double)CLOCKS_PER_SEC) * 1000.0);
 	
-	if (!tb_module_compile(m, TB_OPT_O0, 7)) abort();
+	if (!tb_module_compile(m, TB_OPT_O0, thread_count)) abort();
+	
+	clock_t t3 = clock();
+	printf("Machine code gen took %f ms\n", ((t3 - t2) / (double)CLOCKS_PER_SEC) * 1000.0);
 	
 	FILE* file = fopen("./test_x64.obj", "wb");
 	if (!tb_module_export(m, file)) abort();
@@ -121,8 +123,7 @@ int main(int argc, char** argv) {
 	
 	tb_module_destroy(m);
 	
-	clock_t t3 = clock();
-	delta_ms = ((t3 - t2) / (double)CLOCKS_PER_SEC) * 1000.0;
-	printf("compilation took %f ms\n", delta_ms);
+	clock_t t4 = clock();
+	printf("Object file output took %f ms\n", ((t4 - t3) / (double)CLOCKS_PER_SEC) * 1000.0);
 	return 0;
 }

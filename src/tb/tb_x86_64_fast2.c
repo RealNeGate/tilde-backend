@@ -246,6 +246,15 @@ static bool x64_is_value_gpr(const X64_Value* v, X64_GPR g) {
 	return (v->gpr == g);
 }
 
+static bool x64_is_value_equals(const X64_Value* a, const X64_Value* b) {
+	if (a->type != b->type) return false;
+	
+	// TODO(NeGate): Implement this!
+	assert(a->type == X64_VALUE_GPR);
+	
+	return (a->gpr == b->gpr);
+}
+
 size_t x64_get_prologue_length(uint64_t saved, uint64_t stack_usage) {
 	// If the stack usage is zero we don't need a prologue
 	if (stack_usage == 8) return 0;
@@ -1513,7 +1522,7 @@ static void x64_phi_store_into(TB_Function* f, X64_Context* ctx, TB_Emitter* out
 	}
 	else {
 		X64_Value value = x64_eval(f, ctx, out, src_reg, 0);
-		if (memcmp(&dst, &value, sizeof(X64_Value)) != 0) {
+		if (!x64_is_value_equals(&dst, &value)) {
 			x64_inst_bin_op(f, ctx, out, dt, &insts[X64_MOV], &dst, &value, src_reg);
 		}
 	}

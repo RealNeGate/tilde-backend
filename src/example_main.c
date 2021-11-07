@@ -21,6 +21,7 @@ TB_Function* test_locals_params_1(TB_Module* m);
 TB_Function* test_add_sub_i32(TB_Module* m);
 TB_Function* test_fib(TB_Module* m);
 TB_Function* test_foo(TB_Module* m);
+TB_Function* test_fact(TB_Module* m);
 TB_Function* test_switch_case(TB_Module* m);
 TB_Function* test_entry(TB_Module* m);
 
@@ -46,6 +47,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
     
 	typedef TB_Function*(*TestFunction)(TB_Module* m);
 	static const TestFunction test_functions[] = {
+		test_fact,
 		test_add_i8,
 		test_add_i16,
 		test_add_i32,
@@ -75,7 +77,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_functions[i](m);
 	}
     
-	if (!tb_module_compile(m, TB_OPT_O0, 1)) abort();
+	if (!tb_module_compile(m, TB_OPT_O1, 1)) abort();
 	if (!tb_module_export(m, f)) abort();
 	
 	tb_module_destroy(m);
@@ -414,6 +416,42 @@ TB_Function* test_fib(TB_Module* m) {
 	TB_Register sum = tb_inst_add(func, TB_TYPE_I32(1), call1, call2, TB_NO_WRAP);
 	tb_inst_ret(func, TB_TYPE_I32(1), sum);
 	
+	return func;
+}
+
+TB_Function* test_fact(TB_Module* m) {
+	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_F32(1));
+	
+	TB_Register n = tb_inst_param(func, TB_TYPE_I32(1));
+	TB_Register n_addr = tb_inst_param_addr(func, n);
+	TB_Register f_addr = tb_inst_local(func, 4, 4);
+	tb_inst_store(func, TB_TYPE_I32(1), f_addr, tb_inst_iconst(func, TB_TYPE_I32(1), 1), 4);
+	
+	// Loop entry
+	{
+		tb_inst_label(func, 1);
+		TB_Register n_ld = tb_inst_load(func, TB_TYPE_I32(1), n_addr, 4);
+		tb_inst_if(func, tb_inst_cmp_slt(func, TB_TYPE_I32(1), n_ld, tb_inst_iconst(func, TB_TYPE_I32(1), 0)), 2, 3);
+	}
+	
+	// Loop body
+	{
+		tb_inst_label(func, 2);
+		
+		// f = f * n
+		TB_Register f_ld = tb_inst_load(func, TB_TYPE_I32(1), f_addr, 4);
+		TB_Register n_ld = tb_inst_load(func, TB_TYPE_I32(1), n_addr, 4);
+		tb_inst_store(func, TB_TYPE_I32(1), f_addr, tb_inst_mul(func, TB_TYPE_I32(1), f_ld, n_ld, TB_NO_WRAP), 4);
+		
+		// n = n - 1
+		TB_Register n_ld2 = tb_inst_load(func, TB_TYPE_I32(1), n_addr, 4);
+		tb_inst_store(func, TB_TYPE_I32(1), n_addr, tb_inst_sub(func, TB_TYPE_I32(1), n_ld2, tb_inst_iconst(func, TB_TYPE_I32(1), 1), TB_NO_WRAP), 4);
+		
+		tb_inst_goto(func, 1);
+	}
+	
+	tb_inst_label(func, 3);
+	tb_inst_ret(func, TB_TYPE_I32(1), tb_inst_load(func, TB_TYPE_I32(1), f_addr, 4));
 	return func;
 }
 

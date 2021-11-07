@@ -76,6 +76,8 @@ static bool tb_mem2reg_single_reg(TB_Function* f, TB_TemporaryStorage* tls, int 
 	// Perform local value numbering on all basic blocks
 	TB_Register* first_revision = tb_tls_push(tls, label_count * sizeof(TB_Register));
 	TB_Register* last_revision = tb_tls_push(tls, label_count * sizeof(TB_Register));
+	memset(first_revision, 0, label_count * sizeof(TB_Register));
+	memset(last_revision, 0, label_count * sizeof(TB_Register));
 	
 	int changes = 0;
 	TB_Label current_label = 0;
@@ -84,8 +86,9 @@ static bool tb_mem2reg_single_reg(TB_Function* f, TB_TemporaryStorage* tls, int 
 		if (f->nodes[i].type == TB_LABEL) {
 			current_label = f->nodes[i].label.id;
 			
-			first_revision[current_label] = 0;
-			last_revision[current_label] = 0;
+			first_revision[current_label] = initial_value;
+			last_revision[current_label] = initial_value;
+			initial_value = 0;
 		} else if (f->nodes[i].type == TB_LOAD && f->nodes[i].load.address == address) {
 			if (first_revision[current_label] == 0) first_revision[current_label] = i;
 			

@@ -23,6 +23,7 @@ bool tb_opt_dce(TB_Function* f) {
                 case TB_LOAD:
                 case TB_CALL:
                 case TB_SWITCH:
+                case TB_PARAM:
 				break;
 				// delete:
                 case TB_INT_CONST:
@@ -41,7 +42,6 @@ bool tb_opt_dce(TB_Function* f) {
                 case TB_FSUB:
                 case TB_FMUL:
                 case TB_FDIV:
-                case TB_PARAM:
                 case TB_PARAM_ADDR:
                 case TB_CMP_EQ:
                 case TB_CMP_NE:

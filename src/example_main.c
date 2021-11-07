@@ -4,6 +4,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 TB_Function* test_add_i8(TB_Module* m);
 TB_Function* test_add_i16(TB_Module* m);
 TB_Function* test_add_i32(TB_Module* m);
+TB_Function* test_mul_i64(TB_Module* m);
 TB_Function* test_andor_i32(TB_Module* m);
 TB_Function* test_sat_uadd_i32(TB_Module* m);
 TB_Function* test_sat_sadd_i32(TB_Module* m);
@@ -25,7 +26,7 @@ TB_Function* test_entry(TB_Module* m);
 
 int main(int argc, char** argv) {
 	TB_FeatureSet features = { 0 };
-    
+	
 	// Currently it only supports binary output
 #if 0
 	FILE* f = fopen("./test_aarch64.o", "wb");
@@ -48,6 +49,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_add_i8,
 		test_add_i16,
 		test_add_i32,
+		test_mul_i64,
 		test_sat_uadd_i32,
 		//test_sat_sadd_i32,
 		test_safe_add_i32,
@@ -73,7 +75,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_functions[i](m);
 	}
     
-	if (!tb_module_compile(m, TB_OPT_SIZE, 1)) abort();
+	if (!tb_module_compile(m, TB_OPT_O0, 1)) abort();
 	if (!tb_module_export(m, f)) abort();
 	
 	tb_module_destroy(m);
@@ -109,6 +111,33 @@ TB_Function* test_add_i32(TB_Module* m) {
 	TB_Register sum = tb_inst_add(func, TB_TYPE_I32(1), a, b, TB_NO_WRAP);
     
 	tb_inst_ret(func, TB_TYPE_I32(1), sum);
+	return func;
+}
+
+TB_Function* test_mul_i64(TB_Module* m) {
+	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I64(1));
+	
+	TB_Register a = tb_inst_param(func, TB_TYPE_I64(1));
+	TB_Register b = tb_inst_param(func, TB_TYPE_I64(1));
+	TB_Register c = tb_inst_param(func, TB_TYPE_I64(1));
+	
+	TB_Register ap = tb_inst_param_addr(func, a);
+	/*TB_Register bp = */tb_inst_param_addr(func, b);
+	TB_Register cp = tb_inst_param_addr(func, c);
+    
+	TB_Register factor = tb_inst_mul(
+									 func, TB_TYPE_I64(1),
+									 tb_inst_load(func, TB_TYPE_I64(1), ap, 4),
+									 tb_inst_mul(
+												 func, TB_TYPE_I64(1),
+												 tb_inst_load(func, TB_TYPE_I64(1), cp, 4),
+												 tb_inst_load(func, TB_TYPE_I64(1), cp, 4),
+												 TB_WRAP_CHECK
+												 ),
+									 TB_SATURATED_UNSIGNED
+									 );
+    
+	tb_inst_ret(func, TB_TYPE_I64(1), factor);
 	return func;
 }
 

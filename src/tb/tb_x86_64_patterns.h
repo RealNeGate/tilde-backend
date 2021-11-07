@@ -1,118 +1,58 @@
 #pragma once
 // This file is specifically just to store all the instruction selection patterns
 
-// NOTE(NeGate): LEA addition only works in NO_WRAP and CAN_WRAP
-static const X64_ISel_Pattern IADD_PATTERNS[] = {
-    { 1, "rrr", (uint8_t[]){ X64_LEA, 0, '[', 1, 2, 0x7F }, false, true },
-    { 1, "rri", (uint8_t[]){ X64_LEA, 0, '[', 1, 2, 0x7F }, false, true },
-    { 2, "rrr", (uint8_t[]){ X64_ADD, 0, 2, 0x7F }, true },
-    { 2, "rri", (uint8_t[]){ X64_ADD, 0, 2, 0x7F }, true },
-    { 3, "rrm", (uint8_t[]){ X64_ADD, 0, 2, 0x7F }, true },
-    { 4, "rrm", (uint8_t[]){ X64_MOV, 0, 1, X64_ADD, 0, 2, 0x7F }, false },
-    { 4, "rmr", (uint8_t[]){ X64_MOV, 0, 1, X64_ADD, 0, 2, 0x7F }, false },
-    { 4, "rmi", (uint8_t[]){ X64_MOV, 0, 1, X64_ADD, 0, 2, 0x7F }, false },
-	
-	// This case is a fallback and should never actually be used
-	{ 10, "rii", (uint8_t[]){ X64_MOV, 0, 1, X64_ADD, 0, 2, 0x7F }, true }
+static const X64_IselInfo* SELECTION_IADD = &(X64_IselInfo){
+	.inst = X64_ADD,
+	.has_immediates = true,
+	.communitive = true
+};
+static const X64_IselInfo* SELECTION_ISUB = &(X64_IselInfo){
+	.inst = X64_SUB,
+	.has_immediates = true
+};
+static const X64_IselInfo* SELECTION_IMUL = &(X64_IselInfo){
+	.inst = X64_IMUL,
+	.communitive = true
 };
 
-static const X64_ISel_Pattern ISUB_PATTERNS[] = {
-	{ 1, "rrr", (uint8_t[]){ X64_SUB, 0, 2, 0x7F }, true },
-	{ 2, "rri", (uint8_t[]){ X64_SUB, 0, 2, 0x7F }, true },
-	{ 3, "rir", (uint8_t[]){ X64_MOV, 0, 1, X64_SUB, 0, 2, 0x7F }, true },
-	{ 3, "rrm", (uint8_t[]){ X64_SUB, 0, 2, 0x7F }, true },
-	{ 4, "rrm", (uint8_t[]){ X64_MOV, 0, 1, X64_SUB, 0, 2, 0x7F }, false },
-	{ 4, "rmr", (uint8_t[]){ X64_MOV, 0, 1, X64_SUB, 0, 2, 0x7F }, false },
-	{ 5, "rmi", (uint8_t[]){ X64_MOV, 0, 1, X64_SUB, 0, 2, 0x7F }, false },
-	{ 5, "rim", (uint8_t[]){ X64_MOV, 0, 1, X64_SUB, 0, 2, 0x7F }, true },
-	
-	// This case is a fallback and should never actually be used
-	{ 10, "rii", (uint8_t[]){ X64_MOV, 0, 1, X64_SUB, 0, 2, 0x7F }, true }
+static const X64_IselInfo* SELECTION_AND = &(X64_IselInfo){
+	.inst = X64_AND,
+	.communitive = true,
+	.has_immediates = true
+};
+static const X64_IselInfo* SELECTION_OR = &(X64_IselInfo){
+	.inst = X64_OR,
+	.communitive = true,
+	.has_immediates = true
 };
 
-static const X64_ISel_Pattern AND_PATTERNS[] = {
-	{ 1, "rrr", (uint8_t[]){ X64_AND, 0, 2, 0x7F }, true },
-	{ 2, "rri", (uint8_t[]){ X64_AND, 0, 2, 0x7F }, true },
-	{ 3, "rrm", (uint8_t[]){ X64_AND, 0, 2, 0x7F }, true },
-	{ 4, "rrm", (uint8_t[]){ X64_MOV, 0, 1, X64_AND, 0, 2, 0x7F }, false },
-	{ 4, "rmr", (uint8_t[]){ X64_MOV, 0, 1, X64_AND, 0, 2, 0x7F }, false },
-	{ 4, "rmi", (uint8_t[]){ X64_MOV, 0, 1, X64_AND, 0, 2, 0x7F }, false },
-	
-	// This case is a fallback and should never actually be used
-	{ 10, "rii", (uint8_t[]){ X64_MOV, 0, 1, X64_AND, 0, 2, 0x7F }, true }
+static const X64_IselInfo* SELECTION_F32_ADD = &(X64_IselInfo){
+	.inst = X64_ADDSS,
+	.communitive = true
+};
+static const X64_IselInfo* SELECTION_F32_SUB = &(X64_IselInfo){
+	.inst = X64_SUBSS
+};
+static const X64_IselInfo* SELECTION_F32_MUL = &(X64_IselInfo){
+	.inst = X64_MULSS,
+	.communitive = true
+};
+static const X64_IselInfo* SELECTION_F32_DIV = &(X64_IselInfo){
+	.inst = X64_DIVSS
 };
 
-static const X64_ISel_Pattern OR_PATTERNS[] = {
-	{ 1, "rrr", (uint8_t[]){ X64_OR, 0, 2, 0x7F }, true },
-	{ 2, "rri", (uint8_t[]){ X64_OR, 0, 2, 0x7F }, true },
-	{ 3, "rrm", (uint8_t[]){ X64_OR, 0, 2, 0x7F }, true },
-	{ 4, "rrm", (uint8_t[]){ X64_MOV, 0, 1, X64_OR, 0, 2, 0x7F }, false },
-	{ 4, "rmr", (uint8_t[]){ X64_MOV, 0, 1, X64_OR, 0, 2, 0x7F }, false },
-	{ 4, "rmi", (uint8_t[]){ X64_MOV, 0, 1, X64_OR, 0, 2, 0x7F }, false },
-	
-	// This case is a fallback and should never actually be used
-	{ 10, "rii", (uint8_t[]){ X64_MOV, 0, 1, X64_OR, 0, 2, 0x7F }, true }
+static const X64_IselInfo* SELECTION_F32X4_ADD = &(X64_IselInfo){
+	.inst = X64_ADDPS,
+	.communitive = true
 };
-
-static const X64_ISel_Pattern IMUL_PATTERNS[] = {
-	{ 1, "rrr", (uint8_t[]){ X64_IMUL, 0, 2, 0x7F }, true },
-	{ 2, "rri", (uint8_t[]){ X64_IMUL, 0, 2, 0x7F }, true },
-	{ 3, "rrm", (uint8_t[]){ X64_IMUL, 0, 2, 0x7F }, true },
-	{ 4, "rrm", (uint8_t[]){ X64_MOV, 0, 1, X64_IMUL, 0, 2, 0x7F }, false },
-	{ 4, "rmr", (uint8_t[]){ X64_MOV, 0, 1, X64_IMUL, 0, 2, 0x7F }, false },
-	{ 4, "rmi", (uint8_t[]){ X64_MOV, 0, 1, X64_IMUL, 0, 2, 0x7F }, false },
-	
-	// This case is a fallback and should never actually be used
-	{ 10, "rii", (uint8_t[]){ X64_MOV, 0, 1, X64_OR, 0, 2, 0x7F }, true }
+static const X64_IselInfo* SELECTION_F32X4_SUB = &(X64_IselInfo){
+	.inst = X64_SUBPS
 };
-
-// NOTE(NeGate): These SSE variants must take into account that they can't
-// directly store without using MOVSS
-static const X64_ISel_Pattern F32ADD_PATTERNS[] = {
-	{ 1, "xxx", (uint8_t[]){ X64_ADDSS, 0, 2, 0x7F }, true },
-	{ 2, "xxm", (uint8_t[]){ X64_ADDSS, 0, 2, 0x7F }, true },
-	{ 3, "xmm", (uint8_t[]){ X64_MOVSS, 0, 1, X64_ADDSS, 0, 2, 0x7F }, false }
+static const X64_IselInfo* SELECTION_F32X4_MUL = &(X64_IselInfo){
+	.inst = X64_MULPS,
+	.communitive = true
 };
-
-static const X64_ISel_Pattern F32SUB_PATTERNS[] = {
-	{ 1, "xxx", (uint8_t[]){ X64_SUBSS, 0, 2, 0x7F }, true },
-	{ 2, "xxm", (uint8_t[]){ X64_SUBSS, 0, 2, 0x7F }, true },
-	{ 3, "xmm", (uint8_t[]){ X64_MOVSS, 0, 1, X64_SUBSS, 0, 2, 0x7F }, false }
-};
-
-static const X64_ISel_Pattern F32MUL_PATTERNS[] = {
-	{ 1, "xxx", (uint8_t[]){ X64_MULSS, 0, 2, 0x7F }, true },
-	{ 2, "xxm", (uint8_t[]){ X64_MULSS, 0, 2, 0x7F }, true },
-	{ 3, "xmm", (uint8_t[]){ X64_MOVSS, 0, 1, X64_MULSS, 0, 2, 0x7F }, false }
-};
-
-static const X64_ISel_Pattern F32DIV_PATTERNS[] = {
-	{ 1, "xxx", (uint8_t[]){ X64_DIVSS, 0, 2, 0x7F }, true },
-	{ 2, "xxm", (uint8_t[]){ X64_DIVSS, 0, 2, 0x7F }, true },
-	{ 3, "xmm", (uint8_t[]){ X64_MOVSS, 0, 1, X64_DIVSS, 0, 2, 0x7F }, false }
-};
-
-static const X64_ISel_Pattern F32X4ADD_PATTERNS[] = {
-	{ 1, "xxx", (uint8_t[]){ X64_ADDPS, 0, 2, 0x7F }, true },
-	{ 2, "xxm", (uint8_t[]){ X64_ADDPS, 0, 2, 0x7F }, true },
-	{ 3, "xmm", (uint8_t[]){ X64_MOVAPS, 0, 1, X64_ADDPS, 0, 2, 0x7F }, false }
-};
-
-static const X64_ISel_Pattern F32X4SUB_PATTERNS[] = {
-	{ 1, "xxx", (uint8_t[]){ X64_SUBPS, 0, 2, 0x7F }, true },
-	{ 2, "xxm", (uint8_t[]){ X64_SUBPS, 0, 2, 0x7F }, true },
-	{ 3, "xmm", (uint8_t[]){ X64_MOVAPS, 0, 1, X64_SUBPS, 0, 2, 0x7F }, false }
-};
-
-static const X64_ISel_Pattern F32X4MUL_PATTERNS[] = {
-	{ 1, "xxx", (uint8_t[]){ X64_MULPS, 0, 2, 0x7F }, true },
-	{ 2, "xxm", (uint8_t[]){ X64_MULPS, 0, 2, 0x7F }, true },
-	{ 3, "xmm", (uint8_t[]){ X64_MOVAPS, 0, 1, X64_MULPS, 0, 2, 0x7F }, false }
-};
-
-static const X64_ISel_Pattern F32X4DIV_PATTERNS[] = {
-	{ 1, "xxx", (uint8_t[]){ X64_DIVPS, 0, 2, 0x7F }, true },
-	{ 2, "xxm", (uint8_t[]){ X64_DIVPS, 0, 2, 0x7F }, true },
-	{ 3, "xmm", (uint8_t[]){ X64_MOVAPS, 0, 1, X64_DIVPS, 0, 2, 0x7F }, false }
+static const X64_IselInfo* SELECTION_F32X4_DIV = &(X64_IselInfo){
+	.inst = X64_DIVPS
 };
 

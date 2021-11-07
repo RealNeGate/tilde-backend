@@ -29,7 +29,7 @@
 #include <stdatomic.h>
 
 #ifndef TB_MAX_THREADS
-#define TB_MAX_THREADS 1
+#define TB_MAX_THREADS 16
 #endif
 
 // Per-thread
@@ -38,7 +38,7 @@
 #endif
 
 #ifndef TB_MAX_FUNCTIONS
-#define TB_MAX_FUNCTIONS (1 << 16)
+#define TB_MAX_FUNCTIONS (1 << 20)
 #endif
 
 #define TB_API extern
@@ -214,7 +214,7 @@ TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt);
 
 TB_API TB_Register tb_inst_local(TB_Function* f, uint32_t size, uint32_t alignment);
 TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr, uint32_t alignment);
-TB_API TB_Register tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_Register val, uint32_t alignment);
+TB_API void tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_Register val, uint32_t alignment);
 
 TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm);
 TB_API TB_Register tb_inst_iconst128(TB_Function* f, TB_DataType dt, TB_Int128 imm);
@@ -532,7 +532,9 @@ struct TB_Module {
 	} functions;
     
 	struct {
-		size_t functions_compiled;
+		_Atomic size_t num_compiled;
+		_Atomic size_t num_reserved;
+		
 		size_t count;
 		TB_FunctionOutput* data;
 	} compiled_functions;

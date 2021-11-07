@@ -1,9 +1,12 @@
 #define TB_INTERNAL
 #include "tb.h"
 
-static uint8_t tb_temporary_storage[TB_TEMPORARY_STORAGE_SIZE * TB_MAX_THREADS];
-static uint8_t* tb_thread_storage;
-static atomic_uint tb_used_tls_slots;
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#else
+#warning "Threading implementation not supported! Cannot use multiple threads to compile"
+#endif
 
 static size_t tb_get_ptr_size(TB_Arch target_arch) {
     if (target_arch == TB_ARCH_X86_64) return 8;
@@ -91,14 +94,29 @@ static uint32_t fnv1a(const void* data, size_t num_bytes) {
 	return hash;
 }
 
+static int tb_x64_compile_thread(TB_Module* m) {
+	const size_t count = m->compiled_functions.count;
+	
+	while (true) {
+		size_t i = m->compiled_functions.num_reserved++;
+		if (i >= count) return 0;
+		
+		m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
+		m->compiled_functions.num_compiled++;
+	}
+}
+
 TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_threads) {
 	// Validate the functions
 	uint32_t errors = 0;
+	uint32_t ir_node_count = 0;
 	loop(i, m->functions.count) {
 		errors += tb_validate(&m->functions.data[i]);
+		ir_node_count += m->functions.data[i].count;
 	}
 	if (errors > 0) return false;
 	
+	printf("Node count: %d\n", ir_node_count);
 	m->compiled_functions.count = m->functions.count;
     
 	if (optimization_level == TB_OPT_O0) {
@@ -126,35 +144,53 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 			//tb_function_print(f);
 			//printf("\n\n\n");
 		}
-	} 
+	}
 	
-	// TODO(NeGate): Implement function deduplication,
-	// if the functions are the same merge them.
-	/*if (optimization_level == TB_OPT_SIZE) {
-		loop(i, m->functions.count) {
-			TB_Function* f = &m->functions.data[i];
-			
-			uint32_t hash = fnv1a(f->nodes, f->count * sizeof(TB_Node));
-			printf("Hash: %x\n", hash);
-			tb_function_print(f);
-			printf("\n\n\n");
+	if (max_threads > 1) {
+		// TODO(NeGate): Needs some rework, but it should
+		// be a simple way of doing multithreading
+		m->compiled_functions.num_compiled = 0;
+		m->compiled_functions.num_reserved = 0;
+		
+#ifdef _WIN32
+		assert(max_threads <= TB_MAX_THREADS);
+		HANDLE threads[TB_MAX_THREADS];
+		
+		switch (m->target_arch) {
+			case TB_ARCH_X86_64:
+			loop(i, max_threads) {
+				threads[i] = CreateThread(NULL, 2 * 1024 * 1024, (LPTHREAD_START_ROUTINE)tb_x64_compile_thread, m, 0, 0);
+			}
+			break;
+			default:
+			printf("TinyBackend error: Unknown target!\n");
+			tb_todo();
 		}
-	}*/
-	
-	switch (m->target_arch) {
-		case TB_ARCH_X86_64:
-		loop(i, m->functions.count) {
-			m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
+		
+		WaitForMultipleObjects(max_threads, threads, TRUE, -1);
+		loop(i, max_threads) {
+			CloseHandle(threads[i]);
 		}
 		return true;
-		case TB_ARCH_AARCH64:
-		loop(i, m->functions.count) {
-			m->compiled_functions.data[i] = aarch64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
+#else
+#error "Implement this!!!"
+#endif
+	} else {
+		switch (m->target_arch) {
+			case TB_ARCH_X86_64:
+			loop(i, m->functions.count) {
+				m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
+			}
+			return true;
+			case TB_ARCH_AARCH64:
+			loop(i, m->functions.count) {
+				m->compiled_functions.data[i] = aarch64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
+			}
+			return true;
+			default:
+			printf("TinyBackend error: Unknown target!\n");
+			tb_todo();
 		}
-		return true;
-		default:
-		printf("TinyBackend error: Unknown target!\n");
-		tb_todo();
 	}
 }
 
@@ -235,6 +271,10 @@ TB_API void* tb_module_get_jit_func(TB_Module* m, TB_Function* f) {
 // block per thread that can run TB.
 //
 static TB_TemporaryStorage* tb_tls_allocate() {
+	static _Thread_local uint8_t* tb_thread_storage;
+	static uint8_t tb_temporary_storage[TB_TEMPORARY_STORAGE_SIZE * TB_MAX_THREADS];
+	static atomic_uint tb_used_tls_slots;
+	
 	if (tb_thread_storage == NULL) {
 		unsigned int slot = atomic_fetch_add(&tb_used_tls_slots, 1);
 		if (slot >= TB_MAX_THREADS) tb_todo();
@@ -303,9 +343,10 @@ static TB_Int128 tb_fold_add(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128
 			
 			if (ab == TB_CAN_WRAP) sum &= mask;
 			else if (ab == TB_SATURATED_UNSIGNED) sum = mask;
-			else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
+			//else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
 		}
 		
+		sum = (sum >> shift) & mask;
 		return (TB_Int128) { sum }; 
 	}
 }
@@ -320,11 +361,13 @@ static TB_Int128 tb_fold_sub(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128
 		
 		uint64_t sum;
 		if (__builtin_sub_overflow(a.lo << shift, b.lo << shift, &sum)) {
-			sum >>= shift;
+			sum = (sum >> shift) & mask;
 			
 			if (ab == TB_CAN_WRAP) sum &= mask;
 			else if (ab == TB_SATURATED_UNSIGNED) sum = 0;
-			else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
+			//else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
+		} else {
+			sum = (sum >> shift) & mask;
 		}
 		
 		return (TB_Int128) { sum }; 
@@ -341,11 +384,13 @@ static TB_Int128 tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128
 		
 		uint64_t sum;
 		if (__builtin_mul_overflow(a.lo << shift, b.lo << shift, &sum)) {
-			sum >>= shift;
+			sum = (sum >> shift) & mask;
 			
 			if (ab == TB_CAN_WRAP) sum &= mask;
-			else if (ab == TB_SATURATED_UNSIGNED) sum = mask;
-			else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
+			else if (ab == TB_SATURATED_UNSIGNED) sum = 0;
+			//else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
+		} else {
+			sum = (sum >> shift) & mask;
 		}
 		
 		return (TB_Int128) { sum }; 
@@ -456,15 +501,15 @@ TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr
 	return r;
 }
 
-TB_API TB_Register tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_Register val, uint32_t alignment) {
+TB_API void tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_Register val, uint32_t alignment) {
     assert(f->current_label);
 	loop_range(i, f->current_label, f->count) {
 		if (f->nodes[i].type == TB_STORE &&
-			memcmp(&f->nodes[i].dt, &dt, sizeof(TB_DataType)) == 0 &&
+			TB_DATA_TYPE_EQUALS(f->nodes[i].dt, dt) &&
 			f->nodes[i].store.address == addr &&
 			f->nodes[i].store.value == val &&
 			f->nodes[i].store.alignment == alignment) {
-			return i;
+			return;
 		}
 	}
     
@@ -472,7 +517,7 @@ TB_API TB_Register tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register add
 	f->nodes[r].store.address = addr;
 	f->nodes[r].store.value = val;
 	f->nodes[r].store.alignment = alignment;
-	return r;
+	return;
 }
 
 TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) {
@@ -602,6 +647,8 @@ TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB
 }
 
 TB_API TB_Register tb_inst_sub(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
+	if (a == b) return tb_inst_iconst(f, dt, 0);
+	
 	if (f->nodes[a].type == TB_INT_CONST && f->nodes[b].type == TB_INT_CONST) {
 		TB_Int128 sum = tb_fold_sub(arith_behavior, dt, f->nodes[a].i_const, f->nodes[b].i_const);
 		

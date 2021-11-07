@@ -30,11 +30,14 @@ static TB_ArithmaticBehavior gen_random_arith() {
 static int pool_size = 0;
 static TB_Register pool[512];
 
+static int var_pool_size = 0;
+static TB_Register var_pool[512];
+
 int main(int argc, char** argv) {
 	int trial_count;
 	if (argc == 1) {
-		printf("Defaulting to 10 trials\n");
-		trial_count = 10;
+		printf("Defaulting to 100000 trials\n");
+		trial_count = 100000;
 	} else {
 		trial_count = atoi(argv[1]);
 	}
@@ -47,9 +50,10 @@ int main(int argc, char** argv) {
 	while (n < trial_count) {
 		seed = _rdtsc();
 		pool_size = 0;
+		var_pool_size = 0;
 		
 		static char temp[64];
-		sprintf_s(temp, 64, "trial_%d", n);
+		sprintf_s(temp, 64, "trial_%d_%08x", n, seed);
 		
 		TB_DataType dt = gen_random_int_dt();
 		TB_Function* f = tb_function_create(m, temp, dt);
@@ -60,10 +64,11 @@ int main(int argc, char** argv) {
 			pool_size += 1;
 		}
 		
-		int inst_count = gen_random(1, 50);
+		int inst_count = gen_random(1, 500);
 		for (int i = 0; i < inst_count; i++) {
-			int rng = gen_random(0, 4);
+			int rng = gen_random(0, 7);
 			if (pool_size < 4) rng = 0;
+			if (rng >= 5 && var_pool_size == 0) rng = 0;
 			
 			switch (rng) {
 				case 0: 
@@ -82,24 +87,33 @@ int main(int argc, char** argv) {
 				pool[pool_size] = tb_inst_mul(f, dt, pool[gen_random(0, pool_size)], pool[gen_random(0, pool_size)], gen_random_arith());
 				pool_size += 1;
 				break;
-				/*case 4: 
-				pool[pool_size] = tb_inst_div(f, dt, pool[gen_random(0, pool_size)], pool[gen_random(0, pool_size)], false);
-				pool_size += 1;
+				case 4: 
+				var_pool[var_pool_size] = tb_inst_local(f, dt.type == TB_I32 ? 4 : 8, dt.type == TB_I32 ? 4 : 8);
+				
+				tb_inst_store(f, dt, var_pool[var_pool_size], pool[gen_random(0, pool_size)], dt.type == TB_I32 ? 4 : 8);
+				var_pool_size += 1;
 				break;
 				case 5: 
-				pool[pool_size] = tb_inst_div(f, dt, pool[gen_random(0, pool_size)], pool[gen_random(0, pool_size)], true);
+				pool[pool_size] = tb_inst_load(f, dt, var_pool[gen_random(0, var_pool_size)], dt.type == TB_I32 ? 4 : 8);
 				pool_size += 1;
-				break;*/
+				break;
+				case 6: 
+				tb_inst_store(f, dt, var_pool[gen_random(0, var_pool_size)], pool[gen_random(0, pool_size)], dt.type == TB_I32 ? 4 : 8);
+				break;
 			}
 		}
 		
 		// try to use later values for return
 		tb_inst_ret(f, dt, pool[gen_random(pool_size / 2, pool_size)]);
-		tb_function_print(f);
+		//tb_function_print(f);
 		n++;
 	}
 	
-	if (!tb_module_compile(m, TB_OPT_O0, 1)) abort();
+	clock_t t2 = clock();
+	double delta_ms = ((t2 - t1) / (double)CLOCKS_PER_SEC) * 1000.0;
+	printf("IR generation took %f ms\n", delta_ms);
+	
+	if (!tb_module_compile(m, TB_OPT_O0, 7)) abort();
 	
 	FILE* file = fopen("./test_x64.obj", "wb");
 	if (!tb_module_export(m, file)) abort();
@@ -107,8 +121,8 @@ int main(int argc, char** argv) {
 	
 	tb_module_destroy(m);
 	
-	clock_t t2 = clock();
-	double delta_ms = ((t2 - t1) / (double)CLOCKS_PER_SEC) * 1000.0;
+	clock_t t3 = clock();
+	delta_ms = ((t3 - t2) / (double)CLOCKS_PER_SEC) * 1000.0;
 	printf("compilation took %f ms\n", delta_ms);
 	return 0;
 }

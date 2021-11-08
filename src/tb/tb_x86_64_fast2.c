@@ -1356,7 +1356,6 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 		case TB_SHL: {
 			TB_Register a = p.i_arith.a;
 			TB_Register b = p.i_arith.b;
-			TB_DataType dt = dt;
 			
 			X64_Value a_value = x64_eval(f, ctx, out, a, r);
 			

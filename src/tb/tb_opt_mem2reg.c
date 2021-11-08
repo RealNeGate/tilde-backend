@@ -31,6 +31,8 @@ bool tb_opt_mem2reg(TB_Function* f) {
 			
 			tls->used = 0;
 			changes += tb_mem2reg_single_reg(f, tls, label_count, i, initial_val);
+			
+			tb_function_print(f);
 		}
 	}
 	
@@ -209,7 +211,7 @@ static TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_Tempora
 			label = terminator + 1;
 		} else if (f->nodes.type[terminator] == TB_RET) {
 			label = terminator + 1;
-		}
+		} else tb_todo();
 	} while (label < f->nodes.count);
 	
 	*dst_count = count;

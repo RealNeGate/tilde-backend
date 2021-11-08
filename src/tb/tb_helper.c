@@ -5,7 +5,7 @@
 #define FOR_EACH_REGISTER_IN_FUNC \
 for (size_t i = 1; i < f->nodes.count; i++) { \
 TB_RegType type = f->nodes.type[i]; \
-TB_RegPayload p = f->nodes.payload[i]; \
+TB_RegPayload* p = &f->nodes.payload[i]; \
 switch (type) { \
 case TB_NULL: \
 case TB_INT_CONST: \
@@ -15,38 +15,41 @@ case TB_PARAM: \
 case TB_GOTO: \
 break; \
 case TB_LABEL: \
-X(p.label.terminator); \
+X(p->label.terminator); \
 break; \
 case TB_MEMBER_ACCESS: \
-X(p.member_access.base); \
+X(p->member_access.base); \
 break; \
 case TB_ARRAY_ACCESS: \
-X(p.array_access.base); \
-X(p.array_access.index); \
+X(p->array_access.base); \
+X(p->array_access.index); \
 break; \
 case TB_PARAM_ADDR: \
-X(p.param_addr.param); \
+X(p->param_addr.param); \
+break; \
+case TB_PASS: \
+X(p->pass); \
 break; \
 case TB_PHI1: \
-X(p.phi1.a); \
-X(p.phi1.a_label); \
+X(p->phi1.a); \
+X(p->phi1.a_label); \
 break; \
 case TB_PHI2: \
-X(p.phi2.a); \
-X(p.phi2.b); \
-X(p.phi2.a_label); \
-X(p.phi2.b_label); \
+X(p->phi2.a); \
+X(p->phi2.b); \
+X(p->phi2.a_label); \
+X(p->phi2.b_label); \
 break; \
 case TB_LOAD: \
-X(p.load.address); \
+X(p->load.address); \
 break; \
 case TB_STORE: \
-X(p.store.address); \
-X(p.store.value); \
+X(p->store.address); \
+X(p->store.value); \
 break; \
 case TB_ZERO_EXT: \
 case TB_SIGN_EXT: \
-X(p.ext); \
+X(p->ext); \
 break; \
 case TB_AND: \
 case TB_OR: \
@@ -58,15 +61,15 @@ case TB_SDIV: \
 case TB_SAR: \
 case TB_SHL: \
 case TB_SHR: \
-X(p.i_arith.a); \
-X(p.i_arith.b); \
+X(p->i_arith.a); \
+X(p->i_arith.b); \
 break; \
 case TB_FADD: \
 case TB_FSUB: \
 case TB_FMUL: \
 case TB_FDIV: \
-X(p.f_arith.a); \
-X(p.f_arith.b); \
+X(p->f_arith.a); \
+X(p->f_arith.b); \
 break; \
 case TB_CMP_EQ: \
 case TB_CMP_NE: \
@@ -76,23 +79,23 @@ case TB_CMP_ULT: \
 case TB_CMP_ULE: \
 case TB_CMP_FLT: \
 case TB_CMP_FLE: \
-X(p.cmp.a); \
-X(p.cmp.b); \
+X(p->cmp.a); \
+X(p->cmp.b); \
 break; \
 case TB_CALL: \
 case TB_ICALL: \
-for (size_t j = p.call.param_start; j < p.call.param_end; j++) { \
+for (size_t j = p->call.param_start; j < p->call.param_end; j++) { \
 X(f->vla.data[j]); \
 } \
 break; \
 case TB_SWITCH: \
-X(p.switch_.key); \
+X(p->switch_.key); \
 break; \
 case TB_IF: \
-X(p.if_.cond); \
+X(p->if_.cond); \
 break; \
 case TB_RET: \
-X(p.ret.value); \
+X(p->ret.value); \
 break; \
 default: tb_todo(); \
 } \
@@ -128,7 +131,7 @@ TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t sta
 }
 
 void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Register replace) {
-#define X(reg) if (reg == find) reg = replace
+#define X(reg) if (reg == find) { reg = replace; }
 	FOR_EACH_REGISTER_IN_FUNC
 #undef X
 }
@@ -178,7 +181,7 @@ static TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params,
 	memmove(&f->nodes.type[at + count], &f->nodes.type[at], registers_beyond_end_point * sizeof(TB_RegType));
 	memmove(&f->nodes.dt[at + count], &f->nodes.dt[at], registers_beyond_end_point * sizeof(TB_DataType));
 	memmove(&f->nodes.payload[at + count], &f->nodes.payload[at], registers_beyond_end_point * sizeof(TB_RegPayload));
-	f->nodes.count += 1;
+	f->nodes.count += count;
 	
 	// Clear out registers
 	// necessary for the find & replace not to screw up
@@ -203,7 +206,7 @@ static TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params,
 #define ffu(r) if (r < count) r += (at - src_base)
 	for (int i = at; i < (at+count); i++) {
 		TB_RegType type = f->nodes.type[i];
-		TB_RegPayload p = f->nodes.payload[i];
+		TB_RegPayload* p = &f->nodes.payload[i];
 		
 		switch (type) {
 			case TB_NULL:
@@ -211,16 +214,16 @@ static TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params,
 			case TB_LOCAL:
 			break;
 			case TB_PARAM: {
-				TB_Register r = params[p.param.id];
+				TB_Register r = params[p->param.id];
 				
 				f->nodes.type[i] = TB_PASS;
-				f->nodes.payload[i] = (TB_RegPayload){
+				*p = (TB_RegPayload){
 					.pass = r
 				};
 				break;
 			}
 			case TB_LABEL:
-			if (p.label.id != 0) {
+			if (p->label.id != 0) {
 				// TODO(NeGate): Fix this!
 				tb_todo();
 			} else {
@@ -228,35 +231,35 @@ static TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params,
 			}
 			break;
 			case TB_PHI1:
-			ffu(p.phi1.a);
-			ffu(p.phi1.a_label);
+			ffu(p->phi1.a);
+			ffu(p->phi1.a_label);
 			break;
 			case TB_PHI2:
-			ffu(p.phi2.a);
-			ffu(p.phi2.b);
-			ffu(p.phi2.a_label);
-			ffu(p.phi2.b_label);
+			ffu(p->phi2.a);
+			ffu(p->phi2.b);
+			ffu(p->phi2.a_label);
+			ffu(p->phi2.b_label);
 			break;
 			case TB_ARRAY_ACCESS:
-			ffu(p.array_access.base);
-			ffu(p.array_access.index);
+			ffu(p->array_access.base);
+			ffu(p->array_access.index);
 			break;
 			case TB_MEMBER_ACCESS:
-			ffu(p.member_access.base);
+			ffu(p->member_access.base);
 			break;
 			case TB_SIGN_EXT:
 			case TB_ZERO_EXT:
-			ffu(p.ext);
+			ffu(p->ext);
 			break;
 			case TB_PARAM_ADDR:
-			ffu(p.param_addr.param);
+			ffu(p->param_addr.param);
 			break;
 			case TB_LOAD:
-			ffu(p.load.address);
+			ffu(p->load.address);
 			break;
 			case TB_STORE:
-			ffu(p.store.address);
-			ffu(p.store.value);
+			ffu(p->store.address);
+			ffu(p->store.value);
 			break;
 			case TB_AND:
 			case TB_OR:
@@ -265,15 +268,15 @@ static TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params,
 			case TB_MUL:
 			case TB_UDIV:
 			case TB_SDIV:
-			ffu(p.i_arith.a);
-			ffu(p.i_arith.b);
+			ffu(p->i_arith.a);
+			ffu(p->i_arith.b);
 			break;
 			case TB_FADD:
 			case TB_FSUB:
 			case TB_FMUL:
 			case TB_FDIV:
-			ffu(p.f_arith.a);
-			ffu(p.f_arith.b);
+			ffu(p->f_arith.a);
+			ffu(p->f_arith.b);
 			break;
 			case TB_CMP_EQ:
 			case TB_CMP_NE:
@@ -283,25 +286,25 @@ static TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params,
 			case TB_CMP_ULE:
 			case TB_CMP_FLT:
 			case TB_CMP_FLE:
-			ffu(p.cmp.a);
-			ffu(p.cmp.b);
+			ffu(p->cmp.a);
+			ffu(p->cmp.b);
 			break;
 			case TB_CALL:
 			case TB_ICALL:
-			for (size_t j = p.call.param_start; j < p.call.param_end; j++) {
+			for (size_t j = p->call.param_start; j < p->call.param_end; j++) {
 				ffu(f->vla.data[j]);
 			}
 			break;
 			case TB_IF:
-			ffu(p.if_.cond);
+			ffu(p->if_.cond);
 			break;
 			case TB_RET:
 			// TODO(NeGate): Implement multiple return values
 			if (ret) tb_todo();
 			
-			ffu(p.ret.value);
+			ffu(p->ret.value);
 			
-			ret = p.ret.value;
+			ret = p->ret.value;
 			tb_kill_op(f, i);
 			break;
 			default: tb_todo();

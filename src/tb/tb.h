@@ -234,6 +234,9 @@ TB_API TB_Register tb_inst_array_access(TB_Function* f, TB_Register base, TB_Reg
 TB_API TB_Register tb_inst_member_access(TB_Function* f, TB_Register base, int32_t offset);
 TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Register* params);
 
+TB_API void tb_inst_memset(TB_Function* f, TB_Register dst, TB_Register val, TB_Register size);
+TB_API void tb_inst_memcpy(TB_Function* f, TB_Register dst, TB_Register src, TB_Register size);
+
 TB_API TB_Register tb_inst_and(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
 TB_API TB_Register tb_inst_or(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
 TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
@@ -285,7 +288,7 @@ TB_API void tb_function_print(TB_Function* f);
 // It's broken down into streams which are easy to scan through and 
 // they are:
 // 
-// TB_RegType reg_types[reg_count]
+// TB_RegType      reg_types[reg_count]
 // TB_DataType     reg_data_types[reg_count]
 // TB_RegPayload   reg_payload[reg_count]
 //
@@ -348,7 +351,11 @@ enum {
     // Memory
     TB_LOAD,
     TB_STORE,
-    
+	
+	TB_MEMCPY,
+	TB_MEMSET,
+	TB_MEMCMP,
+	
     TB_LOCAL,
     TB_PARAM,
     TB_PARAM_ADDR,
@@ -470,6 +477,11 @@ typedef union TB_RegPayload {
 		TB_Label default_label;
 		int entries_start, entries_end;
 	} switch_;
+	struct {
+		TB_Register dst;
+		TB_Register src;
+		TB_Register size;
+	} mem_op;
 } TB_RegPayload;
 
 typedef struct TB_ConstPool32Patch {
@@ -695,6 +707,7 @@ bool tb_opt_mem2reg(TB_Function* f);
 bool tb_opt_dce(TB_Function* f);
 bool tb_opt_inline(TB_Function* f);
 bool tb_opt_canonicalize(TB_Function* f);
+bool tb_opt_remove_pass_node(TB_Function* f);
 bool tb_opt_strength_reduction(TB_Function* f);
 bool tb_opt_compact_dead_regs(TB_Function* f);
 

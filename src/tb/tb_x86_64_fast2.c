@@ -402,21 +402,20 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 		for (size_t i = 0; i < f->nodes.count; i += 16) {
 			__m128i bytes = _mm_load_si128((__m128i*)&f->nodes.type[i]);
 			int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(TB_CALL)));
+			if (mask == 0) continue;
 			
-			if (mask) {
-				size_t end = i + 16;
-				size_t j = i + __builtin_ffsll(mask);
+			size_t end = i + 16;
+			size_t j = i + (__builtin_ffsll(mask) - 1);
+			
+			// We know it loops at least once by this point
+			do {
+				int param_usage = (f->nodes.payload[i].call.param_end - f->nodes.payload[i].call.param_start);
 				
-				// We know it loops at least once by this point
-				do {
-					int param_usage = (f->nodes.payload[i].call.param_end - f->nodes.payload[i].call.param_start);
-					
-					caller_usage_in_bytes = (caller_usage_in_bytes < param_usage) 
-						? param_usage : caller_usage_in_bytes;
-					
-					j++;
-				} while (j < end);
-			}
+				caller_usage_in_bytes = (caller_usage_in_bytes < param_usage) 
+					? param_usage : caller_usage_in_bytes;
+				
+				j++;
+			} while (j < end);
 		}
 #undef COUNT_OF_TYPE_IN_M128
 #else
@@ -1097,6 +1096,19 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 	// Check if it's already cached
 	if (TB_IS_FLOAT_TYPE(dt.type) || dt.count > 1) {
 		// Check if it's in registers
+#if TB_HOST_ARCH == TB_HOST_X86_64
+		int* arr = &ctx->xmm_desc[0].bound_value;
+		
+		for (size_t i = 0; i < 4; i++) {
+			__m128i v = _mm_loadu_si128((__m128i*)&arr[i * 4]);
+			unsigned int mask = _mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(v, _mm_set1_epi32(r))));
+			if (mask) return (X64_Value) {
+				.type = X64_VALUE_XMM,
+				.dt = dt,
+				.xmm = __builtin_ffs(mask) - 1
+			};
+		}
+#else
 		for (int i = 0; i < 16; i++) {
 			TB_Register bound = ctx->xmm_desc[i].bound_value;
 			
@@ -1108,7 +1120,21 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 				};
 			}
 		}
+#endif
 	} else if (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR) {
+#if TB_HOST_ARCH == TB_HOST_X86_64
+		int* arr = &ctx->gpr_desc[0].bound_value;
+		
+		for (size_t i = 0; i < 4; i++) {
+			__m128i v = _mm_loadu_si128((__m128i*)&arr[i * 4]);
+			unsigned int mask = _mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(v, _mm_set1_epi32(r))));
+			if (mask) return (X64_Value) {
+				.type = X64_VALUE_GPR,
+				.dt = dt,
+				.gpr = __builtin_ffs(mask) - 1
+			};
+		}
+#else
 		for (int i = 0; i < 16; i++) {
 			TB_Register bound = ctx->gpr_desc[i].bound_value;
 			
@@ -1120,6 +1146,7 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 				};
 			}
 		}
+#endif
 	}
 	
 	switch (reg_type) {
@@ -2117,6 +2144,22 @@ static X64_Value x64_legalize(TB_Function* f, X64_Context* ctx, TB_Emitter* out,
 	return v;
 }
 
+static X64_Value x64_load_into_reg(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_DataType dt, TB_Register src_reg, X64_Value src) {
+	// TODO(NeGate): Design a special case for these
+	// kinds of "generic loads"
+	if (dt.type == TB_F32 || dt.count > 1) {
+		X64_Value temp = x64_allocate_xmm(ctx, src_reg, dt);
+		x64_inst_op(out, dt.type, dt.count == 1 ? &insts[X64_MOVSS] : &insts[X64_MOVAPS], &temp, &src);
+		
+		return temp;
+	} else if (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR) {
+		X64_Value temp = x64_allocate_gpr(f, ctx, src_reg, dt);
+		x64_inst_op(out, dt.type, &insts[X64_MOV], &temp, &src);
+		
+		return temp;
+	} else tb_todo();
+}
+
 static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register dst_reg, TB_Register next_reg, TB_Register a_reg, TB_Register b_reg, X64_Value a, X64_Value b, const X64_IselInfo* info, bool can_recycle) {
 	TB_DataType dst_dt = f->nodes.dt[dst_reg];
 	
@@ -2125,21 +2168,7 @@ static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out,
 	
 	// If both source operands are memory addresses, promote one into a register
 	if (a.type == X64_VALUE_MEM && b.type == X64_VALUE_MEM) {
-		// TODO(NeGate): Design a special case for these
-		// kinds of "generic loads"
-		if (dst_dt.count > 1) {
-			X64_Value temp = x64_allocate_xmm(ctx, a_reg, a.dt);
-			x64_emit_normal(out, dst_dt.type, MOVAPS, &temp, &a);
-			a = temp;
-		} else if (dst_dt.type == TB_F32) {
-			X64_Value temp = x64_allocate_xmm(ctx, a_reg, a.dt);
-			x64_emit_normal(out, dst_dt.type, MOVSS, &temp, &a);
-			a = temp;
-		} else if (TB_IS_INTEGER_TYPE(dst_dt.type)) {
-			X64_Value temp = x64_allocate_gpr(f, ctx, a_reg, a.dt);
-			x64_emit_normal(out, dst_dt.type, MOV, &temp, &a);
-			a = temp;
-		} else tb_todo();
+		a = x64_load_into_reg(f, ctx, out, dst_dt, a_reg, a);
 	}
 	
 	// Some instructions don't have an immediate form
@@ -2170,17 +2199,11 @@ static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out,
 		// TODO(NeGate): Design a special case for these
 		// kinds of "generic loads"
 		if (dst_dt.count > 1) {
-			X64_Value temp = x64_allocate_xmm(ctx, a_reg, a.dt);
 			x64_emit_normal(out, dst_dt.type, MOVAPS, &dst, &a);
-			a = temp;
 		} else if (dst_dt.type == TB_F32) {
-			X64_Value temp = x64_allocate_xmm(ctx, a_reg, a.dt);
 			x64_emit_normal(out, dst_dt.type, MOVSS, &dst, &a);
-			a = temp;
 		} else if (TB_IS_INTEGER_TYPE(dst_dt.type)) {
-			X64_Value temp = x64_allocate_gpr(f, ctx, a_reg, a.dt);
 			x64_emit_normal(out, dst_dt.type, MOV, &dst, &a);
-			a = temp;
 		} else tb_todo();
 	}
 	

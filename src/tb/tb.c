@@ -8,6 +8,11 @@
 #warning "Threading implementation not supported! Cannot use multiple threads to compile"
 #endif
 
+// Used for some optimizations
+#if TB_HOST_ARCH == TB_HOST_X86_64
+#include <x86intrin.h>
+#endif
+
 static size_t tb_get_ptr_size(TB_Arch target_arch) {
     if (target_arch == TB_ARCH_X86_64) return 8;
     if (target_arch == TB_ARCH_AARCH64) return 8;
@@ -133,9 +138,10 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 			TB_Function* f = &m->functions.data[i];
 			
 			restart_opt: {
-				//tb_function_print(f);
-				//printf("\n\n\n");
+				tb_function_print(f);
+				printf("\n\n\n");
 				
+				if (tb_opt_remove_pass_node(f)) goto restart_opt;
 				if (tb_opt_canonicalize(f)) goto restart_opt;
 				if (tb_opt_strength_reduction(f)) goto restart_opt;
 				if (tb_opt_mem2reg(f)) goto restart_opt;
@@ -144,8 +150,8 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 				if (tb_opt_compact_dead_regs(f)) goto restart_opt;
 			}
 			
-			//tb_function_print(f);
-			//printf("\n\n\n");
+			tb_function_print(f);
+			printf("\n\n\n");
 		}
 	}
 	
@@ -168,6 +174,15 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 			default:
 			printf("TinyBackend error: Unknown target!\n");
 			tb_todo();
+		}
+		
+		const size_t count = m->compiled_functions.count;
+		while (true) {
+			size_t i = m->compiled_functions.num_reserved++;
+			if (i >= count) break;
+			
+			m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
+			m->compiled_functions.num_compiled++;
 		}
 		
 		WaitForMultipleObjects(max_threads, threads, TRUE, -1);
@@ -411,6 +426,41 @@ static TB_Int128 tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128
 
 static TB_Register tb_cse_arith(TB_Function* f, int type, TB_DataType dt, TB_ArithmaticBehavior arith_behavior, TB_Register a, TB_Register b) {
 	assert(f->current_label);
+	
+#if TB_HOST_ARCH == TB_HOST_X86_64
+	size_t aligned_start = ((f->current_label + 15) / 16) * 16;
+	
+	for (size_t i = aligned_start; i < f->nodes.count; i += 16) {
+		__m128i bytes = _mm_load_si128((__m128i*)&f->nodes.type[i]);
+		unsigned int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(type)));
+		if (mask == 0) continue;
+		
+		// this one is guarentee to not be zero so it's fine
+		// to not check that FFS.
+		size_t offset = __builtin_ffs(mask) - 1;
+		
+		size_t j = i + offset;
+		// skip over the mask bit for the next iteration
+		mask >>= (offset + 1);
+		
+		// We know it loops at least once by this point
+		do {
+			if (TB_DATA_TYPE_EQUALS(f->nodes.dt[j], dt)
+				&& f->nodes.payload[j].i_arith.arith_behavior == arith_behavior
+				&& f->nodes.payload[j].i_arith.a == a
+				&& f->nodes.payload[j].i_arith.b == b) {
+				return j;
+			}
+			
+			size_t ffs = __builtin_ffs(mask);
+			if (ffs == 0) break;
+			
+			// skip over the mask bit for the next iteration
+			mask >>= ffs;
+			j += (ffs - 1);
+		} while (true);
+	}
+#else
 	for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
 		if (f->nodes.type[i] == type
 			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
@@ -420,6 +470,7 @@ static TB_Register tb_cse_arith(TB_Function* f, int type, TB_DataType dt, TB_Ari
 			return i;
 		}
 	}
+#endif
     
 	TB_Register r = tb_make_reg(f, type, dt);
 	f->nodes.payload[r].i_arith.arith_behavior = arith_behavior;
@@ -527,7 +578,41 @@ TB_API void tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_R
 
 TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) {
 	assert(f->current_label);
-    for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
+    
+#if TB_HOST_ARCH == TB_HOST_X86_64
+	size_t aligned_start = ((f->current_label + 15) / 16) * 16;
+	
+	for (size_t i = aligned_start; i < f->nodes.count; i += 16) {
+		__m128i bytes = _mm_load_si128((__m128i*)&f->nodes.type[i]);
+		unsigned int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(TB_INT_CONST)));
+		if (mask == 0) continue;
+		
+		// this one is guarentee to not be zero so it's fine
+		// to not check that FFS.
+		size_t offset = __builtin_ffs(mask) - 1;
+		
+		size_t j = i + offset;
+		// skip over the mask bit for the next iteration
+		mask >>= (offset + 1);
+		
+		// We know it loops at least once by this point
+		do {
+			if (TB_DATA_TYPE_EQUALS(f->nodes.dt[j], dt)
+				&& f->nodes.payload[j].i_const.lo == imm
+				&& f->nodes.payload[j].i_const.hi == 0) {
+				return j;
+			}
+			
+			size_t ffs = __builtin_ffs(mask);
+			if (ffs == 0) break;
+			
+			// skip over the mask bit for the next iteration
+			mask >>= ffs;
+			j += (ffs - 1);
+		} while (true);
+	}
+#else
+	for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
 		if (f->nodes.type[i] == TB_LOAD
 			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
 			&& f->nodes.payload[i].i_const.lo == imm
@@ -535,6 +620,7 @@ TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) 
 			return i;
 		}
 	}
+#endif
 	
 	assert(dt.type >= TB_I8 && dt.type <= TB_I128);
 	uint64_t mask = (~0ull) >> (64 - (8 << (dt.type - TB_I8)));
@@ -622,6 +708,20 @@ TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Functio
 	f->nodes.payload[r].call.param_start = param_start;
 	f->nodes.payload[r].call.param_end = param_end;
 	return r;
+}
+
+TB_API void tb_inst_memset(TB_Function* f, TB_Register dst, TB_Register val, TB_Register size) {
+	TB_Register r = tb_make_reg(f, TB_MEMSET, TB_TYPE_PTR());
+	f->nodes.payload[r].mem_op.dst = dst;
+	f->nodes.payload[r].mem_op.src = val;
+	f->nodes.payload[r].mem_op.size = size;
+}
+
+TB_API void tb_inst_memcpy(TB_Function* f, TB_Register dst, TB_Register src, TB_Register size) {
+	TB_Register r = tb_make_reg(f, TB_MEMCPY, TB_TYPE_PTR());
+	f->nodes.payload[r].mem_op.dst = dst;
+	f->nodes.payload[r].mem_op.src = src;
+	f->nodes.payload[r].mem_op.size = size;
 }
 
 TB_API TB_Register tb_inst_and(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {

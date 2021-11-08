@@ -36,18 +36,6 @@ bool tb_opt_mem2reg(TB_Function* f) {
 		}
 	}
 	
-	if (changes) {
-		// Remove the PASS nodes
-		for (TB_Register i = 1; i < f->nodes.count; i++) {
-			if (f->nodes.type[i] == TB_PASS) {
-				tb_function_find_replace_reg(f, i, f->nodes.payload[i].pass);
-				
-				// Kill PASS
-				tb_kill_op(f, i);
-			}
-		}
-	}
-	
 	return changes;
 }
 

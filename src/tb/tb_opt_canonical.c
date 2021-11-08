@@ -34,6 +34,22 @@ bool tb_opt_compact_dead_regs(TB_Function* f) {
 	return false;
 }
 
+bool tb_opt_remove_pass_node(TB_Function* f) {
+	int changes = 0;
+	
+	for (TB_Register i = 1; i < f->nodes.count; i++) {
+		if (f->nodes.type[i] == TB_PASS) {
+			tb_function_find_replace_reg(f, i, f->nodes.payload[i].pass);
+			
+			// Kill PASS
+			tb_kill_op(f, i);
+			changes++;
+		}
+	}
+	
+	return changes;
+}
+
 bool tb_opt_canonicalize(TB_Function* f) {
 	int changes = 0;
 	for (TB_Register i = 1; i < f->nodes.count; i++) {
@@ -66,6 +82,20 @@ bool tb_opt_canonicalize(TB_Function* f) {
 				f->nodes.payload[a].i_arith.a = y;
 				f->nodes.payload[a].i_arith.b = z;
 				changes++;
+			}
+		} else if (type == TB_ARRAY_ACCESS) {
+			TB_Register base = f->nodes.payload[i].array_access.base;
+			TB_Register index = f->nodes.payload[i].array_access.index;
+			
+			if (f->nodes.type[index] == TB_INT_CONST) {
+				TB_Int128 index_imm = f->nodes.payload[index].i_const;
+				assert(index_imm.hi == 0);
+				
+				if (index_imm.lo == 0) {
+					f->nodes.type[i] = TB_PASS;
+					f->nodes.payload[i].pass = base;
+					changes++;
+				}
 			}
 		}
 	}

@@ -3,31 +3,34 @@
 
 bool tb_opt_strength_reduction(TB_Function* f) {
 	int changes = 0;
-	for (TB_Register i = 1; i < f->count; i++) {
-		if (f->nodes[i].type == TB_MUL) {
-			TB_Register a = f->nodes[i].i_arith.a;
-			TB_Register b = f->nodes[i].i_arith.b;
-			TB_DataType dt = f->nodes[i].dt;
+	for (TB_Register i = 1; i < f->nodes.count; i++) {
+		if (f->nodes.type[i] == TB_MUL) {
+			TB_Register a = f->nodes.payload[i].i_arith.a;
+			TB_Register b = f->nodes.payload[i].i_arith.b;
+			TB_DataType dt = f->nodes.dt[i];
 			
-			if (f->nodes[b].type == TB_INT_CONST) {
-				assert(f->nodes[b].i_const.hi == 0);
+			if (f->nodes.type[b] == TB_INT_CONST) {
+				TB_Int128 b_const = f->nodes.payload[b].i_const;
+				assert(b_const.hi == 0);
 				
-				int log2 = __builtin_ffs(f->nodes[b].i_const.lo) - 1;
-				if (f->nodes[b].i_const.lo == (1 << log2)) {
+				int log2 = __builtin_ffs(b_const.lo) - 1;
+				if (b_const.lo == (1 << log2)) {
 					// It's a power of two, swap in a left-shift
-					TB_Node* new_op = tb_insert_op(f, i - 1);
-					*new_op = (TB_Node){
-						.type = TB_INT_CONST,
-						.dt = dt,
+					TB_Register new_op = i - 1;
+					tb_insert_op(f, new_op);
+					
+					f->nodes.type[new_op] = TB_INT_CONST;
+					f->nodes.dt[new_op] = dt;
+					f->nodes.payload[new_op] = (TB_RegPayload){
 						.i_const.lo = log2
 					};
 					
 					// shift over `i` because it's infront of the insertion
 					i++;
 					
-					f->nodes[i].type = TB_SHL;
-					f->nodes[i].i_arith.a = a;
-					f->nodes[i].i_arith.b = new_op - f->nodes;
+					f->nodes.type[i] = TB_SHL;
+					f->nodes.payload[i].i_arith.a = a;
+					f->nodes.payload[i].i_arith.b = new_op;
 					changes++;
 				}
 			}

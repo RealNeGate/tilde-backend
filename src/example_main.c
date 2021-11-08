@@ -77,7 +77,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_functions[i](m);
 	}
     
-	if (!tb_module_compile(m, TB_OPT_O1, 1)) abort();
+	if (!tb_module_compile(m, TB_OPT_O0, 1)) abort();
 	if (!tb_module_export(m, f)) abort();
 	
 	tb_module_destroy(m);

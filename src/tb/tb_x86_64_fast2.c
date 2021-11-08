@@ -504,7 +504,77 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 		TB_DataType dt = f->nodes.dt[bb_end];
 		TB_RegPayload p = f->nodes.payload[bb_end];
 		
-		if (reg_type == TB_IF) {
+		if (reg_type == TB_RET) {
+			if (dt.type != TB_VOID) {
+				X64_Value value = x64_eval(f, ctx, &out, p.ret.value, bb_end);
+				
+				if (value.dt.type == TB_F32 || value.dt.count > 1) {
+					// Float results use XMM0
+					X64_Value dst = (X64_Value){
+						.type = X64_VALUE_XMM,
+						.dt = value.dt,
+						.xmm = X64_XMM0
+					};
+					
+					if (value.type != X64_VALUE_XMM || (value.type == X64_VALUE_XMM && value.gpr != X64_XMM0)) {
+						if (value.dt.count > 1) x64_emit_normal(&out, value.dt.type, MOVAPS, &dst, &value);
+						else x64_emit_normal(&out, value.dt.type, MOVSS, &dst, &value);
+					}
+				} else if (value.dt.type == TB_I8 ||
+						   value.dt.type == TB_I16 ||
+						   value.dt.type == TB_I32 ||
+						   value.dt.type == TB_I64 ||
+						   value.dt.type == TB_PTR) {
+					// Integer results use RAX and if result is extended RDX
+					X64_Value dst = (X64_Value){
+						.type = X64_VALUE_GPR,
+						.dt = value.dt,
+						.gpr = X64_RAX
+					};
+					
+					if (value.type == X64_VALUE_IMM32) {
+						uint8_t* out_buffer = tb_out_reserve(&out, 5);
+						
+						assert(value.imm32 < INT32_MAX);
+						if (value.imm32 == 0) {
+							*out_buffer++ = 0x31;
+							*out_buffer++ = x64_inst_mod_rx_rm(X64_MOD_DIRECT, X64_RAX, X64_RAX);
+							
+							tb_out_commit(&out, 2);
+						} else {
+							// mov eax, imm32
+							*out_buffer++ = 0xB8;
+							*((uint32_t*)out_buffer) = value.imm32;
+							out_buffer += 4;
+							
+							tb_out_commit(&out, 5);
+						}
+					} else if (value.type != X64_VALUE_GPR || (value.type == X64_VALUE_GPR && value.gpr != X64_RAX)) {
+						x64_emit_normal(&out, value.dt.type, MOV, &dst, &value);
+					}
+				} else tb_todo();
+			}
+			
+			x64_enqueue_bb(f, bb_stack, bb_end + 1);
+			
+			TB_Label fallthrough_label_reg = 0;
+			if (bb_stack->top > 0) {
+				fallthrough_label_reg = bb_stack->data[bb_stack->top - 1];
+			}
+			
+			// Only jump if we aren't literally about to end the function
+			if (fallthrough_label_reg != TB_NULL_REG) {
+				ret_patches[ret_patch_count++] = out.count + 1;
+				
+				uint8_t* out_buffer = tb_out_reserve(&out, 5);
+				out_buffer[0] = 0xE9;
+				out_buffer[1] = 0x00;
+				out_buffer[2] = 0x00;
+				out_buffer[3] = 0x00;
+				out_buffer[4] = 0x00;
+				tb_out_commit(&out, 5);
+			}
+		} else if (reg_type == TB_IF) {
 			TB_Label if_true = p.if_.if_true;
 			TB_Label if_false = p.if_.if_false;
 			
@@ -584,76 +654,6 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 				} else {
 					tb_out_commit(&out, 6);
 				}
-			}
-		} else if (reg_type == TB_RET) {
-			if (dt.type != TB_VOID) {
-				X64_Value value = x64_eval(f, ctx, &out, p.ret.value, bb_end);
-				
-				if (value.dt.type == TB_F32 || value.dt.count > 1) {
-					// Float results use XMM0
-					X64_Value dst = (X64_Value){
-						.type = X64_VALUE_XMM,
-						.dt = value.dt,
-						.xmm = X64_XMM0
-					};
-					
-					if (value.type != X64_VALUE_XMM || (value.type == X64_VALUE_XMM && value.gpr != X64_XMM0)) {
-						if (value.dt.count > 1) x64_emit_normal(&out, value.dt.type, MOVAPS, &dst, &value);
-						else x64_emit_normal(&out, value.dt.type, MOVSS, &dst, &value);
-					}
-				} else if (value.dt.type == TB_I8 ||
-						   value.dt.type == TB_I16 ||
-						   value.dt.type == TB_I32 ||
-						   value.dt.type == TB_I64 ||
-						   value.dt.type == TB_PTR) {
-					// Integer results use RAX and if result is extended RDX
-					X64_Value dst = (X64_Value){
-						.type = X64_VALUE_GPR,
-						.dt = value.dt,
-						.gpr = X64_RAX
-					};
-					
-					if (value.type == X64_VALUE_IMM32) {
-						uint8_t* out_buffer = tb_out_reserve(&out, 5);
-						
-						assert(value.imm32 < INT32_MAX);
-						if (value.imm32 == 0) {
-							*out_buffer++ = 0x31;
-							*out_buffer++ = x64_inst_mod_rx_rm(X64_MOD_DIRECT, X64_RAX, X64_RAX);
-							
-							tb_out_commit(&out, 2);
-						} else {
-							// mov eax, imm32
-							*out_buffer++ = 0xB8;
-							*((uint32_t*)out_buffer) = value.imm32;
-							out_buffer += 4;
-							
-							tb_out_commit(&out, 5);
-						}
-					} else if (value.type != X64_VALUE_GPR || (value.type == X64_VALUE_GPR && value.gpr != X64_RAX)) {
-						x64_emit_normal(&out, value.dt.type, MOV, &dst, &value);
-					}
-				} else tb_todo();
-			}
-			
-			x64_enqueue_bb(f, bb_stack, bb_end + 1);
-			
-			TB_Label fallthrough_label_reg = 0;
-			if (bb_stack->top > 0) {
-				fallthrough_label_reg = bb_stack->data[bb_stack->top - 1];
-			}
-			
-			// Only jump if we aren't literally about to end the function
-			if (fallthrough_label_reg != TB_NULL_REG) {
-				ret_patches[ret_patch_count++] = out.count + 1;
-				
-				uint8_t* out_buffer = tb_out_reserve(&out, 5);
-				out_buffer[0] = 0xE9;
-				out_buffer[1] = 0x00;
-				out_buffer[2] = 0x00;
-				out_buffer[3] = 0x00;
-				out_buffer[4] = 0x00;
-				tb_out_commit(&out, 5);
 			}
 		} else if (reg_type == TB_LABEL) {
 			x64_terminate_path(f, ctx, &out, bb, bb_end, p.label.terminator);
@@ -1094,54 +1094,56 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 	TB_RegPayload p = f->nodes.payload[r];
 	
 	// Check if it's already cached
-	if (TB_IS_FLOAT_TYPE(dt.type) || dt.count > 1) {
-		// Check if it's in registers
-#if TB_HOST_ARCH == TB_HOST_X86_64
-		int* arr = &ctx->xmm_desc[0].bound_value;
+	{
+		int* arr = NULL;
+		bool use_xmm = false;
 		
+		if (TB_IS_FLOAT_TYPE(dt.type) || dt.count > 1) {
+			use_xmm = true;
+			arr = &ctx->xmm_desc[0].bound_value;
+		} else arr = &ctx->gpr_desc[0].bound_value;
+		
+		// This is a simple linear search over a fixed set so it's very easy
+		// to optimize, if we use SSE we can do it 4-wide and if we use AVX
+		// we can do it 8-wide
+#if TB_HOST_ARCH == TB_HOST_X86_64
+#ifdef __AVX__
+		for (size_t i = 0; i < 2; i++) {
+			__m256i v = _mm256_load_si256((__m256*)&arr[i * 8]);
+			unsigned int mask = _mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(v, _mm256_set1_epi32(r))));
+			
+			if (mask) return (X64_Value) {
+				.type = use_xmm ? X64_VALUE_XMM : X64_VALUE_GPR,
+				.dt = dt,
+				// gpr/xmm both take the same space in the tagged union
+				// so it doesn't matter
+				.gpr = (i * 8) + (__builtin_ffs(mask) - 1)
+			};
+		}
+#else
 		for (size_t i = 0; i < 4; i++) {
 			__m128i v = _mm_loadu_si128((__m128i*)&arr[i * 4]);
 			unsigned int mask = _mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(v, _mm_set1_epi32(r))));
+			
 			if (mask) return (X64_Value) {
-				.type = X64_VALUE_XMM,
+				.type = use_xmm ? X64_VALUE_XMM : X64_VALUE_GPR,
 				.dt = dt,
-				.xmm = __builtin_ffs(mask) - 1
+				// gpr/xmm both take the same space in the tagged union
+				// so it doesn't matter
+				.gpr = (i * 4) + (__builtin_ffs(mask) - 1)
 			};
 		}
+#endif
 #else
 		for (int i = 0; i < 16; i++) {
 			TB_Register bound = ctx->xmm_desc[i].bound_value;
 			
 			if (r == bound) {
 				return (X64_Value) {
-					.type = X64_VALUE_XMM,
+					.type = use_xmm ? X64_VALUE_XMM : X64_VALUE_GPR,
 					.dt = dt,
-					.gpr = i
-				};
-			}
-		}
-#endif
-	} else if (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR) {
-#if TB_HOST_ARCH == TB_HOST_X86_64
-		int* arr = &ctx->gpr_desc[0].bound_value;
-		
-		for (size_t i = 0; i < 4; i++) {
-			__m128i v = _mm_loadu_si128((__m128i*)&arr[i * 4]);
-			unsigned int mask = _mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(v, _mm_set1_epi32(r))));
-			if (mask) return (X64_Value) {
-				.type = X64_VALUE_GPR,
-				.dt = dt,
-				.gpr = __builtin_ffs(mask) - 1
-			};
-		}
-#else
-		for (int i = 0; i < 16; i++) {
-			TB_Register bound = ctx->gpr_desc[i].bound_value;
-			
-			if (r == bound) {
-				return (X64_Value) {
-					.type = X64_VALUE_GPR,
-					.dt = dt,
+					// gpr/xmm both take the same space in the tagged union
+					// so it doesn't matter
 					.gpr = i
 				};
 			}

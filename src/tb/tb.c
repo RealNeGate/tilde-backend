@@ -424,15 +424,25 @@ static TB_Int128 tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128
 	}
 }
 
+// literally only used in `tb_cse_arith` i just don't wanna
+// inline it, readability wise at least.
+inline static bool tb_match_iarith_payload(const TB_RegPayload* a, const TB_RegPayload* b) {
+	__m128i a128 = _mm_load_si128((__m128i*)a);
+	__m128i b128 = _mm_load_si128((__m128i*)b);
+	
+	return _mm_movemask_epi8(_mm_cmpeq_epi8(a128, b128)) == 0xFFF;
+}
+
 static TB_Register tb_cse_arith(TB_Function* f, int type, TB_DataType dt, TB_ArithmaticBehavior arith_behavior, TB_Register a, TB_Register b) {
 	assert(f->current_label);
 	
 #if TB_HOST_ARCH == TB_HOST_X86_64
 	size_t aligned_start = ((f->current_label + 15) / 16) * 16;
+	__m128i pattern = _mm_set1_epi8(type);
 	
 	for (size_t i = aligned_start; i < f->nodes.count; i += 16) {
 		__m128i bytes = _mm_load_si128((__m128i*)&f->nodes.type[i]);
-		unsigned int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(type)));
+		unsigned int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(bytes, pattern));
 		if (mask == 0) continue;
 		
 		// this one is guarentee to not be zero so it's fine
@@ -515,7 +525,7 @@ TB_API TB_Register tb_inst_param(TB_Function* f, TB_DataType dt) {
     
     // TODO(NeGate): It's currently assuming that all pointers are 8bytes big,
     // which is untrue for some platforms.
-	int param_size;
+	int param_size = 0;
 	switch (dt.type) {
         case TB_I8:  param_size = 1; break;
         case TB_I16: param_size = 2; break;
@@ -524,9 +534,10 @@ TB_API TB_Register tb_inst_param(TB_Function* f, TB_DataType dt) {
         case TB_F32: param_size = 4; break;
         case TB_F64: param_size = 8; break;
         case TB_PTR: param_size = 8; break;
-        default: tb_todo();
+        default: break;
 	}
     
+	assert(param_size);
 	assert(dt.count > 0);
 	f->nodes.payload[r].param.size = param_size * dt.count;
 	return r;

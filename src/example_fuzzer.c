@@ -133,5 +133,6 @@ int main(int argc, char** argv) {
 	
 	clock_t t4 = clock();
 	printf("Object file output took %f ms\n", ((t4 - t3) / (double)CLOCKS_PER_SEC) * 1000.0);
+	printf("Compilation took %f ms\n", ((t4 - t1) / (double)CLOCKS_PER_SEC) * 1000.0);
 	return 0;
 }

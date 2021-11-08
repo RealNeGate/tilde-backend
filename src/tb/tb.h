@@ -41,6 +41,15 @@
 #define TB_MAX_FUNCTIONS (1 << 20)
 #endif
 
+#define TB_HOST_UNKNOWN 0
+#define TB_HOST_X86_64 1
+
+#if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64)
+#define TB_HOST_ARCH TB_HOST_X86_64
+#else
+#define TB_HOST_ARCH TB_HOST_UNKNOWN
+#endif
+
 #define TB_API extern
 
 #define TB_NULL_REG ((TB_Register)0)
@@ -270,6 +279,18 @@ TB_API void tb_function_print(TB_Function* f);
 
 // Private header stuff, don't include TB_INTERNAL into your code,
 // it's for the other implementation files of TB
+//
+//
+// The internal structure of a function's IR:
+// It's broken down into streams which are easy to scan through and 
+// they are:
+// 
+// TB_RegType reg_types[reg_count]
+// TB_DataType     reg_data_types[reg_count]
+// TB_RegPayload   reg_payload[reg_count]
+//
+// the TB_Register is an index into these streams and each unique value
+// maps to a valid IR register except 0 which is reserved as the null register.
 #ifdef TB_INTERNAL
 
 typedef struct TB_Emitter {
@@ -277,7 +298,7 @@ typedef struct TB_Emitter {
 	uint8_t* data;
 } TB_Emitter;
 
-enum TB_RegisterType {
+enum {
     TB_NULL,
 	
 	TB_CALL,
@@ -352,106 +373,104 @@ enum TB_RegisterType {
     TB_RET
 };
 
+typedef uint8_t TB_RegType;
+
 #define TB_DATA_TYPE_EQUALS(a, b) (memcmp(&(a), &(b), sizeof(TB_DataType)) == 0)
 #define TB_DATA_TYPE_NOT_EQUALS(a, b) (memcmp(&(a), &(b), sizeof(TB_DataType)) != 0)
 
-typedef struct TB_Node {
-	TB_DataType dt;
-    enum TB_RegisterType type;
-	union {
-        // NOTE(NeGate): Shouldn't exceed 128bits for any option
-		uint32_t raw[4];
-        
-		TB_Int128 i_const;
-		double f_const;
-        TB_Register ext;
-		struct {
-			TB_Register base;
-			int32_t offset;
-		} member_access;
-		struct {
-			TB_Register base;
-			TB_Register index;
-			uint32_t stride;
-		} array_access;
-		struct {
-			uint32_t id;
-			uint32_t size;
-		} param;
-		struct {
-			TB_Register param;
-            
-			uint32_t size;
-			uint32_t alignment;
-		} param_addr;
-		struct {
-			uint32_t size;
-			uint32_t alignment;
-		} local;
-		struct {
-			TB_Register a;
-			TB_Register b;
-			TB_ArithmaticBehavior arith_behavior;
-		} i_arith;
-		struct {
-			TB_Register a;
-			TB_Register b;
-		} f_arith;
-		struct {
-			TB_Register a;
-			TB_Register b;
-			TB_DataType dt;
-		} cmp;
-		struct {
-			TB_Register src;
-		} cvt;
-		struct {
-			TB_Register address;
-			uint32_t alignment;
-		} load;
-		struct {
-			TB_Register address;
-			TB_Register value;
-			uint32_t alignment;
-		} store;
-		struct {
-			TB_Register value;
-		} ret;
-		TB_Register pass;
-		struct {
-			TB_Register a_label;
-			TB_Register a;
-		} phi1;
-		struct {
-			TB_Register a_label;
-			TB_Register a;
-			TB_Register b_label;
-			TB_Register b;
-		} phi2;
-		struct {
-			TB_Label id;
-			TB_Register terminator;
-			bool is_loop;
-		} label;
-		struct {
-			TB_Register cond;
-			TB_Label if_true;
-			TB_Label if_false;
-		} if_;
-		struct {
-			TB_Label label;
-		} goto_;
-		struct {
-			const TB_Function* target;
-			int param_start, param_end;
-		} call;
-		struct {
-			TB_Register key;
-			TB_Label default_label;
-			int entries_start, entries_end;
-		} switch_;
-	};
-} TB_Node;
+typedef union TB_RegPayload {
+	// NOTE(NeGate): Shouldn't exceed 128bits for any option
+	uint32_t raw[4];
+	
+	TB_Int128 i_const;
+	double f_const;
+	TB_Register ext;
+	struct {
+		TB_Register base;
+		int32_t offset;
+	} member_access;
+	struct {
+		TB_Register base;
+		TB_Register index;
+		uint32_t stride;
+	} array_access;
+	struct {
+		uint32_t id;
+		uint32_t size;
+	} param;
+	struct {
+		TB_Register param;
+		
+		uint32_t size;
+		uint32_t alignment;
+	} param_addr;
+	struct {
+		uint32_t size;
+		uint32_t alignment;
+	} local;
+	struct {
+		TB_Register a;
+		TB_Register b;
+		TB_ArithmaticBehavior arith_behavior;
+	} i_arith;
+	struct {
+		TB_Register a;
+		TB_Register b;
+	} f_arith;
+	struct {
+		TB_Register a;
+		TB_Register b;
+		TB_DataType dt;
+	} cmp;
+	struct {
+		TB_Register src;
+	} cvt;
+	struct {
+		TB_Register address;
+		uint32_t alignment;
+	} load;
+	struct {
+		TB_Register address;
+		TB_Register value;
+		uint32_t alignment;
+	} store;
+	struct {
+		TB_Register value;
+	} ret;
+	TB_Register pass;
+	struct {
+		TB_Register a_label;
+		TB_Register a;
+	} phi1;
+	struct {
+		TB_Register a_label;
+		TB_Register a;
+		TB_Register b_label;
+		TB_Register b;
+	} phi2;
+	struct {
+		TB_Label id;
+		TB_Register terminator;
+		bool is_loop;
+	} label;
+	struct {
+		TB_Register cond;
+		TB_Label if_true;
+		TB_Label if_false;
+	} if_;
+	struct {
+		TB_Label label;
+	} goto_;
+	struct {
+		const TB_Function* target;
+		int param_start, param_end;
+	} call;
+	struct {
+		TB_Register key;
+		TB_Label default_label;
+		int entries_start, entries_end;
+	} switch_;
+} TB_RegPayload;
 
 typedef struct TB_ConstPool32Patch {
 	uint32_t func_id;
@@ -477,6 +496,15 @@ struct TB_FunctionOutput {
 	TB_Emitter emitter;
 };
 
+typedef struct TB_NodeStream {
+	TB_Register    capacity;
+	TB_Register    count;
+	
+	TB_RegType*    type;
+	TB_DataType*   dt;
+	TB_RegPayload* payload;
+} TB_NodeStream;
+
 struct TB_Function {
 	bool validated;
 	
@@ -486,9 +514,9 @@ struct TB_Function {
 	// It's kinda a weird circular but still
 	struct TB_Module* module;
 	
-	TB_Register capacity;
-    TB_Register count;
-	TB_Node* nodes;
+	// Used by the IR building
+	TB_Register current_label;
+	TB_NodeStream nodes;
 	
 	// Used by nodes which have variable
 	// length arguements like PHI and CALL.
@@ -500,8 +528,6 @@ struct TB_Function {
 		TB_Register* data;
 	} vla;
 	
-	TB_Register current_label;
-    
 	uint32_t parameter_count;
     
 	uint32_t locals_stack_usage;
@@ -652,7 +678,15 @@ TB_Register tb_find_reg_from_label(TB_Function* f, TB_Label id);
 TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t start, size_t end);
 void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Register replace);
 size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_t end);
-TB_Node* tb_insert_op(TB_Function* f, TB_Register at);
+void tb_insert_op(TB_Function* f, TB_Register at);
+void tb_resize_node_stream(TB_Function* f, size_t cap);
+TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params, TB_Register at, const TB_Function* src_func, TB_Register src_base, int count);
+
+inline static void tb_kill_op(TB_Function* f, TB_Register at) {
+	f->nodes.type[at] = TB_NULL;
+	f->nodes.dt[at] = (TB_DataType){ 0 };
+	f->nodes.payload[at] = (TB_RegPayload){ 0 };
+}
 
 //
 // OPTIMIZATION FUNCTIONS
@@ -672,7 +706,9 @@ TB_API void tb_find_live_intervals(size_t intervals[], const TB_Function* f);
 uint32_t tb_emit_const32_patch(TB_Module* m, uint32_t func_id, size_t pos, uint32_t data);
 void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size_t pos);
 
-extern ICodeGen aarch64_fast_code_gen;
+// TODO(NeGate): Reimplement this later, the code is slightly outdated.
+// extern ICodeGen aarch64_fast_code_gen;
+
 extern ICodeGen x64_fast_code_gen;
 
 #endif /* TB_INTERNAL */

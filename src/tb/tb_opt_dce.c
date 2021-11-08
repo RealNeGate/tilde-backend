@@ -5,12 +5,12 @@ bool tb_opt_dce(TB_Function* f) {
 	int changes = 0;
 	TB_TemporaryStorage* tls = tb_tls_allocate();
     
-	size_t* intervals = tb_tls_push(tls, f->count * sizeof(size_t));
+	size_t* intervals = tb_tls_push(tls, f->nodes.count * sizeof(size_t));
 	tb_find_live_intervals(intervals, f);
     
-	for (TB_Register i = 1; i < f->count; i++) {
+	for (TB_Register i = 1; i < f->nodes.count; i++) {
 		if (intervals[i] == 0) {
-			switch (f->nodes[i].type) {
+			switch (f->nodes.type[i]) {
 				// keep
                 case TB_NULL:
                 case TB_LABEL:
@@ -51,10 +51,10 @@ bool tb_opt_dce(TB_Function* f) {
                 case TB_CMP_ULE:
                 case TB_CMP_FLT:
                 case TB_CMP_FLE:
-				f->nodes[i] = (TB_Node){ 0 };
+				tb_kill_op(f, i);
 				changes++;
 				break;
-                default:
+				default:
 				tb_todo();
 			}
 		}

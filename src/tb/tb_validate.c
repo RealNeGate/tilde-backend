@@ -7,55 +7,55 @@ int tb_validate(TB_Function* f) {
 	
 	//tb_function_print(f);
 	
-	for (TB_Register i = 1; i < f->count; i++) {
-		if (f->nodes[i].type == TB_SIGN_EXT ||
-			f->nodes[i].type == TB_ZERO_EXT) {
+	for (TB_Register i = 1; i < f->nodes.count; i++) {
+		if (f->nodes.type[i] == TB_SIGN_EXT ||
+			f->nodes.type[i] == TB_ZERO_EXT) {
 			// Must all take in integral types
-			if (!TB_IS_INTEGER_TYPE(f->nodes[i].dt.type)) {
+			if (!TB_IS_INTEGER_TYPE(f->nodes.dt[i].type)) {
 				printf("error on %s:r%u: Integer extensions has to use an integral type!\n", f->name, i);
 				error_count++;
 			}
 			
-			TB_Register src = f->nodes[i].ext;
-			if (f->nodes[i].dt.type >= f->nodes[src].dt.type) {
+			TB_Register src = f->nodes.payload[i].ext;
+			if (f->nodes.dt[i].type >= f->nodes.dt[src].type) {
 				printf("error on %s:r%u: destination type must be bigger than the source type.\n", f->name, i);
 				error_count++;
 			}
-		} else if (f->nodes[i].type >= TB_AND &&
-				   f->nodes[i].type <= TB_SAR) {
+		} else if (f->nodes.type[i] >= TB_AND &&
+				   f->nodes.type[i] <= TB_SAR) {
 			// Must all take in integral types
-			if (!TB_IS_INTEGER_TYPE(f->nodes[i].dt.type)) {
+			if (!TB_IS_INTEGER_TYPE(f->nodes.dt[i].type)) {
 				printf("error on %s:r%u: Integer arithmatic has to use an integral type!\n", f->name, i);
 				error_count++;
 			}
 			
-			TB_Register a = f->nodes[i].i_arith.a;
-			if (TB_DATA_TYPE_NOT_EQUALS(f->nodes[i].dt, f->nodes[a].dt)) {
+			TB_Register a = f->nodes.payload[i].i_arith.a;
+			if (TB_DATA_TYPE_NOT_EQUALS(f->nodes.dt[i], f->nodes.dt[a])) {
 				printf("error on %s:r%u: Arithmatic operands must match output type!\n", f->name, i);
 				error_count++;
 			}
 			
-			TB_Register b = f->nodes[i].i_arith.b;
-			if (TB_DATA_TYPE_NOT_EQUALS(f->nodes[i].dt, f->nodes[b].dt)) {
+			TB_Register b = f->nodes.payload[i].i_arith.b;
+			if (TB_DATA_TYPE_NOT_EQUALS(f->nodes.dt[i], f->nodes.dt[b])) {
 				printf("error on %s:r%u: Arithmatic operands must match output type!\n", f->name, i);
 				error_count++;
 			}
-		} else if (f->nodes[i].type >= TB_FADD &&
-				   f->nodes[i].type <= TB_FDIV) {
+		} else if (f->nodes.type[i] >= TB_FADD &&
+				   f->nodes.type[i] <= TB_FDIV) {
 			// Must all take in float types
-			if (!TB_IS_FLOAT_TYPE(f->nodes[i].dt.type)) {
+			if (!TB_IS_FLOAT_TYPE(f->nodes.dt[i].type)) {
 				printf("error on %s:r%u: Float arithmatic has to use a floating-point type!\n", f->name, i);
 				error_count++;
 			}
 			
-			TB_Register a = f->nodes[i].f_arith.a;
-			if (TB_DATA_TYPE_NOT_EQUALS(f->nodes[i].dt, f->nodes[a].dt)) {
+			TB_Register a = f->nodes.payload[i].f_arith.a;
+			if (TB_DATA_TYPE_NOT_EQUALS(f->nodes.dt[i], f->nodes.dt[a])) {
 				printf("error on %s:r%u: Arithmatic operands must match output type!\n", f->name, i);
 				error_count++;
 			}
 			
-			TB_Register b = f->nodes[i].f_arith.b;
-			if (TB_DATA_TYPE_NOT_EQUALS(f->nodes[i].dt, f->nodes[b].dt)) {
+			TB_Register b = f->nodes.payload[i].f_arith.b;
+			if (TB_DATA_TYPE_NOT_EQUALS(f->nodes.dt[i], f->nodes.dt[b])) {
 				printf("error on %s:r%u: Arithmatic operands must match output type!\n", f->name, i);
 				error_count++;
 			}

@@ -68,7 +68,10 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
 
 TB_API void tb_module_destroy(TB_Module* m) {
 	loop(i, m->functions.count) {
-		free(m->functions.data[i].nodes);
+		_aligned_free(m->functions.data[i].nodes.type);
+		_aligned_free(m->functions.data[i].nodes.dt);
+		_aligned_free(m->functions.data[i].nodes.payload);
+		
 		free(m->functions.data[i].name);
 	}
     
@@ -112,7 +115,7 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 	uint32_t ir_node_count = 0;
 	loop(i, m->functions.count) {
 		errors += tb_validate(&m->functions.data[i]);
-		ir_node_count += m->functions.data[i].count;
+		ir_node_count += m->functions.data[i].nodes.count;
 	}
 	if (errors > 0) return false;
 	
@@ -130,8 +133,8 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 			TB_Function* f = &m->functions.data[i];
 			
 			restart_opt: {
-				tb_function_print(f);
-				printf("\n\n\n");
+				//tb_function_print(f);
+				//printf("\n\n\n");
 				
 				if (tb_opt_canonicalize(f)) goto restart_opt;
 				if (tb_opt_strength_reduction(f)) goto restart_opt;
@@ -141,8 +144,8 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 				if (tb_opt_compact_dead_regs(f)) goto restart_opt;
 			}
 			
-			tb_function_print(f);
-			printf("\n\n\n");
+			//tb_function_print(f);
+			//printf("\n\n\n");
 		}
 	}
 	
@@ -182,11 +185,6 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 				m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
 			}
 			return true;
-			case TB_ARCH_AARCH64:
-			loop(i, m->functions.count) {
-				m->compiled_functions.data[i] = aarch64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
-			}
-			return true;
 			default:
 			printf("TinyBackend error: Unknown target!\n");
 			tb_todo();
@@ -198,7 +196,6 @@ TB_API bool tb_module_export(TB_Module* m, FILE* f) {
 	const ICodeGen* restrict code_gen;
 	switch (m->target_arch) {
 		case TB_ARCH_X86_64: code_gen = &x64_fast_code_gen; break;
-		case TB_ARCH_AARCH64: code_gen = &aarch64_fast_code_gen; break;
 		default: tb_todo();
 	}
 	
@@ -217,10 +214,26 @@ TB_API bool tb_module_export(TB_Module* m, FILE* f) {
 	return true;
 }
 
+void tb_resize_node_stream(TB_Function* f, size_t cap) {
+	f->nodes.capacity = cap;
+	
+	f->nodes.type = _aligned_recalloc(f->nodes.type, cap, sizeof(TB_RegType), 64);
+	f->nodes.dt = _aligned_recalloc(f->nodes.dt, cap, sizeof(TB_DataType), 64);
+	f->nodes.payload = _aligned_recalloc(f->nodes.payload, cap, sizeof(TB_RegPayload), 64);
+	
+	// zero out the extra space
+	// TODO(NeGate): optimize this... somehow?
+	//memset(&f->nodes.type[f->nodes.count], 0, (cap - f->nodes.count) * sizeof(TB_RegType));
+	//memset(&f->nodes.dt[f->nodes.count], 0, (cap - f->nodes.count) * sizeof(TB_DataType));
+	//memset(&f->nodes.payload[f->nodes.count], 0, (cap - f->nodes.count) * sizeof(TB_RegPayload));
+}
+
 TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataType return_dt) {
 	assert(m->functions.count < TB_MAX_FUNCTIONS);
     
 	TB_Function* f = &m->functions.data[m->functions.count++];
+	memset(f, 0, sizeof(TB_Function));
+	
 	// TODO(NeGate): We might wanna do something better with these strings
 	// especially since they'll be packed in a string table eventually
 	f->name = malloc(strlen(name) + 1);
@@ -229,24 +242,25 @@ TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataTy
 	f->return_dt = return_dt;
 	f->module = m;
     
-	f->capacity = 64;
-	f->count = 0;
-	f->nodes = malloc(f->capacity * sizeof(TB_Node));
-    
+	f->nodes.count = 0;
+	tb_resize_node_stream(f, 64);
+	
 	f->parameter_count = 0;
-	f->locals_stack_usage = 0;
+	
+	// Null slot
+	f->nodes.type[0] = TB_NULL;
+	f->nodes.dt[0] = (TB_DataType){ 0 };
+	f->nodes.payload[0] = (TB_RegPayload){ 0 };
     
-	f->nodes[0] = (TB_Node){ 0 };
-    
-	f->nodes[1].type = TB_LABEL;
-	f->nodes[1].dt = TB_TYPE_PTR();
-	f->nodes[1].label.id = 0;
-	f->nodes[1].label.terminator = TB_NULL_REG;
-	f->nodes[1].label.is_loop = false;
-	f->count = 2;
+	// Entry label
+	f->nodes.type[1] = TB_LABEL;
+	f->nodes.dt[1] = TB_TYPE_PTR();
+	f->nodes.payload[1].label.id = 0;
+	f->nodes.payload[1].label.terminator = TB_NULL_REG;
+	f->nodes.payload[1].label.is_loop = false;
+	f->nodes.count = 2;
     
 	f->current_label = 1;
-    
 	return f;
 }
 
@@ -315,17 +329,15 @@ static void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance) {
 // optimizations while the generation happens to improve
 // the machine code output or later analysis stages.
 static TB_Register tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
-	// Cannot add registers to terminated basic blocks
-	assert(f->current_label);
+	// Cannot add registers to terminated basic blocks, except labels
+	// which start new basic blocks
+	assert(type == TB_LABEL || f->current_label);
     
-	if (f->count + 1 >= f->capacity) {
-		f->capacity *= 2;
-		f->nodes = realloc(f->nodes, f->capacity * sizeof(TB_Node));
-	}
+	if (f->nodes.count + 1 >= f->nodes.capacity) tb_resize_node_stream(f, tb_next_pow2(f->nodes.count + 1));
     
-	TB_Register r = f->count++;
-	f->nodes[r].type = type;
-	f->nodes[r].dt = dt;
+	TB_Register r = f->nodes.count++;
+	f->nodes.type[r] = type;
+	f->nodes.dt[r] = dt;
 	return r;
 }
 
@@ -399,180 +411,173 @@ static TB_Int128 tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128
 
 static TB_Register tb_cse_arith(TB_Function* f, int type, TB_DataType dt, TB_ArithmaticBehavior arith_behavior, TB_Register a, TB_Register b) {
 	assert(f->current_label);
-	loop_range(i, f->current_label, f->count) {
-		if (TB_DATA_TYPE_EQUALS(f->nodes[i].dt, dt)
-			&& f->nodes[i].type == type
-			&& f->nodes[i].i_arith.arith_behavior == arith_behavior
-			&& f->nodes[i].i_arith.a == a
-			&& f->nodes[i].i_arith.b == b) {
+	for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
+		if (f->nodes.type[i] == type
+			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
+			&& f->nodes.payload[i].i_arith.arith_behavior == arith_behavior
+			&& f->nodes.payload[i].i_arith.a == a
+			&& f->nodes.payload[i].i_arith.b == b) {
 			return i;
 		}
 	}
     
 	TB_Register r = tb_make_reg(f, type, dt);
-	f->nodes[r].i_arith.arith_behavior = arith_behavior;
-	f->nodes[r].i_arith.a = a;
-	f->nodes[r].i_arith.b = b;
+	f->nodes.payload[r].i_arith.arith_behavior = arith_behavior;
+	f->nodes.payload[r].i_arith.a = a;
+	f->nodes.payload[r].i_arith.b = b;
 	return r;
 }
 
 TB_API TB_Register tb_inst_sxt(TB_Function* f, TB_Register src, TB_DataType dt) {
-	loop_range(i, f->current_label, f->count) {
-		if (f->nodes[i].type == TB_SIGN_EXT 
-			&& f->nodes[i].ext == src
-			&& TB_DATA_TYPE_EQUALS(f->nodes[i].dt, dt)) {
+	assert(f->current_label);
+	for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
+		if (f->nodes.type[i] == TB_SIGN_EXT
+			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
+			&& f->nodes.payload[i].ext == src) {
 			return i;
 		}
 	}
     
     TB_Register r = tb_make_reg(f, TB_SIGN_EXT, dt);
-	f->nodes[r].ext = src;
+	f->nodes.payload[r].ext = src;
 	return r;
 }
 
 TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt) {
     assert(f->current_label);
-	loop_range(i, f->current_label, f->count) {
-		if (f->nodes[i].type == TB_ZERO_EXT 
-			&& f->nodes[i].ext == src
-			&& TB_DATA_TYPE_EQUALS(f->nodes[i].dt, dt)) {
+	for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
+		if (f->nodes.type[i] == TB_ZERO_EXT
+			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
+			&& f->nodes.payload[i].ext == src) {
 			return i;
 		}
 	}
     
 	TB_Register r = tb_make_reg(f, TB_ZERO_EXT, dt);
-	f->nodes[r].ext = src;
+	f->nodes.payload[r].ext = src;
 	return r;
 }
 
 TB_API TB_Register tb_inst_param(TB_Function* f, TB_DataType dt) {
 	TB_Register r = tb_make_reg(f, TB_PARAM, dt);
-	f->nodes[r].param.id = f->parameter_count++;
+	f->nodes.payload[r].param.id = f->parameter_count++;
     
     // TODO(NeGate): It's currently assuming that all pointers are 8bytes big,
     // which is untrue for some platforms.
+	int param_size;
 	switch (dt.type) {
-        case TB_I8:  f->nodes[r].param.size = 1; break;
-        case TB_I16: f->nodes[r].param.size = 2; break;
-        case TB_I32: f->nodes[r].param.size = 4; break;
-        case TB_I64: f->nodes[r].param.size = 8; break;
-        case TB_F32: f->nodes[r].param.size = 4; break;
-        case TB_F64: f->nodes[r].param.size = 8; break;
-        case TB_PTR: f->nodes[r].param.size = 8; break;
+        case TB_I8:  param_size = 1; break;
+        case TB_I16: param_size = 2; break;
+        case TB_I32: param_size = 4; break;
+        case TB_I64: param_size = 8; break;
+        case TB_F32: param_size = 4; break;
+        case TB_F64: param_size = 8; break;
+        case TB_PTR: param_size = 8; break;
         default: tb_todo();
 	}
     
 	assert(dt.count > 0);
-	f->nodes[r].param.size *= dt.count;
+	f->nodes.payload[r].param.size = param_size * dt.count;
 	return r;
 }
 
 TB_API TB_Register tb_inst_param_addr(TB_Function* f, TB_Register param) {
-	assert(f->nodes[param].type == TB_PARAM);
+	assert(f->nodes.type[param] == TB_PARAM);
     
+	int param_size = f->nodes.payload[param].param.size;
+	
 	TB_Register r = tb_make_reg(f, TB_PARAM_ADDR, TB_TYPE_PTR());
-	f->nodes[r].param_addr.param = param;
-	f->nodes[r].param_addr.size = f->nodes[param].param.size;
-	f->nodes[r].param_addr.alignment = f->nodes[param].param.size;
+	f->nodes.payload[r].param_addr.param = param;
+	f->nodes.payload[r].param_addr.size = param_size;
+	f->nodes.payload[r].param_addr.alignment = param_size;
 	return r;
 }
 
 TB_API TB_Register tb_inst_local(TB_Function* f, uint32_t size, uint32_t alignment) {
 	TB_Register r = tb_make_reg(f, TB_LOCAL, TB_TYPE_PTR());
-	f->nodes[r].local.alignment = alignment;
-	f->nodes[r].local.size = size;
+	f->nodes.payload[r].local.alignment = alignment;
+	f->nodes.payload[r].local.size = size;
 	return r;
 }
 
 TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr, uint32_t alignment) {
 	assert(f->current_label);
-	loop_range(i, f->current_label, f->count) {
-		if (f->nodes[i].type == TB_LOAD &&
-			memcmp(&f->nodes[i].dt, &dt, sizeof(TB_DataType)) == 0 &&
-			f->nodes[i].load.address == addr &&
-			f->nodes[i].load.alignment == alignment) {
+    for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
+		if (f->nodes.type[i] == TB_LOAD
+			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
+			&& f->nodes.payload[i].load.address == addr
+			&& f->nodes.payload[i].load.alignment == alignment) {
 			return i;
 		}
 	}
-    
+	
 	TB_Register r = tb_make_reg(f, TB_LOAD, dt);
-	f->nodes[r].load.address = addr;
-	f->nodes[r].load.alignment = alignment;
+	f->nodes.payload[r].load.address = addr;
+	f->nodes.payload[r].load.alignment = alignment;
 	return r;
 }
 
 TB_API void tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_Register val, uint32_t alignment) {
-    assert(f->current_label);
-	loop_range(i, f->current_label, f->count) {
-		if (f->nodes[i].type == TB_STORE &&
-			TB_DATA_TYPE_EQUALS(f->nodes[i].dt, dt) &&
-			f->nodes[i].store.address == addr &&
-			f->nodes[i].store.value == val &&
-			f->nodes[i].store.alignment == alignment) {
-			return;
-		}
-	}
-    
 	TB_Register r = tb_make_reg(f, TB_STORE, dt);
-	f->nodes[r].store.address = addr;
-	f->nodes[r].store.value = val;
-	f->nodes[r].store.alignment = alignment;
+	f->nodes.payload[r].store.address = addr;
+	f->nodes.payload[r].store.value = val;
+	f->nodes.payload[r].store.alignment = alignment;
 	return;
 }
 
 TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) {
 	assert(f->current_label);
-	loop_range(i, f->current_label, f->count) {
-		if (f->nodes[i].type == TB_INT_CONST &&
-			memcmp(&f->nodes[i].dt, &dt, sizeof(TB_DataType)) == 0 &&
-			f->nodes[i].i_const.lo == imm &&
-			f->nodes[i].i_const.hi == 0) {
+    for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
+		if (f->nodes.type[i] == TB_LOAD
+			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
+			&& f->nodes.payload[i].i_const.lo == imm
+			&& f->nodes.payload[i].i_const.hi == 0) {
 			return i;
 		}
 	}
-    
+	
 	assert(dt.type >= TB_I8 && dt.type <= TB_I128);
 	uint64_t mask = (~0ull) >> (64 - (8 << (dt.type - TB_I8)));
 	
 	TB_Register r = tb_make_reg(f, TB_INT_CONST, dt);
-	f->nodes[r].i_const.hi = 0;
-	f->nodes[r].i_const.lo = imm & mask;
+	f->nodes.payload[r].i_const.hi = 0;
+	f->nodes.payload[r].i_const.lo = imm & mask;
 	return r;
 }
 
 TB_API TB_Register tb_inst_iconst128(TB_Function* f, TB_DataType dt, TB_Int128 imm) {
 	if (dt.type == TB_I128) {
 		TB_Register r = tb_make_reg(f, TB_INT_CONST, dt);
-		f->nodes[r].i_const.lo = imm.lo;
-		f->nodes[r].i_const.hi = imm.hi;
+		f->nodes.payload[r].i_const.lo = imm.lo;
+		f->nodes.payload[r].i_const.hi = imm.hi;
 		return r;
 	}
 	else if (dt.type == TB_I64) {
 		// Truncate
 		TB_Register r = tb_make_reg(f, TB_INT_CONST, dt);
-		f->nodes[r].i_const.lo = imm.lo;
-		f->nodes[r].i_const.hi = 0;
+		f->nodes.payload[r].i_const.lo = imm.lo;
+		f->nodes.payload[r].i_const.hi = 0;
 		return r;
 	}
 	else if (dt.type == TB_I32) {
 		// Truncate
 		TB_Register r = tb_make_reg(f, TB_INT_CONST, dt);
-		f->nodes[r].i_const.lo = imm.lo & 0xFFFFFFFFull;
-		f->nodes[r].i_const.hi = 0;
+		f->nodes.payload[r].i_const.lo = imm.lo & 0xFFFFFFFFull;
+		f->nodes.payload[r].i_const.hi = 0;
 		return r;
 	}
 	else if (dt.type == TB_I16) {
 		// Truncate
 		TB_Register r = tb_make_reg(f, TB_INT_CONST, dt);
-		f->nodes[r].i_const.lo = imm.lo & 0xFFFFull;
-		f->nodes[r].i_const.hi = 0;
+		f->nodes.payload[r].i_const.lo = imm.lo & 0xFFFFull;
+		f->nodes.payload[r].i_const.hi = 0;
 		return r;
 	}
 	else if (dt.type == TB_I8) {
 		// Truncate
 		TB_Register r = tb_make_reg(f, TB_INT_CONST, dt);
-		f->nodes[r].i_const.lo = imm.lo & 0xFFull;
-		f->nodes[r].i_const.hi = 0;
+		f->nodes.payload[r].i_const.lo = imm.lo & 0xFFull;
+		f->nodes.payload[r].i_const.hi = 0;
 		return r;
 	}
 	else tb_todo();
@@ -580,22 +585,22 @@ TB_API TB_Register tb_inst_iconst128(TB_Function* f, TB_DataType dt, TB_Int128 i
 
 TB_API TB_Register tb_inst_fconst(TB_Function* f, TB_DataType dt, double imm) {
 	TB_Register r = tb_make_reg(f, TB_FLOAT_CONST, dt);
-	f->nodes[r].f_const = imm;
+	f->nodes.payload[r].f_const = imm;
 	return r;
 }
 
 TB_API TB_Register tb_inst_array_access(TB_Function* f, TB_Register base, TB_Register index, uint32_t stride) {
 	TB_Register r = tb_make_reg(f, TB_ARRAY_ACCESS, TB_TYPE_PTR());
-	f->nodes[r].array_access.base = base;
-	f->nodes[r].array_access.index = index;
-	f->nodes[r].array_access.stride = stride;
+	f->nodes.payload[r].array_access.base = base;
+	f->nodes.payload[r].array_access.index = index;
+	f->nodes.payload[r].array_access.stride = stride;
 	return r;
 }
 
 TB_API TB_Register tb_inst_member_access(TB_Function* f, TB_Register base, int32_t offset) {
 	TB_Register r = tb_make_reg(f, TB_MEMBER_ACCESS, TB_TYPE_PTR());
-	f->nodes[r].member_access.base = base;
-	f->nodes[r].member_access.offset = offset;
+	f->nodes.payload[r].member_access.base = base;
+	f->nodes.payload[r].member_access.offset = offset;
 	return r;
 }
 
@@ -613,9 +618,9 @@ TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Functio
 	int param_end = f->vla.count;
 	
 	TB_Register r = tb_make_reg(f, TB_CALL, dt);
-	f->nodes[r].call.target = target;
-	f->nodes[r].call.param_start = param_start;
-	f->nodes[r].call.param_end = param_end;
+	f->nodes.payload[r].call.target = target;
+	f->nodes.payload[r].call.param_start = param_start;
+	f->nodes.payload[r].call.param_end = param_end;
 	return r;
 }
 
@@ -630,17 +635,23 @@ TB_API TB_Register tb_inst_or(TB_Function* f, TB_DataType dt, TB_Register a, TB_
 }
 
 TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
-	if (f->nodes[a].type == TB_INT_CONST) tb_swap(a, b);
-    
-	// TODO(NeGate): Fix the constant folding to handle i128
-	if (f->nodes[a].type == TB_INT_CONST && f->nodes[b].type == TB_INT_CONST) {
-		TB_Int128 sum = tb_fold_add(arith_behavior, dt, f->nodes[a].i_const, f->nodes[b].i_const);
+	if (f->nodes.type[a] == TB_INT_CONST) tb_swap(a, b);
+	
+    TB_RegType a_type = f->nodes.type[a];
+	TB_RegType b_type = f->nodes.type[b];
+	
+	if (a_type == TB_INT_CONST && b_type == TB_INT_CONST) {
+		TB_Int128 sum = tb_fold_add(arith_behavior, dt, f->nodes.payload[a].i_const, f->nodes.payload[b].i_const);
 		
 		return tb_inst_iconst128(f, dt, sum);
-	} else if (f->nodes[b].type == TB_INT_CONST && f->nodes[b].i_const.lo == 0) {
+	} else if (b_type == TB_INT_CONST && f->nodes.payload[b].i_const.lo == 0) {
 		return a;
-	} else if (f->nodes[a].type == TB_ADD) {
-		return tb_inst_add(f, dt, f->nodes[a].i_arith.a, tb_inst_add(f, dt, f->nodes[a].i_arith.b, b, arith_behavior), arith_behavior);
+	} else if (a_type == TB_ADD) {
+		// reassoc
+		TB_Register aa = f->nodes.payload[a].i_arith.a;
+		TB_Register ab = f->nodes.payload[a].i_arith.b;
+		
+		return tb_inst_add(f, dt, aa, tb_inst_add(f, dt, ab, b, arith_behavior), arith_behavior);
     }
 	
 	return tb_cse_arith(f, TB_ADD, dt, arith_behavior, a, b);
@@ -649,8 +660,8 @@ TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB
 TB_API TB_Register tb_inst_sub(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
 	if (a == b) return tb_inst_iconst(f, dt, 0);
 	
-	if (f->nodes[a].type == TB_INT_CONST && f->nodes[b].type == TB_INT_CONST) {
-		TB_Int128 sum = tb_fold_sub(arith_behavior, dt, f->nodes[a].i_const, f->nodes[b].i_const);
+	if (f->nodes.type[a] == TB_INT_CONST && f->nodes.type[b] == TB_INT_CONST) {
+		TB_Int128 sum = tb_fold_sub(arith_behavior, dt, f->nodes.payload[a].i_const, f->nodes.payload[b].i_const);
 		
 		return tb_inst_iconst128(f, dt, sum);
 	}
@@ -659,8 +670,11 @@ TB_API TB_Register tb_inst_sub(TB_Function* f, TB_DataType dt, TB_Register a, TB
 }
 
 TB_API TB_Register tb_inst_mul(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
-    if (f->nodes[a].type == TB_INT_CONST && f->nodes[b].type == TB_INT_CONST) {
-		TB_Int128 sum = tb_fold_mul(arith_behavior, dt, f->nodes[a].i_const, f->nodes[b].i_const);
+    TB_RegType a_type = f->nodes.type[a];
+	TB_RegType b_type = f->nodes.type[b];
+	
+	if (a_type == TB_INT_CONST && b_type == TB_INT_CONST) {
+		TB_Int128 sum = tb_fold_mul(arith_behavior, dt, f->nodes.payload[a].i_const, f->nodes.payload[b].i_const);
 		
 		return tb_inst_iconst128(f, dt, sum);
 	}
@@ -689,168 +703,161 @@ TB_API TB_Register tb_inst_shr(TB_Function* f, TB_DataType dt, TB_Register a, TB
 
 TB_API TB_Register tb_inst_fadd(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_FADD, dt);
-	f->nodes[r].f_arith.a = a;
-	f->nodes[r].f_arith.b = b;
+	f->nodes.payload[r].f_arith.a = a;
+	f->nodes.payload[r].f_arith.b = b;
 	return r;
 }
 
 TB_API TB_Register tb_inst_fsub(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_FSUB, dt);
-	f->nodes[r].f_arith.a = a;
-	f->nodes[r].f_arith.b = b;
+	f->nodes.payload[r].f_arith.a = a;
+	f->nodes.payload[r].f_arith.b = b;
 	return r;
 }
 
 TB_API TB_Register tb_inst_fmul(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_FMUL, dt);
-	f->nodes[r].f_arith.a = a;
-	f->nodes[r].f_arith.b = b;
+	f->nodes.payload[r].f_arith.a = a;
+	f->nodes.payload[r].f_arith.b = b;
 	return r;
 }
 
 TB_API TB_Register tb_inst_fdiv(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_FDIV, dt);
-	f->nodes[r].f_arith.a = a;
-	f->nodes[r].f_arith.b = b;
+	f->nodes.payload[r].f_arith.a = a;
+	f->nodes.payload[r].f_arith.b = b;
 	return r;
 }
 
 TB_API TB_Register tb_inst_cmp_eq(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_CMP_EQ, TB_TYPE_BOOL(1));
-	f->nodes[r].cmp.a = a;
-	f->nodes[r].cmp.b = b;
-	f->nodes[r].cmp.dt = dt;
+	f->nodes.payload[r].cmp.a = a;
+	f->nodes.payload[r].cmp.b = b;
+	f->nodes.payload[r].cmp.dt = dt;
 	return r;
 }
 
 TB_API TB_Register tb_inst_cmp_ne(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_CMP_NE, TB_TYPE_BOOL(1));
-	f->nodes[r].cmp.a = a;
-	f->nodes[r].cmp.b = b;
-	f->nodes[r].cmp.dt = dt;
+	f->nodes.payload[r].cmp.a = a;
+	f->nodes.payload[r].cmp.b = b;
+	f->nodes.payload[r].cmp.dt = dt;
 	return r;
 }
 
 TB_API TB_Register tb_inst_cmp_slt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_CMP_SLT, TB_TYPE_BOOL(1));
-	f->nodes[r].cmp.a = a;
-	f->nodes[r].cmp.b = b;
-	f->nodes[r].cmp.dt = dt;
+	f->nodes.payload[r].cmp.a = a;
+	f->nodes.payload[r].cmp.b = b;
+	f->nodes.payload[r].cmp.dt = dt;
 	return r;
 }
 
 TB_API TB_Register tb_inst_cmp_sle(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_CMP_SLE, TB_TYPE_BOOL(1));
-	f->nodes[r].cmp.a = a;
-	f->nodes[r].cmp.b = b;
-	f->nodes[r].cmp.dt = dt;
+	f->nodes.payload[r].cmp.a = a;
+	f->nodes.payload[r].cmp.b = b;
+	f->nodes.payload[r].cmp.dt = dt;
 	return r;
 }
 
 TB_API TB_Register tb_inst_cmp_sgt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_CMP_SLT, TB_TYPE_BOOL(1));
-	f->nodes[r].cmp.a = b;
-	f->nodes[r].cmp.b = a;
-	f->nodes[r].cmp.dt = dt;
+	f->nodes.payload[r].cmp.a = b;
+	f->nodes.payload[r].cmp.b = a;
+	f->nodes.payload[r].cmp.dt = dt;
 	return r;
 }
 
 TB_API TB_Register tb_inst_cmp_sge(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_CMP_SLE, TB_TYPE_BOOL(1));
-	f->nodes[r].cmp.a = b;
-	f->nodes[r].cmp.b = a;
-	f->nodes[r].cmp.dt = dt;
+	f->nodes.payload[r].cmp.a = b;
+	f->nodes.payload[r].cmp.b = a;
+	f->nodes.payload[r].cmp.dt = dt;
 	return r;
 }
 
 TB_API TB_Register tb_inst_cmp_ult(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_CMP_ULT, TB_TYPE_BOOL(1));
-	f->nodes[r].cmp.a = a;
-	f->nodes[r].cmp.b = b;
-	f->nodes[r].cmp.dt = dt;
+	f->nodes.payload[r].cmp.a = a;
+	f->nodes.payload[r].cmp.b = b;
+	f->nodes.payload[r].cmp.dt = dt;
 	return r;
 }
 
 TB_API TB_Register tb_inst_cmp_ule(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_CMP_ULE, TB_TYPE_BOOL(1));
-	f->nodes[r].cmp.a = a;
-	f->nodes[r].cmp.b = b;
-	f->nodes[r].cmp.dt = dt;
+	f->nodes.payload[r].cmp.a = a;
+	f->nodes.payload[r].cmp.b = b;
+	f->nodes.payload[r].cmp.dt = dt;
 	return r;
 }
 
 TB_API TB_Register tb_inst_cmp_ugt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_CMP_ULT, TB_TYPE_BOOL(1));
-	f->nodes[r].cmp.a = b;
-	f->nodes[r].cmp.b = a;
-	f->nodes[r].cmp.dt = dt;
+	f->nodes.payload[r].cmp.a = b;
+	f->nodes.payload[r].cmp.b = a;
+	f->nodes.payload[r].cmp.dt = dt;
 	return r;
 }
 
 TB_API TB_Register tb_inst_cmp_uge(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_CMP_ULE, TB_TYPE_BOOL(1));
-	f->nodes[r].cmp.a = b;
-	f->nodes[r].cmp.b = a;
-	f->nodes[r].cmp.dt = dt;
+	f->nodes.payload[r].cmp.a = b;
+	f->nodes.payload[r].cmp.b = a;
+	f->nodes.payload[r].cmp.dt = dt;
 	return r;
 }
 
 TB_API TB_Register tb_inst_cmp_flt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_CMP_FLT, TB_TYPE_BOOL(1));
-	f->nodes[r].cmp.a = a;
-	f->nodes[r].cmp.b = b;
-	f->nodes[r].cmp.dt = dt;
+	f->nodes.payload[r].cmp.a = a;
+	f->nodes.payload[r].cmp.b = b;
+	f->nodes.payload[r].cmp.dt = dt;
 	return r;
 }
 
 TB_API TB_Register tb_inst_cmp_fle(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_CMP_FLE, TB_TYPE_BOOL(1));
-	f->nodes[r].cmp.a = a;
-	f->nodes[r].cmp.b = b;
-	f->nodes[r].cmp.dt = dt;
+	f->nodes.payload[r].cmp.a = a;
+	f->nodes.payload[r].cmp.b = b;
+	f->nodes.payload[r].cmp.dt = dt;
 	return r;
 }
 
 TB_API TB_Register tb_inst_cmp_fgt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_CMP_FLT, TB_TYPE_BOOL(1));
-	f->nodes[r].cmp.a = b;
-	f->nodes[r].cmp.b = a;
-	f->nodes[r].cmp.dt = dt;
+	f->nodes.payload[r].cmp.a = b;
+	f->nodes.payload[r].cmp.b = a;
+	f->nodes.payload[r].cmp.dt = dt;
 	return r;
 }
 
 TB_API TB_Register tb_inst_cmp_fge(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_CMP_FLE, TB_TYPE_BOOL(1));
-	f->nodes[r].cmp.a = b;
-	f->nodes[r].cmp.b = a;
-	f->nodes[r].cmp.dt = dt;
+	f->nodes.payload[r].cmp.a = b;
+	f->nodes.payload[r].cmp.b = a;
+	f->nodes.payload[r].cmp.dt = dt;
 	return r;
 }
 
 TB_API TB_Register tb_inst_phi2(TB_Function* f, TB_DataType dt, TB_Label a_label, TB_Register a, TB_Label b_label, TB_Register b) {
 	TB_Register r = tb_make_reg(f, TB_PHI2, dt);
-	f->nodes[r].phi2.a_label = tb_find_reg_from_label(f, a_label);
-	f->nodes[r].phi2.a = a;
-	f->nodes[r].phi2.b_label = tb_find_reg_from_label(f, b_label);
-	f->nodes[r].phi2.b = b;
+	f->nodes.payload[r].phi2.a_label = tb_find_reg_from_label(f, a_label);
+	f->nodes.payload[r].phi2.a = a;
+	f->nodes.payload[r].phi2.b_label = tb_find_reg_from_label(f, b_label);
+	f->nodes.payload[r].phi2.b = b;
 	return r;
 }
 
 TB_API TB_Register tb_inst_label(TB_Function* f, TB_Label id) {
-	if (f->count + 1 < f->capacity) {
-		f->capacity *= 2;
-		f->nodes = realloc(f->nodes, f->capacity * sizeof(TB_Node));
-	}
-    
-	TB_Register r = f->count++;
-	f->nodes[r].type = TB_LABEL;
-	f->nodes[r].dt = TB_TYPE_PTR();
-	f->nodes[r].label.id = id;
-	f->nodes[r].label.terminator = TB_NULL_REG;
-	f->nodes[r].label.is_loop = false;
+	TB_Register r = tb_make_reg(f, TB_LABEL, TB_TYPE_PTR());
+	f->nodes.payload[r].label.id = id;
+	f->nodes.payload[r].label.terminator = TB_NULL_REG;
+	f->nodes.payload[r].label.is_loop = false;
     
 	if (f->current_label) {
-		f->nodes[f->current_label].label.terminator = r;
+		f->nodes.payload[f->current_label].label.terminator = r;
 	}
     
 	f->current_label = r;
@@ -869,21 +876,21 @@ TB_API void tb_inst_goto(TB_Function* f, TB_Label id) {
     }
     
 	TB_Register r = tb_make_reg(f, TB_GOTO, TB_TYPE_VOID());
-	f->nodes[r].goto_.label = id;
+	f->nodes.payload[r].goto_.label = id;
     
 	assert(f->current_label);
-	f->nodes[f->current_label].label.terminator = r;
+	f->nodes.payload[f->current_label].label.terminator = r;
 	f->current_label = TB_NULL_REG;
 }
 
 TB_API TB_Register tb_inst_if(TB_Function* f, TB_Register cond, TB_Label if_true, TB_Label if_false) {
 	TB_Register r = tb_make_reg(f, TB_IF, TB_TYPE_VOID());
-	f->nodes[r].if_.cond = cond;
-	f->nodes[r].if_.if_true = if_true;
-	f->nodes[r].if_.if_false = if_false;
+	f->nodes.payload[r].if_.cond = cond;
+	f->nodes.payload[r].if_.if_true = if_true;
+	f->nodes.payload[r].if_.if_false = if_false;
     
 	assert(f->current_label);
-	f->nodes[f->current_label].label.terminator = r;
+	f->nodes.payload[f->current_label].label.terminator = r;
 	f->current_label = TB_NULL_REG;
 	return r;
 }
@@ -905,22 +912,22 @@ TB_API void tb_inst_switch(TB_Function* f, TB_DataType dt, TB_Register key, TB_L
 	int param_end = f->vla.count;
 	
 	TB_Register r = tb_make_reg(f, TB_SWITCH, dt);
-	f->nodes[r].switch_.key = key;
-	f->nodes[r].switch_.default_label = default_label;
-	f->nodes[r].switch_.entries_start = param_start;
-	f->nodes[r].switch_.entries_end = param_end;
+	f->nodes.payload[r].switch_.key = key;
+	f->nodes.payload[r].switch_.default_label = default_label;
+	f->nodes.payload[r].switch_.entries_start = param_start;
+	f->nodes.payload[r].switch_.entries_end = param_end;
 	
 	assert(f->current_label);
-	f->nodes[f->current_label].label.terminator = r;
+	f->nodes.payload[f->current_label].label.terminator = r;
 	f->current_label = TB_NULL_REG;
 }
 
 TB_API void tb_inst_ret(TB_Function* f, TB_DataType dt, TB_Register value) {
 	TB_Register r = tb_make_reg(f, TB_RET, dt);
-	f->nodes[r].ret.value = value;
+	f->nodes.payload[r].ret.value = value;
     
 	assert(f->current_label);
-	f->nodes[f->current_label].label.terminator = r;
+	f->nodes.payload[f->current_label].label.terminator = r;
 	f->current_label = TB_NULL_REG;
 }
 
@@ -978,9 +985,10 @@ static void tb_print_type(TB_DataType dt) {
 TB_API void tb_function_print(TB_Function* f) {
 	printf("%s():\n", f->name);
     
-	loop(i, f->count) {
-		enum TB_RegisterType type = f->nodes[i].type;
-		TB_DataType dt = f->nodes[i].dt;
+	for (TB_Register i = 0; i < f->nodes.count; i++) {
+		TB_RegType type = f->nodes.type[i];
+		TB_DataType dt = f->nodes.dt[i];
+		TB_RegPayload p = f->nodes.payload[i];
         
 		switch (type) {
             case TB_NULL:
@@ -991,37 +999,37 @@ TB_API void tb_function_print(TB_Function* f) {
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
             
-			if (f->nodes[i].i_const.hi) {
-				printf(" %llx%llx\n", f->nodes[i].i_const.hi, f->nodes[i].i_const.lo);
+			if (p.i_const.hi) {
+				printf(" %llx%llx\n", p.i_const.hi, p.i_const.lo);
 			}
 			else {
-				printf(" %lld\n", f->nodes[i].i_const.lo);
+				printf(" %lld\n", p.i_const.lo);
 			}
 			break;
             case TB_FLOAT_CONST:
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-            printf(" %f\n", f->nodes[i].f_const);
+            printf(" %f\n", p.f_const);
 			break;
             case TB_ZERO_EXT:
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" ZXT r%u\n", f->nodes[i].ext);
+			printf(" ZXT r%u\n", p.ext);
 			break;
             case TB_SIGN_EXT:
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" SXT r%u\n", f->nodes[i].ext);
+			printf(" SXT r%u\n", p.ext);
 			break;
 			case TB_MEMBER_ACCESS:
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" &r%u[r%d]\n", f->nodes[i].member_access.base, f->nodes[i].member_access.offset);
+			printf(" &r%u[r%d]\n", p.member_access.base, p.member_access.offset);
 			break;
 			case TB_ARRAY_ACCESS:
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" &r%u[r%u * %u]\n", f->nodes[i].array_access.base, f->nodes[i].array_access.index, f->nodes[i].array_access.stride);
+			printf(" &r%u[r%u * %u]\n", p.array_access.base, p.array_access.index, p.array_access.stride);
 			break;
 			case TB_AND:
             case TB_OR:
@@ -1035,7 +1043,7 @@ TB_API void tb_function_print(TB_Function* f) {
             case TB_SAR:
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" r%u ", f->nodes[i].i_arith.a);
+			printf(" r%u ", p.i_arith.a);
             
 			switch (type) {
                 case TB_AND: printf("&"); break;
@@ -1051,7 +1059,7 @@ TB_API void tb_function_print(TB_Function* f) {
                 default: tb_todo();
 			}
             
-			printf(" r%u\n", f->nodes[i].i_arith.b);
+			printf(" r%u\n", p.i_arith.b);
 			break;
             case TB_FADD:
             case TB_FSUB:
@@ -1059,7 +1067,7 @@ TB_API void tb_function_print(TB_Function* f) {
             case TB_FDIV:
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" r%u ", f->nodes[i].f_arith.a);
+			printf(" r%u ", p.f_arith.a);
             
 			switch (type) {
                 case TB_FADD: printf("+"); break;
@@ -1069,7 +1077,7 @@ TB_API void tb_function_print(TB_Function* f) {
                 default: tb_todo();
 			}
             
-			printf(" r%u\n", f->nodes[i].f_arith.b);
+			printf(" r%u\n", p.f_arith.b);
 			break;
             case TB_CMP_EQ:
             case TB_CMP_NE:
@@ -1079,7 +1087,7 @@ TB_API void tb_function_print(TB_Function* f) {
             case TB_CMP_SLE:
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" r%u ", f->nodes[i].cmp.a);
+			printf(" r%u ", p.cmp.a);
             
 			switch (type) {
                 case TB_CMP_NE: printf("!="); break;
@@ -1091,27 +1099,27 @@ TB_API void tb_function_print(TB_Function* f) {
                 default: tb_todo();
 			}
             
-			printf(" r%u", f->nodes[i].cmp.b);
+			printf(" r%u", p.cmp.b);
 			
 			if (type == TB_CMP_SLT || type == TB_CMP_SLE) printf(" # signed\n");
 			else printf("\n");
 			break;
             case TB_LOCAL:
-			printf("  r%u\t=\tLOCAL %d (%d align)\n", i, f->nodes[i].local.size, f->nodes[i].local.alignment);
+			printf("  r%u\t=\tLOCAL %d (%d align)\n", i, p.local.size, p.local.alignment);
 			break;
             case TB_ICALL:
-			printf("  r%u\t=\tINLINE CALL %s(", i, f->nodes[i].call.target->name);
-			for (size_t j = f->nodes[i].call.param_start; j < f->nodes[i].call.param_end; j++) {
-				if (j != f->nodes[i].call.param_start) printf(", ");
+			printf("  r%u\t=\tINLINE CALL %s(", i, p.call.target->name);
+			for (size_t j = p.call.param_start; j < p.call.param_end; j++) {
+				if (j != p.call.param_start) printf(", ");
 				
 				printf("r%u", f->vla.data[j]);
 			}
 			printf(")\n");
 			break;
             case TB_CALL:
-			printf("  r%u\t=\tCALL %s(", i, f->nodes[i].call.target->name);
-			for (size_t j = f->nodes[i].call.param_start; j < f->nodes[i].call.param_end; j++) {
-				if (j != f->nodes[i].call.param_start) printf(", ");
+			printf("  r%u\t=\tCALL %s(", i, p.call.target->name);
+			for (size_t j = p.call.param_start; j < p.call.param_end; j++) {
+				if (j != p.call.param_start) printf(", ");
 				
 				printf("r%u", f->vla.data[j]);
 			}
@@ -1120,65 +1128,65 @@ TB_API void tb_function_print(TB_Function* f) {
             case TB_SWITCH: {
 				printf(" SWITCH\t");
 				tb_print_type(dt);
-				printf("\tr%u (\n", f->nodes[i].switch_.key);
+				printf("\tr%u (\n", p.switch_.key);
 				
-				size_t entry_start = f->nodes[i].switch_.entries_start;
-				size_t entry_count = (f->nodes[i].switch_.entries_end - f->nodes[i].switch_.entries_start) / 2;
+				size_t entry_start = p.switch_.entries_start;
+				size_t entry_count = (p.switch_.entries_end - p.switch_.entries_start) / 2;
 				
 				for (size_t j = 0; j < entry_count; j++) {
 					TB_SwitchEntry* e = (TB_SwitchEntry*)&f->vla.data[entry_start + (j * 2)];
 					
 					printf("\t\t\t%u -> L%d,\n", e->key, e->value);
 				}
-				printf("\t\t\tdefault -> L%d)\n", f->nodes[i].switch_.default_label);
+				printf("\t\t\tdefault -> L%d)\n", p.switch_.default_label);
 				break;
 			}
             case TB_PARAM:
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf("  PARAM %u\n", f->nodes[i].param.id);
+			printf("  PARAM %u\n", p.param.id);
 			break;
             case TB_PARAM_ADDR:
-			printf("  r%u\t=\t&PARAM %u\n", i, f->nodes[f->nodes[i].param_addr.param].param.id);
+			printf("  r%u\t=\t&PARAM %u\n", i, f->nodes.payload[p.param_addr.param].param.id);
 			break;
             case TB_LOAD:
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" *r%u (%d align)\n", f->nodes[i].load.address, f->nodes[i].load.alignment);
+			printf(" *r%u (%d align)\n", p.load.address, p.load.alignment);
 			break;
             case TB_STORE:
-			printf(" *r%u \t=\t", f->nodes[i].store.address);
+			printf(" *r%u \t=\t", p.store.address);
 			tb_print_type(dt);
-			printf(" r%u (%d align)\n", f->nodes[i].store.value, f->nodes[i].store.alignment);
+			printf(" r%u (%d align)\n", p.store.value, p.store.alignment);
 			break;
             case TB_LABEL:
-			printf("L%d: # r%u terminates at r%u\n", f->nodes[i].label.id, i, f->nodes[i].label.terminator);
+			printf("L%d: # r%u terminates at r%u\n", p.label.id, i, p.label.terminator);
 			break;
             case TB_GOTO:
-			printf("  goto L%d\n", f->nodes[i].goto_.label);
+			printf("  goto L%d\n", p.goto_.label);
 			break;
             case TB_IF:
-			printf("  if (r%u)\tL%d else L%d\n", f->nodes[i].if_.cond, f->nodes[i].if_.if_true, f->nodes[i].if_.if_false);
+			printf("  if (r%u)\tL%d else L%d\n", p.if_.cond, p.if_.if_true, p.if_.if_false);
 			break;
             case TB_PASS:
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" PASS r%u\n", f->nodes[i].pass);
+			printf(" PASS r%u\n", p.pass);
 			break;
             case TB_PHI1:
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" PHI L%d:r%u\n", f->nodes[f->nodes[i].phi1.a_label].label.id, f->nodes[i].phi1.a);
+			printf(" PHI L%d:r%u\n", f->nodes.payload[p.phi1.a_label].label.id, p.phi1.a);
 			break;
             case TB_PHI2:
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
-			printf(" PHI L%d:r%u, L%d:r%u\n", f->nodes[f->nodes[i].phi2.a_label].label.id, f->nodes[i].phi2.a, f->nodes[f->nodes[i].phi2.b_label].label.id, f->nodes[i].phi2.b);
+			printf(" PHI L%d:r%u, L%d:r%u\n", f->nodes.payload[p.phi2.a_label].label.id, p.phi2.a, f->nodes.payload[p.phi2.b_label].label.id, p.phi2.b);
 			break;
             case TB_RET:
 			printf("  ret\t \t");
 			tb_print_type(dt);
-			printf(" r%u\n", f->nodes[i].i_arith.a);
+			printf(" r%u\n", p.i_arith.a);
 			break;
             default: tb_todo();
 		}

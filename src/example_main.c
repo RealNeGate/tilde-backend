@@ -5,6 +5,7 @@ TB_Function* test_add_i8(TB_Module* m);
 TB_Function* test_add_i16(TB_Module* m);
 TB_Function* test_add_i32(TB_Module* m);
 TB_Function* test_mul_i64(TB_Module* m);
+TB_Function* test_div_i64(TB_Module* m);
 TB_Function* test_andor_i32(TB_Module* m);
 TB_Function* test_sat_uadd_i32(TB_Module* m);
 TB_Function* test_sat_sadd_i32(TB_Module* m);
@@ -22,6 +23,7 @@ TB_Function* test_add_sub_i32(TB_Module* m);
 TB_Function* test_fib(TB_Module* m);
 TB_Function* test_foo(TB_Module* m);
 TB_Function* test_fact(TB_Module* m);
+TB_Function* test_zero_mem(TB_Module* m);
 TB_Function* test_switch_case(TB_Module* m);
 TB_Function* test_entry(TB_Module* m);
 
@@ -47,6 +49,8 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
     
 	typedef TB_Function*(*TestFunction)(TB_Module* m);
 	static const TestFunction test_functions[] = {
+		test_div_i64,
+		test_zero_mem,
 		test_fact,
 		test_add_i8,
 		test_add_i16,
@@ -74,13 +78,20 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 	size_t count = sizeof(test_functions) / sizeof(test_functions[0]);
     
 	for (size_t i = 0; i < count; i++) {
-		test_functions[i](m);
+		tb_function_print(test_functions[i](m));
 	}
     
-	if (!tb_module_compile(m, TB_OPT_SIZE, 1)) abort();
+	if (!tb_module_compile(m, TB_OPT_O0, 1)) abort();
 	if (!tb_module_export(m, f)) abort();
 	
 	tb_module_destroy(m);
+}
+
+TB_Function* test_zero_mem(TB_Module* m) {
+	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_VOID());
+	
+	tb_inst_ret(func, TB_TYPE_VOID(), TB_NULL_REG);
+	return func;
 }
 
 TB_Function* test_add_i8(TB_Module* m) {
@@ -134,12 +145,32 @@ TB_Function* test_mul_i64(TB_Module* m) {
 												 func, TB_TYPE_I64(1),
 												 tb_inst_load(func, TB_TYPE_I64(1), cp, 4),
 												 tb_inst_load(func, TB_TYPE_I64(1), cp, 4),
-												 TB_WRAP_CHECK
+												 TB_UNSIGNED_TRAP_ON_WRAP
 												 ),
 									 TB_SATURATED_UNSIGNED
 									 );
     
 	tb_inst_ret(func, TB_TYPE_I64(1), factor);
+	return func;
+}
+
+TB_Function* test_div_i64(TB_Module* m) {
+	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I64(1));
+	
+	TB_Register a = tb_inst_param(func, TB_TYPE_I64(1));
+	TB_Register b = tb_inst_param(func, TB_TYPE_I64(1));
+    
+	TB_Register ap = tb_inst_param_addr(func, a);
+	TB_Register bp = tb_inst_param_addr(func, b);
+    
+	TB_Register sum = tb_inst_div(
+                                  func, TB_TYPE_I64(1),
+                                  tb_inst_load(func, TB_TYPE_I64(1), ap, 4),
+                                  tb_inst_load(func, TB_TYPE_I64(1), bp, 4),
+                                  true
+                                  );
+    
+	tb_inst_ret(func, TB_TYPE_I64(1), sum);
 	return func;
 }
 
@@ -196,7 +227,7 @@ TB_Function* test_safe_add_i32(TB_Module* m) {
                                   func, TB_TYPE_I32(1),
                                   tb_inst_load(func, TB_TYPE_I32(1), ap, 4),
                                   tb_inst_load(func, TB_TYPE_I32(1), bp, 4),
-                                  TB_WRAP_CHECK
+                                  TB_UNSIGNED_TRAP_ON_WRAP
                                   );
     
 	tb_inst_ret(func, TB_TYPE_I32(1), sum);

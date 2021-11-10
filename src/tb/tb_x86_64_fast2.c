@@ -4,261 +4,6 @@
 #include <x86intrin.h>
 #endif
 
-typedef enum X64_Mod {
-	X64_MOD_INDIRECT = 0,        // [rax]
-	X64_MOD_INDIRECT_DISP8 = 1,  // [rax + disp8]
-	X64_MOD_INDIRECT_DISP32 = 2, // [rax + disp32]
-	X64_MOD_DIRECT = 3,          // rax
-} X64_Mod;
-
-typedef enum X64_ValueType {
-	X64_NONE,
-    
-    // Real encodable types
-	// Their order is based on which should go
-	// on the right hand side of isel(...)
-    X64_VALUE_IMM32,
-    X64_VALUE_MEM,
-    X64_VALUE_GPR,
-    X64_VALUE_XMM,
-    
-    X64_VALUE_FLAGS,
-    X64_VALUE_GPR_PAIR
-} X64_ValueType;
-
-typedef enum X64_Scale {
-	X64_SCALE_X1,
-	X64_SCALE_X2,
-	X64_SCALE_X4,
-	X64_SCALE_X8
-} X64_Scale;
-
-typedef struct X64_Value {
-	X64_ValueType type : 8;
-	TB_DataType dt;
-    
-	union {
-		X64_GPR gpr : 8;
-        X64_XMM xmm : 8;
-        X64_Cond cond : 8;
-        struct {
-            X64_GPR hi, lo;
-        } gpr_pair;
-		struct {
-			X64_GPR base : 8;
-			X64_GPR index : 8;
-			X64_Scale scale : 8;
-			int32_t disp;
-		} mem;
-        int32_t imm32;
-	};
-} X64_Value;
-
-typedef struct X64_LabelPatch {
-	int base;
-	int pos;
-    TB_Label target_lbl;
-} X64_LabelPatch;
-
-typedef struct X64_F32Patch {
-    TB_Register src;
-	int base;
-    float value;
-} X64_F32Patch;
-
-typedef struct X64_PhiValue {
-	TB_Register reg;
-	TB_Register storage_a;
-	TB_Register storage_b;
-	X64_Value value;
-} X64_PhiValue;
-
-typedef struct X64_RegisterDesc {
-	TB_Register bound_value;
-} X64_RegisterDesc;
-
-typedef struct X64_LocalDesc {
-	TB_Register address;
-    int32_t disp;
-} X64_LocalDesc;
-
-typedef struct X64_MemCacheDesc {
-	TB_Register address;
-    X64_Value value;
-} X64_MemCacheDesc;
-
-typedef struct X64_Context {
-	size_t phi_count, locals_count, f32_patch_count;
-    size_t mem_cache_count, local_stack_usage;
-	
-	uint64_t regs_to_save;
-    
-	size_t* intervals;
-	X64_PhiValue* phis;
-	X64_LocalDesc* locals;
-    X64_MemCacheDesc* mem_caches;
-    
-	X64_RegisterDesc gpr_desc[16];
-	X64_RegisterDesc xmm_desc[16];
-} X64_Context;
-
-typedef enum X64_InstType {
-    // Integer data processing
-	X64_ADD, X64_AND, X64_OR, X64_SUB, X64_XOR, X64_CMP, X64_MOV,
-    X64_TEST, X64_LEA, X64_IMUL, X64_MOVSX, X64_MOVZX,
-    
-    // Scalar Single
-    X64_MOVSS, X64_ADDSS, X64_MULSS, X64_SUBSS, X64_DIVSS,
-    X64_CMPSS,
-	
-	// Packed Single
-	X64_MOVAPS, X64_ADDPS, X64_SUBPS, X64_MULPS, X64_DIVPS 
-} X64_InstType;
-
-typedef enum X64_ExtMode {
-    // Normal
-	X64_EXT_NONE,
-    
-    // DEF instructions have a 0F prefix
-	X64_EXT_DEF,
-    
-    // SSE instructions have a F3 0F prefix
-    X64_EXT_SSE_SS,
-    X64_EXT_SSE_PS,
-} X64_ExtMode;
-
-typedef struct X64_NormalInst {
-	uint8_t op;
-    
-	// IMMEDIATES
-	uint8_t op_i;
-	uint8_t rx_i;
-    
-    X64_ExtMode ext : 8;
-} X64_NormalInst;
-
-static const X64_NormalInst insts[] = {
-	[X64_ADD] = { 0x00, 0x80, 0x00 },
-	[X64_AND] = { 0x20, 0x80, 0x04 },
-	[X64_OR]  = { 0x08, 0x80, 0x00 },
-	[X64_SUB] = { 0x28, 0x80, 0x05 },
-	[X64_XOR] = { 0x30, 0x80, 0x06 },
-	[X64_CMP] = { 0x38, 0x80, 0x07 },
-	[X64_MOV] = { 0x88, 0xC6, 0x00 },
-	[X64_TEST] = { 0x84, 0xF6, 0x00 },
-    
-	[X64_LEA] = { 0x8D },
-    
-	[X64_IMUL] = { 0xAF, .ext = X64_EXT_DEF },
-	[X64_MOVSX] = { 0xBE, .ext = X64_EXT_DEF },
-	[X64_MOVZX] = { 0xB6, .ext = X64_EXT_DEF },
-    
-	[X64_MOVSS] = { 0x10, .ext = X64_EXT_SSE_SS },
-	[X64_ADDSS] = { 0x58, .ext = X64_EXT_SSE_SS },
-	[X64_MULSS] = { 0x59, .ext = X64_EXT_SSE_SS },
-	[X64_SUBSS] = { 0x5C, .ext = X64_EXT_SSE_SS },
-	[X64_DIVSS] = { 0x5E, .ext = X64_EXT_SSE_SS },
-	[X64_CMPSS] = { 0xC2, .ext = X64_EXT_SSE_SS },
-	
-	[X64_MOVAPS] = { 0x28, .ext = X64_EXT_SSE_PS },
-	[X64_ADDPS] = { 0x58, .ext = X64_EXT_SSE_PS },
-	[X64_SUBPS] = { 0x5C, .ext = X64_EXT_SSE_PS },
-	[X64_MULPS] = { 0x59, .ext = X64_EXT_SSE_PS },
-	[X64_DIVPS] = { 0x5E, .ext = X64_EXT_SSE_PS }
-};
-
-typedef struct X64_IselInfo {
-	int inst;
-	
-	bool communitive;
-	bool has_immediates;
-	bool has_memory_dst;
-	bool has_memory_src;
-} X64_IselInfo;
-
-static const X64_GPR GPR_PARAMETERS[] = {
-	X64_RCX, X64_RDX, X64_R8, X64_R9
-};
-
-static const X64_GPR GPR_PRIORITY_LIST[] = {
-	X64_RAX, X64_RCX, X64_RDX, X64_R8,
-	X64_R9, X64_R10, X64_R11, X64_RDI,
-	X64_RSI, X64_RBX, X64_R12, X64_R13,
-	X64_R14, X64_R15
-};
-
-// NOTE(NeGate): This is for Win64, we can handle SysV later
-static const uint16_t ABI_CALLER_SAVED = (1u << X64_RAX) | (1u << X64_RCX) | (1u << X64_RDX) | (1u << X64_R8) | (1u << X64_R9) | (1u << X64_R10) | (1u << X64_R11);
-
-static const uint16_t ABI_CALLEE_SAVED = ~ABI_CALLER_SAVED;
-
-// Used to quickly reorder the basic blocks
-typedef struct X64_BBStack {
-	TB_Register top;
-	TB_Register capacity;
-	
-    bool* completed;
-	TB_Register data[];
-} X64_BBStack;
-
-static void x64_enqueue_bb(TB_Function* f, X64_BBStack* queue, TB_Register bb);
-
-// Preprocessing stuff
-static void x64_create_phi_lookup(TB_Function* f, X64_Context* ctx);
-static int32_t x64_allocate_locals(TB_Function* f, X64_Context* ctx, TB_Emitter* out, int32_t* param_space, bool* saves_parameters);
-
-// IR -> Machine IR Lookups
-static X64_PhiValue* x64_find_phi(X64_Context* ctx, TB_Register r);
-static int32_t x64_find_local(X64_Context* ctx, TB_Register r);
-
-// Machine code generation
-static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register bb, TB_Register bb_end);
-static void x64_terminate_path(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register from_label, TB_Register label, TB_Register terminator);
-static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, TB_Register next);
-static X64_Value x64_eval_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, const TB_Int128* imm);
-static X64_Value x64_eval_float_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, float imm);
-static X64_Value x64_as_memory_operand(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_DataType dt, TB_Register r);
-static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register dst_reg, TB_Register next_reg, TB_Register a_reg, TB_Register b_reg, X64_Value a, X64_Value b, const X64_IselInfo* info, bool can_recycle);
-static X64_Value x64_as_bool(TB_Function* f, X64_Context* ctx, TB_Emitter* out, X64_Value src, TB_DataType src_dt);
-static X64_Value x64_explicit_load(TB_Function* f, X64_Context* ctx, TB_Emitter* out, X64_Value addr, TB_Register r, TB_Register addr_reg);
-static void x64_inst_bin_op(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_DataType dt, const X64_NormalInst* inst, const X64_Value* a, const X64_Value* b, TB_Register b_reg);
-static X64_Value x64_legalize(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, TB_Register next);
-
-// x64 instruction emitter
-static void x64_inst_mov_ri64(TB_Emitter* out, X64_GPR dst, uint64_t imm);
-static void x64_inst_op(TB_Emitter* out, int dt_type, const X64_NormalInst* inst, const X64_Value* a, const X64_Value* b);
-static void x64_inst_nop(TB_Emitter* out, int count);
-
-#define x64_emit_normal(out, dt, op, a, b) x64_inst_op(out, dt, &insts[X64_ ## op], a, b)
-#define x64_emit_normal8(out, op, a, b) x64_inst_op(out, TB_I8, &insts[X64_ ## op], a, b)
-#define x64_emit_normal16(out, op, a, b) x64_inst_op(out, TB_I16, &insts[X64_ ## op], a, b)
-#define x64_emit_normal32(out, op, a, b) x64_inst_op(out, TB_I32, &insts[X64_ ## op], a, b)
-#define x64_emit_normal64(out, op, a, b) x64_inst_op(out, TB_I64, &insts[X64_ ## op], a, b)
-
-// Register allocation
-static X64_Value x64_allocate_gpr_pair(TB_Function* f, X64_Context* ctx, TB_Register reg, TB_DataType dt);
-static X64_Value x64_allocate_gpr(TB_Function* f, X64_Context* ctx, TB_Register reg, TB_DataType dt);
-static X64_Value x64_allocate_xmm(X64_Context* ctx, TB_Register reg, TB_DataType dt);
-static void x64_free_xmm(X64_Context* ctx, X64_XMM gpr);
-static void x64_free_gpr(X64_Context* ctx, X64_GPR gpr);
-static bool x64_is_temporary_of_bb(TB_Function* f, X64_Context* ctx, X64_GPR gpr, TB_Register bb, TB_Register bb_end);
-static bool x64_register_garbage_collect(TB_Function* f, X64_Context* ctx, TB_Register bb, TB_Register bb_end);
-
-static bool x64_is_value_gpr(const X64_Value* v, X64_GPR g) {
-	if (v->type != X64_VALUE_GPR) return false;
-	
-	return (v->gpr == g);
-}
-
-static bool x64_is_value_equals(const X64_Value* a, const X64_Value* b) {
-	if (a->type != b->type) return false;
-	
-	// TODO(NeGate): Implement this!
-	assert(a->type == X64_VALUE_GPR);
-	
-	return (a->gpr == b->gpr);
-}
-
 size_t x64_get_prologue_length(uint64_t saved, uint64_t stack_usage) {
 	// If the stack usage is zero we don't need a prologue
 	if (stack_usage == 8) return 0;
@@ -409,7 +154,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 			
 			// We know it loops at least once by this point
 			do {
-				int param_usage = (f->nodes.payload[i].call.param_end - f->nodes.payload[i].call.param_start);
+				int param_usage = (f->nodes.payload[j].call.param_end - f->nodes.payload[j].call.param_start);
 				
 				caller_usage_in_bytes = (caller_usage_in_bytes < param_usage) 
 					? param_usage : caller_usage_in_bytes;
@@ -765,7 +510,9 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 	
 	// Align stack usage to 16bytes and add 8 bytes for the return address
 	int local_stack_usage = ctx->local_stack_usage + caller_usage_in_bytes;
-	if (!saves_parameters && local_stack_usage <= param_space) {
+	if (!saves_parameters &&
+		local_stack_usage <= param_space &&
+		caller_usage_in_bytes == 0) {
 		local_stack_usage = 0;
 	}
 	
@@ -816,12 +563,85 @@ static void x64_enqueue_bb(TB_Function* f, X64_BBStack* stack, TB_Register bb) {
     stack->data[stack->top++] = bb;
 }
 
+static void x64_spill_regs(TB_Function* f, X64_Context* ctx, TB_Emitter* out, X64_SpillInfo* info, uint32_t spill_mask, bool reserve_rax) {
+	info->stack_pos = ctx->local_stack_usage; 
+	
+	// save the registers
+	for (int i = 0; i < 16; i++) if (spill_mask & (1u << i)) {
+		TB_Register bound = ctx->gpr_desc[i].bound_value;
+		
+		// if there's nothing bound then don't save it
+		if (bound == 0) continue;
+		
+		info->regs_to_save[i] = bound;
+		
+		// TODO(NeGate): Implement a smarter alignment setup
+		int pos = ctx->local_stack_usage;
+		pos += 8;
+		pos += (8 - (pos % 8)) % 8;
+		info->savepoints[i] = ctx->local_stack_usage = pos;
+		
+		// NOTE(NeGate): These weren't fed a `dt` value
+		// because the really didn't need one
+		X64_Value src = (X64_Value){
+			.type = X64_VALUE_GPR, .gpr = i
+		};
+		X64_Value dst = (X64_Value){
+			.type = X64_VALUE_MEM, .mem = {
+				.base = X64_RBP,
+				.index = X64_GPR_NONE,
+				.scale = X64_SCALE_X1,
+				.disp = -pos
+			}
+		};
+		
+		// TODO(NeGate): Implement MOVSS and MOVAPS variants
+		TB_DataType dt = f->nodes.dt[info->regs_to_save[i]];
+		x64_emit_normal(out, dt.type, MOV, &dst, &src);
+	}
+	
+	// reserve any registers
+	if (reserve_rax) info->regs_to_save[X64_RAX] = TB_REG_MAX;
+}
+
+static void x64_reload_regs(TB_Function* f, X64_Context* ctx, TB_Emitter* out, X64_SpillInfo* info, uint32_t spill_mask, bool reserve_rax) {
+	// restore any saved registers
+	// handle the return value separately, we'll be swapping it's place
+	int start = reserve_rax ? 1 : 0;
+	
+	for (int i = 16; (--i) >= start;) if (info->savepoints[i]) {
+		int pos = info->savepoints[i];
+		
+		X64_Value dst = (X64_Value){
+			.type = X64_VALUE_GPR, .gpr = i
+		};
+		X64_Value src = (X64_Value){
+			.type = X64_VALUE_MEM, .mem = {
+				.base = X64_RBP,
+				.index = X64_GPR_NONE,
+				.scale = X64_SCALE_X1,
+				.disp = -pos
+			}
+		};
+		
+		// TODO(NeGate): Implement MOVSS and MOVAPS variants
+		TB_DataType dt = f->nodes.dt[info->regs_to_save[i]];
+		x64_emit_normal(out, dt.type, MOV, &dst, &src);
+		
+		// restore it's binding
+		ctx->gpr_desc[i].bound_value = info->regs_to_save[i];
+	}
+	
+	ctx->local_stack_usage = info->stack_pos; 
+}
+
 static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register bb, TB_Register bb_end) {
 	// Evaluate all side effect instructions
 	loop_range(i, bb + 1, bb_end) {
 		TB_DataType dt = f->nodes.dt[i];
+		TB_RegType reg_type = f->nodes.type[i];
 		
-		switch (f->nodes.type[i]) {
+		switch (reg_type) {
 			case TB_NULL:
 			case TB_LOCAL: // the allocation is handled beforehand
 			case TB_PARAM:
@@ -840,8 +660,6 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 			case TB_SHL:
 			case TB_SHR:
 			case TB_SAR:
-			case TB_SDIV:
-			case TB_UDIV:
 			case TB_FADD:
 			case TB_FSUB:
 			case TB_FMUL:
@@ -855,43 +673,106 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 			case TB_PHI1:
 			case TB_PHI2:
 			break;
-			case TB_CALL: {
+			case TB_SDIV:
+			case TB_UDIV: {
 				// garbage collect everything before the call since we'd rather
 				// not save more than necessary
-				x64_register_garbage_collect(f, ctx, bb, i + 1);
+				x64_register_garbage_collect(f, ctx, bb, i);
 				
-				int param_count = f->nodes.payload[i].call.param_end - f->nodes.payload[i].call.param_start;
-				int saved_local_stack_usage = ctx->local_stack_usage; 
+				TB_Register a_reg = f->nodes.payload[i].i_arith.a;
+				TB_Register b_reg = f->nodes.payload[i].i_arith.b;
 				
-				// identify which registers to save
-				// TODO(NeGate): do a small garbage collection stage just 
-				// to get rid of any registers we don't need
-				// any more
-				// TODO(NeGate): Implement XMM registers
-				TB_Register gprs_to_save[16] = { 0 };
-				for (int i = 0; i < 16; i++) {
-					if (ctx->gpr_desc[i].bound_value != 0 && ABI_CALLER_SAVED & (1u << i)) {
-						gprs_to_save[i] = ctx->gpr_desc[i].bound_value;
+				// Save out the argument registers if they are being used
+				X64_SpillInfo gpr_spill = { 0 };
+				x64_spill_regs(f, ctx, out,
+							   &gpr_spill,
+							   (1u << X64_RAX) | (1u << X64_RDX), 
+							   true);
+				
+				{
+					X64_Value a_val = x64_eval(f, ctx, out, a_reg, i);
+					X64_Value b_val = x64_eval(f, ctx, out, b_reg, i);
+					
+					// needs to mov the a value into rdx:rax,
+					if (!x64_is_value_gpr(&a_val, X64_RAX)) {
+						X64_Value rax = (X64_Value) {
+							.type = X64_VALUE_GPR, .gpr = X64_RAX
+						};
+						
+						x64_emit_normal(out, dt.type, MOV, &rax, &a_val);
 					}
+					
+					// we'll just be using CDQ if it's signed
+					// and zeroing RDX it if it's unsigned. 
+					if (reg_type == TB_SDIV) {
+						tb_out1b(out, 0x99);
+					} else {
+						uint8_t* out_buffer = tb_out_reserve(out, 2);
+						
+						*out_buffer++ = 0x31;
+						*out_buffer++ = x64_inst_mod_rx_rm(X64_MOD_DIRECT, X64_RDX, X64_RDX);
+						
+						tb_out_commit(out, 2);
+					}
+					
+					x64_inst_idiv(out, dt.type, &b_val);
 				}
 				
-				// Any parameters after 4 require memory stores so it's likely that they'll
-				// need to use a register to perform any mem<->mem transfers.
-				if (gprs_to_save[X64_RAX] == 0 && param_count > 4) {
-					gprs_to_save[X64_RAX] = ctx->gpr_desc[i].bound_value;
-				}
+				x64_reload_regs(f, ctx, out,
+								&gpr_spill,
+								(1u << X64_RAX) | (1u << X64_RDX), 
+								true);
 				
-				// save the registers
-				// TODO(NeGate): Implement XMM registers
-				int savepoints[16];
-				for (int i = 0; i < 16; i++) if (gprs_to_save[i]) {
-					// TODO(NeGate): Implement a smarter alignment setup
+				// the return value is in RAX
+				ctx->gpr_desc[X64_RAX].bound_value = i;
+				
+				// if there was a value in RAX, we need to restore it to a different place
+				TB_Register bound_rax = gpr_spill.regs_to_save[X64_RAX];
+				if (bound_rax && bound_rax != TB_REG_MAX) {
+					TB_DataType dt = f->nodes.dt[bound_rax];
+					
+					X64_Value dst = x64_allocate_gpr(f, ctx, bound_rax, dt);
+					X64_Value src = (X64_Value){
+						.type = X64_VALUE_MEM, .dt = dt, .mem = {
+							.base = X64_RBP,
+							.index = X64_GPR_NONE,
+							.scale = X64_SCALE_X1,
+							.disp = -gpr_spill.savepoints[X64_RAX]
+						}
+					};
+					
+					x64_emit_normal(out, dt.type, MOV, &dst, &src);
+					ctx->gpr_desc[dst.gpr].bound_value = bound_rax;
+				}
+				break;
+			}
+			// TODO(NeGate): Implement more complex forms of memset like
+			// rep stosq or movaps loops.
+			// TODO(NeGate): It might be best to tie an alignment to
+			// the large memory opearations especially since the normal
+			// loads and stores have them.
+			case TB_MEMSET: {
+				// garbage collect everything before the call since we'd rather
+				// not save more than necessary
+				x64_register_garbage_collect(f, ctx, bb, i);
+				
+				TB_Register dst_reg = f->nodes.payload[i].mem_op.dst;
+				TB_Register val_reg = f->nodes.payload[i].mem_op.src;
+				TB_Register size_reg = f->nodes.payload[i].mem_op.size;
+				
+				// Save out the argument registers if they are being used
+				TB_Register gprs_to_save[3] = {
+					ctx->gpr_desc[X64_RAX].bound_value,
+					ctx->gpr_desc[X64_RCX].bound_value,
+					ctx->gpr_desc[X64_RDI].bound_value
+				};
+				
+				int savepoints[3];
+				for (size_t i = 0; i < 3; i++) if (gprs_to_save[i]) {
 					ctx->local_stack_usage += 8;
 					ctx->local_stack_usage += (8 - (ctx->local_stack_usage % 8)) % 8;
 					
 					int pos = savepoints[i] = ctx->local_stack_usage;
-					TB_DataType dt = f->nodes.dt[gprs_to_save[i]];
-					
 					X64_Value src = (X64_Value){
 						.type = X64_VALUE_GPR, .dt = dt, .gpr = i
 					};
@@ -907,8 +788,88 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 					x64_emit_normal(out, dt.type, MOV, &dst, &src);
 				}
 				
-				// don't let anything allocate this while generating the parameters
-				if (param_count > 4) ctx->gpr_desc[X64_RAX].bound_value = 0;
+				// fill in destination
+				{
+					X64_Value param = x64_eval(f, ctx, out, dst_reg, i);
+					X64_Value dst = (X64_Value) { .type = X64_VALUE_GPR, .gpr = X64_RDI };
+					
+					if (param.type == X64_VALUE_MEM && f->nodes.type[dst_reg] != TB_LOAD) {
+						x64_emit_normal(out, TB_PTR, LEA, &dst, &param);
+					} else if (!x64_is_value_gpr(&param, X64_RDI)) {
+						x64_emit_normal(out, TB_PTR, MOV, &dst, &param);
+					}
+					ctx->gpr_desc[X64_RDI].bound_value = TB_REG_MAX;
+				}
+				
+				// fill in source
+				{
+					X64_Value param = x64_eval(f, ctx, out, val_reg, i);
+					X64_Value dst = (X64_Value) { .type = X64_VALUE_GPR, .gpr = X64_RAX };
+					
+					if (!x64_is_value_gpr(&param, X64_RAX)) {
+						x64_emit_normal(out, TB_PTR, MOV, &dst, &param);
+					}
+					ctx->gpr_desc[X64_RAX].bound_value = TB_REG_MAX;
+				}
+				
+				// fill in size
+				{
+					X64_Value param = x64_eval(f, ctx, out, size_reg, i);
+					X64_Value dst = (X64_Value) { .type = X64_VALUE_GPR, .gpr = X64_RCX };
+					
+					if (!x64_is_value_gpr(&param, X64_RCX)) {
+						x64_emit_normal(out, TB_PTR, MOV, &dst, &param);
+					}
+					ctx->gpr_desc[X64_RCX].bound_value = TB_REG_MAX;
+				}
+				
+				uint8_t* out_buffer = tb_out_reserve(out, 2);
+				
+				// rep stosb
+				out_buffer[0] = 0xF3;
+				out_buffer[1] = 0xAA;
+				
+				tb_out_commit(out, 2);
+				
+				// reload argument registers
+				for (int i = 3; --i;) if (gprs_to_save[i]) {
+					int pos = savepoints[i];
+					TB_DataType spill_dt = f->nodes.dt[gprs_to_save[i]];
+					
+					X64_Value dst = (X64_Value){
+						.type = X64_VALUE_GPR, .dt = spill_dt, .gpr = i
+					};
+					X64_Value src = (X64_Value){
+						.type = X64_VALUE_MEM, .dt = spill_dt, .mem = {
+							.base = X64_RBP,
+							.index = X64_GPR_NONE,
+							.scale = X64_SCALE_X1,
+							.disp = -pos
+						}
+					};
+					
+					x64_emit_normal(out, spill_dt.type, MOV, &dst, &src);
+				}
+				break;
+			}
+			case TB_CALL: {
+				// garbage collect everything before the call since we'd rather
+				// not save more than necessary
+				x64_register_garbage_collect(f, ctx, bb, i);
+				int param_count = f->nodes.payload[i].call.param_end - f->nodes.payload[i].call.param_start;
+				
+				uint32_t spill_mask = ABI_CALLER_SAVED;
+				
+				// NOTE(NeGate): If we have more than 4 parameters
+				// that means we'll probably need a scratch register
+				// to move parameters into their stack slots.
+				if (param_count > 4) spill_mask |= (1u << X64_RAX);
+				
+				X64_SpillInfo gpr_spill = { 0 };
+				x64_spill_regs(f, ctx, out,
+							   &gpr_spill,
+							   spill_mask, 
+							   param_count > 4);
 				
 				// evaluate parameters
 				for (size_t j = f->nodes.payload[i].call.param_start; j < f->nodes.payload[i].call.param_end; j++) {
@@ -924,8 +885,7 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 							.gpr = GPR_PARAMETERS[id]
 						};
 						
-						if (param.type != X64_VALUE_GPR ||
-							(param.type == X64_VALUE_GPR && param.gpr != GPR_PARAMETERS[id])) {
+						if (!x64_is_value_gpr(&param, GPR_PARAMETERS[id])) {
 							x64_emit_normal(out, dt.type, MOV, &dst, &param);
 						}
 						
@@ -961,52 +921,32 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 					tb_out_commit(out, 5);
 				}
 				
-				// restore any saved registers
-				// handle the return value separately, we'll be swapping it's place
-				for (int i = 16; (--i) >= 1;) if (gprs_to_save[i]) {
-					int pos = savepoints[i];
-					TB_DataType spill_dt = f->nodes.dt[gprs_to_save[i]];
-					
-					X64_Value dst = (X64_Value){
-						.type = X64_VALUE_GPR, .dt = spill_dt, .gpr = i
-					};
-					X64_Value src = (X64_Value){
-						.type = X64_VALUE_MEM, .dt = spill_dt, .mem = {
-							.base = X64_RBP,
-							.index = X64_GPR_NONE,
-							.scale = X64_SCALE_X1,
-							.disp = -pos
-						}
-					};
-					
-					x64_emit_normal(out, spill_dt.type, MOV, &dst, &src);
-					
-					// restore it's binding
-					ctx->gpr_desc[i].bound_value = gprs_to_save[i];
-				}
+				x64_reload_regs(f, ctx, out,
+								&gpr_spill,
+								spill_mask, 
+								true);
 				
 				// the return value is in RAX
 				ctx->gpr_desc[X64_RAX].bound_value = i;
 				
 				// if there was a value in RAX, we need to restore it to a different place
-				if (gprs_to_save[X64_RAX] != 0) {
-					TB_DataType spill_dt = f->nodes.dt[gprs_to_save[X64_RAX]];
+				TB_Register bound_rax = gpr_spill.regs_to_save[X64_RAX];
+				if (bound_rax && bound_rax != TB_REG_MAX) {
+					TB_DataType dt = f->nodes.dt[bound_rax];
 					
-					X64_Value dst = x64_allocate_gpr(f, ctx, gprs_to_save[X64_RAX], spill_dt);
+					X64_Value dst = x64_allocate_gpr(f, ctx, bound_rax, dt);
 					X64_Value src = (X64_Value){
-						.type = X64_VALUE_MEM, .dt = spill_dt, .mem = {
+						.type = X64_VALUE_MEM, .dt = dt, .mem = {
 							.base = X64_RBP,
 							.index = X64_GPR_NONE,
 							.scale = X64_SCALE_X1,
-							.disp = -savepoints[X64_RAX]
+							.disp = -gpr_spill.savepoints[X64_RAX]
 						}
 					};
 					
-					x64_emit_normal(out, spill_dt.type, MOV, &dst, &src);
-					ctx->gpr_desc[dst.gpr].bound_value = gprs_to_save[X64_RAX];
+					x64_emit_normal(out, dt.type, MOV, &dst, &src);
+					ctx->gpr_desc[dst.gpr].bound_value = bound_rax;
 				}
-				
-				ctx->local_stack_usage = saved_local_stack_usage; 
 				break;
 			}
 			case TB_LOAD: {
@@ -1041,6 +981,10 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 				break;
 			}
 			case TB_STORE: {
+				// garbage collect everything before the call since we'd rather
+				// not save more than necessary
+				x64_register_garbage_collect(f, ctx, bb, i);
+				
 				// TODO(NeGate): Allow for patterns such as:
 				TB_Register address_reg = f->nodes.payload[i].store.address;
 				TB_Register value_reg = f->nodes.payload[i].store.value;
@@ -1109,7 +1053,7 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 #if TB_HOST_ARCH == TB_HOST_X86_64
 #ifdef __AVX__
 		for (size_t i = 0; i < 2; i++) {
-			__m256i v = _mm256_load_si256((__m256*)&arr[i * 8]);
+			__m256i v = _mm256_loadu_si256((__m256i*)&arr[i * 8]);
 			unsigned int mask = _mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(v, _mm256_set1_epi32(r))));
 			
 			if (mask) return (X64_Value) {
@@ -1320,13 +1264,23 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 					switch (p.i_arith.arith_behavior) {
 						case TB_NO_WRAP: break;
 						case TB_CAN_WRAP: break;
-						case TB_WRAP_CHECK: {
-							// INTO, trap if overflow
-							// NOTE(NeGate): 
+						case TB_UNSIGNED_TRAP_ON_WRAP: {
+							uint8_t* out_buffer = tb_out_reserve(out, 3);
+							*out_buffer++ = 0x72;
+							*out_buffer++ = 0x01;
+							
+							// these should be int3, but im doing nops
+							*out_buffer++ = 0x90;
+							tb_out_commit(out, 3);
+							break;
+						}
+						case TB_SIGNED_TRAP_ON_WRAP: {
 							uint8_t* out_buffer = tb_out_reserve(out, 3);
 							*out_buffer++ = 0x71;
 							*out_buffer++ = 0x01;
-							*out_buffer++ = 0xCC;
+							
+							// these should be int3, but im doing nops
+							*out_buffer++ = 0x90;
 							tb_out_commit(out, 3);
 							break;
 						}
@@ -1817,8 +1771,12 @@ static X64_Value x64_allocate_gpr(TB_Function* f, X64_Context* ctx, TB_Register 
 	// TODO(NeGate): Implement some smart LRU crap or something
 	for (size_t i = 14; i--; i++) {
 		X64_GPR gpr = GPR_PRIORITY_LIST[i];
+		TB_Register bound = ctx->gpr_desc[gpr].bound_value;
 		
-		if (ctx->gpr_desc[gpr].bound_value != TB_REG_MAX) {
+		if (bound && bound != TB_REG_MAX) {
+			// Don't spill it if it's a CALL, these are special ish
+			if (f->nodes.type[bound] == TB_CALL) continue;
+			
 			ctx->gpr_desc[gpr].bound_value = reg;
 			
 			// mark register as to be saved
@@ -1921,7 +1879,7 @@ void x64_inst_op(TB_Emitter* out, int dt_type, const X64_NormalInst* inst, const
 		bool dir_flag = dir != is_gpr_only_dst;
 		
 		// Address size prefix
-		if (dt_type == TB_I8 || dt_type == TB_I16) {
+		if (dt_type == TB_I16) {
 			*out_buffer++ = 0x66;
 		}
 		
@@ -1991,7 +1949,7 @@ void x64_inst_op(TB_Emitter* out, int dt_type, const X64_NormalInst* inst, const
 		*out_buffer++ = 0x0F;
 		*out_buffer++ = inst->op == 0x10 ? inst->op + !dir : inst->op;
 	}
-	else __builtin_unreachable();
+	else tb_unreachable();
 	
 	// We forgot a case!
 	assert(rx != GPR_NONE);
@@ -2024,7 +1982,7 @@ void x64_inst_op(TB_Emitter* out, int dt_type, const X64_NormalInst* inst, const
 			*((uint32_t*)out_buffer) = disp;
 			out_buffer += 4;
 		}
-	} else __builtin_unreachable();
+	} else tb_unreachable();
 	
 	if (b->type == X64_VALUE_IMM32) {
 		if (dt_type == TB_I8) {
@@ -2040,6 +1998,48 @@ void x64_inst_op(TB_Emitter* out, int dt_type, const X64_NormalInst* inst, const
 			out_buffer += 4;
 		}
 	}
+	
+	tb_out_commit(out, out_buffer - out_buffer_start);
+}
+
+static void x64_inst_idiv(TB_Emitter* out, int dt_type, const X64_Value* r) {
+	uint8_t* out_buffer_start = tb_out_reserve(out, 16);
+	uint8_t* out_buffer = out_buffer_start;
+	
+	if (r->type == X64_VALUE_GPR) {
+		*out_buffer++ = x64_inst_rex(true, 0x00, r->gpr, 0x00);
+		*out_buffer++ = 0xF7;
+		*out_buffer++ = x64_inst_mod_rx_rm(X64_MOD_DIRECT, 0x07, r->gpr);
+	} else if (r->type == X64_VALUE_MEM) {
+		uint8_t base = r->mem.base;
+		uint8_t index = r->mem.index;
+		uint8_t scale = r->mem.scale;
+		int32_t disp = r->mem.disp;
+		
+		bool needs_index = (index != GPR_NONE) || (base & 7) == X64_RSP;
+		
+		*out_buffer++ = x64_inst_rex(true, 0x00, base, index != GPR_NONE ? index : 0);
+		*out_buffer++ = 0xF7;
+		
+		// If it needs an index, it'll put RSP into the base slot
+		// and write the real base into the SIB
+		uint8_t mod = X64_MOD_INDIRECT_DISP32;
+		if (disp == 0) mod = X64_MOD_INDIRECT_DISP8;
+		else if (disp == (int8_t)disp) mod = X64_MOD_INDIRECT_DISP8;
+		
+		*out_buffer++ = x64_inst_mod_rx_rm(mod, 0x07, needs_index ? X64_RSP : base);
+		if (needs_index) {
+			*out_buffer++ = x64_inst_mod_rx_rm(scale, (base & 7) == X64_RSP ? X64_RSP : index, base);
+		}
+		
+		if (mod == X64_MOD_INDIRECT_DISP8) {
+			*out_buffer++ = (int8_t)disp;
+		}
+		else if (mod == X64_MOD_INDIRECT_DISP32) {
+			*((uint32_t*)out_buffer) = disp;
+			out_buffer += 4;
+		}
+	} else tb_unreachable();
 	
 	tb_out_commit(out, out_buffer - out_buffer_start);
 }
@@ -2227,6 +2227,8 @@ static uint32_t x64_get_data_type_size(TB_DataType dt) {
 		return 4 * dt.count;
 		case TB_I64: case TB_F64:
 		return 8 * dt.count;
+		case TB_PTR:
+		return 8;
 		default: tb_todo();
 	}
 }

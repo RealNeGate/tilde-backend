@@ -5,6 +5,7 @@ static int tb_estimate_expr_pressure(const TB_Function* f, TB_Register i) {
 	switch (f->nodes.type[i]) {
 		// If the node is a leaf (has no children), its Strahler number is one.
 		case TB_PARAM:
+		case TB_LOCAL:
 		case TB_LOAD:
 		case TB_INT_CONST: 
 		case TB_MEMBER_ACCESS:

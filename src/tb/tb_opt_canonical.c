@@ -60,18 +60,16 @@ bool tb_opt_canonicalize(TB_Function* f) {
 			TB_Register b = f->nodes.payload[i].i_arith.b;
 			
 			// Move all integer constants to the right side
-			if (f->nodes.type[a] == TB_INT_CONST) {
+			if (f->nodes.type[a] == TB_INT_CONST && f->nodes.type[b] != TB_INT_CONST) {
 				tb_swap(a, b);
 				
 				f->nodes.payload[i].i_arith.a = a;
 				f->nodes.payload[i].i_arith.b = b;
 				changes++;
-			}
-			
-			if (f->nodes.type[a] == type) {
+			} else if (f->nodes.type[a] == type && f->nodes.type[b] != type) {
 				// Reshuffle the adds from 
 				// (x + y) + z => x + (y + z)
-				TB_Register xy = a;
+				/*TB_Register xy = a;
 				TB_Register x = f->nodes.payload[a].i_arith.a;
 				TB_Register y = f->nodes.payload[a].i_arith.b;
 				TB_Register z = b;
@@ -81,7 +79,7 @@ bool tb_opt_canonicalize(TB_Function* f) {
 				
 				f->nodes.payload[a].i_arith.a = y;
 				f->nodes.payload[a].i_arith.b = z;
-				changes++;
+				changes++;*/
 			}
 		} else if (type == TB_ARRAY_ACCESS) {
 			TB_Register base = f->nodes.payload[i].array_access.base;

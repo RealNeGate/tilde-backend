@@ -17,7 +17,7 @@ static const char* compile_bf(TB_Function* func, const char* at, TB_Register cel
 				TB_Register one = tb_inst_iconst(func, TB_TYPE_I8(1), 1);
 				TB_Register result = tb_inst_add(func, TB_TYPE_I8(1), ld, one, TB_CAN_WRAP);
 				
-				tb_inst_store(func, TB_TYPE_I32(1), addr, result, 4);
+				tb_inst_store(func, TB_TYPE_I8(1), addr, result, 4);
 				break;
 			}
 			case '-': {
@@ -28,7 +28,25 @@ static const char* compile_bf(TB_Function* func, const char* at, TB_Register cel
 				TB_Register one = tb_inst_iconst(func, TB_TYPE_I8(1), 1);
 				TB_Register result = tb_inst_sub(func, TB_TYPE_I8(1), ld, one, TB_CAN_WRAP);
 				
-				tb_inst_store(func, TB_TYPE_I32(1), addr, result, 4);
+				tb_inst_store(func, TB_TYPE_I8(1), addr, result, 4);
+				break;
+			}
+			case '<': {
+				TB_Register index = tb_inst_load(func, TB_TYPE_I32(1), ptr, 4);
+				
+				TB_Register one = tb_inst_iconst(func, TB_TYPE_I32(1), 1);
+				TB_Register result = tb_inst_sub(func, TB_TYPE_I32(1), index, one, TB_CAN_WRAP);
+				
+				tb_inst_store(func, TB_TYPE_I32(1), ptr, result, 4);
+				break;
+			}
+			case '>': {
+				TB_Register index = tb_inst_load(func, TB_TYPE_I32(1), ptr, 4);
+				
+				TB_Register one = tb_inst_iconst(func, TB_TYPE_I32(1), 1);
+				TB_Register result = tb_inst_add(func, TB_TYPE_I32(1), index, one, TB_CAN_WRAP);
+				
+				tb_inst_store(func, TB_TYPE_I32(1), ptr, result, 4);
 				break;
 			}
 			case '[': {
@@ -81,6 +99,10 @@ int main(int argc, char** argv) {
 		TB_Register ptr = tb_inst_local(func, 4, 4);
 		TB_Register cells = tb_inst_local(func, 512, 4);
 		
+		// clear out the cells
+		tb_inst_memset(func, cells, tb_inst_iconst(func, TB_TYPE_I32(1), 0), tb_inst_iconst(func, TB_TYPE_I32(1), 512));
+		
+		// initialize the cell pointer
 		tb_inst_store(func, TB_TYPE_I32(1), ptr, tb_inst_iconst(func, TB_TYPE_I32(1), 0), 4);
 		
 		compile_bf(func, at, cells, ptr);
@@ -90,10 +112,15 @@ int main(int argc, char** argv) {
 	}
 	
 	tb_module_compile(m, TB_OPT_O0, 1);
+	tb_module_export_jit(m);
 	
-	FILE* file = fopen("./test_x64.obj", "wb");
-	tb_module_export(m, file);
-	fclose(file);
+	typedef void(*BFEntry)();
+	BFEntry e = tb_module_get_jit_func_by_name(m, "main");
+	e();
+	
+	//FILE* file = fopen("./test_x64.obj", "wb");
+	//tb_module_export(m, file);
+	//fclose(file);
 	
 	tb_module_destroy(m);
 	return 0;

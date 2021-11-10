@@ -32,7 +32,7 @@ bool tb_opt_mem2reg(TB_Function* f) {
 			tls->used = 0;
 			changes += tb_mem2reg_single_reg(f, tls, label_count, i, initial_val);
 			
-			tb_function_print(f);
+			//tb_function_print(f);
 		}
 	}
 	
@@ -53,6 +53,8 @@ static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_Da
 		} else if (f->nodes.type[i] == TB_STORE && f->nodes.payload[i].store.address == address) {
 			if (!initialized) dt = f->nodes.dt[i];
 			else if (TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[i])) return false;
+		} else if (f->nodes.type[i] == TB_MEMSET && f->nodes.payload[i].mem_op.dst == address) {
+			return false;
 		}
 	}
 	

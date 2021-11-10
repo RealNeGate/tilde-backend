@@ -102,6 +102,35 @@ static uint32_t fnv1a(const void* data, size_t num_bytes) {
 	return hash;
 }
 
+#define OPT(x) if (tb_opt_ ## x (f)) goto repeat_opt
+static void tb_optimize_func(TB_Function* f) {
+	repeat_opt: {
+		//tb_function_print(f);
+		//printf("\n\n\n");
+		
+		OPT(remove_pass_node);
+		OPT(canonicalize);
+		OPT(strength_reduction);
+		OPT(mem2reg);
+		OPT(dce);
+		OPT(compact_dead_regs);
+	}
+	
+	//tb_function_print(f);
+	//printf("\n\n\n");
+}
+#undef OPT
+
+static void tb_compile_func(TB_Module* m, size_t i) {
+	if (tb_validate(&m->functions.data[i])) abort();
+	
+	if (m->optimization_level != TB_OPT_O0) {
+		tb_optimize_func(&m->functions.data[i]);
+	}
+	
+	m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
+}
+
 static int tb_x64_compile_thread(TB_Module* m) {
 	const size_t count = m->compiled_functions.count;
 	
@@ -109,50 +138,18 @@ static int tb_x64_compile_thread(TB_Module* m) {
 		size_t i = m->compiled_functions.num_reserved++;
 		if (i >= count) return 0;
 		
-		m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
+		tb_compile_func(m, i);
 		m->compiled_functions.num_compiled++;
 	}
 }
 
 TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_threads) {
-	// Validate the functions
-	uint32_t errors = 0;
-	uint32_t ir_node_count = 0;
-	loop(i, m->functions.count) {
-		errors += tb_validate(&m->functions.data[i]);
-		ir_node_count += m->functions.data[i].nodes.count;
-	}
-	if (errors > 0) return false;
-	
-	printf("Node count: %d\n", ir_node_count);
+	m->optimization_level = optimization_level;
 	m->compiled_functions.count = m->functions.count;
     
-	if (optimization_level == TB_OPT_O0) {
-		// Don't optimize
-		/*loop(i, m->functions.count) {
-			TB_Function* f = &m->functions.data[i];
-			tb_function_print(f);
-		}*/
-	} else {
-		loop(i, m->functions.count) {
-			TB_Function* f = &m->functions.data[i];
-			
-			restart_opt: {
-				tb_function_print(f);
-				printf("\n\n\n");
-				
-				if (tb_opt_remove_pass_node(f)) goto restart_opt;
-				if (tb_opt_canonicalize(f)) goto restart_opt;
-				if (tb_opt_strength_reduction(f)) goto restart_opt;
-				if (tb_opt_mem2reg(f)) goto restart_opt;
-				if (tb_opt_dce(f)) goto restart_opt;
-				if (tb_opt_inline(f)) goto restart_opt;
-				if (tb_opt_compact_dead_regs(f)) goto restart_opt;
-			}
-			
-			tb_function_print(f);
-			printf("\n\n\n");
-		}
+	size_t ir_initial_node_count = 0;
+	loop(i, m->functions.count) {
+		ir_initial_node_count += m->functions.data[i].nodes.count;
 	}
 	
 	if (max_threads > 1) {
@@ -181,7 +178,7 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 			size_t i = m->compiled_functions.num_reserved++;
 			if (i >= count) break;
 			
-			m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
+			tb_compile_func(m, i);
 			m->compiled_functions.num_compiled++;
 		}
 		
@@ -189,22 +186,35 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 		loop(i, max_threads) {
 			CloseHandle(threads[i]);
 		}
-		return true;
 #else
 #error "Implement this!!!"
 #endif
 	} else {
+		if (optimization_level != TB_OPT_O0) {
+			loop(i, m->functions.count) {
+				tb_optimize_func(&m->functions.data[i]);
+			}
+		}
+		
 		switch (m->target_arch) {
 			case TB_ARCH_X86_64:
 			loop(i, m->functions.count) {
 				m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
 			}
-			return true;
+			break;
 			default:
 			printf("TinyBackend error: Unknown target!\n");
 			tb_todo();
 		}
 	}
+	
+	size_t ir_final_node_count = 0;
+	loop(i, m->functions.count) {
+		ir_final_node_count += m->functions.data[i].nodes.count;
+	}
+	printf("Node count: %zu -> %zu\n", ir_initial_node_count, ir_final_node_count);
+	
+	return true;
 }
 
 TB_API bool tb_module_export(TB_Module* m, FILE* f) {
@@ -279,12 +289,21 @@ TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataTy
 	return f;
 }
 
+TB_API int TB_DEBUG_UNSAFE_SHIFTY_ASS_GET_PARAMS(TB_Module* m, size_t i) {
+	return m->functions.data[i].parameter_count;
+}
+
 TB_API void* tb_module_get_jit_func_by_name(TB_Module* m, const char* name) {
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
 		if (strcmp(m->compiled_functions.data[i].name, name)) return m->compiled_function_pos[i];
 	}
 	
 	return NULL;
+}
+
+TB_API void* tb_module_get_jit_func_by_id(TB_Module* m, size_t i) {
+	assert(m->compiled_function_pos);
+	return m->compiled_function_pos[i];
 }
 
 TB_API void* tb_module_get_jit_func(TB_Module* m, TB_Function* f) {
@@ -436,6 +455,7 @@ inline static bool tb_match_iarith_payload(const TB_RegPayload* a, const TB_RegP
 static TB_Register tb_cse_arith(TB_Function* f, int type, TB_DataType dt, TB_ArithmaticBehavior arith_behavior, TB_Register a, TB_Register b) {
 	assert(f->current_label);
 	
+#if TB_FRONTEND_OPT
 #if TB_HOST_ARCH == TB_HOST_X86_64
 	size_t aligned_start = ((f->current_label + 15) / 16) * 16;
 	__m128i pattern = _mm_set1_epi8(type);
@@ -481,6 +501,7 @@ static TB_Register tb_cse_arith(TB_Function* f, int type, TB_DataType dt, TB_Ari
 		}
 	}
 #endif
+#endif
     
 	TB_Register r = tb_make_reg(f, type, dt);
 	f->nodes.payload[r].i_arith.arith_behavior = arith_behavior;
@@ -491,6 +512,8 @@ static TB_Register tb_cse_arith(TB_Function* f, int type, TB_DataType dt, TB_Ari
 
 TB_API TB_Register tb_inst_sxt(TB_Function* f, TB_Register src, TB_DataType dt) {
 	assert(f->current_label);
+	
+#if TB_FRONTEND_OPT
 	for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
 		if (f->nodes.type[i] == TB_SIGN_EXT
 			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
@@ -498,6 +521,7 @@ TB_API TB_Register tb_inst_sxt(TB_Function* f, TB_Register src, TB_DataType dt) 
 			return i;
 		}
 	}
+#endif
     
     TB_Register r = tb_make_reg(f, TB_SIGN_EXT, dt);
 	f->nodes.payload[r].ext = src;
@@ -506,6 +530,8 @@ TB_API TB_Register tb_inst_sxt(TB_Function* f, TB_Register src, TB_DataType dt) 
 
 TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt) {
     assert(f->current_label);
+	
+#if TB_FRONTEND_OPT
 	for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
 		if (f->nodes.type[i] == TB_ZERO_EXT
 			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
@@ -513,6 +539,7 @@ TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt) 
 			return i;
 		}
 	}
+#endif
     
 	TB_Register r = tb_make_reg(f, TB_ZERO_EXT, dt);
 	f->nodes.payload[r].ext = src;
@@ -564,6 +591,8 @@ TB_API TB_Register tb_inst_local(TB_Function* f, uint32_t size, uint32_t alignme
 
 TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr, uint32_t alignment) {
 	assert(f->current_label);
+	
+#if TB_FRONTEND_OPT
     for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
 		if (f->nodes.type[i] == TB_LOAD
 			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
@@ -572,6 +601,7 @@ TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr
 			return i;
 		}
 	}
+#endif
 	
 	TB_Register r = tb_make_reg(f, TB_LOAD, dt);
 	f->nodes.payload[r].load.address = addr;
@@ -590,6 +620,7 @@ TB_API void tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_R
 TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) {
 	assert(f->current_label);
     
+#if TB_FRONTEND_OPT
 #if TB_HOST_ARCH == TB_HOST_X86_64
 	size_t aligned_start = ((f->current_label + 15) / 16) * 16;
 	
@@ -632,13 +663,17 @@ TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) 
 		}
 	}
 #endif
+#endif
 	
 	assert(dt.type >= TB_I8 && dt.type <= TB_I128);
+	
 	uint64_t mask = (~0ull) >> (64 - (8 << (dt.type - TB_I8)));
+	((void)mask);
+	assert((imm & mask) == imm);
 	
 	TB_Register r = tb_make_reg(f, TB_INT_CONST, dt);
 	f->nodes.payload[r].i_const.hi = 0;
-	f->nodes.payload[r].i_const.lo = imm & mask;
+	f->nodes.payload[r].i_const.lo = imm;
 	return r;
 }
 
@@ -1131,6 +1166,12 @@ TB_API void tb_function_print(TB_Function* f) {
 			printf("  r%u\t=\t", i);
 			tb_print_type(dt);
 			printf(" SXT r%u\n", p.ext);
+			break;
+			case TB_MEMSET:
+			printf("  MEMSET\t(r%d, r%d, r%d)\n", p.mem_op.dst, p.mem_op.src, p.mem_op.size);
+			break;
+			case TB_MEMCPY:
+			printf("  MEMCPY\t(r%d, r%d, r%d)\n", p.mem_op.dst, p.mem_op.src, p.mem_op.size);
 			break;
 			case TB_MEMBER_ACCESS:
 			printf("  r%u\t=\t", i);

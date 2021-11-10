@@ -24,6 +24,8 @@ bool tb_opt_dce(TB_Function* f) {
                 case TB_CALL:
                 case TB_SWITCH:
                 case TB_PARAM:
+				case TB_MEMSET:
+				case TB_MEMCPY:
 				break;
 				// delete:
                 case TB_INT_CONST:

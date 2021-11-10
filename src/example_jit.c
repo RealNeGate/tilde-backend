@@ -15,6 +15,8 @@ static size_t my_fib(size_t n) {
 }
 
 int main(int argc, char** argv) {
+	clock_t t1 = clock();
+	
 	TB_FeatureSet features = { 0 };
 	TB_Module* m = tb_module_create(TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features);
 	
@@ -25,10 +27,12 @@ int main(int argc, char** argv) {
 	
 	typedef int(*FibFunction)(int n);
 	FibFunction jitted_func = (FibFunction)tb_module_get_jit_func(m, test_func_ref);
-	int t = jitted_func(40);
+	int t = jitted_func(35);
 	//int t = my_fib(40);
 	
-	printf("Fib(%d) = %d\n", 40, t);
+	clock_t t2 = clock();
+	printf("took %f ms\n", ((t2 - t1) / (double)CLOCKS_PER_SEC) * 1000.0);
+	printf("Fib(%d) = %d\n", 35, t);
 	
 	tb_module_destroy(m);
 	return 0;

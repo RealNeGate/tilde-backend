@@ -53,10 +53,9 @@ int main(int argc, char** argv) {
 	int n = 0;
 	int trial_count = 100000;
 	TB_Module* m = tb_module_create(TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features);
-	seed = 764848649;
+	seed = 764848648;
 	
 	while (n < trial_count) {
-		seed = gen_random_any();
 		pool_size = 0;
 		var_pool_size = 0;
 		
@@ -129,10 +128,11 @@ int main(int argc, char** argv) {
 	if (!tb_module_export(m, file)) abort();
 	fclose(file);
 	
-	tb_module_destroy(m);
-	
 	clock_t t4 = clock();
 	printf("Object file output took %f ms\n", ((t4 - t3) / (double)CLOCKS_PER_SEC) * 1000.0);
-	printf("Compilation took %f ms\n", ((t4 - t1) / (double)CLOCKS_PER_SEC) * 1000.0);
+	printf("=========================================\n"
+		   "Compilation took %f ms\n", ((t4 - t1) / (double)CLOCKS_PER_SEC) * 1000.0);
+	
+	tb_module_destroy(m);
 	return 0;
 }

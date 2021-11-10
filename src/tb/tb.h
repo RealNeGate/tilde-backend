@@ -44,6 +44,8 @@
 #define TB_HOST_UNKNOWN 0
 #define TB_HOST_X86_64 1
 
+#define TB_FRONTEND_OPT 0
+
 #if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64)
 #define TB_HOST_ARCH TB_HOST_X86_64
 #else
@@ -61,12 +63,13 @@ typedef enum TB_ArithmaticBehavior {
 	// undefined behavior with unknown consequences.
 	TB_NO_WRAP,
     
-	// Overflow check will throw an error if the result
-	// cannot be represented in the resulting type.
-	TB_WRAP_CHECK,
-    
 	// Wrapping will allow the integer to safely wrap.
 	TB_CAN_WRAP,
+	
+	// Overflow check will throw an error if the result
+	// cannot be represented in the resulting type.
+	TB_SIGNED_TRAP_ON_WRAP,
+	TB_UNSIGNED_TRAP_ON_WRAP,
     
 	// Saturated arithmatic will clamp the results in the
 	// event of overflow/underflow.
@@ -210,7 +213,11 @@ TB_API void tb_module_destroy(TB_Module* m);
 TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_threads);
 TB_API bool tb_module_export(TB_Module* m, FILE* f);
 TB_API void tb_module_export_jit(TB_Module* m);
+
+TB_API int TB_DEBUG_UNSAFE_SHIFTY_ASS_GET_PARAMS(TB_Module* m, size_t i);
+
 TB_API void* tb_module_get_jit_func_by_name(TB_Module* m, const char* name);
+TB_API void* tb_module_get_jit_func_by_id(TB_Module* m, size_t i);
 TB_API void* tb_module_get_jit_func(TB_Module* m, TB_Function* f);
 
 TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataType return_dt);
@@ -551,6 +558,8 @@ struct TB_Module {
 	TB_Arch target_arch;
 	TB_System target_system;
 	TB_FeatureSet features;
+	
+	int optimization_level;
 	
 	struct {
 		size_t count;

@@ -17,6 +17,12 @@ break; \
 case TB_LABEL: \
 X(p->label.terminator); \
 break; \
+case TB_MEMCPY: \
+case TB_MEMSET: \
+X(p->mem_op.dst); \
+X(p->mem_op.src); \
+X(p->mem_op.size); \
+break; \
 case TB_MEMBER_ACCESS: \
 X(p->member_access.base); \
 break; \
@@ -172,7 +178,7 @@ void tb_insert_op(TB_Function* f, TB_Register at) {
 //
 // TODO(NeGate): Move this out of this file once it's relevant
 // TODO(NeGate): Implement multiple return statements, VLA insertion, and proper labels
-static TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params, TB_Register at, const TB_Function* src_func, TB_Register src_base, int count) {
+TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params, TB_Register at, const TB_Function* src_func, TB_Register src_base, int count) {
 	// Reserve the space
 	if (f->nodes.count + count >= f->nodes.capacity) tb_resize_node_stream(f, tb_next_pow2(f->nodes.count + count));
 	

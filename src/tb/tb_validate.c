@@ -5,8 +5,6 @@ int tb_validate(TB_Function* f) {
 	if (f->validated) return 0;
 	int error_count = 0;
 	
-	//tb_function_print(f);
-	
 	for (TB_Register i = 1; i < f->nodes.count; i++) {
 		if (f->nodes.type[i] == TB_SIGN_EXT ||
 			f->nodes.type[i] == TB_ZERO_EXT) {
@@ -17,7 +15,7 @@ int tb_validate(TB_Function* f) {
 			}
 			
 			TB_Register src = f->nodes.payload[i].ext;
-			if (f->nodes.dt[i].type >= f->nodes.dt[src].type) {
+			if (f->nodes.dt[i].type < f->nodes.dt[src].type) {
 				printf("error on %s:r%u: destination type must be bigger than the source type.\n", f->name, i);
 				error_count++;
 			}
@@ -61,6 +59,8 @@ int tb_validate(TB_Function* f) {
 			}
 		}
 	}
+	
+	if (error_count) tb_function_print(f);
 	
 	f->validated = true;
 	return error_count;

@@ -717,7 +717,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		
 		COFF_Symbol sym = {
 			.value = actual_pos,
-			.section_number = 8 + l->func_id,
+			.section_number = 1,
 			.storage_class = IMAGE_SYM_CLASS_LABEL
 		};
 		

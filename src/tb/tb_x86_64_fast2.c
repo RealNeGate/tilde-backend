@@ -176,17 +176,19 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 #undef COUNT_OF_TYPE_IN_M128
 #else
 		for (size_t i = 1; i < f->nodes.count; i++) {
-			if (f->nodes[i].type == TB_PHI1) phi_count++;
-			else if (f->nodes[i].type == TB_PHI2) phi_count++;
-			else if (f->nodes[i].type == TB_LOCAL) locals_count++;
-			else if (f->nodes[i].type == TB_PARAM) locals_count++;
-			else if (f->nodes[i].type == TB_RET) ir_return_count++;
-			else if (f->nodes[i].type == TB_LABEL) ir_label_count++;
-			else if (f->nodes[i].type == TB_IF) ir_label_patch_count += 2;
-			else if (f->nodes[i].type == TB_GOTO) ir_label_patch_count++;
-			else if (f->nodes[i].type == TB_LOAD) mem_cache_count++;
-			else if (f->nodes[i].type == TB_CALL) {
-				int param_usage = (f->nodes[i].call.param_end - f->nodes[i].call.param_start);
+            TB_RegType t = f->nodes[i].type;
+            
+			if (t == TB_PHI1) phi_count++;
+			else if (t == TB_PHI2) phi_count++;
+			else if (t == TB_LOCAL) locals_count++;
+			else if (t == TB_PARAM) locals_count++;
+			else if (t == TB_RET) ir_return_count++;
+			else if (t == TB_LABEL) ir_label_count++;
+			else if (t == TB_IF) ir_label_patch_count += 2;
+			else if (t == TB_GOTO) ir_label_patch_count++;
+			else if (t == TB_LOAD) mem_cache_count++;
+			else if (t == TB_CALL) {
+				int param_usage = (f->nodes.payload[i].call.param_end - f->nodes.payload[i].call.param_start);
 				if (caller_usage_in_bytes < param_usage) {
 					caller_usage_in_bytes = param_usage;
 				}
@@ -485,7 +487,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 			size_t entry_start = p.switch_.entries_start;
 			size_t entry_count = (p.switch_.entries_end - p.switch_.entries_start) / 2;
 			
-			size_t switch_range_min = UINT64_MAX;
+			size_t switch_range_min = SIZE_MAX;
 			size_t switch_range_max = 0;
 			size_t switch_max_case_dist = 0; // Maximum distance between any two case keys
 			size_t switch_avg_case_dist = 0;

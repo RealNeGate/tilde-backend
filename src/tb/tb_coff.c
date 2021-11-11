@@ -347,8 +347,8 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 						if (f->nodes.type[k] == TB_LINE_INFO
 							&& f->nodes.payload[k].line_info.file == i) {
 							// emit line entry
-							tb_out4b(&debugs_out, f->nodes.payload[l].line_info.pos);
-							tb_out4b(&debugs_out, 0x80000000 | f->nodes.payload[l].line_info.line);
+							tb_out4b(&debugs_out, f->nodes.payload[k].line_info.pos);
+							tb_out4b(&debugs_out, 0x80000000 | f->nodes.payload[k].line_info.line);
 							line_count_in_file++;
 						}
 					}

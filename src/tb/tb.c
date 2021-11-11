@@ -158,7 +158,7 @@ static void tb_compile_func(TB_Module* m, size_t i) {
 	m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
 }
 
-static int tb_x64_compile_thread(TB_Module* m) {
+static __stdcall int tb_x64_compile_thread(TB_Module* m) {
 	const size_t count = m->compiled_functions.count;
 	
 	while (true) {

@@ -9,7 +9,7 @@
 // the same memory mapping, this is actually very bad because it means that
 // read-only data is executable.
 void tb_module_export_jit(TB_Module* m) {
-#if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64)
+#if TB_HOST_ARCH == TB_HOST_X86_64
 	const ICodeGen* restrict code_gen = &x64_fast_code_gen;
 #else
 #error "Cannot compile JIT for this target architecture!"
@@ -26,7 +26,7 @@ void tb_module_export_jit(TB_Module* m) {
 	uint32_t* func_layout = (uint32_t*)tb_tls_push(tls, m->compiled_functions.count * sizeof(uint32_t));
 	size_t text_section_size = 0;
 	
-#if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64)
+#if TB_HOST_ARCH == TB_HOST_X86_64
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
 		func_layout[i] = text_section_size;
 		
@@ -68,7 +68,7 @@ void tb_module_export_jit(TB_Module* m) {
 	m->jit_region = VirtualAlloc(NULL, text_section_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 	
 	uint8_t* text_section = m->jit_region;
-#if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64)
+#if TB_HOST_ARCH == TB_HOST_X86_64
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
 		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
 		m->compiled_function_pos[i] = (void*)text_section;

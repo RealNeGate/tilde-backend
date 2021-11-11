@@ -44,12 +44,16 @@
 #define TB_HOST_UNKNOWN 0
 #define TB_HOST_X86_64 1
 
+// While generating the IR, it's possible to
+// perform some optimizations on the spot such
+// as CSE and constant folding, if this define
+// is 0, the CSE is disabled.
 #define TB_FRONTEND_OPT 0
 
-#define TB_STRIP_LABELS 0
 // If on, the labels aren't marked in the object file
 // might save on performance at the cost of some assembly
 // readability.
+#define TB_STRIP_LABELS 0
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64)
 #define TB_HOST_ARCH TB_HOST_X86_64

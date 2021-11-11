@@ -51,7 +51,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 	static const TestFunction test_functions[] = {
 		test_div_i64,
 		test_zero_mem,
-		test_fact,
+		/*test_fact,
 		test_add_i8,
 		test_add_i16,
 		test_add_i32,
@@ -73,7 +73,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_fib,
 		test_foo,
 		test_switch_case,
-		test_entry
+		test_entry*/
 	};
 	size_t count = sizeof(test_functions) / sizeof(test_functions[0]);
     
@@ -85,6 +85,26 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 	if (!tb_module_export(m, f)) abort();
 	
 	tb_module_destroy(m);
+}
+
+TB_Function* test_div_i64(TB_Module* m) {
+	TB_Function* func = tb_function_create(m, "main", TB_TYPE_I64(1));
+	
+	TB_Register a = tb_inst_param(func, TB_TYPE_I64(1));
+	TB_Register b = tb_inst_param(func, TB_TYPE_I64(1));
+    
+	TB_Register ap = tb_inst_param_addr(func, a);
+	TB_Register bp = tb_inst_param_addr(func, b);
+    
+	TB_Register sum = tb_inst_div(
+                                  func, TB_TYPE_I64(1),
+                                  tb_inst_load(func, TB_TYPE_I64(1), ap, 4),
+                                  tb_inst_load(func, TB_TYPE_I64(1), bp, 4),
+                                  true
+                                  );
+    
+	tb_inst_ret(func, TB_TYPE_I64(1), sum);
+	return func;
 }
 
 TB_Function* test_zero_mem(TB_Module* m) {
@@ -151,26 +171,6 @@ TB_Function* test_mul_i64(TB_Module* m) {
 									 );
     
 	tb_inst_ret(func, TB_TYPE_I64(1), factor);
-	return func;
-}
-
-TB_Function* test_div_i64(TB_Module* m) {
-	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I64(1));
-	
-	TB_Register a = tb_inst_param(func, TB_TYPE_I64(1));
-	TB_Register b = tb_inst_param(func, TB_TYPE_I64(1));
-    
-	TB_Register ap = tb_inst_param_addr(func, a);
-	TB_Register bp = tb_inst_param_addr(func, b);
-    
-	TB_Register sum = tb_inst_div(
-                                  func, TB_TYPE_I64(1),
-                                  tb_inst_load(func, TB_TYPE_I64(1), ap, 4),
-                                  tb_inst_load(func, TB_TYPE_I64(1), bp, 4),
-                                  true
-                                  );
-    
-	tb_inst_ret(func, TB_TYPE_I64(1), sum);
 	return func;
 }
 

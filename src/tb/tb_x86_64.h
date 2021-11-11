@@ -91,10 +91,6 @@ typedef struct X64_PhiValue {
 	X64_Value value;
 } X64_PhiValue;
 
-typedef struct X64_RegisterDesc {
-	TB_Register bound_value;
-} X64_RegisterDesc;
-
 typedef struct X64_LocalDesc {
 	TB_Register address;
     int32_t disp;
@@ -116,8 +112,8 @@ typedef struct X64_Context {
 	X64_LocalDesc* locals;
     X64_MemCacheDesc* mem_caches;
     
-	X64_RegisterDesc gpr_desc[16];
-	X64_RegisterDesc xmm_desc[16];
+	TB_Register gpr_desc[16];
+	TB_Register xmm_desc[16];
 } X64_Context;
 
 // Used to quickly reorder the basic blocks
@@ -154,16 +150,6 @@ typedef enum X64_ExtMode {
     X64_EXT_SSE_PS,
 } X64_ExtMode;
 
-typedef struct X64_NormalInst {
-	uint8_t op;
-    
-	// IMMEDIATES
-	uint8_t op_i;
-	uint8_t rx_i;
-    
-    X64_ExtMode ext : 8;
-} X64_NormalInst;
-
 typedef struct X64_IselInfo {
 	int inst;
 	
@@ -182,16 +168,15 @@ typedef struct X64_SpillInfo {
 	uint32_t stack_pos;
 } X64_SpillInfo;
 
-static const X64_GPR GPR_PARAMETERS[] = {
-	X64_RCX, X64_RDX, X64_R8, X64_R9
-};
-
-static const X64_GPR GPR_PRIORITY_LIST[] = {
-	X64_RAX, X64_RCX, X64_RDX, X64_R8,
-	X64_R9,  X64_R10, X64_R11, X64_RDI,
-	X64_RSI, X64_RBX, X64_R12, X64_R13,
-	X64_R14, X64_R15
-};
+typedef struct X64_NormalInst {
+	uint8_t op;
+    
+	// IMMEDIATES
+	uint8_t op_i;
+	uint8_t rx_i;
+    
+    X64_ExtMode ext : 8;
+} X64_NormalInst;
 
 static const X64_NormalInst insts[] = {
 	[X64_ADD] = { 0x00, 0x80, 0x00 },
@@ -221,6 +206,17 @@ static const X64_NormalInst insts[] = {
 	[X64_SUBPS] = { 0x5C, .ext = X64_EXT_SSE_PS },
 	[X64_MULPS] = { 0x59, .ext = X64_EXT_SSE_PS },
 	[X64_DIVPS] = { 0x5E, .ext = X64_EXT_SSE_PS }
+};
+
+static const X64_GPR GPR_PARAMETERS[] = {
+	X64_RCX, X64_RDX, X64_R8, X64_R9
+};
+
+static const X64_GPR GPR_PRIORITY_LIST[] = {
+	X64_RAX, X64_RCX, X64_RDX, X64_R8,
+	X64_R9,  X64_R10, X64_R11, X64_RDI,
+	X64_RSI, X64_RBX, X64_R12, X64_R13,
+	X64_R14, X64_R15
 };
 
 // NOTE(NeGate): This is for Win64, we can handle SysV later

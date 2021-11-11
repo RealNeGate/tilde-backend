@@ -46,6 +46,11 @@
 
 #define TB_FRONTEND_OPT 0
 
+#define TB_STRIP_LABELS 0
+// If on, the labels aren't marked in the object file
+// might save on performance at the cost of some assembly
+// readability.
+
 #if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64)
 #define TB_HOST_ARCH TB_HOST_X86_64
 #else
@@ -180,6 +185,7 @@ typedef struct TB_SwitchEntry {
 	TB_Label value;
 } TB_SwitchEntry;
 
+typedef int TB_FileID;
 typedef struct TB_Module TB_Module;
 typedef struct TB_Function TB_Function;
 typedef int32_t TB_Register;
@@ -214,13 +220,14 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 TB_API bool tb_module_export(TB_Module* m, FILE* f);
 TB_API void tb_module_export_jit(TB_Module* m);
 
-TB_API int TB_DEBUG_UNSAFE_SHIFTY_ASS_GET_PARAMS(TB_Module* m, size_t i);
-
 TB_API void* tb_module_get_jit_func_by_name(TB_Module* m, const char* name);
 TB_API void* tb_module_get_jit_func_by_id(TB_Module* m, size_t i);
 TB_API void* tb_module_get_jit_func(TB_Module* m, TB_Function* f);
 
 TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataType return_dt);
+TB_API TB_FileID tb_register_file(TB_Module* m, const char* path);
+
+TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line);
 
 TB_API TB_Register tb_inst_param(TB_Function* f, TB_DataType dt);
 TB_API TB_Register tb_inst_param_addr(TB_Function* f, TB_Register param);
@@ -311,6 +318,8 @@ typedef struct TB_Emitter {
 enum {
     TB_NULL,
 	
+	TB_LINE_INFO,
+	
 	TB_CALL,
 	TB_ICALL, // inline call
     
@@ -399,6 +408,13 @@ typedef union TB_RegPayload {
 	TB_Int128 i_const;
 	double f_const;
 	TB_Register ext;
+	struct {
+		TB_FileID file;
+		int line;
+		
+		// NOTE(NeGate): Used by the object code generation
+		uint32_t pos;
+	} line_info;
 	struct {
 		TB_Register base;
 		int32_t offset;
@@ -515,6 +531,10 @@ struct TB_FunctionOutput {
 	TB_Emitter emitter;
 };
 
+typedef struct TB_File {
+	const char* path;
+} TB_File;
+
 typedef struct TB_NodeStream {
 	TB_Register    capacity;
 	TB_Register    count;
@@ -554,12 +574,26 @@ struct TB_Function {
 	uint32_t stack_usage;
 };
 
+typedef struct TB_LabelSymbol {
+	uint32_t func_id;
+	uint32_t label_id;
+	uint32_t pos; // relative to the start of the function
+} TB_LabelSymbol;
+
 struct TB_Module {
 	TB_Arch target_arch;
 	TB_System target_system;
 	TB_FeatureSet features;
 	
 	int optimization_level;
+	
+#if !TB_STRIP_LABELS
+	struct {
+		size_t count;
+		size_t capacity;
+		TB_LabelSymbol* data;
+	} label_symbols;
+#endif
 	
 	struct {
 		size_t count;
@@ -575,6 +609,12 @@ struct TB_Module {
     
 	struct {
 		size_t count;
+		size_t capacity;
+		TB_File* data;
+	} files;
+    
+	struct {
+		size_t count;
 		TB_Function* data;
 	} functions;
     
@@ -585,6 +625,11 @@ struct TB_Module {
 		size_t count;
 		TB_FunctionOutput* data;
 	} compiled_functions;
+	
+	// This number is calculated while the builders are running
+	// if the optimizations are run this number is set to SIZE_MAX
+	// which means it needs to be re-evaluated.
+	_Atomic size_t line_info_count;
 	
 	void* jit_region;
 	size_t jit_region_size;
@@ -726,11 +771,18 @@ TB_API void tb_find_live_intervals(size_t intervals[], const TB_Function* f);
 // BACKEND UTILITIES
 //
 uint32_t tb_emit_const32_patch(TB_Module* m, uint32_t func_id, size_t pos, uint32_t data);
+// TODO(NeGate): Not thread safe yet
+
 void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size_t pos);
+// TODO(NeGate): Not thread safe yet
+
+#if !TB_STRIP_LABELS
+void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, size_t pos);
+// TODO(NeGate): Not thread safe yet
+#endif
 
 // TODO(NeGate): Reimplement this later, the code is slightly outdated.
 // extern ICodeGen aarch64_fast_code_gen;
-
 extern ICodeGen x64_fast_code_gen;
 
 #endif /* TB_INTERNAL */

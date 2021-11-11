@@ -54,6 +54,12 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
 	m->target_system = target_system;
 	m->features = *features;
     
+#if !TB_STRIP_LABELS
+	m->label_symbols.count = 0;
+	m->label_symbols.capacity = 64;
+	m->label_symbols.data = malloc(64 * sizeof(TB_LabelSymbol));
+#endif
+	
 	m->const32_patches.count = 0;
 	m->const32_patches.capacity = 64;
 	m->const32_patches.data = malloc(64 * sizeof(TB_ConstPool32Patch));
@@ -61,6 +67,11 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
 	m->call_patches.count = 0;
 	m->call_patches.capacity = 64;
 	m->call_patches.data = malloc(64 * sizeof(TB_FunctionPatch));
+	
+	m->files.count = 1;
+	m->files.capacity = 64;
+	m->files.data = malloc(64 * sizeof(TB_File));
+    m->files.data[0] = (TB_File){ 0 };
 	
 	m->functions.count = 0;
 	m->functions.data = malloc(TB_MAX_FUNCTIONS * sizeof(TB_Function));
@@ -87,6 +98,22 @@ TB_API void tb_module_destroy(TB_Module* m) {
 	free(m->functions.data);
 	free(m->compiled_functions.data);
 	free(m);
+}
+
+TB_API TB_FileID tb_register_file(TB_Module* m, const char* path) {
+	if (m->files.count + 1 >= m->files.capacity) {
+		m->files.capacity *= 2;
+		m->files.data = realloc(m->files.data, m->files.capacity * sizeof(TB_File));
+	}
+    
+	char* str = malloc(strlen(path) + 1);
+	strcpy(str, path);
+	
+	size_t r = m->files.count++;
+	m->files.data[r] = (TB_File){
+		.path = str
+	};
+	return r;
 }
 
 // https://create.stephan-brumme.com/fnv-hash/
@@ -287,10 +314,6 @@ TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataTy
     
 	f->current_label = 1;
 	return f;
-}
-
-TB_API int TB_DEBUG_UNSAFE_SHIFTY_ASS_GET_PARAMS(TB_Module* m, size_t i) {
-	return m->functions.data[i].parameter_count;
 }
 
 TB_API void* tb_module_get_jit_func_by_name(TB_Module* m, const char* name) {
@@ -568,6 +591,19 @@ TB_API TB_Register tb_inst_param(TB_Function* f, TB_DataType dt) {
 	assert(dt.count > 0);
 	f->nodes.payload[r].param.size = param_size * dt.count;
 	return r;
+}
+
+TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line) {
+	if (f->nodes.count > 1 && f->nodes.type[f->nodes.count - 1] == TB_LINE_INFO) {
+		return;
+	}
+	
+	TB_Register r = tb_make_reg(f, TB_LINE_INFO, TB_TYPE_VOID());
+	f->nodes.payload[r].line_info.file = file;
+	f->nodes.payload[r].line_info.line = line;
+	f->nodes.payload[r].line_info.pos = 0;
+	
+	f->module->line_info_count++;
 }
 
 TB_API TB_Register tb_inst_param_addr(TB_Function* f, TB_Register param) {
@@ -1077,6 +1113,23 @@ TB_API void tb_inst_ret(TB_Function* f, TB_DataType dt, TB_Register value) {
 	f->current_label = TB_NULL_REG;
 }
 
+#if !TB_STRIP_LABELS
+void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, size_t pos) {
+	assert(pos < UINT32_MAX);
+	if (m->label_symbols.count + 1 >= m->label_symbols.capacity) {
+		m->label_symbols.capacity *= 2;
+		m->label_symbols.data = realloc(m->label_symbols.data, m->label_symbols.capacity * sizeof(TB_ConstPool32Patch));
+	}
+    
+	size_t r = m->label_symbols.count++;
+	m->label_symbols.data[r] = (TB_LabelSymbol){
+		.func_id = func_id,
+		.label_id = label_id,
+		.pos = pos
+	};
+}
+#endif
+
 uint32_t tb_emit_const32_patch(TB_Module* m, uint32_t func_id, size_t pos, uint32_t data) {
 	assert(pos < UINT32_MAX);
 	if (m->const32_patches.count + 1 >= m->const32_patches.capacity) {
@@ -1151,6 +1204,9 @@ TB_API void tb_function_print(TB_Function* f) {
 			else {
 				printf(" %lld\n", p.i_const.lo);
 			}
+			break;
+			case TB_LINE_INFO:
+			printf("  # LOC %s:%d\n", f->module->files.data[p.line_info.file].path, p.line_info.line);
 			break;
             case TB_FLOAT_CONST:
 			printf("  r%u\t=\t", i);

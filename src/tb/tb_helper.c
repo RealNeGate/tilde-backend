@@ -13,6 +13,7 @@ case TB_FLOAT_CONST: \
 case TB_LOCAL: \
 case TB_PARAM: \
 case TB_GOTO: \
+case TB_LINE_INFO: \
 break; \
 case TB_LABEL: \
 X(p->label.terminator); \

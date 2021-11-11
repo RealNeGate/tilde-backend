@@ -1,6 +1,10 @@
 #define TB_INTERNAL
 #include "tb.h"
 
+#if TB_HOST_ARCH == TB_HOST_X86_64
+#include <x86intrin.h>
+#endif
+
 // IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_16BYTES
 #define COFF_CHARACTERISTICS_TEXT 0x60500020u
 // IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_READ
@@ -9,13 +13,21 @@
 #define COFF_CHARACTERISTICS_RODATA 0x40000040u
 // IMAGE_SCN_CNT_UNINITIALIZED_DATA | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_16BYTES
 #define COFF_CHARACTERISTICS_BSS 0xC0500080u
+// IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_ALIGN_8BYTES | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_DISCARDABLE
+#define COFF_CHARACTERISTICS_CV 0x42100040u
 
 #define IMAGE_SYM_CLASS_EXTERNAL      0x0002
 #define IMAGE_SYM_CLASS_STATIC        0x0003
+#define IMAGE_SYM_CLASS_LABEL         0x0006
+#define IMAGE_SYM_CLASS_FILE          0x0067
 
 #define IMAGE_FILE_LINE_NUMS_STRIPPED 0x0004
 
 #define IMAGE_REL_AMD64_REL32         0x0004
+#define IMAGE_REL_AMD64_SECTION       0x000A
+#define IMAGE_REL_AMD64_SECREL        0x000B
+
+#define MD5_HASHBYTES 16
 
 typedef struct COFF_SectionHeader {
 	char name[8];
@@ -81,6 +93,14 @@ typedef struct COFF_AuxSectionSymbol {
 	int16_t high_bits;		// high bits of the section number
 } COFF_AuxSectionSymbol;
 _Static_assert(sizeof(COFF_AuxSectionSymbol) == 18, "COFF Aux Section Symbol size != 18 bytes");
+
+typedef struct {
+	union {
+		unsigned long l_symndx;  /* function name symbol index */
+		unsigned long l_paddr;   /* address of line number     */
+	} l_addr;
+	unsigned short l_lnno;     /* line number                */
+} LINENO;
 #pragma pack(pop)
 
 enum {
@@ -104,7 +124,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	uint32_t string_table_mark = 4;
 	const char** string_table = (const char**)&tls->data[tls->used];
 	
-	const int number_of_sections = 2;
+	const int number_of_sections = 4;
 	COFF_FileHeader header = {
 		.num_sections = number_of_sections,
 		.timestamp = time(NULL),
@@ -114,12 +134,12 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	};
 	
 	COFF_SectionHeader text_section = {
-		.name = { '.', 't', 'e', 'x', 't' }, // .text
+		.name = { ".text" }, // .text
 		.characteristics = COFF_CHARACTERISTICS_TEXT
 	};
 	
 	COFF_SectionHeader rdata_section = {
-		.name = { '.', 'r', 'd', 'a', 't', 'a' }, // .rdata
+		.name = { ".rdata" }, // .rdata
 		.characteristics = COFF_CHARACTERISTICS_RODATA,
 		
 		// TODO(NeGate): Optimize this a bit, we should probably deduplicate
@@ -127,34 +147,340 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		.raw_data_size = m->const32_patches.count * sizeof(uint32_t)
 	};
 	
+	COFF_SectionHeader debugt_section = {
+		.name = { ".debug$T" },
+		.characteristics = COFF_CHARACTERISTICS_CV
+	};
+	
+	COFF_SectionHeader debugs_section = {
+		.name = { ".debug$S" },
+		.characteristics = COFF_CHARACTERISTICS_CV
+	};
+	
 	switch (m->target_arch) {
-		case TB_ARCH_X86_64: {
-			header.machine = COFF_MACHINE_AMD64;
+		case TB_ARCH_X86_64: header.machine = COFF_MACHINE_AMD64; break;
+		case TB_ARCH_AARCH64: header.machine = COFF_MACHINE_ARM64; break;
+		default: tb_todo();
+	}
+	
+	for (size_t i = 0; i < m->compiled_functions.count; i++) {
+		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
+		func_layout[i] = text_section.raw_data_size;
+		
+		// TODO(NeGate): This data could be arranged better for streaming
+		size_t prologue = code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
+														out_f->stack_usage);
+		
+		size_t epilogue = code_gen->get_epilogue_length(out_f->prologue_epilogue_metadata,
+														out_f->stack_usage);
+		
+		text_section.raw_data_size += prologue;
+		text_section.raw_data_size += epilogue;
+		text_section.raw_data_size += m->compiled_functions.data[i].emitter.count;
+	}
+	
+    TB_Emitter debugs_out = { 0 };
+    TB_Emitter debugt_out = { 0 };
+	
+	// used for some relocations later
+	uint32_t cv_field_base = 0;
+	
+	// This is actually going to alias various different values throught this debug 
+	// section generation pipeline and at the end stores an array of the procedure
+	// relocations
+	size_t file_table_size = m->compiled_functions.count;
+	if (file_table_size > m->files.count) file_table_size = m->files.count;
+	
+	// if the codeview stuff is never done, this is never actually needed so it's
+	// fine that it's NULL
+	uint32_t* file_table_offset = NULL;
+	if (m->line_info_count != 0) {
+		// Based on this, it's the only nice CodeView source out there:
+		// https://github.com/netwide-assembler/nasm/blob/master/output/codeview.c
+		tb_out4b(&debugs_out, 0x00000004);
+		file_table_offset = tb_tls_push(tls, file_table_size * sizeof(uint32_t));
+		
+		//
+		// Write file name table
+		//
+		{
+			tb_out4b(&debugs_out, 0x000000F3);
+			
+			uint32_t patch = debugs_out.count;
+			tb_out4b(&debugs_out, 0x00);
+			tb_out1b(&debugs_out, 0x00);
+			
+			size_t off = 1;
+			for (size_t i = 1; i < m->files.count; i++) {
+				const char* filename = m->files.data[i].path;
+				size_t filename_len = strlen(filename) + 1;
+				
+				tb_out_reserve(&debugs_out, filename_len);
+				tb_outs_UNSAFE(&debugs_out, filename_len, (const uint8_t*)filename);
+				tb_out1b(&debugs_out, 0x00);
+				
+				file_table_offset[i] = off;
+				off += filename_len;
+			}
+			
+			// patch total filename space
+			*((uint32_t*)&debugs_out.data[patch]) = off;
+			
+			size_t pad = (((debugs_out.count + 3) / 4) * 4) - debugs_out.count;
+			while (pad--) tb_out1b(&debugs_out, 0x00);
+		}
+		
+		//
+		// Write Source file table
+		//
+		{
+			size_t entry_size = (4 + 2 + MD5_HASHBYTES + 2);
+			
+			tb_out4b(&debugs_out, 0x000000F4);
+			tb_out4b(&debugs_out, entry_size * 1);
+			
+			for (size_t i = 1; i < m->files.count; i++) {
+				// TODO(NeGate): Implement a MD5 sum function
+				uint8_t md5sum[16] = { 
+					0x54, 0x05, 0x6d, 0x94, 0x72, 0xc7, 0x0f, 0x12,
+					0xe6, 0x18, 0x16, 0xde, 0x26, 0x75, 0xe0, 0xea,
+					
+					/*0x1B, 0x62, 0x79, 0x73, 0x6A, 0x22, 0xEF, 0xCF, 
+					0xE8, 0x7B, 0xA9, 0xB4, 0x08, 0x52, 0x47, 0xFE*/
+				};
+				
+				size_t off = 0;
+				tb_out4b(&debugs_out, file_table_offset[i]);
+				tb_out2b(&debugs_out, 0x0110);
+				tb_out_reserve(&debugs_out, MD5_HASHBYTES);
+				tb_outs_UNSAFE(&debugs_out, MD5_HASHBYTES, md5sum);
+				tb_out2b(&debugs_out, 0x0000);
+				
+				file_table_offset[i] = off;
+				off += entry_size;
+			}
+			
+			size_t pad = (((debugs_out.count + 3) / 4) * 4) - debugs_out.count;
+			while (pad--) tb_out1b(&debugs_out, 0x00);
+		}
+		
+		//
+		// Write line number table
+		//
+		{
+			const uint32_t file_field_len = 12;
+			const uint32_t line_field_len = 8;
+			
+			size_t field_length = 12
+				+ (m->files.count * file_field_len)
+				+ (m->line_info_count * line_field_len);
+			
+			tb_out4b(&debugs_out, 0x000000F2);
+			tb_out4b(&debugs_out, field_length);
+			
+			cv_field_base = debugs_out.count;
+			tb_out4b(&debugs_out, 0); /* SECREL, updated by relocation */
+			tb_out2b(&debugs_out, 0); /* SECTION, updated by relocation*/
+			tb_out2b(&debugs_out, 0); /* pad */
+			tb_out4b(&debugs_out, text_section.raw_data_size);
+			
+			//register_reloc(sect, ".text", field_base,
+			//win64 ? IMAGE_REL_AMD64_SECREL : IMAGE_REL_I386_SECREL);
+			
+			//register_reloc(sect, ".text", field_base + 4,
+			//win64 ? IMAGE_REL_AMD64_SECTION : IMAGE_REL_I386_SECTION);
+			
+			for (size_t i = 1; i < m->files.count; i++) {
+				// source file mapping
+				tb_out4b(&debugs_out, file_table_offset[i]);
+				
+				uint32_t patch = debugs_out.count;
+				tb_out4b(&debugs_out, 0);
+				tb_out4b(&debugs_out, 0);
+				
+				size_t line_count_in_file = 0;
+				
+				// NOTE(NeGate): Holy shit i didn't think ahead but i'll make this
+				// work for now, essentially each file keeps track of it's own line
+				// table so i should have arranged it like that but i didn't so now
+				// i have to filter out from the possibly millions of nodes (well for
+				// now it shouldn't matter much)
+				// TODO(NeGate): Optimize this... please future me!
+				for (size_t j = 0; j < m->functions.count; j++) {
+					TB_Function* f = &m->functions.data[j];
+					
+#if TB_HOST_ARCH == TB_HOST_X86_64
+					__m128i pattern = _mm_set1_epi8(TB_LINE_INFO);
+					
+					for (size_t k = 0; k < f->nodes.count; k += 16) {
+						__m128i bytes = _mm_load_si128((__m128i*)&f->nodes.type[k]);
+						unsigned int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(bytes, pattern));
+						if (mask == 0) continue;
+						
+						// this one is guarentee to not be zero so it's fine
+						// to not check that FFS.
+						size_t offset = __builtin_ffs(mask) - 1;
+						
+						size_t l = k + offset;
+						// skip over the mask bit for the next iteration
+						mask >>= (offset + 1);
+						
+						// We know it loops at least once by this point
+						do {
+							if (f->nodes.payload[l].line_info.file == i) {
+								// emit line entry
+								tb_out4b(&debugs_out, f->nodes.payload[l].line_info.pos);
+								tb_out4b(&debugs_out, 0x80000000 | f->nodes.payload[l].line_info.line);
+								line_count_in_file++;
+							}
+							
+							size_t ffs = __builtin_ffs(mask);
+							if (ffs == 0) break;
+							
+							// skip over the mask bit for the next iteration
+							mask >>= ffs;
+							l += (ffs - 1);
+						} while (true);
+					}
+#else
+					for (size_t k = f->current_label + 1; k < f->nodes.count; k++) {
+						if (f->nodes.type[k] == TB_LINE_INFO
+							&& f->nodes.payload[k].line_info.file == i) {
+							// emit line entry
+							tb_out4b(&debugs_out, f->nodes.payload[l].line_info.pos);
+							tb_out4b(&debugs_out, 0x80000000 | f->nodes.payload[l].line_info.line);
+							line_count_in_file++;
+						}
+					}
+#endif
+				}
+				
+				*((uint32_t*)&debugs_out.data[patch]) = line_count_in_file;
+				*((uint32_t*)&debugs_out.data[patch + 4]) = file_field_len + (line_count_in_file * line_field_len);
+			}
+			
+			size_t pad = (((debugs_out.count + 3) / 4) * 4) - debugs_out.count;
+			while (pad--) tb_out1b(&debugs_out, 0x00);
+		}
+		
+		//
+		// Write symbol info table
+		//
+		{
+			static const char creator_str[] = "TinyBackend";
+			static const size_t creator_str_len = sizeof(creator_str);
+			
+			uint32_t creator_length = 2 + 4 + 2 + (3 * 2) + (3 * 2) + creator_str_len + 2;
+			
+			/*sym_length = (cv8_state.num_syms[SYMTYPE_CODE] * 7) 
+				+ (cv8_state.num_syms[SYMTYPE_PROC]  * 7) 
+				+ (cv8_state.num_syms[SYMTYPE_LDATA] * 10) 
+				+ (cv8_state.num_syms[SYMTYPE_GDATA] * 10) 
+				+ (cv8_state.symbol_lengths);*/
+			
+			uint32_t sym_length = (m->compiled_functions.count * 7);
 			
 			for (size_t i = 0; i < m->compiled_functions.count; i++) {
 				TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
-				func_layout[i] = text_section.raw_data_size;
-				
-				// TODO(NeGate): This data could be arranged better for streaming
-				size_t prologue = code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
-																out_f->stack_usage);
-				
-				size_t epilogue = code_gen->get_epilogue_length(out_f->prologue_epilogue_metadata,
-																out_f->stack_usage);
-				
-				text_section.raw_data_size += prologue;
-				text_section.raw_data_size += epilogue;
-				text_section.raw_data_size += m->compiled_functions.data[i].emitter.count;
+				sym_length += strlen(out_f->name) + 1;
 			}
-			break;
+			
+			uint32_t obj_length = 2 + 4 + sizeof("foo");
+			uint32_t field_length = (2 + obj_length) 
+				+ (2 + creator_length) 
+				+ (4 * m->compiled_functions.count)
+				+ sym_length;
+			
+			tb_out4b(&debugs_out, 0x000000F1);
+			tb_out4b(&debugs_out, field_length);
+			
+			// Symbol info object
+			{
+				tb_out2b(&debugs_out, obj_length);
+				tb_out2b(&debugs_out, 0x1101);
+				tb_out4b(&debugs_out, 0); /* ASM language */
+				
+				tb_out_reserve(&debugs_out, 4);
+				tb_outs_UNSAFE(&debugs_out, 4, (const uint8_t*)"foo");
+			}
+			
+			// Symbol info properties
+			{
+				tb_out2b(&debugs_out, creator_length);
+				tb_out2b(&debugs_out, 0x1116);
+				tb_out4b(&debugs_out, 'N'); /* language: 'N' (0x4e) for "NASM"; flags are 0 */
+				
+				tb_out2b(&debugs_out, 0x00D0); /* machine */
+				tb_out2b(&debugs_out, 0); /* verFEMajor */
+				tb_out2b(&debugs_out, 0); /* verFEMinor */
+				tb_out2b(&debugs_out, 0); /* verFEBuild */
+				
+				/* BinScope/WACK insist on version >= 8.0.50727 */
+				tb_out2b(&debugs_out, 9); /* verMajor */
+				tb_out2b(&debugs_out, 9); /* verMinor */
+				tb_out2b(&debugs_out, 65535); /* verBuild */
+				
+				tb_out_reserve(&debugs_out, creator_str_len);
+				tb_outs_UNSAFE(&debugs_out, creator_str_len, (const uint8_t*)creator_str);
+				
+				tb_out2b(&debugs_out, 0);
+			}
+			
+			// Symbols
+			for (size_t i = 0; i < m->compiled_functions.count; i++) {
+				TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
+				const char* name = out_f->name;
+				size_t name_len = strlen(out_f->name) + 1;
+				
+				tb_out2b(&debugs_out, 9 + name_len);
+				tb_out2b(&debugs_out, 0x1105);
+				
+				file_table_offset[i] = debugs_out.count;
+				tb_out4b(&debugs_out, 0); /* SECREL */
+				tb_out2b(&debugs_out, 0); /* SECTION */
+				tb_out1b(&debugs_out, 0); /* FLAG */
+				
+				tb_out_reserve(&debugs_out, name_len);
+				tb_outs_UNSAFE(&debugs_out, name_len, (const uint8_t*)name);
+			}
 		}
-		case TB_ARCH_AARCH64: {
-			header.machine = COFF_MACHINE_ARM64;
-			tb_todo(); // TODO(NeGate): Implement prologue and epilogue stuff
-			break;
+		
+		//
+		// Write type table
+		//
+		{
+			uint32_t field_len;
+			uint32_t typeindex = 0x1000;
+			uint32_t idx_arglist;
+			
+			tb_out4b(&debugt_out, 0x00000004);
+			
+			/* empty argument list type */
+			field_len = 2 + 4;
+			tb_out2b(&debugt_out, field_len);
+			tb_out2b(&debugt_out, 0x1201); /* ARGLIST */
+			tb_out4b(&debugt_out, 0); /* num params */
+			idx_arglist = typeindex++;
+			
+			/* procedure type: void proc(void) */
+			field_len = 2 + 4 + 1 + 1 + 2 + 4;
+			tb_out2b(&debugt_out, field_len);
+			tb_out2b(&debugt_out, 0x1008); /* PROC type */
+			
+			tb_out4b(&debugt_out, 0x00000003); /* return type VOID */
+			tb_out1b(&debugt_out, 0);  /* calling convention (default) */
+			tb_out1b(&debugt_out, 0);  /* function attributes */
+			tb_out2b(&debugt_out, 0); /* # params */
+			tb_out4b(&debugt_out, idx_arglist); /* argument list type */
+			/* idx_voidfunc = typeindex++; */
+			
+			size_t pad = (((debugt_out.count + 3) / 4) * 4) - debugt_out.count;
+			while (pad--) tb_out1b(&debugt_out, 0x00);
 		}
-		default: tb_todo();
 	}
+	
+	debugs_section.raw_data_size = debugs_out.count;
+	debugt_section.raw_data_size = debugt_out.count;
 	
 	for (size_t i = 0; i < m->call_patches.count; i++) {
 		TB_FunctionPatch* p = &m->call_patches.data[i];
@@ -172,14 +498,35 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		*((uint32_t*)&code[p->pos]) = func_layout[p->target_id] - actual_pos;
 	}
 	
+	/*for (size_t i = 0; i < m->compiled_functions.count; i++) {
+		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
+		
+		size_t name_len = strlen(out_f->name) + 1;
+		
+		debugs_section.raw_data_size += sizeof(PROCSYM32) + name_len + (name_len & 1);
+		debugs_section.raw_data_size += 4;
+	}*/
+	
 	text_section.raw_data_pos = sizeof(COFF_FileHeader) + (number_of_sections * sizeof(COFF_SectionHeader));
 	rdata_section.raw_data_pos = text_section.raw_data_pos + text_section.raw_data_size;
+	debugt_section.raw_data_pos = rdata_section.raw_data_pos + rdata_section.raw_data_size;
+	debugs_section.raw_data_pos = debugt_section.raw_data_pos + debugt_section.raw_data_size;
 	
 	text_section.num_reloc = m->const32_patches.count;
-	text_section.pointer_to_reloc = rdata_section.raw_data_pos + rdata_section.raw_data_size;
+	
+	// A bunch of relocations are made by the CodeView sections, if there's no
+	// debug info then these are ignored/non-existent.
+	debugs_section.num_reloc = 2 + (m->line_info_count ? (2 * m->compiled_functions.count) : 0);
+	
+	text_section.pointer_to_reloc = debugs_section.raw_data_pos + debugs_section.raw_data_size;
+	debugs_section.pointer_to_reloc = text_section.pointer_to_reloc + (text_section.num_reloc * sizeof(COFF_ImageReloc));
 	
 	header.symbol_count = (number_of_sections * 2) + m->compiled_functions.count;
-	header.symbol_table = text_section.pointer_to_reloc + (text_section.num_reloc * sizeof(COFF_ImageReloc));
+#if !TB_STRIP_LABELS
+	header.symbol_count += m->label_symbols.count;
+#endif
+	
+	header.symbol_table = debugs_section.pointer_to_reloc + (debugs_section.num_reloc * sizeof(COFF_ImageReloc));
 	
 	size_t string_table_pos = header.symbol_table + (header.symbol_count * sizeof(COFF_Symbol));
 	
@@ -190,36 +537,27 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	fwrite(&header, sizeof(header), 1, f);
 	fwrite(&text_section, sizeof(text_section), 1, f);
 	fwrite(&rdata_section, sizeof(rdata_section), 1, f);
+	fwrite(&debugt_section, sizeof(debugt_section), 1, f);
+	fwrite(&debugs_section, sizeof(debugs_section), 1, f);
 	
 	assert(ftell(f) == text_section.raw_data_pos);
-	switch (m->target_arch) {
-		case TB_ARCH_X86_64: {
-			header.machine = COFF_MACHINE_AMD64;
-			for (size_t i = 0; i < m->compiled_functions.count; i++) {
-				TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
-				
-				// prologue
-				size_t prologue_len = code_gen->emit_prologue(mini_out_buffer,
-															  out_f->prologue_epilogue_metadata,
-															  out_f->stack_usage);
-				fwrite(mini_out_buffer, prologue_len, 1, f);
-				
-				// body
-				fwrite(out_f->emitter.data, out_f->emitter.count, 1, f);
-				
-				// epilogue
-				size_t epilogue_len = code_gen->emit_epilogue(mini_out_buffer,
-															  out_f->prologue_epilogue_metadata,
-															  out_f->stack_usage);
-				fwrite(mini_out_buffer, epilogue_len, 1, f);
-			}
-			break;
-		}
-		case TB_ARCH_AARCH64: {
-			tb_todo();
-			break;
-		}
-		default: tb_todo();
+	for (size_t i = 0; i < m->compiled_functions.count; i++) {
+		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
+		
+		// prologue
+		size_t prologue_len = code_gen->emit_prologue(mini_out_buffer,
+													  out_f->prologue_epilogue_metadata,
+													  out_f->stack_usage);
+		fwrite(mini_out_buffer, prologue_len, 1, f);
+		
+		// body
+		fwrite(out_f->emitter.data, out_f->emitter.count, 1, f);
+		
+		// epilogue
+		size_t epilogue_len = code_gen->emit_epilogue(mini_out_buffer,
+													  out_f->prologue_epilogue_metadata,
+													  out_f->stack_usage);
+		fwrite(mini_out_buffer, epilogue_len, 1, f);
 	}
 	
 	assert(ftell(f) == rdata_section.raw_data_pos);
@@ -227,6 +565,13 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		TB_ConstPool32Patch* p = &m->const32_patches.data[i];
 		fwrite(&p->raw_data, sizeof(uint32_t), 1, f);
 	}
+	
+	// Emit debug info
+	assert(ftell(f) == debugt_section.raw_data_pos);
+	fwrite(debugt_out.data, debugt_out.count, 1, f);
+	
+	assert(ftell(f) == debugs_section.raw_data_pos);
+	fwrite(debugs_out.data, debugs_out.count, 1, f);
 	
 	assert(ftell(f) == text_section.pointer_to_reloc);
 	for (size_t i = 0; i < m->const32_patches.count; i++) {
@@ -245,9 +590,39 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 			   }, sizeof(COFF_ImageReloc), 1, f);
 	}
 	
+	// Field base relocations in .debug$S
+	assert(ftell(f) == debugs_section.pointer_to_reloc);
+	fwrite(&(COFF_ImageReloc) {
+			   .Type = IMAGE_REL_AMD64_SECREL,
+			   .SymbolTableIndex = 0, // text section
+			   .VirtualAddress = cv_field_base
+		   }, sizeof(COFF_ImageReloc), 1, f);
+	
+	fwrite(&(COFF_ImageReloc) {
+			   .Type = IMAGE_REL_AMD64_SECTION,
+			   .SymbolTableIndex = 0, // text section
+			   .VirtualAddress = cv_field_base + 4
+		   }, sizeof(COFF_ImageReloc), 1, f);
+	
+	for (size_t i = 0; i < m->compiled_functions.count; i++) {
+		uint32_t off = file_table_offset[i];
+		
+		fwrite(&(COFF_ImageReloc) {
+				   .Type = IMAGE_REL_AMD64_SECREL,
+				   .SymbolTableIndex = 8 + i, // text section
+				   .VirtualAddress = off
+			   }, sizeof(COFF_ImageReloc), 1, f);
+		
+		fwrite(&(COFF_ImageReloc) {
+				   .Type = IMAGE_REL_AMD64_SECTION,
+				   .SymbolTableIndex = 8 + i, // text section
+				   .VirtualAddress = off + 4
+			   }, sizeof(COFF_ImageReloc), 1, f);
+	}
+	
 	assert(ftell(f) == header.symbol_table);
 	fwrite(&(COFF_Symbol) {
-			   .short_name = { '.', 't', 'e', 'x', 't' },
+			   .short_name = { ".text" },
 			   .section_number = 1,
 			   .storage_class = IMAGE_SYM_CLASS_STATIC,
 			   .aux_symbols_count = 1
@@ -260,7 +635,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		   }, sizeof(COFF_AuxSectionSymbol), 1, f);
 	
 	fwrite(&(COFF_Symbol) {
-			   .short_name = { '.', 'r', 'd', 'a', 't', 'a' },
+			   .short_name = { ".rdata" },
 			   .section_number = 2,
 			   .storage_class = IMAGE_SYM_CLASS_STATIC,
 			   .aux_symbols_count = 1
@@ -269,6 +644,30 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	fwrite(&(COFF_AuxSectionSymbol) {
 			   .length = rdata_section.raw_data_size,
 			   .number = 2
+		   }, sizeof(COFF_AuxSectionSymbol), 1, f);
+	
+	fwrite(&(COFF_Symbol) {
+			   .short_name = { ".debug$T" },
+			   .section_number = 3,
+			   .storage_class = IMAGE_SYM_CLASS_STATIC,
+			   .aux_symbols_count = 1
+		   }, sizeof(COFF_Symbol), 1, f);
+	
+	fwrite(&(COFF_AuxSectionSymbol) {
+			   .length = debugt_section.raw_data_size,
+			   .number = 3
+		   }, sizeof(COFF_AuxSectionSymbol), 1, f);
+	
+	fwrite(&(COFF_Symbol) {
+			   .short_name = { ".debug$S" },
+			   .section_number = 4,
+			   .storage_class = IMAGE_SYM_CLASS_STATIC,
+			   .aux_symbols_count = 1
+		   }, sizeof(COFF_Symbol), 1, f);
+	
+	fwrite(&(COFF_AuxSectionSymbol) {
+			   .length = debugs_section.raw_data_size,
+			   .number = 4
 		   }, sizeof(COFF_AuxSectionSymbol), 1, f);
 	
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
@@ -292,6 +691,26 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 			memcpy(sym.short_name, m->compiled_functions.data[i].name, name_len + 1);
 		}
 		
+		fwrite(&sym, sizeof(sym), 1, f);
+	}
+	
+	for (size_t i = 0; i < m->label_symbols.count; i++) {
+		TB_LabelSymbol* l = &m->label_symbols.data[i];
+		
+		TB_FunctionOutput* out_f = &m->compiled_functions.data[l->func_id];
+		size_t actual_pos = func_layout[l->func_id] + l->pos;
+		
+		// TODO(NeGate): Consider caching this value if it gets expensive to calculate.
+		actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
+													out_f->stack_usage);
+		
+		COFF_Symbol sym = {
+			.value = actual_pos,
+			.section_number = 1,
+			.storage_class = IMAGE_SYM_CLASS_LABEL
+		};
+		
+		sprintf_s((char*)&sym.short_name[0], 8, ".L%x", l->label_id);
 		fwrite(&sym, sizeof(sym), 1, f);
 	}
 	

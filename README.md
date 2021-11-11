@@ -12,11 +12,11 @@ Currently there's still a lot of work to be done before the backend reached it's
 - [x] ELF64 object file output
 - [x] COFF object file output
 - [x] Simple Optimizer
-- [x] Aarch64 support
+- [ ] Aarch64 support
 - [x] Debug x64 support
 - [ ] Aarch64 NEON support
 - [ ] Aarch64 SVE support
-- [ ] x64 SSE vector support
+- [x] x64 SSE vector support
 - [ ] x64 AVX vector support
 - [ ] Optimized Aarch64 support
 - [ ] Optimized x64 support

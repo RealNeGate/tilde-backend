@@ -769,6 +769,20 @@ bool tb_opt_remove_pass_node(TB_Function* f);
 bool tb_opt_strength_reduction(TB_Function* f);
 bool tb_opt_compact_dead_regs(TB_Function* f);
 
+// A lot of functions in TB require the ability to efficiently stream through the
+// IR to find a specific node type.
+/*typedef struct TB_NodeIter {
+	
+} TB_NodeIter;
+
+inline void tb_node_iter_cond() {
+	
+}
+
+inline void tb_node_iter_cond() {
+	
+}*/
+
 TB_API void tb_find_live_intervals(size_t intervals[], const TB_Function* f);
 
 //

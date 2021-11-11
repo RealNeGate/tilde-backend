@@ -48,7 +48,7 @@ TB_API void tb_get_constraints(TB_Arch target_arch, const TB_FeatureSet* feature
 }
 
 TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, const TB_FeatureSet* features) {
-	TB_Module* m = malloc(sizeof(TB_Module));
+	TB_Module* m = calloc(1, sizeof(TB_Module));
     
 	m->target_arch = target_arch;
 	m->target_system = target_system;
@@ -79,6 +79,8 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
 	m->compiled_functions.count = 0;
 	m->compiled_functions.data = malloc(TB_MAX_FUNCTIONS * sizeof(TB_FunctionOutput));
     
+	m->line_info_count = 0;
+	
 	return m;
 }
 
@@ -498,6 +500,7 @@ static TB_Register tb_cse_arith(TB_Function* f, int type, TB_DataType dt, TB_Ari
 		
 		// We know it loops at least once by this point
 		do {
+			assert(f->nodes.type[j] == type);
 			if (TB_DATA_TYPE_EQUALS(f->nodes.dt[j], dt)
 				&& f->nodes.payload[j].i_arith.arith_behavior == arith_behavior
 				&& f->nodes.payload[j].i_arith.a == a
@@ -510,7 +513,7 @@ static TB_Register tb_cse_arith(TB_Function* f, int type, TB_DataType dt, TB_Ari
 			
 			// skip over the mask bit for the next iteration
 			mask >>= ffs;
-			j += (ffs - 1);
+			j += ffs;
 		} while (true);
 	}
 #else
@@ -594,10 +597,6 @@ TB_API TB_Register tb_inst_param(TB_Function* f, TB_DataType dt) {
 }
 
 TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line) {
-	if (f->nodes.count > 1 && f->nodes.type[f->nodes.count - 1] == TB_LINE_INFO) {
-		return;
-	}
-	
 	TB_Register r = tb_make_reg(f, TB_LINE_INFO, TB_TYPE_VOID());
 	f->nodes.payload[r].line_info.file = file;
 	f->nodes.payload[r].line_info.line = line;
@@ -1184,7 +1183,7 @@ static void tb_print_type(TB_DataType dt) {
 TB_API void tb_function_print(TB_Function* f) {
 	printf("%s():\n", f->name);
     
-	for (TB_Register i = 0; i < f->nodes.count; i++) {
+	for (TB_Register i = 1; i < f->nodes.count; i++) {
 		TB_RegType type = f->nodes.type[i];
 		TB_DataType dt = f->nodes.dt[i];
 		TB_RegPayload p = f->nodes.payload[i];

@@ -170,7 +170,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 				
 				// skip over the mask bit for the next iteration
 				mask >>= ffs;
-				j += (ffs - 1);
+				j += ffs;
 			} while (true);
 		}
 #undef COUNT_OF_TYPE_IN_M128
@@ -240,6 +240,11 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 	// then just follows it's terminators
     bb_stack->top = 1;
     bb_stack->data[0] = 1;
+	
+	// If it's the first node then just map it to the top of the function
+	if (f->nodes.type[2] == TB_LINE_INFO) {
+		f->nodes.payload[2].line_info.pos = 0;
+	}
 	
     do {
 		TB_Register bb = bb_stack->data[--bb_stack->top];
@@ -693,7 +698,9 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 			case TB_PHI2:
 			break;
 			case TB_LINE_INFO: {
-				f->nodes.payload[i].line_info.pos = out->count;
+				// Ignore the first one since it's got special rules
+				// and is already handled by this point
+				if (i > 2) f->nodes.payload[i].line_info.pos = out->count;
 				break;
 			}
 			case TB_SDIV:

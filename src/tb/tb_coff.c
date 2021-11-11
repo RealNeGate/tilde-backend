@@ -189,7 +189,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	// section generation pipeline and at the end stores an array of the procedure
 	// relocations
 	size_t file_table_size = m->compiled_functions.count;
-	if (file_table_size > m->files.count) file_table_size = m->files.count;
+	if (file_table_size < m->files.count) file_table_size = m->files.count;
 	
 	// if the codeview stuff is never done, this is never actually needed so it's
 	// fine that it's NULL
@@ -217,7 +217,6 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 				
 				tb_out_reserve(&debugs_out, filename_len);
 				tb_outs_UNSAFE(&debugs_out, filename_len, (const uint8_t*)filename);
-				tb_out1b(&debugs_out, 0x00);
 				
 				file_table_offset[i] = off;
 				off += filename_len;
@@ -226,7 +225,8 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 			// patch total filename space
 			*((uint32_t*)&debugs_out.data[patch]) = off;
 			
-			size_t pad = (((debugs_out.count + 3) / 4) * 4) - debugs_out.count;
+			size_t pad = 4 - (debugs_out.count % 4);
+			if (pad == 4) pad = 0;
 			while (pad--) tb_out1b(&debugs_out, 0x00);
 		}
 		
@@ -237,19 +237,16 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 			size_t entry_size = (4 + 2 + MD5_HASHBYTES + 2);
 			
 			tb_out4b(&debugs_out, 0x000000F4);
-			tb_out4b(&debugs_out, entry_size * 1);
+			tb_out4b(&debugs_out, entry_size * (m->files.count - 1));
 			
+			size_t off = 0;
 			for (size_t i = 1; i < m->files.count; i++) {
 				// TODO(NeGate): Implement a MD5 sum function
 				uint8_t md5sum[16] = { 
-					0x54, 0x05, 0x6d, 0x94, 0x72, 0xc7, 0x0f, 0x12,
-					0xe6, 0x18, 0x16, 0xde, 0x26, 0x75, 0xe0, 0xea,
-					
-					/*0x1B, 0x62, 0x79, 0x73, 0x6A, 0x22, 0xEF, 0xCF, 
-					0xE8, 0x7B, 0xA9, 0xB4, 0x08, 0x52, 0x47, 0xFE*/
+					//0xD9, 0x9C, 0x59, 0x2E, 0x44, 0x42, 0x73, 0x40, 
+					//0xB5, 0x2A, 0xCF, 0x89, 0x6A, 0x91, 0x9F, 0x70
 				};
 				
-				size_t off = 0;
 				tb_out4b(&debugs_out, file_table_offset[i]);
 				tb_out2b(&debugs_out, 0x0110);
 				tb_out_reserve(&debugs_out, MD5_HASHBYTES);
@@ -260,7 +257,8 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 				off += entry_size;
 			}
 			
-			size_t pad = (((debugs_out.count + 3) / 4) * 4) - debugs_out.count;
+			size_t pad = 4 - (debugs_out.count % 4);
+			if (pad == 4) pad = 0;
 			while (pad--) tb_out1b(&debugs_out, 0x00);
 		}
 		
@@ -272,7 +270,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 			const uint32_t line_field_len = 8;
 			
 			size_t field_length = 12
-				+ (m->files.count * file_field_len)
+				+ ((m->files.count - 1) * file_field_len)
 				+ (m->line_info_count * line_field_len);
 			
 			tb_out4b(&debugs_out, 0x000000F2);
@@ -327,10 +325,21 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 						
 						// We know it loops at least once by this point
 						do {
-							if (f->nodes.payload[l].line_info.file == i) {
+							TB_RegPayload p = f->nodes.payload[l];
+							if (p.line_info.file == i) {
+								TB_FunctionOutput* out_f = &m->compiled_functions.data[j];
+								
 								// emit line entry
-								tb_out4b(&debugs_out, f->nodes.payload[l].line_info.pos);
-								tb_out4b(&debugs_out, 0x80000000 | f->nodes.payload[l].line_info.line);
+								uint32_t actual_pos = func_layout[j] + p.line_info.pos;
+								if (actual_pos) {
+									actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
+																				out_f->stack_usage);
+								}
+								
+								tb_out4b(&debugs_out, actual_pos);
+								tb_out4b(&debugs_out, 0x80000000 | p.line_info.line);
+								
+								printf("%s:%d: %x\n", m->files.data[i].path, p.line_info.line, actual_pos);
 								line_count_in_file++;
 							}
 							
@@ -339,16 +348,26 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 							
 							// skip over the mask bit for the next iteration
 							mask >>= ffs;
-							l += (ffs - 1);
+							l += ffs;
 						} while (true);
 					}
 #else
-					for (size_t k = f->current_label + 1; k < f->nodes.count; k++) {
+					for (size_t k = 2; k < f->nodes.count; k++) {
 						if (f->nodes.type[k] == TB_LINE_INFO
 							&& f->nodes.payload[k].line_info.file == i) {
+							TB_RegPayload p = f->nodes.payload[k];
+							
+							TB_FunctionOutput* out_f = &m->compiled_functions.data[j];
+							
 							// emit line entry
-							tb_out4b(&debugs_out, f->nodes.payload[k].line_info.pos);
-							tb_out4b(&debugs_out, 0x80000000 | f->nodes.payload[k].line_info.line);
+							uint32_t actual_pos = func_layout[j] + p.line_info.pos;
+							actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
+																		out_f->stack_usage);
+							
+							tb_out4b(&debugs_out, actual_pos);
+							tb_out4b(&debugs_out, 0x80000000 | p.line_info.line);
+							
+							printf("%s:%d: %x\n", m->files.data[i].path, p.line_info.line, actual_pos);
 							line_count_in_file++;
 						}
 					}
@@ -359,7 +378,8 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 				*((uint32_t*)&debugs_out.data[patch + 4]) = file_field_len + (line_count_in_file * line_field_len);
 			}
 			
-			size_t pad = (((debugs_out.count + 3) / 4) * 4) - debugs_out.count;
+			size_t pad = 4 - (debugs_out.count % 4);
+			if (pad == 4) pad = 0;
 			while (pad--) tb_out1b(&debugs_out, 0x00);
 		}
 		
@@ -367,10 +387,10 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		// Write symbol info table
 		//
 		{
-			static const char creator_str[] = "TinyBackend";
-			static const size_t creator_str_len = sizeof(creator_str);
+			static const char creator_str[] = "Cuik";
+			static const char obj_file_name[] = "main";//"W:\\Workspace\\Cuik\\a.obj";
 			
-			uint32_t creator_length = 2 + 4 + 2 + (3 * 2) + (3 * 2) + creator_str_len + 2;
+			uint32_t creator_length = 2 + 4 + 2 + (3 * 2) + (3 * 2) + sizeof(creator_str) + 2;
 			
 			/*sym_length = (cv8_state.num_syms[SYMTYPE_CODE] * 7) 
 				+ (cv8_state.num_syms[SYMTYPE_PROC]  * 7) 
@@ -385,7 +405,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 				sym_length += strlen(out_f->name) + 1;
 			}
 			
-			uint32_t obj_length = 2 + 4 + sizeof("foo");
+			uint32_t obj_length = 2 + 4 + sizeof(obj_file_name);
 			uint32_t field_length = (2 + obj_length) 
 				+ (2 + creator_length) 
 				+ (4 * m->compiled_functions.count)
@@ -400,8 +420,8 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 				tb_out2b(&debugs_out, 0x1101);
 				tb_out4b(&debugs_out, 0); /* ASM language */
 				
-				tb_out_reserve(&debugs_out, 4);
-				tb_outs_UNSAFE(&debugs_out, 4, (const uint8_t*)"foo");
+				tb_outstr_UNSAFE(&debugs_out, obj_file_name);
+				tb_out1b(&debugs_out, 0);
 			}
 			
 			// Symbol info properties
@@ -420,8 +440,8 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 				tb_out2b(&debugs_out, 9); /* verMinor */
 				tb_out2b(&debugs_out, 65535); /* verBuild */
 				
-				tb_out_reserve(&debugs_out, creator_str_len);
-				tb_outs_UNSAFE(&debugs_out, creator_str_len, (const uint8_t*)creator_str);
+				tb_out_reserve(&debugs_out, sizeof(creator_str));
+				tb_outs_UNSAFE(&debugs_out, sizeof(creator_str), (const uint8_t*)creator_str);
 				
 				tb_out2b(&debugs_out, 0);
 			}
@@ -443,6 +463,10 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 				tb_out_reserve(&debugs_out, name_len);
 				tb_outs_UNSAFE(&debugs_out, name_len, (const uint8_t*)name);
 			}
+			
+			size_t pad = 4 - (debugs_out.count % 4);
+			if (pad == 4) pad = 0;
+			while (pad--) tb_out1b(&debugs_out, 0x00);
 		}
 		
 		//
@@ -474,7 +498,8 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 			tb_out4b(&debugt_out, idx_arglist); /* argument list type */
 			/* idx_voidfunc = typeindex++; */
 			
-			size_t pad = (((debugt_out.count + 3) / 4) * 4) - debugt_out.count;
+			size_t pad = 4 - (debugt_out.count % 4);
+			if (pad == 4) pad = 0;
 			while (pad--) tb_out1b(&debugt_out, 0x00);
 		}
 	}
@@ -497,15 +522,6 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		assert(m->target_arch == TB_ARCH_X86_64);
 		*((uint32_t*)&code[p->pos]) = func_layout[p->target_id] - actual_pos;
 	}
-	
-	/*for (size_t i = 0; i < m->compiled_functions.count; i++) {
-		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
-		
-		size_t name_len = strlen(out_f->name) + 1;
-		
-		debugs_section.raw_data_size += sizeof(PROCSYM32) + name_len + (name_len & 1);
-		debugs_section.raw_data_size += 4;
-	}*/
 	
 	text_section.raw_data_pos = sizeof(COFF_FileHeader) + (number_of_sections * sizeof(COFF_SectionHeader));
 	rdata_section.raw_data_pos = text_section.raw_data_pos + text_section.raw_data_size;
@@ -604,20 +620,22 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 			   .VirtualAddress = cv_field_base + 4
 		   }, sizeof(COFF_ImageReloc), 1, f);
 	
-	for (size_t i = 0; i < m->compiled_functions.count; i++) {
-		uint32_t off = file_table_offset[i];
-		
-		fwrite(&(COFF_ImageReloc) {
-				   .Type = IMAGE_REL_AMD64_SECREL,
-				   .SymbolTableIndex = 8 + i, // text section
-				   .VirtualAddress = off
-			   }, sizeof(COFF_ImageReloc), 1, f);
-		
-		fwrite(&(COFF_ImageReloc) {
-				   .Type = IMAGE_REL_AMD64_SECTION,
-				   .SymbolTableIndex = 8 + i, // text section
-				   .VirtualAddress = off + 4
-			   }, sizeof(COFF_ImageReloc), 1, f);
+	if (m->line_info_count != 0) {
+		for (size_t i = 0; i < m->compiled_functions.count; i++) {
+			uint32_t off = file_table_offset[i];
+			
+			fwrite(&(COFF_ImageReloc) {
+					   .Type = IMAGE_REL_AMD64_SECREL,
+					   .SymbolTableIndex = 8 + i, // text section
+					   .VirtualAddress = off
+				   }, sizeof(COFF_ImageReloc), 1, f);
+			
+			fwrite(&(COFF_ImageReloc) {
+					   .Type = IMAGE_REL_AMD64_SECTION,
+					   .SymbolTableIndex = 8 + i, // text section
+					   .VirtualAddress = off + 4
+				   }, sizeof(COFF_ImageReloc), 1, f);
+		}
 	}
 	
 	assert(ftell(f) == header.symbol_table);

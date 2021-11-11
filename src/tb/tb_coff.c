@@ -282,12 +282,6 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 			tb_out2b(&debugs_out, 0); /* pad */
 			tb_out4b(&debugs_out, text_section.raw_data_size);
 			
-			//register_reloc(sect, ".text", field_base,
-			//win64 ? IMAGE_REL_AMD64_SECREL : IMAGE_REL_I386_SECREL);
-			
-			//register_reloc(sect, ".text", field_base + 4,
-			//win64 ? IMAGE_REL_AMD64_SECTION : IMAGE_REL_I386_SECTION);
-			
 			for (size_t i = 1; i < m->files.count; i++) {
 				// source file mapping
 				tb_out4b(&debugs_out, file_table_offset[i]);
@@ -331,15 +325,13 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 								
 								// emit line entry
 								uint32_t actual_pos = func_layout[j] + p.line_info.pos;
-								if (actual_pos) {
+								if (p.line_info.pos) {
 									actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
 																				out_f->stack_usage);
 								}
 								
 								tb_out4b(&debugs_out, actual_pos);
 								tb_out4b(&debugs_out, 0x80000000 | p.line_info.line);
-								
-								printf("%s:%d: %x\n", m->files.data[i].path, p.line_info.line, actual_pos);
 								line_count_in_file++;
 							}
 							
@@ -361,13 +353,13 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 							
 							// emit line entry
 							uint32_t actual_pos = func_layout[j] + p.line_info.pos;
-							actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
-																		out_f->stack_usage);
+							if (p.line_info.pos) {
+								actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
+																			out_f->stack_usage);
+							}
 							
 							tb_out4b(&debugs_out, actual_pos);
 							tb_out4b(&debugs_out, 0x80000000 | p.line_info.line);
-							
-							printf("%s:%d: %x\n", m->files.data[i].path, p.line_info.line, actual_pos);
 							line_count_in_file++;
 						}
 					}
@@ -712,6 +704,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		fwrite(&sym, sizeof(sym), 1, f);
 	}
 	
+#if !TB_STRIP_LABELS
 	for (size_t i = 0; i < m->label_symbols.count; i++) {
 		TB_LabelSymbol* l = &m->label_symbols.data[i];
 		
@@ -724,13 +717,14 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		
 		COFF_Symbol sym = {
 			.value = actual_pos,
-			.section_number = 1,
+			.section_number = 8 + l->func_id,
 			.storage_class = IMAGE_SYM_CLASS_LABEL
 		};
 		
 		sprintf_s((char*)&sym.short_name[0], 8, ".L%x", l->label_id);
 		fwrite(&sym, sizeof(sym), 1, f);
 	}
+#endif
 	
 	// String table
 	// First 4 bytes are the size of the string table

@@ -44,7 +44,6 @@ int main(int argc, char** argv) {
 	return 0;
 }
 
-static TB_FileID file_id;
 void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
 	TB_Module* m = tb_module_create(arch, system, features);
     
@@ -77,7 +76,6 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_entry*/
 	};
 	size_t count = sizeof(test_functions) / sizeof(test_functions[0]);
-	file_id = tb_register_file(m, "W:/Workspace/Cuik/examples/int_math.c");
 	
 	for (size_t i = 0; i < count; i++) {
 		tb_function_print(test_functions[i](m));
@@ -92,15 +90,12 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 TB_Function* test_div_i64(TB_Module* m) {
 	TB_Function* func = tb_function_create(m, "main", TB_TYPE_I64(1));
 	
-	tb_inst_loc(func, file_id, 32);
-	
 	TB_Register a = tb_inst_param(func, TB_TYPE_I64(1));
 	TB_Register b = tb_inst_param(func, TB_TYPE_I64(1));
     
 	TB_Register ap = tb_inst_param_addr(func, a);
 	TB_Register bp = tb_inst_param_addr(func, b);
     
-	tb_inst_loc(func, file_id, 33);
 	TB_Register sum = tb_inst_div(
                                   func, TB_TYPE_I64(1),
                                   tb_inst_load(func, TB_TYPE_I64(1), ap, 4),
@@ -108,7 +103,6 @@ TB_Function* test_div_i64(TB_Module* m) {
                                   true
                                   );
     
-	tb_inst_loc(func, file_id, 34);
 	tb_inst_ret(func, TB_TYPE_I64(1), sum);
 	return func;
 }
@@ -116,7 +110,6 @@ TB_Function* test_div_i64(TB_Module* m) {
 TB_Function* test_zero_mem(TB_Module* m) {
 	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_VOID());
 	
-	tb_inst_loc(func, file_id, 37);
 	tb_inst_ret(func, TB_TYPE_VOID(), TB_NULL_REG);
 	return func;
 }

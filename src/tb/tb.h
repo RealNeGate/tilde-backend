@@ -27,6 +27,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdatomic.h>
+#include <inttypes.h>
 
 #ifndef TB_MAX_THREADS
 #define TB_MAX_THREADS 16
@@ -252,11 +253,15 @@ TB_API TB_Register tb_inst_array_access(TB_Function* f, TB_Register base, TB_Reg
 TB_API TB_Register tb_inst_member_access(TB_Function* f, TB_Register base, int32_t offset);
 TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Register* params);
 
-TB_API void tb_inst_memset(TB_Function* f, TB_Register dst, TB_Register val, TB_Register size);
-TB_API void tb_inst_memcpy(TB_Function* f, TB_Register dst, TB_Register src, TB_Register size);
+TB_API void tb_inst_memset(TB_Function* f, TB_Register dst, TB_Register val, TB_Register size, int align);
+TB_API void tb_inst_memcpy(TB_Function* f, TB_Register dst, TB_Register src, TB_Register size, int align);
+
+TB_API TB_Register tb_inst_not(TB_Function* f, TB_DataType dt, TB_Register n);
+TB_API TB_Register tb_inst_neg(TB_Function* f, TB_DataType dt, TB_Register n);
 
 TB_API TB_Register tb_inst_and(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
 TB_API TB_Register tb_inst_or(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
+TB_API TB_Register tb_inst_xor(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
 TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
 TB_API TB_Register tb_inst_sub(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
 TB_API TB_Register tb_inst_mul(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
@@ -336,9 +341,14 @@ enum {
     TB_SIGN_EXT,
     TB_ZERO_EXT,
     
+	// Unary ops
+	TB_NOT,
+	TB_NEG,
+	
     // Integer arithmatic
     TB_AND,
 	TB_OR,
+	TB_XOR,
     TB_ADD,
     TB_SUB,
     TB_MUL,
@@ -442,6 +452,7 @@ typedef union TB_RegPayload {
 		uint32_t size;
 		uint32_t alignment;
 	} local;
+	TB_Register unary;
 	struct {
 		TB_Register a;
 		TB_Register b;
@@ -508,6 +519,7 @@ typedef union TB_RegPayload {
 		TB_Register dst;
 		TB_Register src;
 		TB_Register size;
+		int align;
 	} mem_op;
 } TB_RegPayload;
 

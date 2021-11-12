@@ -721,7 +721,8 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 			.storage_class = IMAGE_SYM_CLASS_LABEL
 		};
 		
-		sprintf_s((char*)&sym.short_name[0], 8, ".L%x", l->label_id);
+		assert(l->label_id < 65536);
+		sprintf((char*)&sym.short_name[0], ".L%x", l->label_id);
 		fwrite(&sym, sizeof(sym), 1, f);
 	}
 #endif

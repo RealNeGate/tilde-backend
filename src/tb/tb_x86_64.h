@@ -135,7 +135,7 @@ typedef enum X64_InstType {
     X64_CMPSS,
 	
 	// Packed Single
-	X64_MOVAPS, X64_ADDPS, X64_SUBPS, X64_MULPS, X64_DIVPS 
+	X64_MOVAPS, X64_MOVUPS, X64_ADDPS, X64_SUBPS, X64_MULPS, X64_DIVPS 
 } X64_InstType;
 
 typedef enum X64_ExtMode {
@@ -202,6 +202,7 @@ static const X64_NormalInst insts[] = {
 	[X64_CMPSS] = { 0xC2, .ext = X64_EXT_SSE_SS },
 	
 	[X64_MOVAPS] = { 0x28, .ext = X64_EXT_SSE_PS },
+	[X64_MOVUPS] = { 0x10, .ext = X64_EXT_SSE_PS },
 	[X64_ADDPS] = { 0x58, .ext = X64_EXT_SSE_PS },
 	[X64_SUBPS] = { 0x5C, .ext = X64_EXT_SSE_PS },
 	[X64_MULPS] = { 0x59, .ext = X64_EXT_SSE_PS },
@@ -264,7 +265,7 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 static void x64_terminate_path(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register from_label, TB_Register label, TB_Register terminator);
 static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, TB_Register next);
 static X64_Value x64_eval_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, const TB_Int128* imm);
-static X64_Value x64_eval_float_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, float imm);
+static X64_Value x64_eval_float32_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, uint32_t imm);
 static X64_Value x64_as_memory_operand(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_DataType dt, TB_Register r);
 static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register dst_reg, TB_Register next_reg, TB_Register a_reg, TB_Register b_reg, X64_Value a, X64_Value b, const X64_IselInfo* info, bool can_recycle);
 static X64_Value x64_as_bool(TB_Function* f, X64_Context* ctx, TB_Emitter* out, X64_Value src, TB_DataType src_dt);
@@ -275,7 +276,7 @@ static X64_Value x64_legalize(TB_Function* f, X64_Context* ctx, TB_Emitter* out,
 // x64 instruction emitter
 static void x64_inst_mov_ri64(TB_Emitter* out, X64_GPR dst, uint64_t imm);
 static void x64_inst_op(TB_Emitter* out, int dt_type, const X64_NormalInst* inst, const X64_Value* a, const X64_Value* b);
-static void x64_inst_idiv(TB_Emitter* out, int dt_type, const X64_Value* r);
+static void x64_inst_single_op(TB_Emitter* out, int dt_type, uint8_t rx, const X64_Value* r);
 static void x64_inst_nop(TB_Emitter* out, int count);
 
 #define x64_emit_normal(out, dt, op, a, b) x64_inst_op(out, dt, &insts[X64_ ## op], a, b)

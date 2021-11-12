@@ -4,13 +4,13 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 TB_Function* test_add_i8(TB_Module* m);
 TB_Function* test_add_i16(TB_Module* m);
 TB_Function* test_add_i32(TB_Module* m);
+TB_Function* test_add_i64(TB_Module* m);
 TB_Function* test_mul_i64(TB_Module* m);
 TB_Function* test_div_i64(TB_Module* m);
 TB_Function* test_andor_i32(TB_Module* m);
 TB_Function* test_sat_uadd_i32(TB_Module* m);
 TB_Function* test_sat_sadd_i32(TB_Module* m);
 TB_Function* test_safe_add_i32(TB_Module* m);
-TB_Function* test_add_i64(TB_Module* m);
 TB_Function* test_add_f32(TB_Module* m);
 TB_Function* test_vadd_f32x4(TB_Module* m);
 TB_Function* test_vmuladd_f32x4(TB_Module* m);
@@ -49,17 +49,16 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
     
 	typedef TB_Function*(*TestFunction)(TB_Module* m);
 	static const TestFunction test_functions[] = {
-		test_div_i64,
-		test_zero_mem,
-		/*test_fact,
+		test_fact,
 		test_add_i8,
 		test_add_i16,
 		test_add_i32,
 		test_mul_i64,
 		test_sat_uadd_i32,
-		//test_sat_sadd_i32,
 		test_safe_add_i32,
 		test_add_i64,
+		test_div_i64,
+		test_zero_mem,
 		test_locals_1,
 		test_params_1,
 		test_params_2,
@@ -73,7 +72,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_fib,
 		test_foo,
 		test_switch_case,
-		test_entry*/
+		test_entry
 	};
 	size_t count = sizeof(test_functions) / sizeof(test_functions[0]);
 	
@@ -110,6 +109,8 @@ TB_Function* test_div_i64(TB_Module* m) {
 TB_Function* test_zero_mem(TB_Module* m) {
 	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_VOID());
 	
+	TB_Register cells = tb_inst_local(func, 32, 4);
+	tb_inst_memset(func, cells, tb_inst_iconst(func, TB_TYPE_I32(1), 0), tb_inst_iconst(func, TB_TYPE_I32(1), 32), 4);
 	tb_inst_ret(func, TB_TYPE_VOID(), TB_NULL_REG);
 	return func;
 }

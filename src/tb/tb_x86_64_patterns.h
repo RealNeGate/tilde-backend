@@ -29,6 +29,12 @@ static const X64_IselInfo* SELECTION_OR = &(X64_IselInfo){
 	.has_immediates = true
 };
 
+static const X64_IselInfo* SELECTION_XOR = &(X64_IselInfo){
+	.inst = X64_XOR,
+	.communitive = true,
+	.has_immediates = true
+};
+
 static const X64_IselInfo* SELECTION_F32_ADD = &(X64_IselInfo){
 	.inst = X64_ADDSS,
 	.communitive = true

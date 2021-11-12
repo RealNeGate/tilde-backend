@@ -4,8 +4,11 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+
+// Refers or is refered to by the OS APIs
+#define OS_API __stdcall
 #else
-#warning "Threading implementation not supported! Cannot use multiple threads to compile"
+#define OS_API
 #endif
 
 // Used for some optimizations
@@ -86,9 +89,16 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
 
 TB_API void tb_module_destroy(TB_Module* m) {
 	loop(i, m->functions.count) {
+#if _WIN32
+		// Windows is different :P
 		_aligned_free(m->functions.data[i].nodes.type);
 		_aligned_free(m->functions.data[i].nodes.dt);
 		_aligned_free(m->functions.data[i].nodes.payload);
+#else
+		free(m->functions.data[i].nodes.type);
+		free(m->functions.data[i].nodes.dt);
+		free(m->functions.data[i].nodes.payload);
+#endif
 		
 		free(m->functions.data[i].name);
 	}
@@ -160,7 +170,8 @@ static void tb_compile_func(TB_Module* m, size_t i) {
 	m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
 }
 
-static __stdcall int tb_x64_compile_thread(TB_Module* m) {
+// NOTE(NeGate): I really don't like how this looks
+static OS_API int tb_x64_compile_thread(TB_Module* m) {
 	const size_t count = m->compiled_functions.count;
 	
 	while (true) {
@@ -216,7 +227,8 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 			CloseHandle(threads[i]);
 		}
 #else
-#error "Implement this!!!"
+		// TODO(NeGate): Implement threading for Posix
+		tb_todo();
 #endif
 	} else {
 		if (optimization_level != TB_OPT_O0) {
@@ -271,15 +283,28 @@ TB_API bool tb_module_export(TB_Module* m, FILE* f) {
 void tb_resize_node_stream(TB_Function* f, size_t cap) {
 	f->nodes.capacity = cap;
 	
+#if _WIN32
+	// Windows is different... but nicer imo here
 	f->nodes.type = _aligned_recalloc(f->nodes.type, cap, sizeof(TB_RegType), 64);
 	f->nodes.dt = _aligned_recalloc(f->nodes.dt, cap, sizeof(TB_DataType), 64);
 	f->nodes.payload = _aligned_recalloc(f->nodes.payload, cap, sizeof(TB_RegPayload), 64);
+#else
+	if (f->nodes.type) {
+		f->nodes.type = realloc(f->nodes.type, cap * sizeof(TB_RegType));
+		f->nodes.dt = realloc(f->nodes.dt, cap * sizeof(TB_DataType));
+		f->nodes.payload = realloc(f->nodes.payload, cap * sizeof(TB_RegPayload));
+	} else {
+		f->nodes.type = aligned_alloc(64, cap * sizeof(TB_RegType));
+		f->nodes.dt = aligned_alloc(64, cap * sizeof(TB_DataType));
+		f->nodes.payload = aligned_alloc(64, cap * sizeof(TB_RegPayload));
+	}
 	
 	// zero out the extra space
 	// TODO(NeGate): optimize this... somehow?
-	//memset(&f->nodes.type[f->nodes.count], 0, (cap - f->nodes.count) * sizeof(TB_RegType));
-	//memset(&f->nodes.dt[f->nodes.count], 0, (cap - f->nodes.count) * sizeof(TB_DataType));
-	//memset(&f->nodes.payload[f->nodes.count], 0, (cap - f->nodes.count) * sizeof(TB_RegPayload));
+	memset(&f->nodes.type[f->nodes.count], 0, (cap - f->nodes.count) * sizeof(TB_RegType));
+	memset(&f->nodes.dt[f->nodes.count], 0, (cap - f->nodes.count) * sizeof(TB_DataType));
+	memset(&f->nodes.payload[f->nodes.count], 0, (cap - f->nodes.count) * sizeof(TB_RegPayload));
+#endif
 }
 
 TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataType return_dt) {
@@ -343,7 +368,7 @@ TB_API void* tb_module_get_jit_func(TB_Module* m, TB_Function* f) {
 // making any heap allocations when possible to there's a preallocated 
 // block per thread that can run TB.
 //
-static TB_TemporaryStorage* tb_tls_allocate() {
+TB_TemporaryStorage* tb_tls_allocate() {
 	static _Thread_local uint8_t* tb_thread_storage;
 	static uint8_t tb_temporary_storage[TB_TEMPORARY_STORAGE_SIZE * TB_MAX_THREADS];
 	static atomic_uint tb_used_tls_slots;
@@ -360,7 +385,7 @@ static TB_TemporaryStorage* tb_tls_allocate() {
 	return store;
 }
 
-static void* tb_tls_push(TB_TemporaryStorage* store, size_t size) {
+void* tb_tls_push(TB_TemporaryStorage* store, size_t size) {
 	assert(sizeof(TB_TemporaryStorage) + store->used + size < TB_TEMPORARY_STORAGE_SIZE);
     
 	void* ptr = &store->data[store->used];
@@ -368,14 +393,14 @@ static void* tb_tls_push(TB_TemporaryStorage* store, size_t size) {
 	return ptr;
 }
 
-static void* tb_tls_pop(TB_TemporaryStorage* store, size_t size) {
+void* tb_tls_pop(TB_TemporaryStorage* store, size_t size) {
 	assert(sizeof(TB_TemporaryStorage) + store->used > size);
     
 	store->used -= size;
 	return &store->data[store->used];
 }
 
-static void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance) {
+void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance) {
 	assert(sizeof(TB_TemporaryStorage) + store->used > distance);
     
 	return &store->data[store->used - distance];
@@ -674,6 +699,7 @@ TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) 
 		
 		// We know it loops at least once by this point
 		do {
+			assert(f->nodes.type[j] == type);
 			if (TB_DATA_TYPE_EQUALS(f->nodes.dt[j], dt)
 				&& f->nodes.payload[j].i_const.lo == imm
 				&& f->nodes.payload[j].i_const.hi == 0) {
@@ -685,7 +711,7 @@ TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) 
 			
 			// skip over the mask bit for the next iteration
 			mask >>= ffs;
-			j += (ffs - 1);
+			j += ffs;
 		} while (true);
 	}
 #else
@@ -791,18 +817,32 @@ TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Functio
 	return r;
 }
 
-TB_API void tb_inst_memset(TB_Function* f, TB_Register dst, TB_Register val, TB_Register size) {
+TB_API void tb_inst_memset(TB_Function* f, TB_Register dst, TB_Register val, TB_Register size, int align) {
 	TB_Register r = tb_make_reg(f, TB_MEMSET, TB_TYPE_PTR());
 	f->nodes.payload[r].mem_op.dst = dst;
 	f->nodes.payload[r].mem_op.src = val;
 	f->nodes.payload[r].mem_op.size = size;
+	f->nodes.payload[r].mem_op.align = align;
 }
 
-TB_API void tb_inst_memcpy(TB_Function* f, TB_Register dst, TB_Register src, TB_Register size) {
+TB_API void tb_inst_memcpy(TB_Function* f, TB_Register dst, TB_Register src, TB_Register size, int align) {
 	TB_Register r = tb_make_reg(f, TB_MEMCPY, TB_TYPE_PTR());
 	f->nodes.payload[r].mem_op.dst = dst;
 	f->nodes.payload[r].mem_op.src = src;
 	f->nodes.payload[r].mem_op.size = size;
+	f->nodes.payload[r].mem_op.align = align;
+}
+
+TB_API TB_Register tb_inst_not(TB_Function* f, TB_DataType dt, TB_Register n) {
+	TB_Register r = tb_make_reg(f, TB_NOT, dt);
+	f->nodes.payload[r].unary = n;
+	return r;
+}
+
+TB_API TB_Register tb_inst_neg(TB_Function* f, TB_DataType dt, TB_Register n) {
+	TB_Register r = tb_make_reg(f, TB_NEG, dt);
+	f->nodes.payload[r].unary = n;
+	return r;
 }
 
 TB_API TB_Register tb_inst_and(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
@@ -813,6 +853,11 @@ TB_API TB_Register tb_inst_and(TB_Function* f, TB_DataType dt, TB_Register a, TB
 TB_API TB_Register tb_inst_or(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	// bitwise operators can't wrap
 	return tb_cse_arith(f, TB_OR, dt, TB_NO_WRAP, a, b);
+}
+
+TB_API TB_Register tb_inst_xor(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
+	// bitwise operators can't wrap
+	return tb_cse_arith(f, TB_XOR, dt, TB_NO_WRAP, a, b);
 }
 
 TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
@@ -1198,10 +1243,10 @@ TB_API void tb_function_print(TB_Function* f) {
 			tb_print_type(dt);
             
 			if (p.i_const.hi) {
-				printf(" %llx%llx\n", p.i_const.hi, p.i_const.lo);
+				printf(" %" PRIx64 "%" PRIx64 "\n", p.i_const.hi, p.i_const.lo);
 			}
 			else {
-				printf(" %lld\n", p.i_const.lo);
+				printf(" %" PRIu64 "\n", p.i_const.lo);
 			}
 			break;
 			case TB_LINE_INFO:

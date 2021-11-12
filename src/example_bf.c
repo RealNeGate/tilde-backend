@@ -100,7 +100,7 @@ int main(int argc, char** argv) {
 		TB_Register cells = tb_inst_local(func, 512, 4);
 		
 		// clear out the cells
-		tb_inst_memset(func, cells, tb_inst_iconst(func, TB_TYPE_I32(1), 0), tb_inst_iconst(func, TB_TYPE_I32(1), 512));
+		tb_inst_memset(func, cells, tb_inst_iconst(func, TB_TYPE_I32(1), 0), tb_inst_iconst(func, TB_TYPE_I32(1), 512), 4);
 		
 		// initialize the cell pointer
 		tb_inst_store(func, TB_TYPE_I32(1), ptr, tb_inst_iconst(func, TB_TYPE_I32(1), 0), 4);

@@ -116,15 +116,6 @@ typedef struct X64_Context {
 	TB_Register xmm_desc[16];
 } X64_Context;
 
-// Used to quickly reorder the basic blocks
-typedef struct X64_BBStack {
-	TB_Register top;
-	TB_Register capacity;
-	
-    bool* completed;
-	TB_Register data[];
-} X64_BBStack;
-
 typedef enum X64_InstType {
     // Integer data processing
 	X64_ADD, X64_AND, X64_OR, X64_SUB, X64_XOR, X64_CMP, X64_MOV,
@@ -246,8 +237,6 @@ static bool x64_is_value_equals(const X64_Value* a, const X64_Value* b) {
 	
 	return (a->gpr == b->gpr);
 }
-
-static void x64_enqueue_bb(TB_Function* f, X64_BBStack* queue, TB_Register bb);
 
 static void x64_spill_regs(TB_Function* f, X64_Context* ctx, TB_Emitter* out, X64_SpillInfo* info, uint32_t spill_mask, bool reserve_rax);
 static void x64_reload_regs(TB_Function* f, X64_Context* ctx, TB_Emitter* out, X64_SpillInfo* info, uint32_t spill_mask, bool reserve_rax);

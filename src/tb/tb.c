@@ -361,6 +361,12 @@ TB_API void* tb_module_get_jit_func(TB_Module* m, TB_Function* f) {
 	return m->compiled_function_pos[f - m->functions.data];
 }
 
+TB_API TB_Label tb_get_current_label(TB_Function* f) {
+	if (!f->current_label) return 0;
+	
+	return f->nodes.payload[f->current_label].label.id;
+}
+
 //
 // TLS - Thread local storage
 // 
@@ -490,6 +496,21 @@ static TB_Int128 tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128
 		}
 		
 		return (TB_Int128) { sum }; 
+	}
+}
+
+static TB_Int128 tb_fold_div(TB_DataType dt, TB_Int128 a, TB_Int128 b) {
+	assert(a.hi == 0 && b.hi == 0);
+    if (dt.type == TB_I128) {
+		tb_todo();
+	} else {
+		uint64_t shift = 64 - (8 << (dt.type - TB_I8));
+		uint64_t mask = (~0ull) >> shift;
+		
+		if (b.lo == 0) return (TB_Int128) { 0 };
+		uint64_t q = (a.lo << shift) / (b.lo << shift);
+		
+		return (TB_Int128) { (q >> shift) & mask }; 
 	}
 }
 
@@ -726,7 +747,7 @@ TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) 
 #endif
 #endif
 	
-	assert(dt.type >= TB_I8 && dt.type <= TB_I128);
+	assert(dt.type == TB_BOOL || (dt.type >= TB_I8 && dt.type <= TB_I128));
 	
 	uint64_t mask = (~0ull) >> (64 - (8 << (dt.type - TB_I8)));
 	((void)mask);
@@ -909,6 +930,15 @@ TB_API TB_Register tb_inst_mul(TB_Function* f, TB_DataType dt, TB_Register a, TB
 }
 
 TB_API TB_Register tb_inst_div(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness) {
+	TB_RegType a_type = f->nodes.type[a];
+	TB_RegType b_type = f->nodes.type[b];
+	
+	if (a_type == TB_INT_CONST && b_type == TB_INT_CONST) {
+		TB_Int128 sum = tb_fold_div(dt, f->nodes.payload[a].i_const, f->nodes.payload[b].i_const);
+		
+		return tb_inst_iconst128(f, dt, sum);
+	}
+	
 	// division can't wrap or overflow
     return tb_cse_arith(f, signedness ? TB_SDIV : TB_UDIV, dt, TB_NO_WRAP, a, b);
 }
@@ -1073,6 +1103,7 @@ TB_API TB_Register tb_inst_phi2(TB_Function* f, TB_DataType dt, TB_Label a_label
 	f->nodes.payload[r].phi2.a = a;
 	f->nodes.payload[r].phi2.b_label = tb_find_reg_from_label(f, b_label);
 	f->nodes.payload[r].phi2.b = b;
+	
 	return r;
 }
 
@@ -1250,7 +1281,7 @@ TB_API void tb_function_print(TB_Function* f) {
 			}
 			break;
 			case TB_LINE_INFO:
-			printf("  # LOC %s:%d\n", f->module->files.data[p.line_info.file].path, p.line_info.line);
+			//printf("  # LOC %s:%d\n", f->module->files.data[p.line_info.file].path, p.line_info.line);
 			break;
             case TB_FLOAT_CONST:
 			printf("  r%u\t=\t", i);
@@ -1436,7 +1467,7 @@ TB_API void tb_function_print(TB_Function* f) {
 			printf(" PHI L%d:r%u, L%d:r%u\n", f->nodes.payload[p.phi2.a_label].label.id, p.phi2.a, f->nodes.payload[p.phi2.b_label].label.id, p.phi2.b);
 			break;
             case TB_RET:
-			printf("  ret\t \t");
+			printf("  ret\t\t");
 			tb_print_type(dt);
 			printf(" r%u\n", p.i_arith.a);
 			break;

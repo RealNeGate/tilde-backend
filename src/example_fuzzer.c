@@ -15,6 +15,12 @@ static uint32_t gen_random(uint32_t min, uint32_t max) {
 	return min + (v % (max - min));
 }
 
+static bool gen_random_bool() {
+	uint32_t v = seed = _mm_crc32_u32(0, seed);
+	
+	return v & 1;
+}
+
 static TB_DataType gen_random_dt() {
 	return (TB_DataType){
 		.type = gen_random(0, TB_MAX_TYPES),
@@ -74,8 +80,8 @@ int main(int argc, char** argv) {
 		int inst_count = gen_random(1, 500);
 		for (int i = 0; i < inst_count; i++) {
 			int rng = gen_random(0, 7);
-			if (pool_size < 4) rng = 0;
-			if (rng >= 5 && var_pool_size == 0) rng = 0;
+			if (pool_size < 5) rng = 0;
+			if (rng >= 6 && var_pool_size == 0) rng = 0;
 			
 			switch (rng) {
 				case 0: 
@@ -91,20 +97,25 @@ int main(int argc, char** argv) {
 				pool_size += 1;
 				break;
 				case 3: 
+				case 4: 
 				pool[pool_size] = tb_inst_mul(f, dt, pool[gen_random(0, pool_size)], pool[gen_random(0, pool_size)], gen_random_arith());
 				pool_size += 1;
 				break;
-				case 4: 
+				/*
+				pool[pool_size] = tb_inst_div(f, dt, pool[gen_random(0, pool_size)], pool[gen_random(0, pool_size)], gen_random_bool());
+				pool_size += 1;
+				break;*/
+				case 5: 
 				var_pool[var_pool_size] = tb_inst_local(f, dt.type == TB_I32 ? 4 : 8, dt.type == TB_I32 ? 4 : 8);
 				
 				tb_inst_store(f, dt, var_pool[var_pool_size], pool[gen_random(0, pool_size)], dt.type == TB_I32 ? 4 : 8);
 				var_pool_size += 1;
 				break;
-				case 5: 
+				case 6: 
 				pool[pool_size] = tb_inst_load(f, dt, var_pool[gen_random(0, var_pool_size)], dt.type == TB_I32 ? 4 : 8);
 				pool_size += 1;
 				break;
-				case 6: 
+				case 7: 
 				tb_inst_store(f, dt, var_pool[gen_random(0, var_pool_size)], pool[gen_random(0, pool_size)], dt.type == TB_I32 ? 4 : 8);
 				break;
 			}

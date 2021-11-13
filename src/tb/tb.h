@@ -232,6 +232,7 @@ TB_API void* tb_module_get_jit_func(TB_Module* m, TB_Function* f);
 TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataType return_dt);
 TB_API TB_FileID tb_register_file(TB_Module* m, const char* path);
 
+TB_API TB_Label tb_get_current_label(TB_Function* f);
 TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line);
 
 TB_API TB_Register tb_inst_param(TB_Function* f, TB_DataType dt);
@@ -603,6 +604,11 @@ struct TB_Module {
 	
 	int optimization_level;
 	
+	// This number is calculated while the builders are running
+	// if the optimizations are run this number is set to SIZE_MAX
+	// which means it needs to be re-evaluated.
+	_Atomic size_t line_info_count;
+	
 #if !TB_STRIP_LABELS
 	struct {
 		size_t count;
@@ -642,17 +648,22 @@ struct TB_Module {
 		TB_FunctionOutput* data;
 	} compiled_functions;
 	
-	// This number is calculated while the builders are running
-	// if the optimizations are run this number is set to SIZE_MAX
-	// which means it needs to be re-evaluated.
-	_Atomic size_t line_info_count;
-	
 	void* jit_region;
 	size_t jit_region_size;
 	
 	// If not NULL, there's JITted functions in each 
 	// non NULL entry which map to the `compiled_functions` 
 	void** compiled_function_pos;
+	
+	// The code is stored into giant buffers
+	// there's on per code gen thread so that
+	// each can work at the same time without
+	// making any allocations within the code
+	// gen.
+	/*struct {
+		size_t count;
+		uint8_t* data;
+	} code_regions[TB_MAX_THREADS];*/
 };
 
 typedef enum TB_DataflowPattern {

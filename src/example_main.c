@@ -27,6 +27,8 @@ TB_Function* test_zero_mem(TB_Module* m);
 TB_Function* test_switch_case(TB_Module* m);
 TB_Function* test_entry(TB_Module* m);
 
+#include <math.h>
+
 int main(int argc, char** argv) {
 	TB_FeatureSet features = { 0 };
 	

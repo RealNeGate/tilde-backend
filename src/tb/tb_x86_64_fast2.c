@@ -110,7 +110,6 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 	X64_Context* ctx;
 	uint32_t* ret_patches;
 	uint32_t* labels;
-    X64_BBStack* bb_stack;
 	X64_LabelPatch* label_patches;
     
 	uint32_t ret_patch_count = 0;
@@ -217,11 +216,6 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
         ret_patches = (uint32_t*)tb_tls_push(tls, ir_return_count * sizeof(uint32_t));
 		labels = (uint32_t*)tb_tls_push(tls, ir_label_count * sizeof(uint32_t));
 		label_patches = (X64_LabelPatch*)tb_tls_push(tls, ir_label_patch_count * sizeof(X64_LabelPatch));
-		
-		bb_stack = (X64_BBStack*)tb_tls_push(tls, sizeof(X64_BBStack) + (ir_label_count * sizeof(TB_Register)));
-        bb_stack->capacity = ir_label_count;
-        bb_stack->completed = tb_tls_push(tls, ir_label_count * sizeof(bool));
-        memset(bb_stack->completed, 0, ir_label_count * sizeof(bool));
     }
     
 	// Microsoft wants at least 32bytes of parameter storage called the shadow space.
@@ -244,26 +238,19 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 	bool saves_parameters;
     ctx->local_stack_usage = x64_allocate_locals(f, ctx, &out, &param_space, &saves_parameters);
 	
-	// the queue starts with just the entry BB
-	// then just follows it's terminators
-    bb_stack->top = 1;
-    bb_stack->data[0] = 1;
-	
 	// If it's the first node then just map it to the top of the function
 	if (f->nodes.type[2] == TB_LINE_INFO) {
 		f->nodes.payload[2].line_info.pos = 0;
 	}
 	
+	TB_Register bb = 1;
     do {
-		TB_Register bb = bb_stack->data[--bb_stack->top];
-		
         assert(f->nodes.type[bb] == TB_LABEL);
         TB_Label label_id = f->nodes.payload[bb].label.id;
         TB_Register bb_end = f->nodes.payload[bb].label.terminator;
         
         // Clear and initialize new cache
         //printf("Process BB: r%u-r%u\n", bb, bb_end);
-        bb_stack->completed[label_id] = true;
         labels[label_id] = out.count;
 		
 #if !TB_STRIP_LABELS
@@ -332,15 +319,8 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 				} else tb_todo();
 			}
 			
-			x64_enqueue_bb(f, bb_stack, bb_end + 1);
-			
-			TB_Label fallthrough_label_reg = 0;
-			if (bb_stack->top > 0) {
-				fallthrough_label_reg = bb_stack->data[bb_stack->top - 1];
-			}
-			
 			// Only jump if we aren't literally about to end the function
-			if (fallthrough_label_reg != TB_NULL_REG) {
+			if (bb_end + 1 != f->nodes.count) {
 				ret_patches[ret_patch_count++] = out.count + 1;
 				
 				uint8_t* out_buffer = tb_out_reserve(&out, 5);
@@ -364,32 +344,33 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 			x64_terminate_path(f, ctx, &out, bb, if_true_reg, if_true_reg_end);
 			x64_terminate_path(f, ctx, &out, bb, if_false_reg, if_false_reg_end);
 			
-			x64_enqueue_bb(f, bb_stack, bb_end + 1);
-			
 			TB_Register cond_reg = p.if_.cond;
 			X64_Value cond = x64_eval(f, ctx, &out, cond_reg, bb_end);
 			
 			if (cond.type == X64_VALUE_IMM32) {
 				TB_Label dst = (cond.imm32 ? if_true : if_false);
-				label_patches[label_patch_count++] = (X64_LabelPatch){
-					.base = out.count, .pos = out.count + 1, .target_lbl = dst
-				};
 				
-				uint8_t* out_buffer = tb_out_reserve(&out, 5);
-				out_buffer[0] = 0xE9;
-				out_buffer[1] = 0x00;
-				out_buffer[2] = 0x00;
-				out_buffer[3] = 0x00;
-				out_buffer[4] = 0x00;
-				tb_out_commit(&out, 5);
+				if (dst != f->nodes.payload[bb_end + 1].label.id) {
+					label_patches[label_patch_count++] = (X64_LabelPatch){
+						.base = out.count, .pos = out.count + 1, .target_lbl = dst
+					};
+					
+					uint8_t* out_buffer = tb_out_reserve(&out, 5);
+					out_buffer[0] = 0xE9;
+					out_buffer[1] = 0x00;
+					out_buffer[2] = 0x00;
+					out_buffer[3] = 0x00;
+					out_buffer[4] = 0x00;
+					tb_out_commit(&out, 5);
+				}
 			} else {
 				// Implicit convert into FLAGS
 				cond = x64_as_bool(f, ctx, &out, cond, f->nodes.dt[cond_reg]);
 				
 				// Reorder the targets to avoid an extra JMP
 				TB_Label fallthrough_label = 0;
-				if (bb_stack->top > 0) {
-					fallthrough_label = f->nodes.payload[bb_stack->data[bb_stack->top - 1]].label.id;
+				if (bb_end + 1 < f->nodes.count) {
+					fallthrough_label = f->nodes.payload[bb_end + 1].label.id;
 				}
 				bool has_fallthrough = fallthrough_label == if_false;
 				
@@ -434,44 +415,13 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 			}
 		} else if (reg_type == TB_LABEL) {
 			x64_terminate_path(f, ctx, &out, bb, bb_end, p.label.terminator);
-			x64_enqueue_bb(f, bb_stack, bb_end);
-			
-			TB_Label fallthrough_label = 0;
-			if (bb_stack->top > 0) {
-				fallthrough_label = f->nodes.payload[bb_stack->data[bb_stack->top - 1]].label.id;
-			}
-			
-			TB_Label target_lbl = p.label.id;
-			if (fallthrough_label != target_lbl) {
-				label_patches[label_patch_count++] = (X64_LabelPatch){
-					.base = out.count, .pos = out.count + 1, .target_lbl = target_lbl
-				};
-				
-				uint8_t* out_buffer = tb_out_reserve(&out, 5);
-				out_buffer[0] = 0xE9;
-				out_buffer[1] = 0x00;
-				out_buffer[2] = 0x00;
-				out_buffer[3] = 0x00;
-				out_buffer[4] = 0x00;
-				tb_out_commit(&out, 5);
-			}
 		} else if (reg_type == TB_GOTO) {
 			TB_Register target_reg = tb_find_reg_from_label(f, p.goto_.label);
 			x64_terminate_path(f, ctx, &out, bb, target_reg, f->nodes.payload[target_reg].label.terminator);
 			
-			// Try to compile it's target next
-			//x64_enqueue_bb(f, bb_stack, target_reg);
-			x64_enqueue_bb(f, bb_stack, bb_end + 1);
-			
-			TB_Label fallthrough_label = 0;
-			if (bb_stack->top > 0) {
-				fallthrough_label = f->nodes.payload[bb_stack->data[bb_stack->top - 1]].label.id;
-			}
-			
-			TB_Label target_lbl = p.goto_.label;
-			if (fallthrough_label != target_lbl) {
+			if (bb_end + 1 != target_reg) {
 				label_patches[label_patch_count++] = (X64_LabelPatch){
-					.base = out.count, .pos = out.count + 1, .target_lbl = target_lbl
+					.base = out.count, .pos = out.count + 1, .target_lbl = p.goto_.label
 				};
 				
 				uint8_t* out_buffer = tb_out_reserve(&out, 5);
@@ -483,8 +433,6 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 				tb_out_commit(&out, 5);
 			}
 		} else if (reg_type == TB_SWITCH) {
-			x64_enqueue_bb(f, bb_stack, bb_end + 1);
-			
 			// the switch statement is possibly the most complicated single
 			// node in the IR, it matches the switch statement in C almost
 			// perfectly and can be thought of as a search function.
@@ -538,7 +486,10 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 		
 		// Terminate any cached values
 		ctx->mem_cache_count = 0;
-	} while (bb_stack->top > 0);
+		
+		// Next Basic block
+		bb = bb_end + ((reg_type == TB_LABEL) ? 0 : 1);
+	} while (bb < f->nodes.count);
 	
 	// Align stack usage to 16bytes and add 8 bytes for the return address
 	int local_stack_usage = ctx->local_stack_usage + caller_usage_in_bytes;
@@ -580,19 +531,6 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 		.stack_usage = local_stack_usage,
 		.prologue_epilogue_metadata = ctx->regs_to_save
 	};
-}
-
-static void x64_enqueue_bb(TB_Function* f, X64_BBStack* stack, TB_Register bb) {
-    if (bb >= f->nodes.count) return;
-	
-	assert(bb);
-    TB_Label id = f->nodes.payload[bb].label.id;
-	
-	// Don't enqueue if it already got compiled
-    if (stack->completed[id]) return;
-	
-	assert(stack->top < stack->capacity);
-    stack->data[stack->top++] = bb;
 }
 
 static void x64_spill_regs(TB_Function* f, X64_Context* ctx, TB_Emitter* out, X64_SpillInfo* info, uint32_t spill_mask, bool reserve_rax) {
@@ -757,6 +695,13 @@ static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Re
 					}
 					
 					// IDIV
+					if (b_val.type == X64_VALUE_IMM32) {
+						X64_Value dst = x64_allocate_gpr(f, ctx, i, dt);
+						
+						x64_emit_normal(out, dt.type, MOV, &dst, &b_val);
+						b_val = dst;
+					}
+					
 					x64_inst_single_op(out, dt.type, 7, &b_val);
 				}
 				
@@ -1573,7 +1518,22 @@ static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_
 			// TODO(NeGate): Implement the case where the value is converted 
 			// into a byte, IF nodes don't require it but it may come up in 
 			// code.
-			assert(f->nodes.type[next] == TB_IF);
+			if (f->nodes.type[next] != TB_IF) {
+				X64_Value dst = x64_allocate_gpr(f, ctx, r, f->nodes.dt[next]);
+				
+				uint8_t* out_buffer = tb_out_reserve(out, 5);
+				
+				*out_buffer++ = 0x31;
+				*out_buffer++ = x64_inst_mod_rx_rm(X64_MOD_DIRECT, dst.gpr, dst.gpr);
+				
+				*out_buffer++ = 0x0F;
+				*out_buffer++ = 0x90 + cc;
+				*out_buffer++ = x64_inst_mod_rx_rm(X64_MOD_DIRECT, dst.gpr, dst.gpr);
+				
+				tb_out_commit(out, 5);
+				return dst;
+			}
+			
 			return (X64_Value) { .type = X64_VALUE_FLAGS, .cond = cc };
 		}
 		case TB_LOAD: {

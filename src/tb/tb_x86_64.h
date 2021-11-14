@@ -238,35 +238,38 @@ static bool x64_is_value_equals(const X64_Value* a, const X64_Value* b) {
 	return (a->gpr == b->gpr);
 }
 
-static void x64_spill_regs(TB_Function* f, X64_Context* ctx, TB_Emitter* out, X64_SpillInfo* info, uint32_t spill_mask, bool reserve_rax);
-static void x64_reload_regs(TB_Function* f, X64_Context* ctx, TB_Emitter* out, X64_SpillInfo* info, uint32_t spill_mask, bool reserve_rax);
+// avoids many reloads when its restrict
+typedef uint8_t** restrict X64_OutStream;
+
+static void x64_spill_regs(TB_Function* f, X64_Context* ctx, X64_OutStream out, X64_SpillInfo* info, uint32_t spill_mask, bool reserve_rax);
+static void x64_reload_regs(TB_Function* f, X64_Context* ctx, X64_OutStream out, X64_SpillInfo* info, uint32_t spill_mask, bool reserve_rax);
 
 // Preprocessing stuff
 static void x64_create_phi_lookup(TB_Function* f, X64_Context* ctx);
-static int32_t x64_allocate_locals(TB_Function* f, X64_Context* ctx, TB_Emitter* out, int32_t* param_space, bool* saves_parameters);
+static int32_t x64_allocate_locals(TB_Function* f, X64_Context* ctx, X64_OutStream out, int32_t* param_space, bool* saves_parameters);
 
 // IR -> Machine IR Lookups
 static X64_PhiValue* x64_find_phi(X64_Context* ctx, TB_Register r);
 static int32_t x64_find_local(X64_Context* ctx, TB_Register r);
 
 // Machine code generation
-static void x64_eval_bb(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register bb, TB_Register bb_end);
-static void x64_terminate_path(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register from_label, TB_Register label, TB_Register terminator);
-static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, TB_Register next);
-static X64_Value x64_eval_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, const TB_Int128* imm);
-static X64_Value x64_eval_float32_immediate(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, uint32_t imm);
-static X64_Value x64_as_memory_operand(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_DataType dt, TB_Register r);
-static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register dst_reg, TB_Register next_reg, TB_Register a_reg, TB_Register b_reg, X64_Value a, X64_Value b, const X64_IselInfo* info, bool can_recycle);
-static X64_Value x64_as_bool(TB_Function* f, X64_Context* ctx, TB_Emitter* out, X64_Value src, TB_DataType src_dt);
-static X64_Value x64_explicit_load(TB_Function* f, X64_Context* ctx, TB_Emitter* out, X64_Value addr, TB_Register r, TB_Register addr_reg);
-static void x64_inst_bin_op(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_DataType dt, const X64_NormalInst* inst, const X64_Value* a, const X64_Value* b, TB_Register b_reg);
-static X64_Value x64_legalize(TB_Function* f, X64_Context* ctx, TB_Emitter* out, TB_Register r, TB_Register next);
+static void x64_eval_bb(TB_Function* f, X64_Context* ctx, X64_OutStream out, TB_Register bb, TB_Register bb_end);
+static void x64_terminate_path(TB_Function* f, X64_Context* ctx, X64_OutStream out, TB_Register from_label, TB_Register label, TB_Register terminator);
+static X64_Value x64_eval(TB_Function* f, X64_Context* ctx, X64_OutStream out, TB_Register r, TB_Register next);
+static X64_Value x64_eval_immediate(TB_Function* f, X64_Context* ctx, X64_OutStream out, TB_Register r, const TB_Int128* imm);
+static X64_Value x64_eval_float32_immediate(TB_Function* f, X64_Context* ctx, X64_OutStream out, TB_Register r, uint32_t imm);
+static X64_Value x64_as_memory_operand(TB_Function* f, X64_Context* ctx, X64_OutStream out, TB_DataType dt, TB_Register r);
+static X64_Value x64_std_isel(TB_Function* f, X64_Context* ctx, X64_OutStream out, TB_Register dst_reg, TB_Register next_reg, TB_Register a_reg, TB_Register b_reg, X64_Value a, X64_Value b, const X64_IselInfo* info, bool can_recycle);
+static X64_Value x64_as_bool(TB_Function* f, X64_Context* ctx, X64_OutStream out, X64_Value src, TB_DataType src_dt);
+static X64_Value x64_explicit_load(TB_Function* f, X64_Context* ctx, X64_OutStream out, X64_Value addr, TB_Register r, TB_Register addr_reg);
+static void x64_inst_bin_op(TB_Function* f, X64_Context* ctx, X64_OutStream out, TB_DataType dt, const X64_NormalInst* inst, const X64_Value* a, const X64_Value* b, TB_Register b_reg);
+static X64_Value x64_legalize(TB_Function* f, X64_Context* ctx, X64_OutStream out, TB_Register r, TB_Register next);
 
 // x64 instruction emitter
-static void x64_inst_mov_ri64(TB_Emitter* out, X64_GPR dst, uint64_t imm);
-static void x64_inst_op(TB_Emitter* out, int dt_type, const X64_NormalInst* inst, const X64_Value* a, const X64_Value* b);
-static void x64_inst_single_op(TB_Emitter* out, int dt_type, uint8_t rx, const X64_Value* r);
-static void x64_inst_nop(TB_Emitter* out, int count);
+static void x64_inst_mov_ri64(X64_OutStream out, X64_GPR dst, uint64_t imm);
+static void x64_inst_op(X64_OutStream out, int dt_type, const X64_NormalInst* inst, const X64_Value* a, const X64_Value* b);
+static void x64_inst_single_op(X64_OutStream out, int dt_type, uint8_t rx, const X64_Value* r);
+static void x64_inst_nop(X64_OutStream out, int count);
 
 #define x64_emit_normal(out, dt, op, a, b) x64_inst_op(out, dt, &insts[X64_ ## op], a, b)
 #define x64_emit_normal8(out, op, a, b) x64_inst_op(out, TB_I8, &insts[X64_ ## op], a, b)

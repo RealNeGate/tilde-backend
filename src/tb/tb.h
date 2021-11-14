@@ -545,7 +545,8 @@ struct TB_FunctionOutput {
 	uint64_t prologue_epilogue_metadata;
 	uint64_t stack_usage;
 	
-	TB_Emitter emitter;
+	uint8_t* code;
+	size_t code_size;
 };
 
 typedef struct TB_File {
@@ -660,10 +661,11 @@ struct TB_Module {
 	// each can work at the same time without
 	// making any allocations within the code
 	// gen.
-	/*struct {
-		size_t count;
+	size_t code_region_count;
+	struct {
+		size_t size;
 		uint8_t* data;
-	} code_regions[TB_MAX_THREADS];*/
+	} code_regions[TB_MAX_THREADS];
 };
 
 typedef enum TB_DataflowPattern {
@@ -696,7 +698,7 @@ typedef struct ICodeGen {
 	size_t(*get_epilogue_length)(uint64_t saved, uint64_t stack_usage);
 	size_t(*emit_prologue)(char out[64], uint64_t saved, uint64_t stack_usage);
 	size_t(*emit_epilogue)(char out[64], uint64_t saved, uint64_t stack_usage);
-	TB_FunctionOutput(*compile_function)(TB_Function* f, const TB_FeatureSet* features);
+	TB_FunctionOutput(*compile_function)(TB_Function* f, const TB_FeatureSet* features, uint8_t** out);
 } ICodeGen;
 
 // Used internally for some optimizations

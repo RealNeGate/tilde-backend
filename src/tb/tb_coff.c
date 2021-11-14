@@ -176,7 +176,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		
 		text_section.raw_data_size += prologue;
 		text_section.raw_data_size += epilogue;
-		text_section.raw_data_size += m->compiled_functions.data[i].emitter.count;
+		text_section.raw_data_size += m->compiled_functions.data[i].code_size;
 	}
 	
     TB_Emitter debugs_out = { 0 };
@@ -502,7 +502,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	for (size_t i = 0; i < m->call_patches.count; i++) {
 		TB_FunctionPatch* p = &m->call_patches.data[i];
 		TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
-		uint8_t* code = out_f->emitter.data;
+		uint8_t* code = out_f->code;
 		
 		// TODO(NeGate): Consider caching this value if it gets expensive to calculate.
 		uint32_t actual_pos = func_layout[p->func_id] + p->pos + 4;
@@ -559,7 +559,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		fwrite(mini_out_buffer, prologue_len, 1, f);
 		
 		// body
-		fwrite(out_f->emitter.data, out_f->emitter.count, 1, f);
+		fwrite(out_f->code, out_f->code_size, 1, f);
 		
 		// epilogue
 		size_t epilogue_len = code_gen->emit_epilogue(mini_out_buffer,

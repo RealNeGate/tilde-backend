@@ -215,7 +215,7 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		
 		code_section.sh_size += prologue;
 		code_section.sh_size += epilogue;
-		code_section.sh_size += out_f->emitter.count;
+		code_section.sh_size += out_f->code_size;
 	}
 	
 	// Data section:
@@ -248,7 +248,7 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 													  out_f->stack_usage);
 		fwrite(mini_out_buffer, prologue_len, 1, f);
 		
-		fwrite(out_f->emitter.data, out_f->emitter.count, 1, f);
+		fwrite(out_f->code, out_f->code_size, 1, f);
 		
 		// epilogue
 		size_t epilogue_len = code_gen->emit_epilogue(mini_out_buffer,

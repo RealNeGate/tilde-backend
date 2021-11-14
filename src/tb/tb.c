@@ -103,9 +103,14 @@ TB_API void tb_module_destroy(TB_Module* m) {
 		free(m->functions.data[i].name);
 	}
     
-	loop(i, m->compiled_functions.count) {
-		free(m->compiled_functions.data[i].emitter.data);
+	
+#if _WIN32
+	loop(i, m->code_region_count) {
+		VirtualFree(m->code_regions[i].data, 0, MEM_RELEASE);
 	}
+#else
+#error "TODO: setup code region delete"
+#endif
     
 	free(m->functions.data);
 	free(m->compiled_functions.data);
@@ -160,30 +165,53 @@ static void tb_optimize_func(TB_Function* f) {
 }
 #undef OPT
 
-static void tb_compile_func(TB_Module* m, size_t i) {
+static size_t tb_compile_func(TB_Module* m, size_t i, uint8_t** code) {
 	if (tb_validate(&m->functions.data[i])) abort();
 	
 	if (m->optimization_level != TB_OPT_O0) {
 		tb_optimize_func(&m->functions.data[i]);
 	}
 	
-	m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
+	const uint8_t* start = *code;
+	
+	TB_FunctionOutput o = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features, code);
+	o.code = *code;
+	o.code_size = *code - start;
+	m->compiled_functions.data[i] = o;
+	
+	return o.code_size;
 }
 
 // NOTE(NeGate): I really don't like how this looks
-static OS_API int tb_x64_compile_thread(TB_Module* m) {
-	const size_t count = m->compiled_functions.count;
+typedef struct CodegenThreadInfo {
+	TB_Module* m;
+	size_t id;
+} CodegenThreadInfo;
+
+static OS_API int tb_x64_compile_thread(CodegenThreadInfo* info) {
+	TB_Module* m = info->m;
+	size_t id = info->id;
 	
+	uint8_t* code = m->code_regions[id].data;
+	size_t code_size = 0;
+	
+	const size_t func_count = m->compiled_functions.count;
 	while (true) {
 		size_t i = m->compiled_functions.num_reserved++;
-		if (i >= count) return 0;
+		if (i >= func_count) return 0;
 		
-		tb_compile_func(m, i);
+		code_size += tb_compile_func(m, i, &code);
 		m->compiled_functions.num_compiled++;
 	}
+	
+	m->code_regions[info->id].size = code_size;
 }
 
+// TODO(NeGate): Consider using separate memory regions with guard pages for the
+// code regions.
 TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_threads) {
+	assert(max_threads >= 1 && max_threads <= TB_MAX_THREADS);
+	
 	m->optimization_level = optimization_level;
 	m->compiled_functions.count = m->functions.count;
     
@@ -192,6 +220,11 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 		ir_initial_node_count += m->functions.data[i].nodes.count;
 	}
 	
+	// Size of one code output region, for the single threaded case it just
+	// makes one huge buffer the size of TB_MAX_THREADS * code_output_stride
+	const size_t code_output_stride = 16 * 1024 * 1024;
+	
+	m->code_region_count = max_threads;
 	if (max_threads > 1) {
 		// TODO(NeGate): Needs some rework, but it should
 		// be a simple way of doing multithreading
@@ -199,27 +232,24 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 		m->compiled_functions.num_reserved = 0;
 		
 #ifdef _WIN32
-		assert(max_threads <= TB_MAX_THREADS);
 		HANDLE threads[TB_MAX_THREADS];
+		CodegenThreadInfo startup_info[TB_MAX_THREADS];
+		
+		uint8_t* code_output_region = VirtualAlloc(NULL, max_threads * code_output_stride, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 		
 		switch (m->target_arch) {
 			case TB_ARCH_X86_64:
 			loop(i, max_threads) {
-				threads[i] = CreateThread(NULL, 2 * 1024 * 1024, (LPTHREAD_START_ROUTINE)tb_x64_compile_thread, m, 0, 0);
+				m->code_regions[i].size = 0;
+				m->code_regions[i].data = &code_output_region[i * code_output_stride];
+				
+				startup_info[i] = (CodegenThreadInfo){ m, i };
+				threads[i] = CreateThread(NULL, 2 * 1024 * 1024, (LPTHREAD_START_ROUTINE)tb_x64_compile_thread, &startup_info[i], 0, 0);
 			}
 			break;
 			default:
 			printf("TinyBackend error: Unknown target!\n");
 			tb_todo();
-		}
-		
-		const size_t count = m->compiled_functions.count;
-		while (true) {
-			size_t i = m->compiled_functions.num_reserved++;
-			if (i >= count) break;
-			
-			tb_compile_func(m, i);
-			m->compiled_functions.num_compiled++;
 		}
 		
 		WaitForMultipleObjects(max_threads, threads, TRUE, -1);
@@ -231,22 +261,35 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 		tb_todo();
 #endif
 	} else {
-		if (optimization_level != TB_OPT_O0) {
-			loop(i, m->functions.count) {
-				tb_optimize_func(&m->functions.data[i]);
-			}
+#ifdef _WIN32
+		uint8_t* code_output_region = m->code_regions[0].data = VirtualAlloc(NULL, TB_MAX_THREADS * code_output_stride, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+#else
+		tb_todo();
+#endif
+		
+		if (optimization_level != TB_OPT_O0) loop(i, m->functions.count) {
+			tb_optimize_func(&m->functions.data[i]);
 		}
 		
+		uint8_t* curr = code_output_region;
 		switch (m->target_arch) {
 			case TB_ARCH_X86_64:
 			loop(i, m->functions.count) {
-				m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features);
+				uint8_t* start = curr;
+				
+				TB_FunctionOutput o = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features, &curr);
+				o.code = start;
+				o.code_size = curr - start;
+				
+				m->compiled_functions.data[i] = o;
 			}
 			break;
 			default:
 			printf("TinyBackend error: Unknown target!\n");
 			tb_todo();
 		}
+		
+		m->code_regions[0].size = curr - code_output_region;
 	}
 	
 	size_t ir_final_node_count = 0;

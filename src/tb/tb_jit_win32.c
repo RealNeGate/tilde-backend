@@ -39,7 +39,7 @@ void tb_module_export_jit(TB_Module* m) {
 		
 		text_section_size += prologue;
 		text_section_size += epilogue;
-		text_section_size += m->compiled_functions.data[i].emitter.count;
+		text_section_size += m->compiled_functions.data[i].code_size;
 	}
 #else
 #error "Cannot compile JIT for this target architecture!"
@@ -49,7 +49,7 @@ void tb_module_export_jit(TB_Module* m) {
 	for (size_t i = 0; i < m->call_patches.count; i++) {
 		TB_FunctionPatch* p = &m->call_patches.data[i];
 		TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
-		uint8_t* code = m->compiled_functions.data[p->func_id].emitter.data;
+		uint8_t* code = m->compiled_functions.data[p->func_id].code;
 		
 		// TODO(NeGate): Consider caching this value if it gets expensive to calculate.
 		uint32_t actual_pos = func_layout[p->func_id] + p->pos + 4;
@@ -81,8 +81,8 @@ void tb_module_export_jit(TB_Module* m) {
 		text_section += prologue_len;
 		
 		// body
-		memcpy(text_section, m->compiled_functions.data[i].emitter.data, m->compiled_functions.data[i].emitter.count);
-		text_section += m->compiled_functions.data[i].emitter.count;
+		memcpy(text_section, m->compiled_functions.data[i].code, m->compiled_functions.data[i].code_size);
+		text_section += m->compiled_functions.data[i].code_size;
 		
 		// epilogue
 		size_t epilogue_len = code_gen->emit_epilogue(mini_out_buffer,

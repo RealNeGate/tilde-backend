@@ -122,7 +122,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	// into the string table
 	uint32_t string_table_length = 0;
 	uint32_t string_table_mark = 4;
-	const char** string_table = (const char**)&tls->data[tls->used];
+	const char** string_table = malloc(m->compiled_functions.count * sizeof(const char*));
 	
 	const int number_of_sections = 4;
 	COFF_FileHeader header = {
@@ -738,5 +738,6 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		fwrite(s, 1, strlen(s) + 1, f);
 	}
 	
+	free(string_table);
 	free(func_layout);
 }

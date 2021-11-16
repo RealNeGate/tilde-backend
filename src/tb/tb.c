@@ -160,8 +160,8 @@ static void tb_optimize_func(TB_Function* f) {
 		OPT(compact_dead_regs);
 	}
 	
-	//tb_function_print(f);
-	//printf("\n\n\n");
+	tb_function_print(f);
+	printf("\n\n\n");
 }
 #undef OPT
 
@@ -229,13 +229,11 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 		HANDLE threads[TB_MAX_THREADS];
 		CodegenThreadInfo startup_info[TB_MAX_THREADS];
 		
-		uint8_t* code_output_region = VirtualAlloc(NULL, max_threads * code_output_stride, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-		
 		switch (m->target_arch) {
 			case TB_ARCH_X86_64:
 			loop(i, max_threads) {
 				m->code_regions[i].size = 0;
-				m->code_regions[i].data = &code_output_region[i * code_output_stride];
+				m->code_regions[i].data = VirtualAlloc(NULL, code_output_stride, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 				
 				startup_info[i] = (CodegenThreadInfo){ m, i };
 				threads[i] = CreateThread(NULL, 2 * 1024 * 1024, (LPTHREAD_START_ROUTINE)tb_x64_compile_thread, &startup_info[i], 0, 0);

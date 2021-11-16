@@ -7,7 +7,12 @@
 #define printf(...) ((void)0)
 
 static int get_data_type_size(const TB_DataType dt);
+static PhiValue* find_phi(Ctx* ctx, TB_Register r);
 static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Register bb_end);
+
+// Just handles the PHI nodes that we'll encounter when leaving `from`
+// into `to`
+static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_Register from_terminator, TB_Register to, TB_Register to_terminator);
 
 TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* features, uint8_t* out) {
 	TB_TemporaryStorage* tls = tb_tls_allocate();
@@ -141,7 +146,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 							  ctx->gpr_desc[GPR_PARAMETERS[id]] = i;
 							  printf("   PARAM GPR %s\n", GPR_NAMES[GPR_PARAMETERS[id]]);
 							  
-							  def(ctx, f, val_gpr(dt.type, GPR_PARAMETERS[i]), i);
+							  def(ctx, f, val_gpr(dt.type, GPR_PARAMETERS[id]), i);
 						  }
 					  } else {
 						  def(ctx, f, val_stack(dt, -stack_usage), i);
@@ -288,16 +293,17 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 			TB_Label if_true = p.if_.if_true;
 			TB_Label if_false = p.if_.if_false;
 			
-			/*TB_Register if_true_reg = tb_find_reg_from_label(f, if_true);
-			TB_Register if_false_reg = tb_find_reg_from_label(f, if_false);
-			
-			TB_Register if_true_reg_end = f->nodes.payload[if_true_reg].label.terminator;
-			TB_Register if_false_reg_end = f->nodes.payload[if_false_reg].label.terminator;
-			
-			// TODO(NeGate): save out any phi nodes
-			x64_terminate_path(f, ctx, out, bb, if_true_reg, if_true_reg_end);
-			x64_terminate_path(f, ctx, out, bb, if_false_reg, if_false_reg_end);
-			*/
+			// Save out PHI nodes
+			{
+				TB_Register if_true_reg = tb_find_reg_from_label(f, if_true);
+				TB_Register if_false_reg = tb_find_reg_from_label(f, if_false);
+				
+				TB_Register if_true_reg_end = f->nodes.payload[if_true_reg].label.terminator;
+				TB_Register if_false_reg_end = f->nodes.payload[if_false_reg].label.terminator;
+				
+				eval_terminator_phis(ctx, f, bb, bb_end, if_true_reg, if_true_reg_end);
+				eval_terminator_phis(ctx, f, bb, bb_end, if_false_reg, if_false_reg_end);
+			}
 			
 			Val cond;
 			use(ctx, f, &cond, p.if_.cond, bb_end);
@@ -338,12 +344,21 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 		} else if (reg_type == TB_GOTO) {
 			// TODO(NeGate): save out any phi nodes
 			assert(f->nodes.type[bb_end + 1] == TB_LABEL);
-			TB_Label fallthrough_label = f->nodes.payload[bb_end + 1].label.id;
 			
+			TB_Label target_label = f->nodes.payload[bb_end].goto_.label;
+			TB_Register target = tb_find_reg_from_label(f, target_label);
+			TB_Register target_end = f->nodes.payload[target].label.terminator;
+			
+			eval_terminator_phis(ctx, f, bb, bb_end, target, target_end);
+			
+			TB_Label fallthrough_label = f->nodes.payload[bb_end + 1].label.id;
 			if (fallthrough_label != p.goto_.label) jmp(ctx, p.goto_.label);
 		} else if (reg_type == TB_LABEL) {
 			// simple fallthrough
 			// TODO(NeGate): save out any phi nodes
+			TB_Register next_terminator = f->nodes.payload[bb_end].label.terminator;
+			
+			eval_terminator_phis(ctx, f, bb, bb_end, bb_end, next_terminator);
 		} else {
 			tb_todo();
 		}
@@ -385,6 +400,48 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 		
 		.prologue_epilogue_metadata = ctx->regs_to_save
 	};
+}
+
+static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_Register from_terminator, TB_Register to, TB_Register to_terminator) {
+	for (size_t i = to; i < to_terminator; i++) {
+		if (f->nodes.type[i] != TB_PHI2) continue;
+		
+		TB_RegPayload p = f->nodes.payload[i];
+		TB_DataType dt = f->nodes.dt[i];
+		assert(p.phi2.a_label != p.phi2.b_label);
+		
+		TB_Register src;
+		if (p.phi2.a_label == from) src = p.phi2.a;
+		else if (p.phi2.b_label == from) src = p.phi2.b;
+		else tb_unreachable();
+		
+		Val src_value;
+		use(ctx, f, &src_value, src, 0);
+		
+		PhiValue* phi = find_phi(ctx, i);
+		if (phi->value.type == VAL_NONE) {
+			// Initialize it
+			if (src_value.type == VAL_GPR && 
+				is_temporary_of_bb(ctx, f, src_value.gpr, from, from_terminator)) {
+				// Recycle old value
+				phi->value = src_value;
+				def(ctx, f, src_value, i);
+			} else {
+				// Create a new GPR and map it
+				def_new_gpr(ctx, f, &phi->value, i, dt.type);
+				
+				// TODO(NeGate): Handle vector and float types
+				if (!is_value_gpr(&src_value, phi->value.gpr)) {
+					inst2(ctx, MOV, &phi->value, &src_value, dt.type);
+				}
+			}
+		} else {
+			// Load value into existing phi node
+			if (!is_value_match(&phi->value, &src_value)) {
+				inst2(ctx, MOV, &phi->value, &src_value, dt.type);
+			}
+		}
+	}
 }
 
 static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Register bb_end) {
@@ -608,10 +665,17 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 		TB_RegPayload p = f->nodes.payload[r];
 		
 		switch (reg_type) {
-			// Param is loaded beforehand so
+			// loaded beforehand so
 			// it should never reach here
 			case TB_PARAM:
+			case TB_PHI2:
 			tb_unreachable();
+			case TB_PHI1: {
+				TB_Register phi = f->nodes.payload[r].phi1.a;
+				
+				*v = find_phi(ctx, phi)->value;
+				break;
+			}
 			case TB_INT_CONST: {
 				assert(p.i_const.hi == 0);
 				
@@ -635,6 +699,7 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 			case TB_LOAD: {
 				use(ctx, f, v, p.load.address, next);
 				assert(v->type == VAL_MEM);
+				v->dt = dt;
 				break;
 			}
 			case TB_PARAM_ADDR: {
@@ -1095,6 +1160,27 @@ static bool garbage_collect(Ctx* ctx, TB_Function* f, TB_Register end) {
 	}
 	
 	return changes;
+}
+
+static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, GPR gpr, TB_Register bb, TB_Register bb_end) {
+	TB_Register bound = ctx->gpr_desc[gpr];
+	
+	if (bound >= bb &&
+		bound <= bb_end &&
+		f->nodes.type[bound] != TB_PHI1 &&
+		f->nodes.type[bound] != TB_PHI2) {
+		return true;
+	}
+	
+	return false;
+}
+
+static PhiValue* find_phi(Ctx* ctx, TB_Register r) {
+	for (size_t i = 0; i < ctx->phi_count; i++) {
+		if (ctx->phis[i].reg == r) return &ctx->phis[i];
+	}
+	
+	return NULL;
 }
 
 static int get_data_type_size(const TB_DataType dt) {

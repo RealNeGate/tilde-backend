@@ -211,7 +211,7 @@ typedef struct Inst2 {
     ExtMode ext : 8;
 } Inst2;
 
-static const GPR GPR_PARAMETERS[] = {
+static const GPR GPR_PARAMETERS[4] = {
 	RCX, RDX, R8, R9
 };
 
@@ -316,6 +316,13 @@ inline static bool is_value_gpr(const Val* v, GPR g) {
 	return (v->gpr == g);
 }
 
+inline static bool is_value_match(const Val* a, const Val* b) {
+	if (a->type != b->type) return false;
+	
+	if (a->type == VAL_GPR) return a->gpr == b->gpr;
+	else return false;
+}
+
 // Short and sweet C:
 #define code_pos() (ctx->out - ctx->start_out)
 
@@ -325,6 +332,8 @@ inline static bool is_value_gpr(const Val* v, GPR g) {
 #define emit8(b) (*((uint64_t*) ctx->out) = (b), ctx->out += 8)
 
 #define patch4(p, b) (*((uint32_t*) &ctx->start_out[p]) = (b))
+
+static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, GPR gpr, TB_Register bb, TB_Register bb_end);
 
 // Evaluates the virtual register if not already, outputs to `r`
 static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register next);

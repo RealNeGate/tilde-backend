@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
 	}
 	
 	rng.state = __rdtsc();
-	printf("Executing 100,000 trials\n");
+	printf("Executing %d x 50,000 (%d) trials\n", thread_count, thread_count * TRIAL_COUNT);
 	
 	clock_t t1 = clock();
 	TB_FeatureSet features = { 0 };

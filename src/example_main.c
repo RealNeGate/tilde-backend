@@ -65,10 +65,10 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_params_2,
 		test_zero_mem,
 		test_add_sub_i32,
+		test_locals_params_1,
 		/*
 		test_vadd_f32x4,
 				test_vmuladd_f32x4,
-				test_locals_params_1,
 				test_add_f32,
 				test_andor_i32,
 				test_muladd_f32,
@@ -83,7 +83,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		tb_function_print(test_functions[i](m));
 	}
     
-	if (!tb_module_compile(m, TB_OPT_O0, 1)) abort();
+	if (!tb_module_compile(m, TB_OPT_O1, 1)) abort();
 	if (!tb_module_export(m, f)) abort();
 	
 	tb_module_destroy(m);

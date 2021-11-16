@@ -165,21 +165,15 @@ static void tb_optimize_func(TB_Function* f) {
 }
 #undef OPT
 
-static size_t tb_compile_func(TB_Module* m, size_t i, uint8_t** code) {
+static size_t tb_compile_func(TB_Module* m, size_t i, uint8_t* code) {
 	if (tb_validate(&m->functions.data[i])) abort();
 	
 	if (m->optimization_level != TB_OPT_O0) {
 		tb_optimize_func(&m->functions.data[i]);
 	}
 	
-	const uint8_t* start = *code;
-	
-	TB_FunctionOutput o = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features, code);
-	o.code = *code;
-	o.code_size = *code - start;
-	m->compiled_functions.data[i] = o;
-	
-	return o.code_size;
+	m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features, code);
+	return m->compiled_functions.data[i].code_size;
 }
 
 // NOTE(NeGate): I really don't like how this looks
@@ -200,7 +194,7 @@ static OS_API int tb_x64_compile_thread(CodegenThreadInfo* info) {
 		size_t i = m->compiled_functions.num_reserved++;
 		if (i >= func_count) return 0;
 		
-		code_size += tb_compile_func(m, i, &code);
+		code_size += tb_compile_func(m, i, &code[code_size]);
 		m->compiled_functions.num_compiled++;
 	}
 	
@@ -262,7 +256,7 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 #endif
 	} else {
 #ifdef _WIN32
-		uint8_t* code_output_region = m->code_regions[0].data = VirtualAlloc(NULL, TB_MAX_THREADS * code_output_stride, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+		uint8_t* code = m->code_regions[0].data = VirtualAlloc(NULL, TB_MAX_THREADS * code_output_stride, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 #else
 		tb_todo();
 #endif
@@ -271,17 +265,12 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 			tb_optimize_func(&m->functions.data[i]);
 		}
 		
-		uint8_t* curr = code_output_region;
+		size_t code_size = 0;
 		switch (m->target_arch) {
 			case TB_ARCH_X86_64:
 			loop(i, m->functions.count) {
-				uint8_t* start = curr;
-				
-				TB_FunctionOutput o = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features, &curr);
-				o.code = start;
-				o.code_size = curr - start;
-				
-				m->compiled_functions.data[i] = o;
+				m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features, &code[code_size]);
+				code_size += m->compiled_functions.data[i].code_size;
 			}
 			break;
 			default:
@@ -289,7 +278,7 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 			tb_todo();
 		}
 		
-		m->code_regions[0].size = curr - code_output_region;
+		m->code_regions[0].size = code_size;
 	}
 	
 	size_t ir_final_node_count = 0;
@@ -302,7 +291,7 @@ TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_thre
 }
 
 TB_API bool tb_module_export(TB_Module* m, FILE* f) {
-	const ICodeGen* restrict code_gen;
+	const ICodeGen* restrict code_gen = NULL;
 	switch (m->target_arch) {
 		case TB_ARCH_X86_64: code_gen = &x64_fast_code_gen; break;
 		default: tb_todo();
@@ -351,9 +340,11 @@ void tb_resize_node_stream(TB_Function* f, size_t cap) {
 }
 
 TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataType return_dt) {
-	assert(m->functions.count < TB_MAX_FUNCTIONS);
-    
-	TB_Function* f = &m->functions.data[m->functions.count++];
+	
+	size_t i = m->functions.count++;
+	assert(i < TB_MAX_FUNCTIONS);
+	
+	TB_Function* f = &m->functions.data[i];
 	memset(f, 0, sizeof(TB_Function));
 	
 	// TODO(NeGate): We might wanna do something better with these strings
@@ -1429,6 +1420,16 @@ TB_API void tb_function_print(TB_Function* f) {
 			
 			if (type == TB_CMP_SLT || type == TB_CMP_SLE) printf(" # signed\n");
 			else printf("\n");
+			break;
+            case TB_NEG:
+			printf("  r%u\t=\t", i);
+			tb_print_type(dt);
+			printf(" NEG r%u\n", p.unary);
+			break;
+            case TB_NOT:
+			printf("  r%u\t=\t", i);
+			tb_print_type(dt);
+			printf(" NOT r%u\n", p.unary);
 			break;
             case TB_LOCAL:
 			printf("  r%u\t=\tLOCAL %d (%d align)\n", i, p.local.size, p.local.alignment);

@@ -1,9 +1,9 @@
 call vcvars64
 
-set clang_settings=-march=nehalem -O0 -Werror -Wall -Wno-microsoft-anon-tag -Wno-unused-function -g -gcodeview -D_CRT_SECURE_NO_WARNINGS
+set clang_settings=-march=nehalem -O3 -DNDEBUG -Werror -Wall -Wno-unused-function -g -gcodeview -D_CRT_SECURE_NO_WARNINGS
 
 set tb_source_files=src/tb/tb.c ^
-	src/tb/tb_x86_64_fast2.c ^
+	src/tb/x64/codegen.c ^
 	src/tb/tb_opt_mem2reg.c ^
 	src/tb/tb_opt_inline.c ^
 	src/tb/tb_opt_dce.c ^
@@ -16,4 +16,4 @@ set tb_source_files=src/tb/tb.c ^
 	src/tb/tb_helper.c
 
 mkdir build
-clang %clang_settings% src/example_main.c %tb_source_files% -o build/example.exe
+clang %clang_settings% src/example_fuzzer.c %tb_source_files% -o build/example.exe

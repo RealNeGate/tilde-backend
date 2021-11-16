@@ -35,11 +35,11 @@
 
 // Per-thread
 #ifndef TB_TEMPORARY_STORAGE_SIZE
-#define TB_TEMPORARY_STORAGE_SIZE (1 << 22)
+#define TB_TEMPORARY_STORAGE_SIZE (1 << 20)
 #endif
 
 #ifndef TB_MAX_FUNCTIONS
-#define TB_MAX_FUNCTIONS (1 << 20)
+#define TB_MAX_FUNCTIONS (1 << 22)
 #endif
 
 #define TB_HOST_UNKNOWN 0
@@ -325,16 +325,30 @@ typedef struct TB_Emitter {
 	uint8_t* data;
 } TB_Emitter;
 
-enum {
+typedef enum TB_RegTypeEnum {
     TB_NULL,
 	
+	// instructions with side-effects
 	TB_LINE_INFO,
-	
+	TB_ICALL,
 	TB_CALL,
-	TB_ICALL, // inline call
     
-    // Immediates
-    TB_INT_CONST,
+    TB_LOAD,
+    TB_STORE,
+	
+	TB_MEMCPY,
+	TB_MEMSET,
+	TB_MEMCMP,
+	
+	// Terminators
+    TB_LABEL,
+    TB_GOTO,
+    TB_SWITCH,
+    TB_IF,
+    TB_RET,
+	
+	// Immediates
+	TB_INT_CONST,
     TB_FLOAT_CONST,
     TB_STRING_CONST,
     
@@ -353,11 +367,12 @@ enum {
     TB_ADD,
     TB_SUB,
     TB_MUL,
-    TB_UDIV,
-    TB_SDIV,
+	
     TB_SHL,
     TB_SHR,
     TB_SAR,
+    TB_UDIV,
+    TB_SDIV,
     
     // Float arithmatic
     TB_FADD,
@@ -380,13 +395,6 @@ enum {
     TB_CVT_PTR2INT,
     
     // Memory
-    TB_LOAD,
-    TB_STORE,
-	
-	TB_MEMCPY,
-	TB_MEMSET,
-	TB_MEMCMP,
-	
     TB_LOCAL,
     TB_PARAM,
     TB_PARAM_ADDR,
@@ -395,21 +403,22 @@ enum {
 	TB_MEMBER_ACCESS,
 	TB_ARRAY_ACCESS,
     
+    // PHI
+    TB_PHI1,
+    TB_PHI2,
+	
     // NOTE(NeGate): only used internally, if you
     // see one in normal IR things went wrong in
     // an optimization pass
     TB_PASS,
-    
-    // Control flow
-    TB_PHI1,
-    TB_PHI2,
-    
-    TB_LABEL,
-    TB_GOTO,
-    TB_SWITCH,
-    TB_IF,
-    TB_RET
-};
+	
+	// helpful for certain scans
+	TB_SIDE_EFFECT_MIN = TB_LINE_INFO,
+	TB_SIDE_EFFECT_MAX = TB_MEMCMP,
+	
+	TB_TERMINATOR_MIN = TB_LABEL,
+	TB_TERMINATOR_MAX = TB_RET
+} TB_RegTypeEnum;
 
 typedef uint8_t TB_RegType;
 
@@ -637,7 +646,7 @@ struct TB_Module {
 	} files;
     
 	struct {
-		size_t count;
+		_Atomic size_t count;
 		TB_Function* data;
 	} functions;
     
@@ -698,7 +707,7 @@ typedef struct ICodeGen {
 	size_t(*get_epilogue_length)(uint64_t saved, uint64_t stack_usage);
 	size_t(*emit_prologue)(char out[64], uint64_t saved, uint64_t stack_usage);
 	size_t(*emit_epilogue)(char out[64], uint64_t saved, uint64_t stack_usage);
-	TB_FunctionOutput(*compile_function)(TB_Function* f, const TB_FeatureSet* features, uint8_t** out);
+	TB_FunctionOutput(*compile_function)(TB_Function* f, const TB_FeatureSet* features, uint8_t* out);
 } ICodeGen;
 
 // Used internally for some optimizations
@@ -784,6 +793,45 @@ inline static void tb_kill_op(TB_Function* f, TB_Register at) {
 }
 
 //
+// HELPER FUNCTIONS
+//
+#define CALL_NODE_PARAM_COUNT(f, i) ((f)->nodes.payload[i].call.param_end - (f)->nodes.payload[i].call.param_start)
+
+#if TB_HOST_ARCH == TB_HOST_X86_64
+#define FOR_EACH_NODE(iterator, func, target, ...) \
+for (size_t i = 0, cnt = (func)->nodes.count; i < cnt; i += 16) { \
+__m128i bytes = _mm_load_si128((__m128i*)&(func)->nodes.type[i]); \
+unsigned int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(target))); \
+if (mask == 0) continue; \
+/* this one is guarentee to not be zero */ \
+size_t offset = __builtin_ffs(mask) - 1; \
+size_t j = i + offset; \
+/* skip over the mask bit for the next iteration */ \
+mask >>= (offset + 1); \
+/* We know it loops at least once by this point */ \
+do { \
+{ \
+size_t iterator = j; \
+__VA_ARGS__; \
+} \
+/* scan for next, if one exists */ \
+size_t ffs = __builtin_ffs(mask); \
+if (ffs == 0) break; \
+/* skip over the mask bit for the next iteration */ \
+mask >>= ffs; \
+j += ffs; \
+} while (true); \
+}
+#else
+#define FOR_EACH_NODE(iterator, func, target, ...) \
+for (size_t iterator = 0; iterator < (func)->nodes.count; iterator++) { \
+if ((func)->nodes.type[iterator] == (target)) { \
+__VA_ARGS__; \
+} \
+}
+#endif
+
+//
 // OPTIMIZATION FUNCTIONS
 //
 bool tb_opt_mem2reg(TB_Function* f);
@@ -808,7 +856,7 @@ inline void tb_node_iter_cond() {
 	
 }*/
 
-TB_API void tb_find_live_intervals(size_t intervals[], const TB_Function* f);
+TB_API void tb_find_live_intervals(const TB_Function* f, TB_Register intervals[]);
 
 //
 // BACKEND UTILITIES
@@ -824,8 +872,6 @@ void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, siz
 // TODO(NeGate): Not thread safe yet
 #endif
 
-// TODO(NeGate): Reimplement this later, the code is slightly outdated.
-// extern ICodeGen aarch64_fast_code_gen;
 extern ICodeGen x64_fast_code_gen;
 
 #endif /* TB_INTERNAL */

@@ -5,8 +5,8 @@ bool tb_opt_dce(TB_Function* f) {
 	int changes = 0;
 	TB_TemporaryStorage* tls = tb_tls_allocate();
     
-	size_t* intervals = tb_tls_push(tls, f->nodes.count * sizeof(size_t));
-	tb_find_live_intervals(intervals, f);
+	TB_Register* intervals = tb_tls_push(tls, f->nodes.count * sizeof(TB_Register));
+	tb_find_live_intervals(f, intervals);
     
 	for (TB_Register i = 1; i < f->nodes.count; i++) {
 		if (intervals[i] == 0) {
@@ -30,6 +30,8 @@ bool tb_opt_dce(TB_Function* f) {
 				// delete:
                 case TB_INT_CONST:
                 case TB_LOCAL:
+                case TB_NOT:
+                case TB_NEG:
                 case TB_AND:
                 case TB_OR:
                 case TB_ADD:

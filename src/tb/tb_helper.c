@@ -71,6 +71,10 @@ case TB_SHR: \
 X(p->i_arith.a); \
 X(p->i_arith.b); \
 break; \
+case TB_NOT: \
+case TB_NEG: \
+X(p->unary); \
+break; \
 case TB_FADD: \
 case TB_FSUB: \
 case TB_FMUL: \
@@ -111,7 +115,7 @@ default: tb_todo(); \
 //
 // IR ANALYSIS
 //
-void tb_find_live_intervals(size_t intervals[], const TB_Function* f) {
+void tb_find_live_intervals(const TB_Function* f, TB_Register intervals[]) {
 	for (size_t i = 0; i < f->nodes.count; i++) intervals[i] = TB_NULL_REG;
     
 #define X(reg) intervals[reg] = i

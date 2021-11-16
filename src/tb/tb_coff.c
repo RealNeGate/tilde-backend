@@ -116,7 +116,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	
 	// Buffer stores all the positions of each 
 	// function relative to the .text section start.
-	uint32_t* func_layout = tb_tls_push(tls, m->compiled_functions.count * sizeof(uint32_t));
+	uint32_t* func_layout = malloc(m->compiled_functions.count * sizeof(uint32_t));
 	
 	// String table array, stores the strings which will be put 
 	// into the string table
@@ -737,4 +737,6 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		
 		fwrite(s, 1, strlen(s) + 1, f);
 	}
+	
+	free(func_layout);
 }

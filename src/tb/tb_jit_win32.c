@@ -23,7 +23,7 @@ void tb_module_export_jit(TB_Module* m) {
 	
 	// Buffer stores all the positions of each 
 	// function relative to the .text section start.
-	uint32_t* func_layout = (uint32_t*)tb_tls_push(tls, m->compiled_functions.count * sizeof(uint32_t));
+	uint32_t* func_layout = malloc(m->compiled_functions.count * sizeof(uint32_t));
 	size_t text_section_size = 0;
 	
 #if TB_HOST_ARCH == TB_HOST_X86_64
@@ -94,6 +94,8 @@ void tb_module_export_jit(TB_Module* m) {
 #else
 #error "Cannot compile JIT for this target architecture!"
 #endif
+	
+	free(func_layout);
 	
 	// convert to executable
 	DWORD old_protect;

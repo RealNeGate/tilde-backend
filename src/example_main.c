@@ -60,21 +60,22 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_safe_add_i32,
 		test_add_i64,
 		test_div_i64,
-		test_zero_mem,
 		test_locals_1,
 		test_params_1,
 		test_params_2,
-		test_vadd_f32x4,
-		test_vmuladd_f32x4,
-		test_locals_params_1,
+		test_zero_mem,
 		test_add_sub_i32,
-		test_add_f32,
-		test_andor_i32,
-		test_muladd_f32,
-		test_fib,
-		test_foo,
-		test_switch_case,
-		test_entry
+		/*
+		test_vadd_f32x4,
+				test_vmuladd_f32x4,
+				test_locals_params_1,
+				test_add_f32,
+				test_andor_i32,
+				test_muladd_f32,
+				test_fib,
+				test_foo,
+				test_switch_case,
+				test_entry*/
 	};
 	size_t count = sizeof(test_functions) / sizeof(test_functions[0]);
 	

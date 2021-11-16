@@ -1,72 +1,43 @@
 #include "tb/tb.h"
 #include <x86intrin.h>
+#include <windows.h>
 
-static uint32_t seed;
+#define TRIAL_COUNT 50000
 
-static uint32_t gen_random_any() {
-	uint32_t v = seed = _mm_crc32_u32(0, seed);
+static uint32_t gen_random_any();
+static uint32_t gen_random(uint32_t min, uint32_t max);
+static uint32_t gen_random_bool();
+static TB_DataType gen_random_dt();
+static TB_DataType gen_random_int_dt();
+static TB_ArithmaticBehavior gen_random_arith();
+
+// NOTE(NeGate): Maybe performance wise it's not nice to put so many big things
+// into the thread local storage.
+typedef struct FuzzerInfo {
+	// Which functions should it generate
+	int thread_id;
+	uint64_t initial_state, initial_inc;
+} FuzzerInfo;
+
+// https://www.pcg-random.org/download.html#minimal-c-implementation
+static _Thread_local struct { uint64_t state;  uint64_t inc; } rng;
+
+static _Thread_local TB_Register pool[512];
+static _Thread_local TB_Register var_pool[512];
+
+static TB_Module* m;
+
+static __stdcall int ir_gen(FuzzerInfo* i) {
+	rng.state = i->initial_state;
+	rng.inc = i->initial_inc;
 	
-	return v;
-}
-
-static uint32_t gen_random(uint32_t min, uint32_t max) {
-	uint32_t v = seed = _mm_crc32_u32(0, seed);
-	
-	return min + (v % (max - min));
-}
-
-static bool gen_random_bool() {
-	uint32_t v = seed = _mm_crc32_u32(0, seed);
-	
-	return v & 1;
-}
-
-static TB_DataType gen_random_dt() {
-	return (TB_DataType){
-		.type = gen_random(0, TB_MAX_TYPES),
-		.count = 1
-	};
-}
-
-static TB_DataType gen_random_int_dt() {
-	return (TB_DataType){
-		.type = gen_random(TB_I32, TB_I64 + 1), // ignores i128
-		.count = 1
-	};
-}
-
-static TB_ArithmaticBehavior gen_random_arith() {
-	return gen_random(0, TB_SATURATED_SIGNED); // it's ignoring sat_signed for now
-}
-
-static int pool_size = 0;
-static TB_Register pool[512];
-
-static int var_pool_size = 0;
-static TB_Register var_pool[512];
-
-int main(int argc, char** argv) {
-	int thread_count = 1;
-	if (argc > 1) {
-		thread_count = atoi(argv[1]);
-	}
-	
-	printf("Executing 100000 trials\n");
-	
-	clock_t t1 = clock();
-	TB_FeatureSet features = { 0 };
-	
-	int n = 0;
-	int trial_count = 100000;
-	TB_Module* m = tb_module_create(TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features);
-	seed = 764848648;
-	
-	while (n < trial_count) {
-		pool_size = 0;
-		var_pool_size = 0;
+	size_t n = 0;
+	while (n < TRIAL_COUNT) {
+		int pool_size = 0;
+		int var_pool_size = 0;
 		
-		static char temp[64];
-		sprintf_s(temp, 64, "trial_%d_%08x", n, seed);
+		char temp[64];
+		sprintf_s(temp, 64, "trial_%d_%d", i->thread_id, n);
 		
 		TB_DataType dt = gen_random_int_dt();
 		TB_Function* f = tb_function_create(m, temp, dt);
@@ -79,13 +50,13 @@ int main(int argc, char** argv) {
 		
 		int inst_count = gen_random(1, 500);
 		for (int i = 0; i < inst_count; i++) {
-			int rng = gen_random(0, 7);
-			if (pool_size < 5) rng = 0;
-			if (rng >= 6 && var_pool_size == 0) rng = 0;
+			int rng = gen_random(0, 14);
+			if (pool_size < 4) rng = 0;
+			if (rng >= 11 && var_pool_size == 0) rng = 0;
 			
 			switch (rng) {
 				case 0: 
-				pool[pool_size] = tb_inst_iconst(f, dt, gen_random(0, 10000));
+				pool[pool_size] = tb_inst_iconst(f, dt, gen_random_any());
 				pool_size += 1;
 				break;
 				case 1: 
@@ -101,21 +72,42 @@ int main(int argc, char** argv) {
 				pool[pool_size] = tb_inst_mul(f, dt, pool[gen_random(0, pool_size)], pool[gen_random(0, pool_size)], gen_random_arith());
 				pool_size += 1;
 				break;
-				/*
+				case 5:
 				pool[pool_size] = tb_inst_div(f, dt, pool[gen_random(0, pool_size)], pool[gen_random(0, pool_size)], gen_random_bool());
 				pool_size += 1;
-				break;*/
-				case 5: 
+				break;
+				break;
+				case 6:
+				pool[pool_size] = tb_inst_and(f, dt, pool[gen_random(0, pool_size)], pool[gen_random(0, pool_size)]);
+				pool_size += 1;
+				break;
+				case 7:
+				pool[pool_size] = tb_inst_and(f, dt, pool[gen_random(0, pool_size)], pool[gen_random(0, pool_size)]);
+				pool_size += 1;
+				break;
+				case 8:
+				pool[pool_size] = tb_inst_or(f, dt, pool[gen_random(0, pool_size)], pool[gen_random(0, pool_size)]);
+				pool_size += 1;
+				break;
+				case 9:
+				pool[pool_size] = tb_inst_not(f, dt, pool[gen_random(0, pool_size)]);
+				pool_size += 1;
+				break;
+				case 10:
+				pool[pool_size] = tb_inst_neg(f, dt, pool[gen_random(0, pool_size)]);
+				pool_size += 1;
+				break;
+				case 11: 
 				var_pool[var_pool_size] = tb_inst_local(f, dt.type == TB_I32 ? 4 : 8, dt.type == TB_I32 ? 4 : 8);
 				
 				tb_inst_store(f, dt, var_pool[var_pool_size], pool[gen_random(0, pool_size)], dt.type == TB_I32 ? 4 : 8);
 				var_pool_size += 1;
 				break;
-				case 6: 
+				case 12: 
 				pool[pool_size] = tb_inst_load(f, dt, var_pool[gen_random(0, var_pool_size)], dt.type == TB_I32 ? 4 : 8);
 				pool_size += 1;
 				break;
-				case 7: 
+				case 13: 
 				tb_inst_store(f, dt, var_pool[gen_random(0, var_pool_size)], pool[gen_random(0, pool_size)], dt.type == TB_I32 ? 4 : 8);
 				break;
 			}
@@ -125,6 +117,48 @@ int main(int argc, char** argv) {
 		tb_inst_ret(f, dt, pool[gen_random(pool_size / 2, pool_size)]);
 		//tb_function_print(f);
 		n++;
+	}
+	
+	return 0;
+}
+
+int main(int argc, char** argv) {
+	int thread_count = 1;
+	if (argc > 1) {
+		thread_count = atoi(argv[1]);
+	}
+	
+	rng.state = __rdtsc();
+	printf("Executing 100,000 trials\n");
+	
+	clock_t t1 = clock();
+	TB_FeatureSet features = { 0 };
+	
+	m = tb_module_create(TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features);
+	
+	rng.inc = __builtin_bswap64(__rdtsc()) >> 7;
+	printf("Initial seed: 0x%llx 0x%llx\n", rng.state, rng.inc);
+	
+	{
+		FuzzerInfo info[TB_MAX_THREADS];
+		HANDLE threads[TB_MAX_THREADS];
+		for (size_t i = 0; i < thread_count; i++) {
+			info[i] = (FuzzerInfo){ 0 };
+			info[i].thread_id = i;
+			info[i].initial_state = (((uint64_t)gen_random_any()) << 32ull) 
+				| ((uint64_t)gen_random_any());
+			info[i].initial_inc = (((uint64_t)gen_random_any()) << 32ull) 
+				| ((uint64_t)gen_random_any());
+			
+			printf("Thread seed: 0x%llx 0x%llx\n", info[i].initial_state, info[i].initial_inc);
+		}
+		
+		for (size_t i = 0; i < thread_count; i++) {
+			threads[i] = CreateThread(NULL, 2 << 21, (LPTHREAD_START_ROUTINE)ir_gen, &info[i], 0, 0);
+		}
+		
+		WaitForMultipleObjects(thread_count, threads, TRUE, -1);
+		for (size_t i = 0; i < thread_count; i++) CloseHandle(threads[i]);
 	}
 	
 	clock_t t2 = clock();
@@ -146,4 +180,43 @@ int main(int argc, char** argv) {
 	
 	tb_module_destroy(m);
 	return 0;
+}
+
+// https://www.pcg-random.org/download.html#minimal-c-implementation
+// *Really* minimal PCG32 code / (c) 2014 M.E. O'Neill / pcg-random.org
+// Licensed under Apache License 2.0 (NO WARRANTY, etc. see website)
+static uint32_t gen_random_any() {
+    uint64_t oldstate = rng.state;
+    // Advance internal state
+    rng.state = oldstate * 6364136223846793005ULL + (rng.inc|1);
+    // Calculate output function (XSH RR), uses old state for max ILP
+    uint32_t xorshifted = ((oldstate >> 18u) ^ oldstate) >> 27u;
+    uint32_t rot = oldstate >> 59u;
+    return (xorshifted >> rot) | (xorshifted << ((-rot) & 31));
+}
+
+static uint32_t gen_random(uint32_t min, uint32_t max) {
+	return min + (gen_random_any() % (max - min));
+}
+
+static uint32_t gen_random_bool() {
+	return gen_random_any() & 1;
+}
+
+static TB_DataType gen_random_dt() {
+	return (TB_DataType){
+		.type = (gen_random_any() % TB_MAX_TYPES),
+		.count = 1
+	};
+}
+
+static TB_DataType gen_random_int_dt() {
+	return (TB_DataType){
+		.type = (gen_random_any() & 1) ? TB_I64 : TB_I32, // ignores i128
+		.count = 1
+	};
+}
+
+static TB_ArithmaticBehavior gen_random_arith() {
+	return gen_random(0, TB_SATURATED_SIGNED); // it's ignoring sat_signed for now
 }

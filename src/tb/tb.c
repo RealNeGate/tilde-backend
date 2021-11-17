@@ -178,7 +178,9 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
 	uint32_t write_ptr = s->write_pointer;
 	uint32_t new_write_ptr = (write_ptr + 1) % MAX_JOBS_PER_JOB_SYSTEM;
 	while (new_write_ptr == s->read_pointer) { 
-		__builtin_ia32_pause();
+#if _WIN32
+		SwitchToThread();
+#endif
 	}
 	
 	s->functions[write_ptr] = f;

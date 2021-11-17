@@ -2,10 +2,6 @@
 #include "tb.h"
 
 #ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
-
-// Refers or is refered to by the OS APIs
 #define OS_API __stdcall
 #else
 #define OS_API
@@ -16,11 +12,233 @@
 #include <x86intrin.h>
 #endif
 
-static size_t tb_get_ptr_size(TB_Arch target_arch) {
-    if (target_arch == TB_ARCH_X86_64) return 8;
-    if (target_arch == TB_ARCH_AARCH64) return 8;
+#define CODE_OUTPUT_BUFFER (32 * 1024 * 1024)
+
+// TODO(NeGate): Doesn't free the name, it's needed for later
+static void tb_function_free(TB_Function* f) {
+	if (f->is_ir_free) return;
+	
+#if _WIN32
+	// Windows is different :P
+	_aligned_free(f->nodes.type);
+	_aligned_free(f->nodes.dt);
+	_aligned_free(f->nodes.payload);
+#else
+	free(f->nodes.type);
+	free(f->nodes.dt);
+	free(f->nodes.payload);
+#endif
+	
+	f->nodes.type = NULL;
+	f->nodes.dt = NULL;
+	f->nodes.payload = NULL;
+	
+	f->is_ir_free = true;
+}
+
+#define OPT(x) if (tb_opt_ ## x (f)) goto repeat_opt
+static void tb_optimize_func(TB_Function* f) {
+	repeat_opt: {
+		//tb_function_print(f);
+		//printf("\n\n\n");
+		
+		OPT(remove_pass_node);
+		OPT(canonicalize);
+		OPT(strength_reduction);
+		OPT(mem2reg);
+		OPT(dce);
+		OPT(compact_dead_regs);
+	}
+	
+	//tb_function_print(f);
+	//printf("\n\n\n");
+}
+#undef OPT
+
+static OS_API unsigned long job_system_thread_func(void* lpParam) {
+	TB_Module* m = (TB_Module*) lpParam;
+	TB_JobSystem* s = m->jobs;
+	
+	// TODO(NeGate): Properly detect this
+	ICodeGen* gen = &x64_fast_code_gen;
+	
+	size_t i = m->code_region_count++;
+	assert(i < TB_MAX_THREADS);
+	
+	size_t code_size = 0;
+	uint8_t* code = VirtualAlloc(NULL,
+								 CODE_OUTPUT_BUFFER,
+								 MEM_RESERVE | MEM_COMMIT,
+								 PAGE_READWRITE);
+	
+	while (s->running) {
+		uint32_t read_ptr = s->read_pointer;
+		uint32_t new_read_ptr = (read_ptr + 1) % MAX_JOBS_PER_JOB_SYSTEM;
+		
+		if (read_ptr == s->write_pointer) {
+			// Nothing to do, just wait
+			WaitForSingleObjectEx(s->semaphore, -1, false);
+			continue;
+		}
+		
+		if (atomic_compare_exchange_strong(&s->read_pointer, &read_ptr, new_read_ptr)) {
+			// Compile function
+			TB_Function* f = s->functions[read_ptr];
+			size_t index = f - m->functions.data;
+			assert(f->validated);
+			
+			if (m->optimization_level != TB_OPT_O0) {
+				tb_optimize_func(f);
+			}
+			
+			TB_FunctionOutput* out = &m->compiled_functions.data[index];
+			*out = gen->compile_function(f, &m->features, &code[code_size]);
+			code_size += out->code_size;
+			
+			// Free the IR, no longer needed
+			tb_function_free(f);
+		}
+	}
+	
+	m->code_regions[i].data = code;
+	m->code_regions[i].size = code_size;
+	return 0;
+}
+
+TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, const TB_FeatureSet* features, int optimization_level, int max_threads) {
+	assert(max_threads >= 1 && max_threads <= TB_MAX_THREADS);
+	TB_Module* m = calloc(1, sizeof(TB_Module));
     
-    tb_todo();
+	m->optimization_level = optimization_level;
+	m->target_arch = target_arch;
+	m->target_system = target_system;
+	m->features = *features;
+	
+#if !TB_STRIP_LABELS
+	m->label_symbols.count = 0;
+	m->label_symbols.capacity = 64;
+	m->label_symbols.data = malloc(64 * sizeof(TB_LabelSymbol));
+#endif
+	
+	m->const32_patches.count = 0;
+	m->const32_patches.capacity = 64;
+	m->const32_patches.data = malloc(64 * sizeof(TB_ConstPool32Patch));
+    
+	m->call_patches.count = 0;
+	m->call_patches.capacity = 64;
+	m->call_patches.data = malloc(64 * sizeof(TB_FunctionPatch));
+	
+	m->files.count = 1;
+	m->files.capacity = 64;
+	m->files.data = malloc(64 * sizeof(TB_File));
+    m->files.data[0] = (TB_File){ 0 };
+	
+	m->functions.count = 0;
+	m->functions.data = malloc(TB_MAX_FUNCTIONS * sizeof(TB_Function));
+    
+	m->compiled_functions.count = 0;
+	m->compiled_functions.data = malloc(TB_MAX_FUNCTIONS * sizeof(TB_FunctionOutput));
+    
+	m->line_info_count = 0;
+	
+#ifdef _WIN32
+	TB_JobSystem* j = calloc(1, sizeof(TB_JobSystem));
+	m->jobs = j;
+	
+	j->running = true;
+	j->write_pointer = 0;
+	j->read_pointer = 0;
+	j->thread_count = max_threads;
+	
+	j->semaphore = CreateSemaphoreExA(0,
+									  max_threads, max_threads,
+									  0, 0,
+									  SEMAPHORE_ALL_ACCESS);
+	
+	loop(i, max_threads) {
+		j->threads[i] = CreateThread(0, 4 * 1024 * 1024,
+									 job_system_thread_func,
+									 m, 0, 0);
+	}
+	
+	InitializeCriticalSection(&j->mutex);
+#endif
+	
+	return m;
+}
+
+TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
+	if (!tb_validate(f)) abort();
+	TB_JobSystem* s = m->jobs;
+	
+#if _WIN32
+	EnterCriticalSection(&s->mutex);
+#endif
+	
+	uint32_t write_ptr = s->write_pointer;
+	uint32_t new_write_ptr = (write_ptr + 1) % MAX_JOBS_PER_JOB_SYSTEM;
+	while (new_write_ptr == s->read_pointer) { 
+		__builtin_ia32_pause();
+	}
+	
+	s->functions[write_ptr] = f;
+	s->write_pointer = new_write_ptr;
+	ReleaseSemaphore(s->semaphore, 1, 0);
+	
+#if _WIN32
+	LeaveCriticalSection(&s->mutex);
+#endif
+	
+	return true;
+}
+
+TB_API bool tb_module_compile(TB_Module* m) {
+	TB_JobSystem* s = m->jobs;
+	
+	// wait for the threads to finish
+	while (s->write_pointer != s->read_pointer) {
+		__builtin_ia32_pause();
+	}
+	
+	s->running = false;
+	m->compiled_functions.count = m->functions.count;
+    
+#if _WIN32
+	ReleaseSemaphore(m->jobs->semaphore, m->jobs->thread_count, 0);
+	WaitForMultipleObjects(s->thread_count, s->threads, TRUE, -1);
+	loop(i, s->thread_count) CloseHandle(s->threads[i]);
+	
+	DeleteCriticalSection(&s->mutex);
+#endif
+	
+	return true;
+}
+
+TB_API size_t tb_DEBUG_module_get_full_node_count(TB_Module* m) {
+	size_t node_count = 0;
+	loop(i, m->functions.count) {
+		node_count += m->functions.data[i].nodes.count;
+	}
+	return node_count;
+}
+
+TB_API void tb_module_destroy(TB_Module* m) {
+	loop(i, m->functions.count) {
+		tb_function_free(&m->functions.data[i]);
+		free(m->functions.data[i].name);
+	}
+    
+#if _WIN32
+	loop(i, m->code_region_count) {
+		VirtualFree(m->code_regions[i].data, 0, MEM_RELEASE);
+	}
+#else
+#error "TODO: setup code region delete"
+#endif
+    
+	free(m->functions.data);
+	free(m->compiled_functions.data);
+	free(m);
 }
 
 TB_API void tb_get_constraints(TB_Arch target_arch, const TB_FeatureSet* features, TB_FeatureConstraints* constraints) {
@@ -50,73 +268,6 @@ TB_API void tb_get_constraints(TB_Arch target_arch, const TB_FeatureSet* feature
     } else tb_todo();
 }
 
-TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, const TB_FeatureSet* features) {
-	TB_Module* m = calloc(1, sizeof(TB_Module));
-    
-	m->target_arch = target_arch;
-	m->target_system = target_system;
-	m->features = *features;
-    
-#if !TB_STRIP_LABELS
-	m->label_symbols.count = 0;
-	m->label_symbols.capacity = 64;
-	m->label_symbols.data = malloc(64 * sizeof(TB_LabelSymbol));
-#endif
-	
-	m->const32_patches.count = 0;
-	m->const32_patches.capacity = 64;
-	m->const32_patches.data = malloc(64 * sizeof(TB_ConstPool32Patch));
-    
-	m->call_patches.count = 0;
-	m->call_patches.capacity = 64;
-	m->call_patches.data = malloc(64 * sizeof(TB_FunctionPatch));
-	
-	m->files.count = 1;
-	m->files.capacity = 64;
-	m->files.data = malloc(64 * sizeof(TB_File));
-    m->files.data[0] = (TB_File){ 0 };
-	
-	m->functions.count = 0;
-	m->functions.data = malloc(TB_MAX_FUNCTIONS * sizeof(TB_Function));
-    
-	m->compiled_functions.count = 0;
-	m->compiled_functions.data = malloc(TB_MAX_FUNCTIONS * sizeof(TB_FunctionOutput));
-    
-	m->line_info_count = 0;
-	
-	return m;
-}
-
-TB_API void tb_module_destroy(TB_Module* m) {
-	loop(i, m->functions.count) {
-#if _WIN32
-		// Windows is different :P
-		_aligned_free(m->functions.data[i].nodes.type);
-		_aligned_free(m->functions.data[i].nodes.dt);
-		_aligned_free(m->functions.data[i].nodes.payload);
-#else
-		free(m->functions.data[i].nodes.type);
-		free(m->functions.data[i].nodes.dt);
-		free(m->functions.data[i].nodes.payload);
-#endif
-		
-		free(m->functions.data[i].name);
-	}
-    
-	
-#if _WIN32
-	loop(i, m->code_region_count) {
-		VirtualFree(m->code_regions[i].data, 0, MEM_RELEASE);
-	}
-#else
-#error "TODO: setup code region delete"
-#endif
-    
-	free(m->functions.data);
-	free(m->compiled_functions.data);
-	free(m);
-}
-
 TB_API TB_FileID tb_register_file(TB_Module* m, const char* path) {
 	if (m->files.count + 1 >= m->files.capacity) {
 		m->files.capacity *= 2;
@@ -144,148 +295,6 @@ static uint32_t fnv1a(const void* data, size_t num_bytes) {
 	}
 	
 	return hash;
-}
-
-#define OPT(x) if (tb_opt_ ## x (f)) goto repeat_opt
-static void tb_optimize_func(TB_Function* f) {
-	repeat_opt: {
-		//tb_function_print(f);
-		//printf("\n\n\n");
-		
-		OPT(remove_pass_node);
-		OPT(canonicalize);
-		OPT(strength_reduction);
-		OPT(mem2reg);
-		OPT(dce);
-		OPT(compact_dead_regs);
-	}
-	
-	tb_function_print(f);
-	printf("\n\n\n");
-}
-#undef OPT
-
-static size_t tb_compile_func(TB_Module* m, size_t i, uint8_t* code) {
-	if (tb_validate(&m->functions.data[i])) abort();
-	
-	if (m->optimization_level != TB_OPT_O0) {
-		tb_optimize_func(&m->functions.data[i]);
-	}
-	
-	m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features, code);
-	return m->compiled_functions.data[i].code_size;
-}
-
-// NOTE(NeGate): I really don't like how this looks
-typedef struct CodegenThreadInfo {
-	TB_Module* m;
-	size_t id;
-} CodegenThreadInfo;
-
-static OS_API int tb_x64_compile_thread(CodegenThreadInfo* info) {
-	TB_Module* m = info->m;
-	size_t id = info->id;
-	
-	uint8_t* code = m->code_regions[id].data;
-	size_t code_size = 0;
-	
-	const size_t func_count = m->compiled_functions.count;
-	while (true) {
-		size_t i = m->compiled_functions.num_reserved++;
-		if (i >= func_count) return 0;
-		
-		code_size += tb_compile_func(m, i, &code[code_size]);
-		m->compiled_functions.num_compiled++;
-	}
-	
-	m->code_regions[info->id].size = code_size;
-}
-
-// TODO(NeGate): Consider using separate memory regions with guard pages for the
-// code regions.
-TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_threads) {
-	assert(max_threads >= 1 && max_threads <= TB_MAX_THREADS);
-	
-	m->optimization_level = optimization_level;
-	m->compiled_functions.count = m->functions.count;
-    
-	size_t ir_initial_node_count = 0;
-	loop(i, m->functions.count) {
-		ir_initial_node_count += m->functions.data[i].nodes.count;
-	}
-	
-	// Size of one code output region, for the single threaded case it just
-	// makes one huge buffer the size of TB_MAX_THREADS * code_output_stride
-	const size_t code_output_stride = 16 * 1024 * 1024;
-	
-	m->code_region_count = max_threads;
-	if (max_threads > 1) {
-		// TODO(NeGate): Needs some rework, but it should
-		// be a simple way of doing multithreading
-		m->compiled_functions.num_compiled = 0;
-		m->compiled_functions.num_reserved = 0;
-		
-#ifdef _WIN32
-		HANDLE threads[TB_MAX_THREADS];
-		CodegenThreadInfo startup_info[TB_MAX_THREADS];
-		
-		switch (m->target_arch) {
-			case TB_ARCH_X86_64:
-			loop(i, max_threads) {
-				m->code_regions[i].size = 0;
-				m->code_regions[i].data = VirtualAlloc(NULL, code_output_stride, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-				
-				startup_info[i] = (CodegenThreadInfo){ m, i };
-				threads[i] = CreateThread(NULL, 2 * 1024 * 1024, (LPTHREAD_START_ROUTINE)tb_x64_compile_thread, &startup_info[i], 0, 0);
-			}
-			break;
-			default:
-			printf("TinyBackend error: Unknown target!\n");
-			tb_todo();
-		}
-		
-		WaitForMultipleObjects(max_threads, threads, TRUE, -1);
-		loop(i, max_threads) {
-			CloseHandle(threads[i]);
-		}
-#else
-		// TODO(NeGate): Implement threading for Posix
-		tb_todo();
-#endif
-	} else {
-#ifdef _WIN32
-		uint8_t* code = m->code_regions[0].data = VirtualAlloc(NULL, TB_MAX_THREADS * code_output_stride, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-#else
-		tb_todo();
-#endif
-		
-		if (optimization_level != TB_OPT_O0) loop(i, m->functions.count) {
-			tb_optimize_func(&m->functions.data[i]);
-		}
-		
-		size_t code_size = 0;
-		switch (m->target_arch) {
-			case TB_ARCH_X86_64:
-			loop(i, m->functions.count) {
-				m->compiled_functions.data[i] = x64_fast_code_gen.compile_function(&m->functions.data[i], &m->features, &code[code_size]);
-				code_size += m->compiled_functions.data[i].code_size;
-			}
-			break;
-			default:
-			printf("TinyBackend error: Unknown target!\n");
-			tb_todo();
-		}
-		
-		m->code_regions[0].size = code_size;
-	}
-	
-	size_t ir_final_node_count = 0;
-	loop(i, m->functions.count) {
-		ir_final_node_count += m->functions.data[i].nodes.count;
-	}
-	printf("Node count: %zu -> %zu\n", ir_initial_node_count, ir_final_node_count);
-	
-	return true;
 }
 
 TB_API bool tb_module_export(TB_Module* m, FILE* f) {
@@ -408,14 +417,9 @@ TB_API TB_Label tb_get_current_label(TB_Function* f) {
 //
 TB_TemporaryStorage* tb_tls_allocate() {
 	static _Thread_local uint8_t* tb_thread_storage;
-	static uint8_t tb_temporary_storage[TB_TEMPORARY_STORAGE_SIZE * TB_MAX_THREADS];
-	static atomic_uint tb_used_tls_slots;
 	
 	if (tb_thread_storage == NULL) {
-		unsigned int slot = atomic_fetch_add(&tb_used_tls_slots, 1);
-		if (slot >= TB_MAX_THREADS) tb_todo();
-        
-		tb_thread_storage = &tb_temporary_storage[slot * TB_TEMPORARY_STORAGE_SIZE];
+		tb_thread_storage = malloc(TB_TEMPORARY_STORAGE_SIZE);
 	}
     
 	TB_TemporaryStorage* store = (TB_TemporaryStorage*)tb_thread_storage;

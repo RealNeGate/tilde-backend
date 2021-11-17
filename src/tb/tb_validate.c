@@ -1,8 +1,8 @@
 #define TB_INTERNAL
 #include "tb.h"
 
-int tb_validate(TB_Function* f) {
-	if (f->validated) return 0;
+bool tb_validate(TB_Function* f) {
+	if (f->validated) return true;
 	int error_count = 0;
 	
 	for (TB_Register i = 1; i < f->nodes.count; i++) {
@@ -63,5 +63,5 @@ int tb_validate(TB_Function* f) {
 	if (error_count) tb_function_print(f);
 	
 	f->validated = true;
-	return error_count;
+	return (error_count == 0);
 }

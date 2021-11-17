@@ -1,6 +1,7 @@
 #include "tb/tb.h"
 
 void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* features);
+
 TB_Function* test_add_i8(TB_Module* m);
 TB_Function* test_add_i16(TB_Module* m);
 TB_Function* test_add_i32(TB_Module* m);
@@ -47,7 +48,7 @@ int main(int argc, char** argv) {
 }
 
 void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
-	TB_Module* m = tb_module_create(arch, system, features);
+	TB_Module* m = tb_module_create(arch, system, features, TB_OPT_O0, 1);
     
 	typedef TB_Function*(*TestFunction)(TB_Module* m);
 	static const TestFunction test_functions[] = {
@@ -66,24 +67,23 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_zero_mem,
 		test_add_sub_i32,
 		test_locals_params_1,
-		/*
+		test_add_f32,
+		test_andor_i32,
+		test_muladd_f32,
+		test_fib,
 		test_vadd_f32x4,
-				test_vmuladd_f32x4,
-				test_add_f32,
-				test_andor_i32,
-				test_muladd_f32,
-				test_fib,
-				test_foo,
-				test_switch_case,
-				test_entry*/
+		test_vmuladd_f32x4,
+		test_foo,
+		test_entry,
+		// test_switch_case
 	};
 	size_t count = sizeof(test_functions) / sizeof(test_functions[0]);
 	
 	for (size_t i = 0; i < count; i++) {
-		tb_function_print(test_functions[i](m));
+		tb_module_compile_func(m, test_functions[i](m));
 	}
     
-	if (!tb_module_compile(m, TB_OPT_O1, 1)) abort();
+	if (!tb_module_compile(m)) abort();
 	if (!tb_module_export(m, f)) abort();
 	
 	tb_module_destroy(m);

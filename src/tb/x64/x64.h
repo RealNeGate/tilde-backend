@@ -10,6 +10,11 @@
 
 _Static_assert(sizeof(float) == sizeof(uint32_t), "Float needs to be a 32-bit single float!");
 
+typedef union Cvt_F32U32 {
+	float f;
+	uint32_t i;
+} Cvt_F32U32;
+
 typedef enum Cond {
 	O, NO, B, X64, E, NE, BE, A,
 	S, NS, P, NP, L, GE, LE, G,
@@ -310,6 +315,19 @@ inline static Val val_stack(TB_DataType dt, int s) {
 	};
 }
 
+inline static Val val_base_disp(TB_DataType dt, GPR b, int d) {
+	return (Val) {
+		.type = VAL_MEM,
+		.dt = dt,
+		.mem = {
+			.base = b,
+			.index = GPR_NONE,
+			.scale = SCALE_X1,
+			.disp = d
+		}
+	};
+}
+
 inline static bool is_value_gpr(const Val* v, GPR g) {
 	if (v->type != VAL_GPR) return false;
 	
@@ -354,9 +372,15 @@ static void def(Ctx* ctx, TB_Function* f, const Val v, TB_Register r);
 // allocates a new gpr as the `r` virtual reg
 static void def_new_gpr(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, int dt_type);
 
+// allocates a new xmm as the `r` virtual reg
+static void def_new_xmm(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_DataType dt);
+
 // if something is bound to this GPR, it's spilled into a stack slot
 // returns true if it spilled
 static bool evict_gpr(Ctx* ctx, TB_Function* f, GPR g);
+
+// same as evict_gpr(...) but for XMM
+static bool evict_xmm(Ctx* ctx, TB_Function* f, XMM x);
 
 static void materialize(Ctx* ctx, TB_Function* f, Val* dst, const Val* src, TB_Register src_reg, TB_DataType dt);
 
@@ -372,4 +396,5 @@ static void isel_aliased(Ctx* ctx, TB_Function* f, Val* v, const IselInfo* info,
 // Garbage collects up to the `r` register (doesn't handle registers 
 // between basic blocks only locals).
 // Returns true if any virtual registers were unused and now gone.
-static bool garbage_collect(Ctx* ctx, TB_Function* f, TB_Register r);
+static bool garbage_collect_gpr(Ctx* ctx, TB_Function* f, TB_Register r);
+static bool garbage_collect_xmm(Ctx* ctx, TB_Function* f, TB_Register r);

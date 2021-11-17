@@ -2,7 +2,7 @@
 #include <x86intrin.h>
 #include <windows.h>
 
-#define TRIAL_COUNT 50000
+#define TRIAL_COUNT 100000
 
 static uint32_t gen_random_any();
 static uint32_t gen_random(uint32_t min, uint32_t max);
@@ -115,7 +115,7 @@ static __stdcall int ir_gen(FuzzerInfo* i) {
 		
 		// try to use later values for return
 		tb_inst_ret(f, dt, pool[gen_random(pool_size / 2, pool_size)]);
-		//tb_function_print(f);
+		tb_module_compile_func(m, f);
 		n++;
 	}
 	
@@ -134,7 +134,9 @@ int main(int argc, char** argv) {
 	clock_t t1 = clock();
 	TB_FeatureSet features = { 0 };
 	
-	m = tb_module_create(TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features);
+	m = tb_module_create(TB_ARCH_X86_64,
+						 TB_SYSTEM_WINDOWS, &features,
+						 TB_OPT_O0, thread_count);
 	
 	rng.inc = __builtin_bswap64(__rdtsc()) >> 7;
 	printf("Initial seed: 0x%llx 0x%llx\n", rng.state, rng.inc);
@@ -150,7 +152,7 @@ int main(int argc, char** argv) {
 			info[i].initial_inc = (((uint64_t)gen_random_any()) << 32ull) 
 				| ((uint64_t)gen_random_any());
 			
-			printf("Thread seed: 0x%llx 0x%llx\n", info[i].initial_state, info[i].initial_inc);
+			//printf("Thread seed: 0x%llx 0x%llx\n", info[i].initial_state, info[i].initial_inc);
 		}
 		
 		for (size_t i = 0; i < thread_count; i++) {
@@ -164,7 +166,7 @@ int main(int argc, char** argv) {
 	clock_t t2 = clock();
 	printf("IR gen took %f ms\n", ((t2 - t1) / (double)CLOCKS_PER_SEC) * 1000.0);
 	
-	if (!tb_module_compile(m, TB_OPT_O0, thread_count)) abort();
+	if (!tb_module_compile(m)) abort();
 	
 	clock_t t3 = clock();
 	printf("Machine code gen took %f ms\n", ((t3 - t2) / (double)CLOCKS_PER_SEC) * 1000.0);
@@ -175,8 +177,16 @@ int main(int argc, char** argv) {
 	
 	clock_t t4 = clock();
 	printf("Object file output took %f ms\n", ((t4 - t3) / (double)CLOCKS_PER_SEC) * 1000.0);
+	
+	double compile_time = ((t4 - t1) / (double)CLOCKS_PER_SEC);
 	printf("=========================================\n"
 		   "Compilation took %f ms\n", ((t4 - t1) / (double)CLOCKS_PER_SEC) * 1000.0);
+	
+	size_t node_count = tb_DEBUG_module_get_full_node_count(m);
+	double speed = ((double)node_count / compile_time) / 1000000.0;
+	
+	printf("Node count: %zu\n", node_count);
+	printf("  %f million nodes/second\n", speed);
 	
 	tb_module_destroy(m);
 	return 0;

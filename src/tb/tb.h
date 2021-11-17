@@ -218,10 +218,12 @@ typedef struct TB_FunctionOutput TB_FunctionOutput;
 // *******************************
 TB_API void tb_get_constraints(TB_Arch target_arch, const TB_FeatureSet* features, TB_FeatureConstraints* constraints);
 
-TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, const TB_FeatureSet* features);
+TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, const TB_FeatureSet* features, int optimization_level, int max_threads);
+TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f);
+TB_API size_t tb_DEBUG_module_get_full_node_count(TB_Module* m);
 TB_API void tb_module_destroy(TB_Module* m);
 
-TB_API bool tb_module_compile(TB_Module* m, int optimization_level, int max_threads);
+TB_API bool tb_module_compile(TB_Module* m);
 TB_API bool tb_module_export(TB_Module* m, FILE* f);
 TB_API void tb_module_export_jit(TB_Module* m);
 
@@ -320,20 +322,27 @@ TB_API void tb_function_print(TB_Function* f);
 // maps to a valid IR register except 0 which is reserved as the null register.
 #ifdef TB_INTERNAL
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#endif
+
 typedef struct TB_Emitter {
 	size_t capacity, count;
 	uint8_t* data;
 } TB_Emitter;
 
+// NOTE(NeGate): Don't reorder this stuff... bitch
 typedef enum TB_RegTypeEnum {
     TB_NULL,
 	
 	// instructions with side-effects
 	TB_LINE_INFO,
-	TB_ICALL,
+	TB_ICALL, /* internal use only, inline call */
 	TB_CALL,
-    
-    TB_LOAD,
+	TB_ECALL, /* extern call */
+	
+	TB_LOAD,
     TB_STORE,
 	
 	TB_MEMCPY,
@@ -572,6 +581,7 @@ typedef struct TB_NodeStream {
 } TB_NodeStream;
 
 struct TB_Function {
+	bool is_ir_free;
 	bool validated;
 	
 	char* name;
@@ -607,12 +617,39 @@ typedef struct TB_LabelSymbol {
 	uint32_t pos; // relative to the start of the function
 } TB_LabelSymbol;
 
+typedef struct CodegenThreadInfo {
+	TB_Module* m;
+	size_t id;
+} CodegenThreadInfo;
+
+typedef void(*CompileRoutine)(TB_Function* f);
+
+#define MAX_JOBS_PER_JOB_SYSTEM 4096
+
+typedef struct TB_JobSystem {
+#if _WIN32
+	CRITICAL_SECTION mutex;
+#endif
+	
+	// FIFO queue
+	_Atomic bool running;
+	_Atomic uint32_t read_pointer; // Read
+	_Atomic uint32_t write_pointer; // Write
+	
+	uint32_t thread_count;
+	void* semaphore;
+	void* threads[TB_MAX_THREADS];
+	
+	TB_Function* functions[MAX_JOBS_PER_JOB_SYSTEM];
+} TB_JobSystem;
+
 struct TB_Module {
+	int optimization_level;
+	
 	TB_Arch target_arch;
 	TB_System target_system;
 	TB_FeatureSet features;
-	
-	int optimization_level;
+	TB_JobSystem* jobs;
 	
 	// This number is calculated while the builders are running
 	// if the optimizations are run this number is set to SIZE_MAX
@@ -651,9 +688,6 @@ struct TB_Module {
 	} functions;
     
 	struct {
-		_Atomic size_t num_compiled;
-		_Atomic size_t num_reserved;
-		
 		size_t count;
 		TB_FunctionOutput* data;
 	} compiled_functions;
@@ -670,7 +704,7 @@ struct TB_Module {
 	// each can work at the same time without
 	// making any allocations within the code
 	// gen.
-	size_t code_region_count;
+	_Atomic size_t code_region_count;
 	struct {
 		size_t size;
 		uint8_t* data;
@@ -739,7 +773,7 @@ inline static uint64_t tb_next_pow2(uint64_t x) {
 TB_TemporaryStorage* tb_tls_allocate();
 // Allocates/Clears the temporary storage. It won't zero out the memory just mark the TLS as empty.
 
-int tb_validate(TB_Function* f);
+bool tb_validate(TB_Function* f);
 
 void* tb_tls_push(TB_TemporaryStorage* store, size_t size);
 // Reserves memory from the TLS and returns pointer to the beginning of the allocation.
@@ -795,7 +829,8 @@ inline static void tb_kill_op(TB_Function* f, TB_Register at) {
 //
 // HELPER FUNCTIONS
 //
-#define CALL_NODE_PARAM_COUNT(f, i) ((f)->nodes.payload[i].call.param_end - (f)->nodes.payload[i].call.param_start)
+#define CALL_NODE_PARAM_COUNT(f, i) \
+((f)->nodes.payload[i].call.param_end - (f)->nodes.payload[i].call.param_start)
 
 #if TB_HOST_ARCH == TB_HOST_X86_64
 #define FOR_EACH_NODE(iterator, func, target, ...) \
@@ -841,20 +876,6 @@ bool tb_opt_canonicalize(TB_Function* f);
 bool tb_opt_remove_pass_node(TB_Function* f);
 bool tb_opt_strength_reduction(TB_Function* f);
 bool tb_opt_compact_dead_regs(TB_Function* f);
-
-// A lot of functions in TB require the ability to efficiently stream through the
-// IR to find a specific node type.
-/*typedef struct TB_NodeIter {
-	
-} TB_NodeIter;
-
-inline void tb_node_iter_cond() {
-	
-}
-
-inline void tb_node_iter_cond() {
-	
-}*/
 
 TB_API void tb_find_live_intervals(const TB_Function* f, TB_Register intervals[]);
 

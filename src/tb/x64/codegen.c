@@ -141,7 +141,8 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 						  if (TB_IS_FLOAT_TYPE(dt.type) || dt.count > 1) {
 							  ctx->xmm_desc[id] = i;
 							  
-							  tb_todo();
+							  printf("   PARAM XMM%d\n", GPR_NAMES[id]);
+							  def(ctx, f, val_xmm(dt, id), i);
 						  } else if (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR) {
 							  ctx->gpr_desc[GPR_PARAMETERS[id]] = i;
 							  printf("   PARAM GPR %s\n", GPR_NAMES[GPR_PARAMETERS[id]]);
@@ -517,10 +518,105 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					}
 					break;
 				}
+				case TB_CALL: {
+					int param_start = p->call.param_start;
+					int param_count = p->call.param_end - p->call.param_start;
+					
+					// Evict the GPRs that are caller saved
+					for (size_t j = 0; j < 16; j++) {
+						if (ABI_CALLER_SAVED & (1u << j)) evict_gpr(ctx, f, j);
+					}
+					
+					// Evict the XMMs that are caller saved
+					for (size_t j = 0; j < param_count; j++) {
+						TB_DataType param_dt = f->nodes.dt[param_start + j];
+						
+						if (j < 4 && (param_dt.count > 1 ||
+									  TB_IS_FLOAT_TYPE(param_dt.type))) {
+							evict_xmm(ctx, f, j);
+						}
+					}
+					
+					// evict return value
+					if (dt.count > 1 || TB_IS_FLOAT_TYPE(dt.type)) {
+						evict_xmm(ctx, f, XMM0);
+					} else if (dt.type != TB_VOID) {
+						evict_gpr(ctx, f, RAX);
+					}
+					
+					// We need to reserve some registers until the function is
+					// done so we save out all the bindings and restore it right
+					// after the function call.
+					TB_Register reserved_gpr[16];
+					TB_Register reserved_xmm[16];
+					memcpy(reserved_gpr, ctx->gpr_desc, 16 * sizeof(TB_Register));
+					memcpy(reserved_xmm, ctx->xmm_desc, 16 * sizeof(TB_Register));
+					
+					// evaluate parameters
+					for (size_t j = 0; j < param_count; j++) {
+						TB_Register param_reg = f->vla.data[param_start + j];
+						
+						Val param;
+						use(ctx, f, &param, param_reg, i);
+						
+						if (j < 4) {
+							if (param.dt.count > 1 ||
+								TB_IS_FLOAT_TYPE(param.dt.type)) {
+								Val dst = val_xmm(param.dt, j);
+								
+								// move into param slot
+								inst2(ctx,
+									  param.dt.count == 1 ? MOVSS : MOVAPS,
+									  &dst, &param,
+									  TB_F32);
+								
+								// reserve for a bit
+								ctx->xmm_desc[j] = TB_REG_MAX;
+							} else if (param.dt.type != TB_VOID) {
+								Val dst = val_gpr(param.dt.type, GPR_PARAMETERS[j]);
+								if (!is_value_gpr(&param, GPR_PARAMETERS[j])) {
+									inst2(ctx, MOV, &dst, &param, param.dt.type);
+								}
+								
+								// reserve for a bit
+								ctx->gpr_desc[GPR_PARAMETERS[j]] = TB_REG_MAX;
+							}
+						} else {
+							// parameter is in memory
+							tb_todo();
+						}
+					}
+					
+					// CALL instruction and patch
+					int target_func = p->call.target - f->module->functions.data;
+					int source_func = f - f->module->functions.data;
+					
+					tb_emit_call_patch(f->module, source_func, target_func, code_pos() + 1);
+					
+					// CALL rel32
+					emit(0xE8);
+					emit4(0x0);
+					
+					// Restore those saved slots
+					memcpy(reserved_gpr, ctx->gpr_desc, 16 * sizeof(TB_Register));
+					memcpy(reserved_xmm, ctx->xmm_desc, 16 * sizeof(TB_Register));
+					
+					// the return value
+					if (dt.type == TB_VOID) {
+						/* none */
+					} else if (dt.count > 1 || TB_IS_FLOAT_TYPE(dt.type)) {
+						Val xmm0 = val_xmm(dt, XMM0);
+						def(ctx, f, xmm0, i);
+					} else {
+						Val rax = val_gpr(dt.type, RAX);
+						def(ctx, f, rax, i);
+					}
+					break;
+				}
 				case TB_MEMSET: {
-					TB_Register dst_reg = f->nodes.payload[i].mem_op.dst;
-					TB_Register val_reg = f->nodes.payload[i].mem_op.src;
-					TB_Register size_reg = f->nodes.payload[i].mem_op.size;
+					TB_Register dst_reg = p->mem_op.dst;
+					TB_Register val_reg = p->mem_op.src;
+					TB_Register size_reg = p->mem_op.size;
 					//int align = f->nodes.payload[i].mem_op.align;
 					
 					// TODO(NeGate): Implement vector memset
@@ -696,6 +792,36 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 				*v = val_imm(dt, p.i_const.lo);
 				break;
 			}
+			case TB_FLOAT_CONST: {
+				// Unlike integers, there's no float immediates
+				def_new_xmm(ctx, f, v, r, dt);
+				XMM dst_xmm = v->xmm;
+				
+				assert(dt.type == TB_F32 && dt.count == 1);
+				uint32_t imm = (Cvt_F32U32){ .f = p.f_const }.i;
+				
+				if (imm == 0) {
+					if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
+					emit(0x0F);
+					emit(0x57);
+					emit(mod_rx_rm(MOD_DIRECT, dst_xmm, dst_xmm));
+				} else {
+					// Convert it to raw bits
+					if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
+					emit(0xF3);
+					emit(0x0F);
+					emit(0x10);
+					emit(((dst_xmm & 7) << 3) | RBP);
+					
+					size_t func_id = f - f->module->functions.data;
+					uint32_t offset = tb_emit_const32_patch(f->module, 
+															func_id,
+															code_pos(),
+															imm);
+					emit4(offset);
+				}
+				break;
+			}
 			case TB_LOAD: {
 				use(ctx, f, v, p.load.address, next);
 				assert(v->type == VAL_MEM);
@@ -729,6 +855,43 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 				inst1(ctx, NOT, v);
 				break;
 			}
+			case TB_FADD:
+			case TB_FSUB:
+			case TB_FMUL:
+			case TB_FDIV: {
+				const static IselInfo tbl[] = {
+					// inst   commut has_imm mem_dst mem_src   
+					{ ADDSS,  true,  true,   false,  true },
+					{ SUBSS,  true,  true,   false,  true },
+					{ MULSS,  true,  true,   false,  true },
+					{ DIVSS,  true,  true,   false,  true },
+					
+					// 4-wide versions
+					{ ADDPS,  true,  true,   false,  true },
+					{ SUBPS,  true,  true,   false,  true },
+					{ MULPS,  true,  true,   false,  true },
+					{ DIVPS,  true,  true,   false,  true }
+				};
+				assert((dt.count == 1 || dt.count == 4) && dt.type == TB_F32);
+				const IselInfo* info = &tbl[(dt.count == 4 ? 4 : 0) + (reg_type - TB_FADD)];
+				
+				TB_Register a_reg = p.f_arith.a;
+				TB_Register b_reg = p.f_arith.b;
+				
+				if (a_reg == b_reg) {
+					Val src;
+					use(ctx, f, &src, a_reg, r);
+					
+					isel_aliased(ctx, f, v, info, r, a_reg, &src);
+				} else {
+					Val a, b;
+					use(ctx, f, &a, a_reg, r);
+					use(ctx, f, &b, b_reg, r);
+					
+					isel(ctx, f, v, info, r, a_reg, b_reg, &a, &b);
+				}
+				break;
+			}
 			case TB_AND:
 			case TB_OR:
 			case TB_XOR:
@@ -737,12 +900,12 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 			case TB_MUL: {
 				const static IselInfo tbl[] = {
 					// type               inst  commut  has_imm  mem_dst  mem_src   
-					[TB_AND - TB_AND] = { AND,  true,   true,    false,   false },
-					[TB_OR  - TB_AND] = { OR,   true,   true,    false,   false },
-					[TB_XOR - TB_AND] = { XOR,  true,   true,    false,   false },
-					[TB_ADD - TB_AND] = { ADD,  true,   true,    false,   false },
-					[TB_SUB - TB_AND] = { SUB,  false,  true,    false,   false },
-					[TB_MUL - TB_AND] = { IMUL, true,   false,   false,   false }
+					[TB_AND - TB_AND] = { AND,  true,   true,    false,   true },
+					[TB_OR  - TB_AND] = { OR,   true,   true,    false,   true },
+					[TB_XOR - TB_AND] = { XOR,  true,   true,    false,   true },
+					[TB_ADD - TB_AND] = { ADD,  true,   true,    false,   true },
+					[TB_SUB - TB_AND] = { SUB,  false,  true,    false,   true },
+					[TB_MUL - TB_AND] = { IMUL, true,   false,   false,   true }
 				};
 				const IselInfo* info = &tbl[reg_type - TB_AND];
 				
@@ -758,8 +921,6 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 					Val a, b;
 					use(ctx, f, &a, a_reg, r);
 					use(ctx, f, &b, b_reg, r);
-					assert(a.type != VAL_NONE);
-					assert(b.type != VAL_NONE);
 					
 					if (dt.count == 1 &&
 						reg_type == TB_ADD &&
@@ -775,6 +936,24 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 						emit(0x8D);
 						emit(mod_rx_rm(MOD_INDIRECT, dst_gpr, RSP));
 						emit(mod_rx_rm(SCALE_X1, (b.gpr & 7) == RSP ? RSP : b.gpr, a.gpr));
+					} else if (dt.count == 1 &&
+							   reg_type == TB_ADD &&
+							   a.type == VAL_GPR &&
+							   b.type == VAL_IMM) {
+						// lea _0, [_1 + _2]
+						def_new_gpr(ctx, f, v, r, dt.type);
+						Val arith = val_base_disp(dt, a.gpr, b.imm);
+						
+						inst2(ctx, LEA, v, &arith, dt.type);
+					} else if (dt.count == 1 &&
+							   reg_type == TB_SUB &&
+							   a.type == VAL_GPR &&
+							   b.type == VAL_IMM) {
+						// lea _0, [_1 + _2]
+						def_new_gpr(ctx, f, v, r, dt.type);
+						Val arith = val_base_disp(dt, a.gpr, -b.imm);
+						
+						inst2(ctx, LEA, v, &arith, dt.type);
 					} else {
 						isel(ctx, f, v, info, r, a_reg, b_reg, &a, &b);
 					}
@@ -965,24 +1144,25 @@ static void def(Ctx* ctx, TB_Function* f, const Val v, TB_Register r) {
 }
 
 static void def_new_gpr(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, int dt_type) {
-	try_again:
-	for (size_t i = 0; i < 14; i++) {
-		GPR gpr = GPR_PRIORITY_LIST[i];
-		
-		if (ctx->gpr_desc[gpr] == 0) {
-			// mark register as to be saved
-			ctx->regs_to_save |= (1u << gpr) & ABI_CALLEE_SAVED;
+	do {
+		for (size_t i = 0; i < 14; i++) {
+			GPR gpr = GPR_PRIORITY_LIST[i];
 			
-			ctx->gpr_desc[gpr] = r;
-			ctx->addr_desc[r] = val_gpr(dt_type, gpr);
-			
-			*v = ctx->addr_desc[r];
-			printf("   allocated r%u <- %s\n", r, GPR_NAMES[gpr]);
-			return;
+			if (ctx->gpr_desc[gpr] == 0) {
+				// mark register as to be saved
+				ctx->regs_to_save |= (1u << gpr) & ABI_CALLEE_SAVED;
+				
+				ctx->gpr_desc[gpr] = r;
+				ctx->addr_desc[r] = val_gpr(dt_type, gpr);
+				
+				*v = ctx->addr_desc[r];
+				printf("   allocated r%u <- %s\n", r, GPR_NAMES[gpr]);
+				return;
+			}
 		}
-	}
-	
-	if (garbage_collect(ctx, f, r)) goto try_again;
+		
+		// If it fails just try GCing it and hopefully space was made.
+	} while (garbage_collect_gpr(ctx, f, r));
 	
 	// TODO(NeGate): Try figuring out which register is best to evict.
 	for (size_t i = 14; i--;) {
@@ -991,6 +1171,39 @@ static void def_new_gpr(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, int dt_
 		if (evict_gpr(ctx, f, gpr)) {
 			ctx->gpr_desc[gpr] = r;
 			ctx->addr_desc[r] = val_gpr(dt_type, gpr);
+			
+			*v = ctx->addr_desc[r];
+			return;
+		}
+	}
+	
+	abort();
+}
+
+static void def_new_xmm(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_DataType dt) {
+	do {
+		for (size_t i = 0; i < 16; i++) {
+			if (ctx->xmm_desc[i] == 0) {
+				// mark register as to be saved
+				// ctx->regs_to_save |= (1u << (i + 32)) & ABI_CALLEE_SAVED;
+				
+				ctx->xmm_desc[i] = r;
+				ctx->addr_desc[r] = val_xmm(dt, i);
+				
+				*v = ctx->addr_desc[r];
+				printf("   allocated r%u <- XMM%d\n", r, i);
+				return;
+			}
+		}
+		
+		// If it fails just try GCing it and hopefully space was made.
+	} while (garbage_collect_xmm(ctx, f, r));
+	
+	// TODO(NeGate): Try figuring out which register is best to evict.
+	for (size_t i = 16; i--;) {
+		if (evict_xmm(ctx, f, i)) {
+			ctx->xmm_desc[i] = r;
+			ctx->addr_desc[r] = val_xmm(dt, i);
 			
 			*v = ctx->addr_desc[r];
 			return;
@@ -1022,13 +1235,44 @@ static bool evict_gpr(Ctx* ctx, TB_Function* f, GPR g) {
 	return false;
 }
 
+static bool evict_xmm(Ctx* ctx, TB_Function* f, XMM x) {
+	TB_Register bound = ctx->xmm_desc[x];
+	
+	if (bound && bound != TB_REG_MAX) {
+		printf("   evicted XMM%d\n", x);
+		
+		// unbind it
+		ctx->xmm_desc[x] = 0;
+		
+		// spill it
+		TB_DataType dt = f->nodes.dt[bound];
+		
+		Val dst;
+		if (dt.count > 1) {
+			ctx->stack_usage = align_up(ctx->stack_usage + 16, 16);
+			dst = val_stack(f->nodes.dt[bound], -ctx->stack_usage);
+			
+			Val src = val_xmm(dt, x);
+			inst2(ctx, MOVAPS, &dst, &src, TB_F32);
+		} else if (dt.type == TB_F32) {
+			ctx->stack_usage = align_up(ctx->stack_usage + 8, 8);
+			dst = val_stack(f->nodes.dt[bound], -ctx->stack_usage);
+			
+			Val src = val_xmm(dt, x);
+			inst2(ctx, MOVSS, &dst, &src, TB_F32);
+		} else tb_todo();
+		
+		ctx->addr_desc[bound] = dst;
+		return true;
+	}
+	
+	return false;
+}
+
 static void materialize(Ctx* ctx, TB_Function* f, Val* dst, const Val* src, TB_Register src_reg, TB_DataType dt) {
 	if (dt.type == TB_F32 || dt.count > 1) {
-		/*Val temp = x64_allocate_xmm(ctx, src_reg, dt);
-		inst2(ctx, dt.count == 1 ? MOVSS : MOVAPS, &temp, &src, TB_F32);
-		
-		return temp;*/
-		tb_todo();
+		def_new_xmm(ctx, f, dst, src_reg, dt);
+		inst2(ctx, dt.count == 1 ? MOVSS : MOVAPS, dst, src, dt.type);
 	} else if (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR) {
 		def_new_gpr(ctx, f, dst, src_reg, dt.type);
 		inst2(ctx, MOV, dst, src, dt.type);
@@ -1044,6 +1288,7 @@ static void isel(Ctx* ctx, TB_Function* f, Val* v, const IselInfo* info,
 	assert(a != b);
 	
 	TB_DataType dst_dt = f->nodes.dt[dst_reg];
+	bool is_xmm = dst_dt.count > 1 || TB_IS_FLOAT_TYPE(dst_dt.type);
 	
 	// NOTE(NeGate): The operands are ordered for this "magic"
 	if (info->communitive && a->type < b->type) tb_swap(a, b);
@@ -1087,7 +1332,8 @@ static void isel(Ctx* ctx, TB_Function* f, Val* v, const IselInfo* info,
 		*v = av;
 	} else {
 		// dst = a, dst += b;
-		def_new_gpr(ctx, f, v, dst_reg, dst_dt.type);
+		if (is_xmm) def_new_xmm(ctx, f, v, dst_reg, dst_dt);
+		else def_new_gpr(ctx, f, v, dst_reg, dst_dt.type);
 		
 		int mov_type = MOV;
 		if (dst_dt.count > 1) mov_type = MOVAPS;
@@ -1127,7 +1373,7 @@ static void isel_aliased(Ctx* ctx, TB_Function* f, Val* v, const IselInfo* info,
 	}
 }
 
-static bool garbage_collect(Ctx* ctx, TB_Function* f, TB_Register end) {
+static bool garbage_collect_gpr(Ctx* ctx, TB_Function* f, TB_Register end) {
 	TB_Register bb = ctx->current_bb;
 	TB_Register bb_end = ctx->current_bb_end;
 	
@@ -1153,6 +1399,41 @@ static bool garbage_collect(Ctx* ctx, TB_Function* f, TB_Register end) {
 			} else {
 				printf("   gc kill r%u\n", r);
 				ctx->gpr_desc[i] = 0;
+				ctx->addr_desc[r] = (Val) { 0 };
+			}
+			changes++;
+		}
+	}
+	
+	return changes;
+}
+
+static bool garbage_collect_xmm(Ctx* ctx, TB_Function* f, TB_Register end) {
+	TB_Register bb = ctx->current_bb;
+	TB_Register bb_end = ctx->current_bb_end;
+	
+	int changes = 0;
+	for (size_t i = 0; i < 16; i++) {
+		TB_Register r = ctx->xmm_desc[i];
+		if (r <= bb || r > bb_end) continue;
+		if (f->nodes.type[r] == TB_PHI1) continue;
+		if (f->nodes.type[r] == TB_PHI2) continue;
+		
+		if (ctx->intervals[r] < end) {
+			if (f->nodes.type[r] == TB_PARAM) {
+				printf("   param spill r%u : %s\n", r, GPR_NAMES[i]);
+				
+				// Unbind the GPR and update the stack slot
+				int id = f->nodes.payload[r].param.id;
+				
+				Val dst = val_stack(f->nodes.dt[r], ctx->params[id]);
+				Val src = val_gpr(TB_I64, i);
+				
+				inst2(ctx, MOV, &dst, &src, TB_F32);
+				ctx->xmm_desc[i] = 0;
+			} else {
+				printf("   gc kill r%u\n", r);
+				ctx->xmm_desc[i] = 0;
 				ctx->addr_desc[r] = (Val) { 0 };
 			}
 			changes++;

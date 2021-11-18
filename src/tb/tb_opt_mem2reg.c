@@ -7,7 +7,6 @@ static TB_Register tb_walk_for_intermediate_phi(TB_Function* f, TB_Label label_c
 
 bool tb_opt_mem2reg(TB_Function* f) {
 	int changes = 0;
-	TB_Label initial_label = 0;
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	
 	int label_count = 0;
@@ -16,9 +15,7 @@ bool tb_opt_mem2reg(TB_Function* f) {
 	}
 	
 	for (TB_Register i = 1; i < f->nodes.count; i++) {
-		if (f->nodes.type[i] == TB_LABEL) {
-			initial_label = i;
-		} else if (f->nodes.type[i] == TB_LOCAL || f->nodes.type[i] == TB_PARAM_ADDR) {
+		if (f->nodes.type[i] == TB_LOCAL || f->nodes.type[i] == TB_PARAM_ADDR) {
 			// Make sure that the stack slots are coherent
 			TB_DataType initial_dt;
 			if (!tb_is_stack_slot_coherent(f, i, &initial_dt)) continue;

@@ -1,11 +1,5 @@
 #include "tb_internal.h"
 
-#ifdef _WIN32
-#define OS_API __stdcall
-#else
-#define OS_API
-#endif
-
 // Used for some optimizations
 #if TB_HOST_ARCH == TB_HOST_X86_64
 #include <x86intrin.h>
@@ -54,7 +48,12 @@ static void tb_optimize_func(TB_Function* f) {
 }
 #undef OPT
 
-static OS_API unsigned long job_system_thread_func(void* lpParam) {
+#if _WIN32
+static __stdcall unsigned long job_system_thread_func(void* lpParam)
+#else
+static void* job_system_thread_func(void* lpParam)
+#endif
+{
 	TB_Module* m = (TB_Module*) lpParam;
 	TB_JobSystem* s = m->jobs;
 	
@@ -65,10 +64,19 @@ static OS_API unsigned long job_system_thread_func(void* lpParam) {
 	assert(i < TB_MAX_THREADS);
 	
 	size_t code_size = 0;
+	
+#if _WIN32
 	uint8_t* code = VirtualAlloc(NULL,
 								 CODE_OUTPUT_BUFFER,
 								 MEM_RESERVE | MEM_COMMIT,
 								 PAGE_READWRITE);
+#else
+	uint8_t* code = mmap(NULL,
+						 CODE_OUTPUT_BUFFER,
+						 PROT_READ | PROT_WRITE, 
+						 MAP_PRIVATE | MAP_ANONYMOUS,
+						 -1, 0);
+#endif
 	
 	while (s->running) {
 		uint32_t read_ptr = s->read_pointer;
@@ -76,7 +84,11 @@ static OS_API unsigned long job_system_thread_func(void* lpParam) {
 		
 		if (read_ptr == s->write_pointer) {
 			// Nothing to do, just wait
+#if _WIN32
 			WaitForSingleObjectEx(s->semaphore, -1, false);
+#else
+			sem_wait(&s->semaphore);
+#endif
 			continue;
 		}
 		
@@ -144,7 +156,6 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
     
 	m->line_info_count = 0;
 	
-#ifdef _WIN32
 	TB_JobSystem* j = calloc(1, sizeof(TB_JobSystem));
 	m->jobs = j;
 	
@@ -153,6 +164,7 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
 	j->read_pointer = 0;
 	j->thread_count = max_threads;
 	
+#ifdef _WIN32
 	j->semaphore = CreateSemaphoreExA(0,
 									  max_threads, max_threads,
 									  0, 0,
@@ -165,6 +177,14 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
 	}
 	
 	InitializeCriticalSection(&j->mutex);
+#else
+	assert(!sem_init(&j->semaphore, 0, max_threads));
+	
+	loop(i, max_threads) {
+		pthread_create(&j->threads[i], 0, job_system_thread_func, m);
+	}
+	
+	pthread_mutex_init(&j->mutex, NULL);
 #endif
 	
 	return m;
@@ -176,6 +196,8 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
 	
 #if _WIN32
 	EnterCriticalSection(&s->mutex);
+#else
+	pthread_mutex_lock(&s->mutex);
 #endif
 	
 	uint32_t write_ptr = s->write_pointer;
@@ -183,15 +205,20 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
 	while (new_write_ptr == s->read_pointer) { 
 #if _WIN32
 		SwitchToThread();
+#else
+		sleep(0);
 #endif
 	}
 	
 	s->functions[write_ptr] = f;
 	s->write_pointer = new_write_ptr;
-	ReleaseSemaphore(s->semaphore, 1, 0);
 	
 #if _WIN32
+	ReleaseSemaphore(s->semaphore, 1, 0);
 	LeaveCriticalSection(&s->mutex);
+#else
+	sem_post(&s->semaphore);
+	pthread_mutex_unlock(&s->mutex);
 #endif
 	
 	return true;
@@ -238,7 +265,9 @@ TB_API void tb_module_destroy(TB_Module* m) {
 		VirtualFree(m->code_regions[i].data, 0, MEM_RELEASE);
 	}
 #else
-#error "TODO: setup code region delete"
+	loop(i, m->code_region_count) {
+		munmap(m->code_regions[i].data, CODE_OUTPUT_BUFFER);
+	}
 #endif
     
 	free(m->functions.data);

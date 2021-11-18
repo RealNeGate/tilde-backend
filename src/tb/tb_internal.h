@@ -19,6 +19,11 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#else
+#include <unistd.h>
+#include <sys/mman.h>
+#include <pthread.h>
+#include <semaphore.h>
 #endif
 
 #define MAX_JOBS_PER_JOB_SYSTEM 4096
@@ -335,6 +340,8 @@ typedef struct CodegenThreadInfo {
 typedef struct TB_JobSystem {
 #if _WIN32
 	CRITICAL_SECTION mutex;
+#else
+	pthread_mutex_t mutex;
 #endif
 	
 	// FIFO queue
@@ -343,8 +350,14 @@ typedef struct TB_JobSystem {
 	_Atomic uint32_t write_pointer;
 	
 	uint32_t thread_count;
-	void* semaphore;
-	void* threads[TB_MAX_THREADS];
+	
+#if _WIN32
+	HANDLE semaphore;
+	HANDLE threads[TB_MAX_THREADS];
+#else
+	sem_t semaphore;
+	pthread_t threads[TB_MAX_THREADS];
+#endif
 	
 	TB_Function* functions[MAX_JOBS_PER_JOB_SYSTEM];
 } TB_JobSystem;

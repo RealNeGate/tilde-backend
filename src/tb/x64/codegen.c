@@ -169,7 +169,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 						  goto done_with_param_scan;
 				  });
 	
-	done_with_param_scan:
+	done_with_param_scan:;
 	// Just the splitting point between parameters
 	// and locals in the stack.
 	int param_space = stack_usage;
@@ -263,7 +263,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 					// Float results use XMM0
 					Val dst = val_xmm(value.dt, XMM0);
 					
-					if (value.type != VAL_XMM || (value.type == VAL_XMM && value.gpr != XMM0)) {
+					if (value.type != VAL_XMM || (value.type == VAL_XMM && value.xmm != XMM0)) {
 						inst2(ctx, value.dt.count > 1 ? MOVAPS : MOVSS, &dst, &value, value.dt.type);
 					}
 				} else if (value.dt.type == TB_I8 ||

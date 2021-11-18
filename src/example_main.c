@@ -124,7 +124,7 @@ TB_Function* test_add_i8(TB_Module* m) {
 	
 	TB_Register a = tb_inst_iconst(func, TB_TYPE_I8(1), 64);
 	TB_Register b = tb_inst_iconst(func, TB_TYPE_I8(1), 32);
-	TB_Register sum = tb_inst_add(func, TB_TYPE_I8(1), a, b, TB_NO_WRAP);
+	TB_Register sum = tb_inst_add(func, TB_TYPE_I8(1), a, b, TB_ASSUME_NUW);
     
 	tb_inst_ret(func, TB_TYPE_I8(1), sum);
 	return func;
@@ -135,7 +135,7 @@ TB_Function* test_add_i16(TB_Module* m) {
 	
 	TB_Register a = tb_inst_iconst(func, TB_TYPE_I16(1), 64);
 	TB_Register b = tb_inst_iconst(func, TB_TYPE_I16(1), 32);
-	TB_Register sum = tb_inst_add(func, TB_TYPE_I16(1), a, b, TB_NO_WRAP);
+	TB_Register sum = tb_inst_add(func, TB_TYPE_I16(1), a, b, TB_ASSUME_NUW);
     
 	tb_inst_ret(func, TB_TYPE_I16(1), sum);
 	return func;
@@ -146,7 +146,7 @@ TB_Function* test_add_i32(TB_Module* m) {
 	
 	TB_Register a = tb_inst_iconst(func, TB_TYPE_I32(1), 64);
 	TB_Register b = tb_inst_iconst(func, TB_TYPE_I32(1), 32);
-	TB_Register sum = tb_inst_add(func, TB_TYPE_I32(1), a, b, TB_NO_WRAP);
+	TB_Register sum = tb_inst_add(func, TB_TYPE_I32(1), a, b, TB_ASSUME_NUW);
     
 	tb_inst_ret(func, TB_TYPE_I32(1), sum);
 	return func;
@@ -269,7 +269,7 @@ TB_Function* test_add_i64(TB_Module* m) {
 	
 	TB_Register a = tb_inst_iconst(func, TB_TYPE_I64(1), 64);
 	TB_Register b = tb_inst_iconst(func, TB_TYPE_I64(1), 32);
-	TB_Register sum = tb_inst_add(func, TB_TYPE_I64(1), a, b, TB_NO_WRAP);
+	TB_Register sum = tb_inst_add(func, TB_TYPE_I64(1), a, b, TB_ASSUME_NUW);
     
 	tb_inst_ret(func, TB_TYPE_I64(1), sum);
 	return func;
@@ -342,7 +342,7 @@ TB_Function* test_locals_1(TB_Module* m) {
     
 	TB_Register a = tb_inst_iconst(func, TB_TYPE_I32(1), 64);
 	TB_Register b = tb_inst_iconst(func, TB_TYPE_I32(1), 32);
-	TB_Register sum = tb_inst_add(func, TB_TYPE_I32(1), a, b, TB_NO_WRAP);
+	TB_Register sum = tb_inst_add(func, TB_TYPE_I32(1), a, b, TB_ASSUME_NUW);
     
 	tb_inst_store(func, TB_TYPE_I32(1), local, sum, 4);
 	tb_inst_ret(func, TB_TYPE_I32(1), tb_inst_load(func, TB_TYPE_I32(1), local, 4));
@@ -354,7 +354,7 @@ TB_Function* test_params_1(TB_Module* m) {
 	
 	TB_Register a = tb_inst_param(func, TB_TYPE_I32(1));
 	TB_Register b = tb_inst_param(func, TB_TYPE_I32(1));
-	TB_Register sum = tb_inst_add(func, TB_TYPE_I32(1), a, b, TB_NO_WRAP);
+	TB_Register sum = tb_inst_add(func, TB_TYPE_I32(1), a, b, TB_ASSUME_NUW);
     
 	tb_inst_ret(func, TB_TYPE_I32(1), sum);
 	return func;
@@ -373,7 +373,7 @@ TB_Function* test_params_2(TB_Module* m) {
                                   func, TB_TYPE_I32(1),
                                   tb_inst_load(func, TB_TYPE_I32(1), ap, 4),
                                   tb_inst_load(func, TB_TYPE_I32(1), bp, 4),
-                                  TB_NO_WRAP
+                                  TB_ASSUME_NUW
                                   );
     
 	tb_inst_ret(func, TB_TYPE_I32(1), sum);
@@ -394,7 +394,7 @@ TB_Function* test_locals_params_1(TB_Module* m) {
                                   func, TB_TYPE_I32(1),
                                   tb_inst_load(func, TB_TYPE_I32(1), ap, 4),
                                   tb_inst_load(func, TB_TYPE_I32(1), bp, 4),
-                                  TB_NO_WRAP
+                                  TB_ASSUME_NUW
                                   );
     
 	tb_inst_store(func, TB_TYPE_I32(1), local, sum, 4);
@@ -419,9 +419,9 @@ TB_Function* test_add_sub_i32(TB_Module* m) {
                                                  func, TB_TYPE_I32(1),
                                                  tb_inst_load(func, TB_TYPE_I32(1), ap, 4),
                                                  tb_inst_load(func, TB_TYPE_I32(1), bp, 4),
-                                                 TB_NO_WRAP
+                                                 TB_ASSUME_NUW
                                                  ),
-                                     TB_NO_WRAP
+                                     TB_ASSUME_NUW
                                      );
     
 	tb_inst_ret(func, TB_TYPE_I32(1), result);
@@ -443,13 +443,13 @@ TB_Function* test_fib(TB_Module* m) {
 	
 	tb_inst_label(func, 2); // .L2:
 	
-	TB_Register n_minus_one = tb_inst_sub(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 1), TB_NO_WRAP);
+	TB_Register n_minus_one = tb_inst_sub(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 1), TB_ASSUME_NUW);
 	TB_Register call1 = tb_inst_call(func, TB_TYPE_I32(1), func, 1, (TB_Register[]) { n_minus_one });
 	
-	TB_Register n_minus_two = tb_inst_sub(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 2), TB_NO_WRAP);
+	TB_Register n_minus_two = tb_inst_sub(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 2), TB_ASSUME_NUW);
 	TB_Register call2 = tb_inst_call(func, TB_TYPE_I32(1), func, 1, (TB_Register[]) { n_minus_two });
 	
-	TB_Register sum = tb_inst_add(func, TB_TYPE_I32(1), call1, call2, TB_NO_WRAP);
+	TB_Register sum = tb_inst_add(func, TB_TYPE_I32(1), call1, call2, TB_ASSUME_NUW);
 	tb_inst_ret(func, TB_TYPE_I32(1), sum);
 	
 	return func;
@@ -477,11 +477,11 @@ TB_Function* test_fact(TB_Module* m) {
 		// f = f * n
 		TB_Register f_ld = tb_inst_load(func, TB_TYPE_I32(1), f_addr, 4);
 		TB_Register n_ld = tb_inst_load(func, TB_TYPE_I32(1), n_addr, 4);
-		tb_inst_store(func, TB_TYPE_I32(1), f_addr, tb_inst_mul(func, TB_TYPE_I32(1), f_ld, n_ld, TB_NO_WRAP), 4);
+		tb_inst_store(func, TB_TYPE_I32(1), f_addr, tb_inst_mul(func, TB_TYPE_I32(1), f_ld, n_ld, TB_ASSUME_NUW), 4);
 		
 		// n = n - 1
 		TB_Register n_ld2 = tb_inst_load(func, TB_TYPE_I32(1), n_addr, 4);
-		tb_inst_store(func, TB_TYPE_I32(1), n_addr, tb_inst_sub(func, TB_TYPE_I32(1), n_ld2, tb_inst_iconst(func, TB_TYPE_I32(1), 1), TB_NO_WRAP), 4);
+		tb_inst_store(func, TB_TYPE_I32(1), n_addr, tb_inst_sub(func, TB_TYPE_I32(1), n_ld2, tb_inst_iconst(func, TB_TYPE_I32(1), 1), TB_ASSUME_NUW), 4);
 		
 		tb_inst_goto(func, 1);
 	}
@@ -504,7 +504,7 @@ TB_Function* test_foo(TB_Module* m) {
 	TB_Register factor = tb_inst_mul(func, TB_TYPE_I32(1),
 									 tb_inst_load(func, TB_TYPE_I32(1), ap, 4),
 									 tb_inst_load(func, TB_TYPE_I32(1), bp, 4),
-									 TB_NO_WRAP
+									 TB_ASSUME_NUW
 									 );
 	
 	tb_inst_ret(func, TB_TYPE_I32(1), factor);

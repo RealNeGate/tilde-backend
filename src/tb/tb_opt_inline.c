@@ -51,13 +51,11 @@ static int tb_estimate_expr_pressure(const TB_Function* f, TB_Register i) {
 
 static int tb_estimate_func_pressure(const TB_Function* f) {
 	int max_pressure = 0;
-	TB_Register label = 1;
 	
 	// get an estimate of register pressure in a basic block.
 	// we'll be using it in the opportunity calculation.
 	for (TB_Register i = 1; i < f->nodes.count; i++) {
 		if (f->nodes.type[i] == TB_LABEL) {
-			label = i;
 			max_pressure = 0;
 		} else if (f->nodes.type[i] == TB_CALL) {
 			// tally up pressure from parameters, it'll probably be relevant too
@@ -90,14 +88,12 @@ static int tb_estimate_func_pressure(const TB_Function* f) {
 
 bool tb_opt_inline(TB_Function* f) {
 	int max_pressure = 0;
-	TB_Register label = 1;
 	
 	// get an estimate of register pressure in a basic block.
 	// we'll be using it in the opportunity calculation.
 	int changes = 0;
 	for (TB_Register i = 1; i < f->nodes.count; i++) {
 		if (f->nodes.type[i] == TB_LABEL) {
-			label = i;
 			max_pressure = 0;
 		} else if (f->nodes.type[i] == TB_CALL && f->nodes.payload[i].call.target != f) {
 			// tally up pressure from parameters, it'll probably be relevant too

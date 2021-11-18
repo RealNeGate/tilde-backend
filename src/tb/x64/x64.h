@@ -225,10 +225,10 @@ static const GPR GPR_PRIORITY_LIST[] = {
 	R14, R15
 };
 
-static const char* GPR_NAMES[] = {
+/*static const char* GPR_NAMES[] = {
 	"RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI",
 	"R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"
-};
+};*/
 
 typedef enum Inst1 {
 	NOT  = 0x02,

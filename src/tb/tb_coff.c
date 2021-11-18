@@ -520,23 +520,34 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	debugt_section.raw_data_pos = rdata_section.raw_data_pos + rdata_section.raw_data_size;
 	debugs_section.raw_data_pos = debugt_section.raw_data_pos + debugt_section.raw_data_size;
 	
-	text_section.num_reloc = m->const32_patches.count;
+	text_section.num_reloc = m->const32_patches.count + m->ecall_patches.count;
 	
 	// A bunch of relocations are made by the CodeView sections, if there's no
 	// debug info then these are ignored/non-existent.
-	debugs_section.num_reloc = 2 + (m->line_info_count ? (2 * m->compiled_functions.count) : 0);
+	debugs_section.num_reloc = 0;
+	if (m->line_info_count) {
+		debugs_section.num_reloc = 2 + (2 * m->compiled_functions.count);
+	}
 	
-	text_section.pointer_to_reloc = debugs_section.raw_data_pos + debugs_section.raw_data_size;
-	debugs_section.pointer_to_reloc = text_section.pointer_to_reloc + (text_section.num_reloc * sizeof(COFF_ImageReloc));
+	text_section.pointer_to_reloc = debugs_section.raw_data_pos
+		+ debugs_section.raw_data_size;
 	
-	header.symbol_count = (number_of_sections * 2) + m->compiled_functions.count;
+	debugs_section.pointer_to_reloc = text_section.pointer_to_reloc 
+		+ (text_section.num_reloc * sizeof(COFF_ImageReloc));
+	
+	header.symbol_count = (number_of_sections * 2) 
+		+ m->compiled_functions.count 
+		+ m->externals.count;
+	
 #if !TB_STRIP_LABELS
 	header.symbol_count += m->label_symbols.count;
 #endif
 	
-	header.symbol_table = debugs_section.pointer_to_reloc + (debugs_section.num_reloc * sizeof(COFF_ImageReloc));
+	header.symbol_table = debugs_section.pointer_to_reloc 
+		+ (debugs_section.num_reloc * sizeof(COFF_ImageReloc));
 	
-	size_t string_table_pos = header.symbol_table + (header.symbol_count * sizeof(COFF_Symbol));
+	size_t string_table_pos = header.symbol_table 
+		+ (header.symbol_count * sizeof(COFF_Symbol));
 	
 	// it's only here for an assertion, so i'm making
 	// sure it doesn't get mark as unused in release.
@@ -598,21 +609,38 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 			   }, sizeof(COFF_ImageReloc), 1, f);
 	}
 	
+	size_t extern_func_sym_start = 8 + m->compiled_functions.count;
+	for (size_t i = 0; i < m->ecall_patches.count; i++) {
+		TB_ExternFunctionPatch* p = &m->ecall_patches.data[i];
+		TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
+		size_t actual_pos = func_layout[p->func_id] + p->pos;
+		
+		// TODO(NeGate): Consider caching this value if it gets expensive to calculate.
+		actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
+													out_f->stack_usage);
+		
+		fwrite(&(COFF_ImageReloc) {
+				   .Type = IMAGE_REL_AMD64_REL32,
+				   .SymbolTableIndex = extern_func_sym_start + p->target_id,
+				   .VirtualAddress = actual_pos
+			   }, sizeof(COFF_ImageReloc), 1, f);
+	}
+	
 	// Field base relocations in .debug$S
 	assert(ftell(f) == debugs_section.pointer_to_reloc);
-	fwrite(&(COFF_ImageReloc) {
-			   .Type = IMAGE_REL_AMD64_SECREL,
-			   .SymbolTableIndex = 0, // text section
-			   .VirtualAddress = cv_field_base
-		   }, sizeof(COFF_ImageReloc), 1, f);
-	
-	fwrite(&(COFF_ImageReloc) {
-			   .Type = IMAGE_REL_AMD64_SECTION,
-			   .SymbolTableIndex = 0, // text section
-			   .VirtualAddress = cv_field_base + 4
-		   }, sizeof(COFF_ImageReloc), 1, f);
-	
 	if (m->line_info_count != 0) {
+		fwrite(&(COFF_ImageReloc) {
+				   .Type = IMAGE_REL_AMD64_SECREL,
+				   .SymbolTableIndex = 0, // text section
+				   .VirtualAddress = cv_field_base
+			   }, sizeof(COFF_ImageReloc), 1, f);
+		
+		fwrite(&(COFF_ImageReloc) {
+				   .Type = IMAGE_REL_AMD64_SECTION,
+				   .SymbolTableIndex = 0, // text section
+				   .VirtualAddress = cv_field_base + 4
+			   }, sizeof(COFF_ImageReloc), 1, f);
+		
 		for (size_t i = 0; i < m->compiled_functions.count; i++) {
 			uint32_t off = file_table_offset[i];
 			
@@ -699,6 +727,30 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		}
 		else {
 			memcpy(sym.short_name, m->compiled_functions.data[i].name, name_len + 1);
+		}
+		
+		fwrite(&sym, sizeof(sym), 1, f);
+	}
+	
+	for (size_t i = 0; i < m->externals.count; i++) {
+		COFF_Symbol sym = {
+			.value = func_layout[i],
+			.section_number = 0,
+			.storage_class = IMAGE_SYM_CLASS_EXTERNAL
+		};
+		
+		size_t name_len = strlen(m->externals.data[i].name);
+		assert(name_len < UINT16_MAX);
+		
+		if (name_len >= 8) {
+			sym.long_name[0] = 0; // this value is 0 for long names
+			sym.long_name[1] = string_table_mark;
+			
+			string_table[string_table_length++] = m->externals.data[i].name;
+			string_table_mark += name_len + 1;
+		}
+		else {
+			memcpy(sym.short_name, m->externals.data[i].name, name_len + 1);
 		}
 		
 		fwrite(&sym, sizeof(sym), 1, f);

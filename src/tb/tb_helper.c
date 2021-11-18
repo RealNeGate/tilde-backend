@@ -95,6 +95,7 @@ X(p->cmp.b); \
 break; \
 case TB_CALL: \
 case TB_ICALL: \
+case TB_ECALL: \
 for (size_t j = p->call.param_start; j < p->call.param_end; j++) { \
 X(f->vla.data[j]); \
 } \

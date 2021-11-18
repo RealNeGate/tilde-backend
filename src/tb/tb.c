@@ -1324,7 +1324,7 @@ void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id
 	if (m->ecall_patches.count + 1 >= m->ecall_patches.capacity) {
 		m->ecall_patches.capacity *= 2;
 		m->ecall_patches.data = realloc(m->ecall_patches.data,
-										m->ecall_patches.capacity * sizeof(TB_ExternFunctionPatch));
+										m->ecall_patches.capacity * sizeof(TB_FunctionPatch));
 	}
     
 	size_t r = m->ecall_patches.count++;

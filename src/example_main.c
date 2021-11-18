@@ -28,7 +28,7 @@ TB_Function* test_zero_mem(TB_Module* m);
 TB_Function* test_switch_case(TB_Module* m);
 TB_Function* test_entry(TB_Module* m);
 
-#include <math.h>
+static TB_ExternalID test_get_module_handle;
 
 int main(int argc, char** argv) {
 	TB_FeatureSet features = { 0 };
@@ -78,6 +78,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		// test_switch_case
 	};
 	size_t count = sizeof(test_functions) / sizeof(test_functions[0]);
+	test_get_module_handle = tb_module_extern(m, "GetModuleHandleA");
 	
 	for (size_t i = 0; i < count; i++) {
 		tb_module_compile_func(m, test_functions[i](m));
@@ -541,6 +542,10 @@ TB_Function* test_entry(TB_Module* m) {
 	
 	TB_Register al = tb_inst_load(func, TB_TYPE_I32(1), ap, 4);
 	TB_Register b = tb_inst_iconst(func, TB_TYPE_I32(1), 2);
+	
+	tb_inst_ecall(func, TB_TYPE_VOID(), test_get_module_handle, 1, (TB_Register[]) {
+					  tb_inst_iconst(func, TB_TYPE_I64(1), 0)
+				  });
 	
 	TB_Register result = tb_inst_call(func, TB_TYPE_I32(1), test_foo_func_ref, 2, (TB_Register[]) { al, b });
 	tb_inst_ret(func, TB_TYPE_I32(1), result);

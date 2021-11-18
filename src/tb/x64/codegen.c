@@ -84,6 +84,13 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 						  }
 					  });
 		
+		FOR_EACH_NODE(i, f, TB_ECALL, {
+						  int param_usage = CALL_NODE_PARAM_COUNT(f, i);
+						  if (caller_usage < param_usage) {
+							  caller_usage = param_usage;
+						  }
+					  });
+		
 		ctx->intervals = tb_tls_push(tls, f->nodes.count * sizeof(TB_Register));
 		ctx->phis = tb_tls_push(tls, phi_count * sizeof(PhiValue));
 		
@@ -518,7 +525,8 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					}
 					break;
 				}
-				case TB_CALL: {
+				case TB_CALL:
+				case TB_ECALL: {
 					int param_start = p->call.param_start;
 					int param_count = p->call.param_end - p->call.param_start;
 					
@@ -588,10 +596,21 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					}
 					
 					// CALL instruction and patch
-					int target_func = p->call.target - f->module->functions.data;
 					int source_func = f - f->module->functions.data;
 					
-					tb_emit_call_patch(f->module, source_func, target_func, code_pos() + 1);
+					if (reg_type == TB_CALL) {
+						int target_func = p->call.target - f->module->functions.data;
+						
+						tb_emit_call_patch(f->module,
+										   source_func,
+										   target_func,
+										   code_pos() + 1);
+					} else {
+						tb_emit_ecall_patch(f->module,
+											source_func,
+											p->ecall.target,
+											code_pos() + 1);
+					}
 					
 					// CALL rel32
 					emit(0xE8);

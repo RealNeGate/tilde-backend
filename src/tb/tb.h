@@ -323,6 +323,7 @@ TB_API void tb_function_print(TB_Function* f);
 //
 // the TB_Register is an index into these streams and each unique value
 // maps to a valid IR register except 0 which is reserved as the null register.
+// TODO(NeGate): Consider refactoring the internals of this... please
 #ifdef TB_INTERNAL
 
 #ifdef _WIN32
@@ -650,8 +651,8 @@ typedef struct TB_JobSystem {
 	
 	// FIFO queue
 	_Atomic bool running;
-	_Atomic uint32_t read_pointer; // Read
-	_Atomic uint32_t write_pointer; // Write
+	_Atomic uint32_t read_pointer;
+	_Atomic uint32_t write_pointer;
 	
 	uint32_t thread_count;
 	void* semaphore;
@@ -660,6 +661,7 @@ typedef struct TB_JobSystem {
 	TB_Function* functions[MAX_JOBS_PER_JOB_SYSTEM];
 } TB_JobSystem;
 
+// This might be getting too 
 struct TB_Module {
 	int optimization_level;
 	

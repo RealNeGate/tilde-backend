@@ -147,10 +147,8 @@ int main(int argc, char** argv) {
 		for (size_t i = 0; i < thread_count; i++) {
 			info[i] = (FuzzerInfo){ 0 };
 			info[i].thread_id = i;
-			info[i].initial_state = (((uint64_t)gen_random_any()) << 32ull) 
-				| ((uint64_t)gen_random_any());
-			info[i].initial_inc = (((uint64_t)gen_random_any()) << 32ull) 
-				| ((uint64_t)gen_random_any());
+			info[i].initial_state = (((uint64_t)gen_random_any()) << 32ull) | ((uint64_t)gen_random_any());
+			info[i].initial_inc = (((uint64_t)gen_random_any()) << 32ull) | ((uint64_t)gen_random_any());
 			
 			//printf("Thread seed: 0x%llx 0x%llx\n", info[i].initial_state, info[i].initial_inc);
 		}

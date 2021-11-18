@@ -1,5 +1,4 @@
-#define TB_INTERNAL
-#include "tb.h"
+#include "tb_internal.h"
 
 bool tb_opt_strength_reduction(TB_Function* f) {
 	int changes = 0;

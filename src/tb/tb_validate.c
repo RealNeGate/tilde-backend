@@ -1,5 +1,4 @@
-#define TB_INTERNAL
-#include "tb.h"
+#include "tb_internal.h"
 
 bool tb_validate(TB_Function* f) {
 	if (f->validated) return true;

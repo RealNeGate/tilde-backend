@@ -1,7 +1,5 @@
 #pragma once
-
-#define TB_INTERNAL
-#include "../tb.h"
+#include "../tb_internal.h"
 
 #if TB_HOST_ARCH == TB_HOST_X86_64
 // Needed for some of the fancier 

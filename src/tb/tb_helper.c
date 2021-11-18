@@ -1,6 +1,4 @@
-// TODO(NeGate): Consider some smart list macros for this.
-#define TB_INTERNAL
-#include "tb.h"
+#include "tb_internal.h"
 
 #define FOR_EACH_REGISTER_IN_FUNC \
 for (size_t i = 1; i < f->nodes.count; i++) { \

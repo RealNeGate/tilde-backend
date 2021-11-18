@@ -1,5 +1,4 @@
-#define TB_INTERNAL
-#include "tb.h"
+#include "tb_internal.h"
 
 #if TB_HOST_ARCH == TB_HOST_X86_64
 #include <x86intrin.h>

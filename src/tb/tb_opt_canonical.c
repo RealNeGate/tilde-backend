@@ -1,5 +1,4 @@
-#define TB_INTERNAL
-#include "tb.h"
+#include "tb_internal.h"
 
 bool tb_opt_compact_dead_regs(TB_Function* f) {
 	// Shift the dead regs out

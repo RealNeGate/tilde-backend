@@ -1,5 +1,4 @@
-#define TB_INTERNAL
-#include "tb.h"
+#include "tb_internal.h"
 
 static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_DataType* dst_dt);
 static TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count);

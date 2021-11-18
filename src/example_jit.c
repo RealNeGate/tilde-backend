@@ -14,6 +14,33 @@ static size_t my_fib(size_t n) {
 	return b;
 }
 
+TB_Function* test_fib(TB_Module* m) {
+	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I32(1));
+	test_func_ref = func;
+	
+	TB_Register n = tb_inst_param(func, TB_TYPE_I32(1));
+	
+	tb_inst_if(func, tb_inst_cmp_slt(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 2)), 1, 2);
+	
+	tb_inst_label(func, 1); // .L1:
+	tb_inst_ret(func, TB_TYPE_I32(1), n);
+	
+	tb_inst_label(func, 2); // .L2:
+	
+	TB_Register n_minus_one = tb_inst_sub(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 1), TB_NO_WRAP);
+	
+	TB_Register call1 = tb_inst_call(func, TB_TYPE_I32(1), func, 1, (TB_Register[]) { n_minus_one });
+	
+	TB_Register n_minus_two = tb_inst_sub(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 2), TB_NO_WRAP);
+	
+	TB_Register call2 = tb_inst_call(func, TB_TYPE_I32(1), func, 1, (TB_Register[]) { n_minus_two });
+	
+	TB_Register sum = tb_inst_add(func, TB_TYPE_I32(1), call1, call2, TB_NO_WRAP);
+	tb_inst_ret(func, TB_TYPE_I32(1), sum);
+	
+	return func;
+}
+
 int main(int argc, char** argv) {
 	clock_t t1 = clock();
 	
@@ -45,34 +72,4 @@ int main(int argc, char** argv) {
 	
 	tb_module_destroy(m);
 	return 0;
-}
-
-TB_Function* test_fib(TB_Module* m) {
-	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I32(1));
-	test_func_ref = func;
-	
-	TB_Register n = tb_inst_param(func, TB_TYPE_I32(1));
-	
-	tb_inst_if(func, tb_inst_cmp_slt(func,
-									 TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 2)), 1, 2);
-	tb_inst_label(func, 1); // .L1:
-	tb_inst_ret(func, TB_TYPE_I32(1), n);
-	
-	tb_inst_label(func, 2); // .L2:
-	
-	TB_Register n_minus_one = tb_inst_sub(func,
-										  TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 1), TB_NO_WRAP);
-	TB_Register call1 = tb_inst_call(func,
-									 TB_TYPE_I32(1), func, 1, (TB_Register[]) { n_minus_one });
-	
-	TB_Register n_minus_two = tb_inst_sub(func,
-										  TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 2), TB_NO_WRAP);
-	
-	TB_Register call2 = tb_inst_call(func,
-									 TB_TYPE_I32(1), func, 1, (TB_Register[]) { n_minus_two });
-	
-	TB_Register sum = tb_inst_add(func, TB_TYPE_I32(1), call1, call2, TB_NO_WRAP);
-	tb_inst_ret(func, TB_TYPE_I32(1), sum);
-	
-	return func;
 }

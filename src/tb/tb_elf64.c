@@ -1,5 +1,4 @@
-#define TB_INTERNAL
-#include "tb.h"
+#include "tb_internal.h"
 
 #define	EI_MAG0			0
 #define	EI_MAG1			1

@@ -1,6 +1,5 @@
 #ifdef _WIN32
-#define TB_INTERNAL
-#include "tb.h"
+#include "tb_internal.h"
 
 #include <windows.h>
 

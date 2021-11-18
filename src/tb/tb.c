@@ -128,6 +128,10 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
 	m->call_patches.capacity = 64;
 	m->call_patches.data = malloc(64 * sizeof(TB_FunctionPatch));
 	
+	m->ecall_patches.count = 0;
+	m->ecall_patches.capacity = 64;
+	m->ecall_patches.data = malloc(64 * sizeof(TB_ExternFunctionPatch));
+	
 	m->files.count = 1;
 	m->files.capacity = 64;
 	m->files.data = malloc(64 * sizeof(TB_File));
@@ -386,6 +390,23 @@ TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataTy
 	return f;
 }
 
+TB_API TB_ExternalID tb_module_extern(TB_Module* m, const char* name) {
+	if (m->externals.count + 1 >= m->externals.capacity) {
+		// TODO(NeGate): This might be excessive for this array, idk :P
+		m->externals.capacity = tb_next_pow2(m->externals.count + 1);
+		m->externals.data = realloc(m->externals.data, m->externals.capacity * sizeof(TB_External));
+	}
+	
+	// TODO(NeGate): We might wanna do something better with these strings
+	// especially since they'll be packed in a string table eventually
+	char* new_name = malloc(strlen(name) + 1);
+	strcpy(new_name, name);
+	
+	TB_ExternalID i = m->externals.count++;
+	m->externals.data[i].name = new_name;
+	return i;
+}
+
 TB_API void* tb_module_get_jit_func_by_name(TB_Module* m, const char* name) {
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
 		if (strcmp(m->compiled_functions.data[i].name, name)) return m->compiled_function_pos[i];
@@ -461,8 +482,10 @@ static TB_Register tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
 	// which start new basic blocks
 	assert(type == TB_LABEL || f->current_label);
     
-	if (f->nodes.count + 1 >= f->nodes.capacity) tb_resize_node_stream(f, tb_next_pow2(f->nodes.count + 1));
-    
+	if (f->nodes.count + 1 >= f->nodes.capacity) {
+		tb_resize_node_stream(f, tb_next_pow2(f->nodes.count + 1));
+	}
+	
 	TB_Register r = f->nodes.count++;
 	f->nodes.type[r] = type;
 	f->nodes.dt[r] = dt;
@@ -876,6 +899,26 @@ TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Functio
 	return r;
 }
 
+TB_API TB_Register tb_inst_ecall(TB_Function* f, TB_DataType dt, const TB_ExternalID target, size_t param_count, const TB_Register* params) {
+	// Reserve space for the arguments
+	if (f->vla.count + param_count >= f->vla.capacity) {
+		// TODO(NeGate): This might be excessive for this array, idk :P
+		f->vla.capacity = tb_next_pow2(f->vla.count + param_count);
+		f->vla.data = realloc(f->vla.data, f->vla.capacity * sizeof(TB_Register));
+	}
+	
+	int param_start = f->vla.count;
+	memcpy(f->vla.data + f->vla.count, params, param_count * sizeof(TB_Register));
+	f->vla.count += param_count;
+	int param_end = f->vla.count;
+	
+	TB_Register r = tb_make_reg(f, TB_ECALL, dt);
+	f->nodes.payload[r].ecall.target = target;
+	f->nodes.payload[r].ecall.param_start = param_start;
+	f->nodes.payload[r].ecall.param_end = param_end;
+	return r;
+}
+
 TB_API void tb_inst_memset(TB_Function* f, TB_Register dst, TB_Register val, TB_Register size, int align) {
 	TB_Register r = tb_make_reg(f, TB_MEMSET, TB_TYPE_PTR());
 	f->nodes.payload[r].mem_op.dst = dst;
@@ -1264,11 +1307,28 @@ void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size
 	assert(pos < UINT32_MAX);
 	if (m->call_patches.count + 1 >= m->call_patches.capacity) {
 		m->call_patches.capacity *= 2;
-		m->call_patches.data = realloc(m->call_patches.data, m->call_patches.capacity * sizeof(TB_FunctionPatch));
+		m->call_patches.data = realloc(m->call_patches.data,
+									   m->call_patches.capacity * sizeof(TB_FunctionPatch));
 	}
     
 	size_t r = m->call_patches.count++;
 	m->call_patches.data[r] = (TB_FunctionPatch){
+		.func_id = func_id,
+		.target_id = target_id,
+		.pos = pos
+	};
+}
+
+void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id, size_t pos) {
+	assert(pos < UINT32_MAX);
+	if (m->ecall_patches.count + 1 >= m->ecall_patches.capacity) {
+		m->ecall_patches.capacity *= 2;
+		m->ecall_patches.data = realloc(m->ecall_patches.data,
+										m->ecall_patches.capacity * sizeof(TB_ExternFunctionPatch));
+	}
+    
+	size_t r = m->ecall_patches.count++;
+	m->ecall_patches.data[r] = (TB_ExternFunctionPatch){
 		.func_id = func_id,
 		.target_id = target_id,
 		.pos = pos

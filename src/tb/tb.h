@@ -191,6 +191,7 @@ typedef struct TB_SwitchEntry {
 } TB_SwitchEntry;
 
 typedef int TB_FileID;
+typedef int TB_ExternalID;
 typedef struct TB_Module TB_Module;
 typedef struct TB_Function TB_Function;
 typedef int32_t TB_Register;
@@ -232,6 +233,7 @@ TB_API void* tb_module_get_jit_func_by_id(TB_Module* m, size_t i);
 TB_API void* tb_module_get_jit_func(TB_Module* m, TB_Function* f);
 
 TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataType return_dt);
+TB_API TB_ExternalID tb_module_extern(TB_Module* m, const char* name);
 TB_API TB_FileID tb_register_file(TB_Module* m, const char* path);
 
 TB_API TB_Label tb_get_current_label(TB_Function* f);
@@ -255,6 +257,7 @@ TB_API TB_Register tb_inst_fconst(TB_Function* f, TB_DataType dt, double imm);
 TB_API TB_Register tb_inst_array_access(TB_Function* f, TB_Register base, TB_Register index, uint32_t stride);
 TB_API TB_Register tb_inst_member_access(TB_Function* f, TB_Register base, int32_t offset);
 TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Register* params);
+TB_API TB_Register tb_inst_ecall(TB_Function* f, TB_DataType dt, const TB_ExternalID target, size_t param_count, const TB_Register* params);
 
 TB_API void tb_inst_memset(TB_Function* f, TB_Register dst, TB_Register val, TB_Register size, int align);
 TB_API void tb_inst_memcpy(TB_Function* f, TB_Register dst, TB_Register src, TB_Register size, int align);
@@ -526,8 +529,12 @@ typedef union TB_RegPayload {
 		TB_Label label;
 	} goto_;
 	struct {
-		const TB_Function* target;
 		int param_start, param_end;
+		TB_ExternalID target;
+	} ecall;
+	struct {
+		int param_start, param_end;
+		const TB_Function* target;
 	} call;
 	struct {
 		TB_Register key;
@@ -554,6 +561,12 @@ typedef struct TB_FunctionPatch {
 	uint32_t pos; // relative to the start of the function
 } TB_FunctionPatch;
 
+typedef struct TB_ExternFunctionPatch {
+	uint32_t func_id;
+	TB_ExternalID target_id;
+	uint32_t pos; // relative to the start of the function
+} TB_ExternFunctionPatch;
+
 struct TB_FunctionOutput {
 	const char* name;
 	
@@ -579,6 +592,10 @@ typedef struct TB_NodeStream {
 	TB_DataType*   dt;
 	TB_RegPayload* payload;
 } TB_NodeStream;
+
+typedef struct TB_External {
+	char* name;
+} TB_External;
 
 struct TB_Function {
 	bool is_ir_free;
@@ -679,6 +696,12 @@ struct TB_Module {
 	struct {
 		size_t count;
 		size_t capacity;
+		TB_ExternFunctionPatch* data;
+	} ecall_patches;
+    
+	struct {
+		size_t count;
+		size_t capacity;
 		TB_File* data;
 	} files;
     
@@ -687,6 +710,12 @@ struct TB_Module {
 		TB_Function* data;
 	} functions;
     
+	struct {
+		size_t count;
+		size_t capacity;
+		TB_External* data;
+	} externals;
+	
 	struct {
 		size_t count;
 		TB_FunctionOutput* data;
@@ -882,15 +911,15 @@ TB_API void tb_find_live_intervals(const TB_Function* f, TB_Register intervals[]
 //
 // BACKEND UTILITIES
 //
-uint32_t tb_emit_const32_patch(TB_Module* m, uint32_t func_id, size_t pos, uint32_t data);
 // TODO(NeGate): Not thread safe yet
+uint32_t tb_emit_const32_patch(TB_Module* m, uint32_t func_id, size_t pos, uint32_t data);
 
 void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size_t pos);
-// TODO(NeGate): Not thread safe yet
+
+void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id, size_t pos);
 
 #if !TB_STRIP_LABELS
 void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, size_t pos);
-// TODO(NeGate): Not thread safe yet
 #endif
 
 extern ICodeGen x64_fast_code_gen;

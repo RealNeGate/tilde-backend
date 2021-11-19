@@ -842,6 +842,68 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 				}
 				break;
 			}
+			case TB_ARRAY_ACCESS: {
+				Val base, index;
+				use(ctx, f, &base, p.array_access.base, r);
+				use(ctx, f, &index, p.array_access.index, r);
+				uint32_t stride = p.array_access.stride;
+				
+				// Load base
+				if (base.type == VAL_MEM) {
+					Val new_base;
+					def_new_gpr(ctx, f, &new_base, p.array_access.base, dt.type);
+					inst2(ctx, MOV, &new_base, &base, dt.type);
+					
+					base = new_base;
+				}
+				
+				// Load index
+				if (index.type == VAL_MEM) {
+					Val new_index;
+					def_new_gpr(ctx, f, &new_index, p.array_access.index, dt.type);
+					inst2(ctx, MOV, &new_index, &index, dt.type);
+					
+					index = new_index;
+				}
+				
+				if (index.type == VAL_IMM) {
+					*v = val_base_disp(dt, base.gpr, index.imm * stride);
+				} else if (index.type == VAL_GPR) {
+					def_new_gpr(ctx, f, v, r, dt.type);
+					
+					if (stride == 1 ||
+						stride == 2 ||
+						stride == 4 ||
+						stride == 8) {
+						Scale scale = __builtin_ffs(stride) - 1;
+						*v = val_base_index(dt, base.gpr, index.gpr, scale);
+					} else {
+						// Resolve the index then add the base
+						//inst2(ctx, MOV, v, &base, dt.type);
+						
+						// TODO(NeGate): Improve this scaling method by
+						// adding ways to break down multiplies into bitshifts.
+						emit(rex(true, v->gpr, index.gpr, 0));
+						emit(0x69);
+						emit(mod_rx_rm(MOD_DIRECT, v->gpr, index.gpr));
+						emit4(stride);
+						
+						inst2(ctx, ADD, v, &base, dt.type);
+					}
+				} else tb_todo();
+			}
+			case TB_MEMBER_ACCESS: {
+				use(ctx, f, v, p.member_access.base, r);
+				
+				int32_t offset = p.member_access.offset;
+				if (v->type == VAL_MEM) {
+					v->mem.disp += offset;
+				} else if (v->type == VAL_GPR) {
+					// Convert into memory operand
+					*v = val_base_disp(dt, v->gpr, offset); 
+				} else tb_todo();
+				break;
+			}
 			case TB_LOAD: {
 				use(ctx, f, v, p.load.address, next);
 				assert(v->type == VAL_MEM);

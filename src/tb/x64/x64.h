@@ -313,6 +313,19 @@ inline static Val val_base_disp(TB_DataType dt, GPR b, int d) {
 	};
 }
 
+inline static Val val_base_index(TB_DataType dt, GPR b, GPR i, Scale s) {
+	return (Val) {
+		.type = VAL_MEM,
+		.dt = dt,
+		.mem = {
+			.base = b,
+			.index = i,
+			.scale = s,
+			.disp = 0
+		}
+	};
+}
+
 inline static bool is_value_gpr(const Val* v, GPR g) {
 	if (v->type != VAL_GPR) return false;
 	

@@ -73,9 +73,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_fib,
 		test_vadd_f32x4,
 		test_vmuladd_f32x4,
-		test_foo,
-		test_entry,
-		// test_switch_case
+		test_foo
 	};
 	size_t count = sizeof(test_functions) / sizeof(test_functions[0]);
 	test_get_module_handle = tb_module_extern(m, "GetModuleHandleA");

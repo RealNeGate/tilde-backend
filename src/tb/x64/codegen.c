@@ -40,7 +40,8 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 		// TODO(NeGate): Consider splitting this into two separate versions, one with 
 		// SSE, one without.
 #if TB_HOST_ARCH == TB_HOST_X86_64
-#define COUNT_OF_TYPE_IN_M128(t) __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
+#define COUNT_OF_TYPE_IN_M128(t) \
+__builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 		
 		// the node types are aligned to a cache line so we could in theory
 		// grab up to 64bytes aligned without seg faulting

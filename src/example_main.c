@@ -20,6 +20,7 @@ TB_Function* test_locals_1(TB_Module* m);
 TB_Function* test_locals_2(TB_Module* m);
 TB_Function* test_params_1(TB_Module* m);
 TB_Function* test_params_2(TB_Module* m);
+TB_Function* test_bools_1(TB_Module* m);
 TB_Function* test_locals_params_1(TB_Module* m);
 TB_Function* test_add_sub_i32(TB_Module* m);
 TB_Function* test_fib(TB_Module* m);
@@ -67,6 +68,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_locals_2,
 		test_params_1,
 		test_params_2,
+		test_bools_1,
 		test_zero_mem,
 		test_add_sub_i32,
 		test_locals_params_1,
@@ -399,6 +401,16 @@ TB_Function* test_params_2(TB_Module* m) {
                                   );
     
 	tb_inst_ret(func, TB_TYPE_I32(1), sum);
+	return func;
+}
+
+TB_Function* test_bools_1(TB_Module* m) {
+	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_BOOL(1));
+	
+	TB_Register local = tb_inst_local(func, 1, 1);
+	tb_inst_store(func, TB_TYPE_BOOL(1), local, tb_inst_iconst(func, TB_TYPE_BOOL(1), 1), 1);
+    
+	tb_inst_ret(func, TB_TYPE_BOOL(1), tb_inst_load(func, TB_TYPE_BOOL(1), local, 4));
 	return func;
 }
 

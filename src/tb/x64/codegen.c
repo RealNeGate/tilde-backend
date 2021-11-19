@@ -513,6 +513,9 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					use(ctx, f, &address, addr_reg, i);
 					use(ctx, f, &value, val_reg, i);
 					
+					// Desugar booleans into bytes
+					if (dt.type == TB_BOOL) dt.type = TB_I8;
+					
 					if (value.type != VAL_MEM) {
 						inst2(ctx, MOV, &address, &value, dt.type);
 					} else {
@@ -910,7 +913,10 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 			case TB_LOAD: {
 				use(ctx, f, v, p.load.address, next);
 				assert(v->type == VAL_MEM);
+				
+				// Desugar booleans into bytes
 				v->dt = dt;
+				if (v->dt.type == TB_BOOL) v->dt.type = TB_I8;
 				break;
 			}
 			case TB_PARAM_ADDR: {

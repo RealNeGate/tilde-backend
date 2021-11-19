@@ -154,19 +154,6 @@ typedef struct Ctx {
 	// The value of all virtual registers
 	// VAL_NONE is for unmapped registers
 	Val addr_desc[];
-	
-	// OLD SHIT
-	/*size_t phi_count, locals_count, f32_patch_count;
-    size_t mem_cache_count, local_stack_usage;
-	
-    
-	size_t* intervals;
-	PhiValue* phis;
-	LocalDesc* locals;
-    MemCacheDesc* mem_caches;
-    
-	TB_Register gpr_desc[16];
-	TB_Register xmm_desc[16];*/
 } Ctx;
 
 typedef enum Inst2Type {

@@ -364,8 +364,9 @@ typedef struct TB_JobSystem {
 
 // This might be getting too 
 struct TB_Module {
+	bool preserve_ir_after_submit;
 	int optimization_level;
-	
+    
 	TB_Arch target_arch;
 	TB_System target_system;
 	TB_FeatureSet features;

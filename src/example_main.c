@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
 	TB_FeatureSet features = { 0 };
 	
 	// Currently it only supports binary output
-#if 1
+#if 0
 	FILE* f = fopen("./test_x64.o", "wb");
 	do_tests(f, TB_ARCH_X86_64, TB_SYSTEM_LINUX, &features);
 	fclose(f);
@@ -48,7 +48,7 @@ int main(int argc, char** argv) {
 }
 
 void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
-	TB_Module* m = tb_module_create(arch, system, features, TB_OPT_O0, 1);
+	TB_Module* m = tb_module_create(arch, system, features, TB_OPT_O0, 1, true);
     
 	typedef TB_Function*(*TestFunction)(TB_Module* m);
 	static const TestFunction test_functions[] = {
@@ -73,13 +73,17 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_fib,
 		test_vadd_f32x4,
 		test_vmuladd_f32x4,
-		test_foo
+		test_foo,
+        test_entry
 	};
 	size_t count = sizeof(test_functions) / sizeof(test_functions[0]);
 	test_get_module_handle = tb_module_extern(m, "GetModuleHandleA");
 	
 	for (size_t i = 0; i < count; i++) {
-		tb_module_compile_func(m, test_functions[i](m));
+		TB_Function* func = test_functions[i](m);
+        
+        tb_function_print(func, stdout);
+        tb_module_compile_func(m, func);
 	}
     
 	if (!tb_module_compile(m)) abort();

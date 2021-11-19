@@ -106,8 +106,9 @@ static void* job_system_thread_func(void* lpParam)
 			*out = gen->compile_function(f, &m->features, &code[code_size]);
 			code_size += out->code_size;
 			
-			// Free the IR, no longer needed
-			tb_function_free(f);
+			// Free the IR, no longer needed,
+            // unless we say otherwise
+            if (!m->preserve_ir_after_submit) tb_function_free(f);
 		}
 	}
 	
@@ -116,10 +117,16 @@ static void* job_system_thread_func(void* lpParam)
 	return 0;
 }
 
-TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, const TB_FeatureSet* features, int optimization_level, int max_threads) {
+TB_API TB_Module* tb_module_create(TB_Arch target_arch,
+                                   TB_System target_system,
+                                   const TB_FeatureSet* features,
+                                   int optimization_level,
+                                   int max_threads,
+                                   bool preserve_ir_after_submit) {
 	assert(max_threads >= 1 && max_threads <= TB_MAX_THREADS);
 	TB_Module* m = calloc(1, sizeof(TB_Module));
     
+    m->preserve_ir_after_submit = preserve_ir_after_submit;
 	m->optimization_level = optimization_level;
 	m->target_arch = target_arch;
 	m->target_system = target_system;
@@ -381,7 +388,6 @@ void tb_resize_node_stream(TB_Function* f, size_t cap) {
 }
 
 TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataType return_dt) {
-	
 	size_t i = m->functions.count++;
 	assert(i < TB_MAX_FUNCTIONS);
 	
@@ -534,7 +540,7 @@ void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id
 //
 // IR PRINTER
 //
-static void tb_print_type(TB_DataType dt) {
+static void tb_print_type(FILE* out, TB_DataType dt) {
 	switch (dt.type) {
         case TB_VOID:   printf("[void]   \t"); break;
         case TB_BOOL:   printf("[bool x %d]\t", dt.count); break;
@@ -550,8 +556,9 @@ static void tb_print_type(TB_DataType dt) {
 	}
 }
 
-TB_API void tb_function_print(TB_Function* f) {
-	printf("%s():\n", f->name);
+TB_API void tb_function_print(TB_Function* f, FILE* out) {
+    TB_Module* m = f->module;
+	fprintf(out, "%s():\n", f->name);
     
 	for (TB_Register i = 1; i < f->nodes.count; i++) {
 		TB_RegType type = f->nodes.type[i];
@@ -560,53 +567,53 @@ TB_API void tb_function_print(TB_Function* f) {
         
 		switch (type) {
             case TB_NULL:
-			printf("  r%u\t=\t", i);
-			printf(" NOP\n");
+			fprintf(out, "  r%u\t=\t", i);
+			fprintf(out, " NOP\n");
 			break;
             case TB_INT_CONST:
-			printf("  r%u\t=\t", i);
-			tb_print_type(dt);
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
             
 			if (p.i_const.hi) {
-				printf(" %" PRIx64 "%" PRIx64 "\n", p.i_const.hi, p.i_const.lo);
+				fprintf(out, " %" PRIx64 "%" PRIx64 "\n", p.i_const.hi, p.i_const.lo);
 			}
 			else {
-				printf(" %" PRIu64 "\n", p.i_const.lo);
+				fprintf(out, " %" PRIu64 "\n", p.i_const.lo);
 			}
 			break;
 			case TB_LINE_INFO:
-			//printf("  # LOC %s:%d\n", f->module->files.data[p.line_info.file].path, p.line_info.line);
+			//fprintf(out, "  # LOC %s:%d\n", f->module->files.data[p.line_info.file].path, p.line_info.line);
 			break;
             case TB_FLOAT_CONST:
-			printf("  r%u\t=\t", i);
-			tb_print_type(dt);
-            printf(" %f\n", p.f_const);
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+            fprintf(out, " %f\n", p.f_const);
 			break;
             case TB_ZERO_EXT:
-			printf("  r%u\t=\t", i);
-			tb_print_type(dt);
-			printf(" ZXT r%u\n", p.ext);
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " ZXT r%u\n", p.ext);
 			break;
             case TB_SIGN_EXT:
-			printf("  r%u\t=\t", i);
-			tb_print_type(dt);
-			printf(" SXT r%u\n", p.ext);
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " SXT r%u\n", p.ext);
 			break;
 			case TB_MEMSET:
-			printf("  MEMSET\t(r%d, r%d, r%d)\n", p.mem_op.dst, p.mem_op.src, p.mem_op.size);
+			fprintf(out, "  MEMSET\t(r%d, r%d, r%d)\n", p.mem_op.dst, p.mem_op.src, p.mem_op.size);
 			break;
 			case TB_MEMCPY:
-			printf("  MEMCPY\t(r%d, r%d, r%d)\n", p.mem_op.dst, p.mem_op.src, p.mem_op.size);
+			fprintf(out, "  MEMCPY\t(r%d, r%d, r%d)\n", p.mem_op.dst, p.mem_op.src, p.mem_op.size);
 			break;
 			case TB_MEMBER_ACCESS:
-			printf("  r%u\t=\t", i);
-			tb_print_type(dt);
-			printf(" &r%u[r%d]\n", p.member_access.base, p.member_access.offset);
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " &r%u[r%d]\n", p.member_access.base, p.member_access.offset);
 			break;
 			case TB_ARRAY_ACCESS:
-			printf("  r%u\t=\t", i);
-			tb_print_type(dt);
-			printf(" &r%u[r%u * %u]\n", p.array_access.base, p.array_access.index, p.array_access.stride);
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " &r%u[r%u * %u]\n", p.array_access.base, p.array_access.index, p.array_access.stride);
 			break;
 			case TB_AND:
             case TB_OR:
@@ -618,43 +625,43 @@ TB_API void tb_function_print(TB_Function* f) {
             case TB_SHL:
             case TB_SHR:
             case TB_SAR:
-			printf("  r%u\t=\t", i);
-			tb_print_type(dt);
-			printf(" r%u ", p.i_arith.a);
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " r%u ", p.i_arith.a);
             
 			switch (type) {
-                case TB_AND: printf("&"); break;
-                case TB_OR: printf("|"); break;
-                case TB_ADD: printf("+"); break;
-                case TB_SUB: printf("-"); break;
-                case TB_MUL: printf("*"); break;
-                case TB_UDIV: printf("/u"); break;
-                case TB_SDIV: printf("/s"); break;
-				case TB_SHL: printf("<<"); break;
-				case TB_SHR: printf(">>"); break;
-				case TB_SAR: printf(">>s"); break;
+                case TB_AND: fprintf(out, "&"); break;
+                case TB_OR: fprintf(out, "|"); break;
+                case TB_ADD: fprintf(out, "+"); break;
+                case TB_SUB: fprintf(out, "-"); break;
+                case TB_MUL: fprintf(out, "*"); break;
+                case TB_UDIV: fprintf(out, "/u"); break;
+                case TB_SDIV: fprintf(out, "/s"); break;
+				case TB_SHL: fprintf(out, "<<"); break;
+				case TB_SHR: fprintf(out, ">>"); break;
+				case TB_SAR: fprintf(out, ">>s"); break;
                 default: tb_todo();
 			}
             
-			printf(" r%u\n", p.i_arith.b);
+			fprintf(out, " r%u\n", p.i_arith.b);
 			break;
             case TB_FADD:
             case TB_FSUB:
             case TB_FMUL:
             case TB_FDIV:
-			printf("  r%u\t=\t", i);
-			tb_print_type(dt);
-			printf(" r%u ", p.f_arith.a);
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " r%u ", p.f_arith.a);
             
 			switch (type) {
-                case TB_FADD: printf("+"); break;
-                case TB_FSUB: printf("-"); break;
-                case TB_FMUL: printf("*"); break;
-                case TB_FDIV: printf("/"); break;
+                case TB_FADD: fprintf(out, "+"); break;
+                case TB_FSUB: fprintf(out, "-"); break;
+                case TB_FMUL: fprintf(out, "*"); break;
+                case TB_FDIV: fprintf(out, "/"); break;
                 default: tb_todo();
 			}
             
-			printf(" r%u\n", p.f_arith.b);
+			fprintf(out, " r%u\n", p.f_arith.b);
 			break;
             case TB_CMP_EQ:
             case TB_CMP_NE:
@@ -662,60 +669,69 @@ TB_API void tb_function_print(TB_Function* f) {
             case TB_CMP_ULE:
             case TB_CMP_SLT:
             case TB_CMP_SLE:
-			printf("  r%u\t=\t", i);
-			tb_print_type(dt);
-			printf(" r%u ", p.cmp.a);
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " r%u ", p.cmp.a);
             
 			switch (type) {
-                case TB_CMP_NE: printf("!="); break;
-                case TB_CMP_EQ: printf("=="); break;
-                case TB_CMP_ULT: printf("<"); break;
-                case TB_CMP_ULE: printf("<="); break;
-                case TB_CMP_SLT: printf("<"); break;
-                case TB_CMP_SLE: printf("<="); break;
+                case TB_CMP_NE: fprintf(out, "!="); break;
+                case TB_CMP_EQ: fprintf(out, "=="); break;
+                case TB_CMP_ULT: fprintf(out, "<"); break;
+                case TB_CMP_ULE: fprintf(out, "<="); break;
+                case TB_CMP_SLT: fprintf(out, "<"); break;
+                case TB_CMP_SLE: fprintf(out, "<="); break;
                 default: tb_todo();
 			}
             
-			printf(" r%u", p.cmp.b);
+			fprintf(out, " r%u", p.cmp.b);
 			
-			if (type == TB_CMP_SLT || type == TB_CMP_SLE) printf(" # signed\n");
-			else printf("\n");
+			if (type == TB_CMP_SLT || type == TB_CMP_SLE) fprintf(out, " # signed\n");
+			else fprintf(out, "\n");
 			break;
             case TB_NEG:
-			printf("  r%u\t=\t", i);
-			tb_print_type(dt);
-			printf(" NEG r%u\n", p.unary);
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " NEG r%u\n", p.unary);
 			break;
             case TB_NOT:
-			printf("  r%u\t=\t", i);
-			tb_print_type(dt);
-			printf(" NOT r%u\n", p.unary);
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " NOT r%u\n", p.unary);
 			break;
             case TB_LOCAL:
-			printf("  r%u\t=\tLOCAL %d (%d align)\n", i, p.local.size, p.local.alignment);
+			fprintf(out, "  r%u\t=\tLOCAL %d (%d align)\n", i, p.local.size, p.local.alignment);
 			break;
             case TB_ICALL:
-			printf("  r%u\t=\tINLINE CALL %s(", i, p.call.target->name);
+			fprintf(out, "  r%u\t=\tINLINE CALL %s(", i, p.call.target->name);
 			for (size_t j = p.call.param_start; j < p.call.param_end; j++) {
-				if (j != p.call.param_start) printf(", ");
+				if (j != p.call.param_start) fprintf(out, ", ");
 				
-				printf("r%u", f->vla.data[j]);
+				fprintf(out, "r%u", f->vla.data[j]);
 			}
-			printf(")\n");
+			fprintf(out, ")\n");
+			break;
+            case TB_ECALL:
+			fprintf(out, "  r%u\t=\tECALL %s(", i, m->externals.data[p.ecall.target].name);
+			for (size_t j = p.ecall.param_start; j < p.ecall.param_end; j++) {
+				if (j != p.ecall.param_start) fprintf(out, ", ");
+				
+				fprintf(out, "r%u", f->vla.data[j]);
+			}
+			fprintf(out, ")\n");
 			break;
             case TB_CALL:
-			printf("  r%u\t=\tCALL %s(", i, p.call.target->name);
+			fprintf(out, "  r%u\t=\tCALL %s(", i, p.call.target->name);
 			for (size_t j = p.call.param_start; j < p.call.param_end; j++) {
-				if (j != p.call.param_start) printf(", ");
+				if (j != p.call.param_start) fprintf(out, ", ");
 				
-				printf("r%u", f->vla.data[j]);
+				fprintf(out, "r%u", f->vla.data[j]);
 			}
-			printf(")\n");
+			fprintf(out, ")\n");
 			break;
             case TB_SWITCH: {
-				printf(" SWITCH\t");
-				tb_print_type(dt);
-				printf("\tr%u (\n", p.switch_.key);
+				fprintf(out, " SWITCH\t");
+				tb_print_type(out, dt);
+				fprintf(out, "\tr%u (\n", p.switch_.key);
 				
 				size_t entry_start = p.switch_.entries_start;
 				size_t entry_count = (p.switch_.entries_end - p.switch_.entries_start) / 2;
@@ -723,57 +739,57 @@ TB_API void tb_function_print(TB_Function* f) {
 				for (size_t j = 0; j < entry_count; j++) {
 					TB_SwitchEntry* e = (TB_SwitchEntry*)&f->vla.data[entry_start + (j * 2)];
 					
-					printf("\t\t\t%u -> L%d,\n", e->key, e->value);
+					fprintf(out, "\t\t\t%u -> L%d,\n", e->key, e->value);
 				}
-				printf("\t\t\tdefault -> L%d)\n", p.switch_.default_label);
+				fprintf(out, "\t\t\tdefault -> L%d)\n", p.switch_.default_label);
 				break;
 			}
             case TB_PARAM:
-			printf("  r%u\t=\t", i);
-			tb_print_type(dt);
-			printf("  PARAM %u\n", p.param.id);
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, "  PARAM %u\n", p.param.id);
 			break;
             case TB_PARAM_ADDR:
-			printf("  r%u\t=\t&PARAM %u\n", i, f->nodes.payload[p.param_addr.param].param.id);
+			fprintf(out, "  r%u\t=\t&PARAM %u\n", i, f->nodes.payload[p.param_addr.param].param.id);
 			break;
             case TB_LOAD:
-			printf("  r%u\t=\t", i);
-			tb_print_type(dt);
-			printf(" *r%u (%d align)\n", p.load.address, p.load.alignment);
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " *r%u (%d align)\n", p.load.address, p.load.alignment);
 			break;
             case TB_STORE:
-			printf(" *r%u \t=\t", p.store.address);
-			tb_print_type(dt);
-			printf(" r%u (%d align)\n", p.store.value, p.store.alignment);
+			fprintf(out, " *r%u \t=\t", p.store.address);
+			tb_print_type(out, dt);
+			fprintf(out, " r%u (%d align)\n", p.store.value, p.store.alignment);
 			break;
             case TB_LABEL:
-			printf("L%d: # r%u terminates at r%u\n", p.label.id, i, p.label.terminator);
+			fprintf(out, "L%d: # r%u terminates at r%u\n", p.label.id, i, p.label.terminator);
 			break;
             case TB_GOTO:
-			printf("  goto L%d\n", p.goto_.label);
+			fprintf(out, "  goto L%d\n", p.goto_.label);
 			break;
             case TB_IF:
-			printf("  if (r%u)\tL%d else L%d\n", p.if_.cond, p.if_.if_true, p.if_.if_false);
+			fprintf(out, "  if (r%u)\tL%d else L%d\n", p.if_.cond, p.if_.if_true, p.if_.if_false);
 			break;
             case TB_PASS:
-			printf("  r%u\t=\t", i);
-			tb_print_type(dt);
-			printf(" PASS r%u\n", p.pass);
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " PASS r%u\n", p.pass);
 			break;
             case TB_PHI1:
-			printf("  r%u\t=\t", i);
-			tb_print_type(dt);
-			printf(" PHI L%d:r%u\n", f->nodes.payload[p.phi1.a_label].label.id, p.phi1.a);
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " PHI L%d:r%u\n", f->nodes.payload[p.phi1.a_label].label.id, p.phi1.a);
 			break;
             case TB_PHI2:
-			printf("  r%u\t=\t", i);
-			tb_print_type(dt);
-			printf(" PHI L%d:r%u, L%d:r%u\n", f->nodes.payload[p.phi2.a_label].label.id, p.phi2.a, f->nodes.payload[p.phi2.b_label].label.id, p.phi2.b);
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " PHI L%d:r%u, L%d:r%u\n", f->nodes.payload[p.phi2.a_label].label.id, p.phi2.a, f->nodes.payload[p.phi2.b_label].label.id, p.phi2.b);
 			break;
             case TB_RET:
-			printf("  ret\t\t");
-			tb_print_type(dt);
-			printf(" r%u\n", p.i_arith.a);
+			fprintf(out, "  ret\t\t");
+			tb_print_type(out, dt);
+			fprintf(out, " r%u\n", p.i_arith.a);
 			break;
             default: tb_todo();
 		}

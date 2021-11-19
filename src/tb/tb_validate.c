@@ -59,8 +59,7 @@ bool tb_validate(TB_Function* f) {
 		}
 	}
 	
-	if (error_count) tb_function_print(f);
-	
+	if (error_count) tb_function_print(f, stdout);
 	f->validated = true;
 	return (error_count == 0);
 }

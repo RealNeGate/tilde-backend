@@ -222,7 +222,12 @@ typedef struct TB_FunctionOutput TB_FunctionOutput;
 // *******************************
 TB_API void tb_get_constraints(TB_Arch target_arch, const TB_FeatureSet* features, TB_FeatureConstraints* constraints);
 
-TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, const TB_FeatureSet* features, int optimization_level, int max_threads);
+TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, const TB_FeatureSet* features, int optimization_level, int max_threads, bool preserve_ir_after_submit);
+// preserve_ir_after_submit means that after the tb_module_compile_func(...) you can 
+// still access the IR, this comes at a higher overall memory usage cost since the
+// IR is kept in memory for the lifetime of the compile but this is not an issue when
+// debugging.
+
 TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f);
 TB_API size_t tb_DEBUG_module_get_full_node_count(TB_Module* m);
 TB_API void tb_module_destroy(TB_Module* m);
@@ -310,6 +315,6 @@ TB_API TB_Register tb_inst_if(TB_Function* f, TB_Register cond, TB_Label if_true
 TB_API void tb_inst_switch(TB_Function* f, TB_DataType dt, TB_Register key, TB_Label default_label, size_t entry_count, const TB_SwitchEntry* entries);
 TB_API void tb_inst_ret(TB_Function* f, TB_DataType dt, TB_Register value);
 
-TB_API void tb_function_print(TB_Function* f);
+TB_API void tb_function_print(TB_Function* f, FILE* out);
 
 #endif /* _TINYBACKEND_H_ */

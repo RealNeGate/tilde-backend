@@ -26,7 +26,7 @@ static TB_Register tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
 	return r;
 }
 
-static TB_Int128 tb_fold_add(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b) {
+TB_Int128 tb_fold_add(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b) {
 	assert(a.hi == 0 && b.hi == 0);
     if (dt.type == TB_I128) {
 		tb_todo();
@@ -48,7 +48,7 @@ static TB_Int128 tb_fold_add(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128
 	}
 }
 
-static TB_Int128 tb_fold_sub(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b) {
+TB_Int128 tb_fold_sub(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b) {
 	assert(a.hi == 0 && b.hi == 0);
     if (dt.type == TB_I128) {
 		tb_todo();
@@ -71,7 +71,7 @@ static TB_Int128 tb_fold_sub(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128
 	}
 }
 
-static TB_Int128 tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b) {
+TB_Int128 tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b) {
 	assert(a.hi == 0 && b.hi == 0);
     if (dt.type == TB_I128) {
 		tb_todo();
@@ -94,7 +94,7 @@ static TB_Int128 tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128
 	}
 }
 
-static TB_Int128 tb_fold_div(TB_DataType dt, TB_Int128 a, TB_Int128 b) {
+TB_Int128 tb_fold_div(TB_DataType dt, TB_Int128 a, TB_Int128 b) {
 	assert(a.hi == 0 && b.hi == 0);
     if (dt.type == TB_I128) {
 		tb_todo();

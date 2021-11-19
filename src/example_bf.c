@@ -3,8 +3,6 @@
 static TB_Function* test_putc = NULL;
 static TB_Function* test_getc = NULL;
 
-static int label_count = 1;
-
 static const char* compile_bf(TB_Function* func, const char* at, TB_Register cells, TB_Register ptr) {
 	while (*at) {
 		char c = *at++;
@@ -50,9 +48,9 @@ static const char* compile_bf(TB_Function* func, const char* at, TB_Register cel
 				break;
 			}
 			case '[': {
-				int entry = label_count++;
-				int body = label_count++;
-				int exit = label_count++;
+				int entry = tb_inst_new_label_id(func);
+				int body = tb_inst_new_label_id(func);
+				int exit = tb_inst_new_label_id(func);
 				
 				{
 					tb_inst_label(func, entry);
@@ -84,17 +82,22 @@ static const char* compile_bf(TB_Function* func, const char* at, TB_Register cel
 
 int main(int argc, char** argv) {
 	TB_FeatureSet features = { 0 };
-	TB_Module* m = tb_module_create(TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features);
+	TB_Module* m = tb_module_create(TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features, TB_OPT_O1, 1, false);
 	
 	test_putc = tb_function_create(m, "putc", TB_TYPE_VOID());
 	tb_inst_ret(test_putc, TB_TYPE_VOID(), TB_NULL_REG);
+	tb_module_compile_func(m, test_putc);
 	
 	test_getc = tb_function_create(m, "getc", TB_TYPE_I8(1));
 	tb_inst_ret(test_getc, TB_TYPE_VOID(), tb_inst_iconst(test_getc, TB_TYPE_I8(1), 0));
+	tb_module_compile_func(m, test_getc);
 	
+	TB_Function* func;
 	{
-		const char* at = "+++";
-		TB_Function* func = tb_function_create(m, "main", TB_TYPE_VOID());
+		//const char* at = "--[----->+<]>---.++++++++++++.+.+++++++++.+[-->+<]>+++.++[-->+++<]>.++++++++++++.+.+++++++++.-[-->+++++<]>++.[--->++<]>-.-----------.++>>+<<";
+		const char* at = "+++>+<++";
+		
+		func = tb_function_create(m, "main", TB_TYPE_VOID());
 		
 		TB_Register ptr = tb_inst_local(func, 4, 4);
 		TB_Register cells = tb_inst_local(func, 512, 4);
@@ -108,14 +111,16 @@ int main(int argc, char** argv) {
 		compile_bf(func, at, cells, ptr);
 		
 		tb_inst_ret(func, TB_TYPE_VOID(), TB_NULL_REG);
-		tb_function_print(func);
+		
+		tb_function_print(func, stdout);
+		tb_module_compile_func(m, func);
 	}
 	
-	tb_module_compile(m, TB_OPT_O0, 1);
+	tb_module_compile(m);
 	tb_module_export_jit(m);
 	
 	typedef void(*BFEntry)();
-	BFEntry e = tb_module_get_jit_func_by_name(m, "main");
+	BFEntry e = tb_module_get_jit_func(m, func);
 	e();
 	
 	//FILE* file = fopen("./test_x64.obj", "wb");

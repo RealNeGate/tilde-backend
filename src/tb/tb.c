@@ -32,19 +32,21 @@ static void tb_function_free(TB_Function* f) {
 #define OPT(x) if (tb_opt_ ## x (f)) goto repeat_opt
 static void tb_optimize_func(TB_Function* f) {
 	repeat_opt: {
-		//tb_function_print(f);
+		//tb_function_print(f, stdout);
 		//printf("\n\n\n");
 		
 		OPT(remove_pass_node);
 		OPT(canonicalize);
+		OPT(fold);
+		OPT(load_elim);
 		OPT(strength_reduction);
 		OPT(mem2reg);
 		OPT(dce);
 		OPT(compact_dead_regs);
 	}
 	
-	//tb_function_print(f);
-	//printf("\n\n\n");
+	tb_function_print(f, stdout);
+	printf("\n\n\n");
 }
 #undef OPT
 
@@ -234,20 +236,20 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
 TB_API bool tb_module_compile(TB_Module* m) {
 	TB_JobSystem* s = m->jobs;
 	
-	// wait for the threads to finish
 	while (s->write_pointer != s->read_pointer) {
 		__builtin_ia32_pause();
 	}
-	
 	s->running = false;
 	m->compiled_functions.count = m->functions.count;
-    
+	
 #if _WIN32
 	ReleaseSemaphore(m->jobs->semaphore, m->jobs->thread_count, 0);
 	WaitForMultipleObjects(s->thread_count, s->threads, TRUE, -1);
 	loop(i, s->thread_count) CloseHandle(s->threads[i]);
 	
 	DeleteCriticalSection(&s->mutex);
+#else
+	// TODO(NeGate): Delete the stuff
 #endif
 	
 	return true;
@@ -420,6 +422,7 @@ TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataTy
 	f->nodes.payload[1].label.is_loop = false;
 	f->nodes.count = 2;
     
+	f->label_count = 1;
 	f->current_label = 1;
 	return f;
 }

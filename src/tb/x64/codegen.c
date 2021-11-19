@@ -848,21 +848,27 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 				use(ctx, f, &index, p.array_access.index, r);
 				uint32_t stride = p.array_access.stride;
 				
+				// We'll be allocating some registers temporarily
+				GPR temp_base = GPR_NONE;
+				GPR temp_index = GPR_NONE;
+				
 				// Load base
 				if (base.type == VAL_MEM) {
 					Val new_base;
-					def_new_gpr(ctx, f, &new_base, p.array_access.base, dt.type);
+					def_new_gpr(ctx, f, &new_base, TB_REG_MAX /* reserved for a sec*/, dt.type);
 					inst2(ctx, MOV, &new_base, &base, dt.type);
 					
+					temp_base = new_base.gpr;
 					base = new_base;
 				}
 				
 				// Load index
 				if (index.type == VAL_MEM) {
 					Val new_index;
-					def_new_gpr(ctx, f, &new_index, p.array_access.index, dt.type);
+					def_new_gpr(ctx, f, &new_index, TB_REG_MAX /* reserved for a sec*/, dt.type);
 					inst2(ctx, MOV, &new_index, &index, dt.type);
 					
+					temp_index = new_index.gpr;
 					index = new_index;
 				}
 				
@@ -895,6 +901,9 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 						emit(mod_rx_rm(MOD_DIRECT, base.gpr, v->gpr));
 					}
 				} else tb_todo();
+				
+				ctx->gpr_desc[temp_base] = 0;
+				ctx->gpr_desc[temp_index] = 0;
 				break;
 			}
 			case TB_MEMBER_ACCESS: {
@@ -1242,10 +1251,11 @@ static void def_new_gpr(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, int dt_
 				// mark register as to be saved
 				ctx->regs_to_save |= (1u << gpr) & ABI_CALLEE_SAVED;
 				
+				Val val = val_gpr(dt_type, gpr);
 				ctx->gpr_desc[gpr] = r;
-				ctx->addr_desc[r] = val_gpr(dt_type, gpr);
+				if (r != TB_REG_MAX) ctx->addr_desc[r] = val;
 				
-				*v = ctx->addr_desc[r];
+				*v = val;
 				return;
 			}
 		}
@@ -1259,9 +1269,10 @@ static void def_new_gpr(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, int dt_
 		
 		if (evict_gpr(ctx, f, gpr)) {
 			ctx->gpr_desc[gpr] = r;
-			ctx->addr_desc[r] = val_gpr(dt_type, gpr);
+			Val val = val_gpr(dt_type, gpr);
+			if (r != TB_REG_MAX) ctx->addr_desc[r] = val;
 			
-			*v = ctx->addr_desc[r];
+			*v = val;
 			return;
 		}
 	}

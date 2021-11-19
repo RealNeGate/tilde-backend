@@ -60,10 +60,8 @@ bool tb_opt_canonicalize(TB_Function* f) {
 			
 			// Move all integer constants to the right side
 			if (f->nodes.type[a] == TB_INT_CONST && f->nodes.type[b] != TB_INT_CONST) {
-				tb_swap(a, b);
-				
-				f->nodes.payload[i].i_arith.a = a;
-				f->nodes.payload[i].i_arith.b = b;
+				f->nodes.payload[i].i_arith.a = b;
+				f->nodes.payload[i].i_arith.b = a;
 				changes++;
 			} else if (f->nodes.type[a] == type && f->nodes.type[b] != type) {
 				// Reshuffle the adds from 

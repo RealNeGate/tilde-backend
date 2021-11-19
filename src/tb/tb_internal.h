@@ -132,6 +132,8 @@ typedef enum TB_RegTypeEnum {
 
 typedef uint8_t TB_RegType;
 
+#define TB_IS_NODE_SIDE_EFFECT(type) ((type) >= TB_SIDE_EFFECT_MIN && (type) <= TB_SIDE_EFFECT_MAX)
+#define TB_IS_NODE_TERMINATOR(type) ((type) >= TB_TERMINATOR_MIN && (type) <= TB_TERMINATOR_MAX)
 #define TB_DATA_TYPE_EQUALS(a, b) (memcmp(&(a), &(b), sizeof(TB_DataType)) == 0)
 #define TB_DATA_TYPE_NOT_EQUALS(a, b) (memcmp(&(a), &(b), sizeof(TB_DataType)) != 0)
 
@@ -602,10 +604,20 @@ __VA_ARGS__; \
 #endif
 
 //
+// CONSTANT FOLDING UTILS
+//
+TB_Int128 tb_fold_add(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b);
+TB_Int128 tb_fold_sub(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b);
+TB_Int128 tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b);
+TB_Int128 tb_fold_div(TB_DataType dt, TB_Int128 a, TB_Int128 b);
+
+//
 // OPTIMIZATION FUNCTIONS
 //
 bool tb_opt_mem2reg(TB_Function* f);
 bool tb_opt_dce(TB_Function* f);
+bool tb_opt_fold(TB_Function* f);
+bool tb_opt_load_elim(TB_Function* f);
 bool tb_opt_inline(TB_Function* f);
 bool tb_opt_canonicalize(TB_Function* f);
 bool tb_opt_remove_pass_node(TB_Function* f);

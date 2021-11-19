@@ -17,6 +17,7 @@ TB_Function* test_vadd_f32x4(TB_Module* m);
 TB_Function* test_vmuladd_f32x4(TB_Module* m);
 TB_Function* test_muladd_f32(TB_Module* m);
 TB_Function* test_locals_1(TB_Module* m);
+TB_Function* test_locals_2(TB_Module* m);
 TB_Function* test_params_1(TB_Module* m);
 TB_Function* test_params_2(TB_Module* m);
 TB_Function* test_locals_params_1(TB_Module* m);
@@ -24,6 +25,7 @@ TB_Function* test_add_sub_i32(TB_Module* m);
 TB_Function* test_fib(TB_Module* m);
 TB_Function* test_foo(TB_Module* m);
 TB_Function* test_fact(TB_Module* m);
+TB_Function* test_array_access(TB_Module* m);
 TB_Function* test_zero_mem(TB_Module* m);
 TB_Function* test_switch_case(TB_Module* m);
 TB_Function* test_entry(TB_Module* m);
@@ -62,6 +64,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_add_i64,
 		test_div_i64,
 		test_locals_1,
+		test_locals_2,
 		test_params_1,
 		test_params_2,
 		test_zero_mem,
@@ -73,6 +76,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		test_fib,
 		test_vadd_f32x4,
 		test_vmuladd_f32x4,
+		test_array_access,
 		test_foo,
         test_entry
 	};
@@ -117,6 +121,7 @@ TB_Function* test_zero_mem(TB_Module* m) {
 	
 	TB_Register cells = tb_inst_local(func, 32, 4);
 	tb_inst_memset(func, cells, tb_inst_iconst(func, TB_TYPE_I32(1), 0), tb_inst_iconst(func, TB_TYPE_I32(1), 32), 4);
+	
 	tb_inst_ret(func, TB_TYPE_VOID(), TB_NULL_REG);
 	return func;
 }
@@ -351,6 +356,21 @@ TB_Function* test_locals_1(TB_Module* m) {
 	return func;
 }
 
+TB_Function* test_locals_2(TB_Module* m) {
+	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I32(1));
+	
+	TB_Register local = tb_inst_local(func, 8, 4);
+    
+	TB_Register a = tb_inst_member_access(func, local, 0);
+	TB_Register b = tb_inst_member_access(func, local, 4);
+	
+	tb_inst_store(func, TB_TYPE_I32(1), a, tb_inst_iconst(func, TB_TYPE_I32(1), 69), 4);
+	tb_inst_store(func, TB_TYPE_I32(1), b, tb_inst_iconst(func, TB_TYPE_I32(1), 69), 4);
+    
+	tb_inst_ret(func, TB_TYPE_I32(1), tb_inst_load(func, TB_TYPE_I32(1), b, 4));
+	return func;
+}
+
 TB_Function* test_params_1(TB_Module* m) {
 	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I32(1));
 	
@@ -401,6 +421,16 @@ TB_Function* test_locals_params_1(TB_Module* m) {
     
 	tb_inst_store(func, TB_TYPE_I32(1), local, sum, 4);
 	tb_inst_ret(func, TB_TYPE_I32(1), tb_inst_load(func, TB_TYPE_I32(1), local, 4));
+	return func;
+}
+
+TB_Function* test_array_access(TB_Module* m) {
+	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_PTR());
+	
+	TB_Register a = tb_inst_param(func, TB_TYPE_PTR());
+	TB_Register b = tb_inst_param(func, TB_TYPE_PTR());
+	
+	tb_inst_ret(func, TB_TYPE_PTR(), tb_inst_array_access(func, a, b, 24));
 	return func;
 }
 

@@ -888,9 +888,12 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 						emit(mod_rx_rm(MOD_DIRECT, v->gpr, index.gpr));
 						emit4(stride);
 						
-						inst2(ctx, ADD, v, &base, dt.type);
+						emit(rex(true, base.gpr, v->gpr, 0));
+						emit(0x01);
+						emit(mod_rx_rm(MOD_DIRECT, base.gpr, v->gpr));
 					}
 				} else tb_todo();
+				break;
 			}
 			case TB_MEMBER_ACCESS: {
 				use(ctx, f, v, p.member_access.base, r);

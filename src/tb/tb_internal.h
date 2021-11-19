@@ -307,6 +307,7 @@ struct TB_Function {
 	
 	// Used by the IR building
 	TB_Register current_label;
+	TB_Label label_count;
 	TB_NodeStream nodes;
 	
 	// Used by nodes which have variable

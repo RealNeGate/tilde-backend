@@ -34,7 +34,6 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 		size_t phi_count = 0;
 		size_t locals_count = 0;
 		size_t return_count = 0;
-		size_t label_count = 0;
 		size_t label_patch_count = 0;
 		
 		// TODO(NeGate): Consider splitting this into two separate versions, one with 
@@ -55,7 +54,6 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 			locals_count += COUNT_OF_TYPE_IN_M128(TB_PARAM);
 			
 			return_count += COUNT_OF_TYPE_IN_M128(TB_RET);
-			label_count += COUNT_OF_TYPE_IN_M128(TB_LABEL);
 			
 			label_patch_count += COUNT_OF_TYPE_IN_M128(TB_GOTO);
 			label_patch_count += COUNT_OF_TYPE_IN_M128(TB_IF) * 2;
@@ -70,7 +68,6 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 			else if (t == TB_LOCAL) locals_count++;
 			else if (t == TB_PARAM) locals_count++;
 			else if (t == TB_RET) return_count++;
-			else if (t == TB_LABEL) label_count++;
 			else if (t == TB_IF) label_patch_count += 2;
 			else if (t == TB_GOTO) label_patch_count++;
 		}
@@ -96,7 +93,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 		ctx->phis = tb_tls_push(tls, phi_count * sizeof(PhiValue));
 		
 		ctx->params = tb_tls_push(tls, f->parameter_count * sizeof(int32_t));
-		ctx->labels = tb_tls_push(tls, label_count * sizeof(uint32_t));
+		ctx->labels = tb_tls_push(tls, f->label_count * sizeof(uint32_t));
 		ctx->label_patches = tb_tls_push(tls, label_patch_count * sizeof(LabelPatch));
 		ctx->ret_patches = tb_tls_push(tls, return_count * sizeof(ReturnPatch));
 	}
@@ -886,6 +883,8 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 						
 						// TODO(NeGate): Improve this scaling method by
 						// adding ways to break down multiplies into bitshifts.
+						// int shifts_needed = __builtin_popcount(stride);
+						
 						emit(rex(true, v->gpr, index.gpr, 0));
 						emit(0x69);
 						emit(mod_rx_rm(MOD_DIRECT, v->gpr, index.gpr));
@@ -1236,7 +1235,7 @@ static void def(Ctx* ctx, TB_Function* f, const Val v, TB_Register r) {
 
 static void def_new_gpr(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, int dt_type) {
 	do {
-		for (size_t i = 0; i < 14; i++) {
+		for (size_t i = 0; i < tb_arrlen(GPR_PRIORITY_LIST); i++) {
 			GPR gpr = GPR_PRIORITY_LIST[i];
 			
 			if (ctx->gpr_desc[gpr] == 0) {
@@ -1247,7 +1246,6 @@ static void def_new_gpr(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, int dt_
 				ctx->addr_desc[r] = val_gpr(dt_type, gpr);
 				
 				*v = ctx->addr_desc[r];
-				printf("   allocated r%u <- %s\n", r, GPR_NAMES[gpr]);
 				return;
 			}
 		}

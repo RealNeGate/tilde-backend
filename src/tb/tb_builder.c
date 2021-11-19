@@ -725,7 +725,13 @@ TB_API TB_Register tb_inst_phi2(TB_Function* f, TB_DataType dt, TB_Label a_label
 	return r;
 }
 
+TB_API TB_Label tb_inst_new_label_id(TB_Function* f) {
+	return f->label_count++;
+}
+
 TB_API TB_Register tb_inst_label(TB_Function* f, TB_Label id) {
+	assert(id < f->label_count);
+	
 	TB_Register r = tb_make_reg(f, TB_LABEL, TB_TYPE_PTR());
 	f->nodes.payload[r].label.id = id;
 	f->nodes.payload[r].label.terminator = TB_NULL_REG;

@@ -481,20 +481,31 @@ TB_Function* test_fib(TB_Module* m) {
 	
 	TB_Register n = tb_inst_param(func, TB_TYPE_I32(1));
 	
-	tb_inst_if(func, tb_inst_cmp_slt(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 2)), 1, 2);
-	tb_inst_label(func, 1); // .L1:
-	tb_inst_ret(func, TB_TYPE_I32(1), n);
+	TB_Label if_true = tb_inst_new_label_id(func);
+	TB_Label if_false = tb_inst_new_label_id(func);
 	
-	tb_inst_label(func, 2); // .L2:
+	// if (n < 2)
+	tb_inst_if(func, tb_inst_cmp_slt(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 2)), if_true, if_false);
 	
-	TB_Register n_minus_one = tb_inst_sub(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 1), TB_ASSUME_NUW);
-	TB_Register call1 = tb_inst_call(func, TB_TYPE_I32(1), func, 1, (TB_Register[]) { n_minus_one });
+	// then
+	{
+		tb_inst_label(func, if_true);
+		tb_inst_ret(func, TB_TYPE_I32(1), n);
+	}
 	
-	TB_Register n_minus_two = tb_inst_sub(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 2), TB_ASSUME_NUW);
-	TB_Register call2 = tb_inst_call(func, TB_TYPE_I32(1), func, 1, (TB_Register[]) { n_minus_two });
-	
-	TB_Register sum = tb_inst_add(func, TB_TYPE_I32(1), call1, call2, TB_ASSUME_NUW);
-	tb_inst_ret(func, TB_TYPE_I32(1), sum);
+	// else
+	{
+		tb_inst_label(func, if_false);
+		
+		TB_Register n_minus_one = tb_inst_sub(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 1), TB_ASSUME_NUW);
+		TB_Register call1 = tb_inst_call(func, TB_TYPE_I32(1), func, 1, (TB_Register[]) { n_minus_one });
+		
+		TB_Register n_minus_two = tb_inst_sub(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 2), TB_ASSUME_NUW);
+		TB_Register call2 = tb_inst_call(func, TB_TYPE_I32(1), func, 1, (TB_Register[]) { n_minus_two });
+		
+		TB_Register sum = tb_inst_add(func, TB_TYPE_I32(1), call1, call2, TB_ASSUME_NUW);
+		tb_inst_ret(func, TB_TYPE_I32(1), sum);
+	}
 	
 	return func;
 }
@@ -507,16 +518,20 @@ TB_Function* test_fact(TB_Module* m) {
 	TB_Register f_addr = tb_inst_local(func, 4, 4);
 	tb_inst_store(func, TB_TYPE_I32(1), f_addr, tb_inst_iconst(func, TB_TYPE_I32(1), 1), 4);
 	
+	TB_Label loop_entry = tb_inst_new_label_id(func);
+	TB_Label loop_body = tb_inst_new_label_id(func);
+	TB_Label loop_exit = tb_inst_new_label_id(func);
+	
 	// Loop entry
 	{
-		tb_inst_label(func, 1);
+		tb_inst_label(func, loop_entry);
 		TB_Register n_ld = tb_inst_load(func, TB_TYPE_I32(1), n_addr, 4);
-		tb_inst_if(func, tb_inst_cmp_slt(func, TB_TYPE_I32(1), n_ld, tb_inst_iconst(func, TB_TYPE_I32(1), 0)), 2, 3);
+		tb_inst_if(func, tb_inst_cmp_slt(func, TB_TYPE_I32(1), n_ld, tb_inst_iconst(func, TB_TYPE_I32(1), 0)), loop_body, loop_exit);
 	}
 	
 	// Loop body
 	{
-		tb_inst_label(func, 2);
+		tb_inst_label(func, loop_body);
 		
 		// f = f * n
 		TB_Register f_ld = tb_inst_load(func, TB_TYPE_I32(1), f_addr, 4);
@@ -527,10 +542,10 @@ TB_Function* test_fact(TB_Module* m) {
 		TB_Register n_ld2 = tb_inst_load(func, TB_TYPE_I32(1), n_addr, 4);
 		tb_inst_store(func, TB_TYPE_I32(1), n_addr, tb_inst_sub(func, TB_TYPE_I32(1), n_ld2, tb_inst_iconst(func, TB_TYPE_I32(1), 1), TB_ASSUME_NUW), 4);
 		
-		tb_inst_goto(func, 1);
+		tb_inst_goto(func, loop_entry);
 	}
 	
-	tb_inst_label(func, 3);
+	tb_inst_label(func, loop_exit);
 	tb_inst_ret(func, TB_TYPE_I32(1), tb_inst_load(func, TB_TYPE_I32(1), f_addr, 4));
 	return func;
 }
@@ -552,29 +567,6 @@ TB_Function* test_foo(TB_Module* m) {
 									 );
 	
 	tb_inst_ret(func, TB_TYPE_I32(1), factor);
-	return func;
-}
-
-TB_Function* test_switch_case(TB_Module* m) {
-	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I32(1));
-	
-	TB_Register n = tb_inst_param(func, TB_TYPE_I32(1));
-    tb_inst_switch(func, TB_TYPE_I32(1), n, 9, 8, (TB_SwitchEntry[]) {
-					   { 100, 1 },
-					   { 150, 2 },
-					   { 200, 3 },
-					   { 250, 4 },
-					   { 300, 5 },
-					   { 350, 6 },
-					   { 400, 7 },
-					   { 450, 8 }
-				   });
-	
-	const static int nums[9] = { 13, 3, 14, 4, 15, 5, 16, 6, 0 };
-	for (size_t i = 0; i < 9; i++) {
-		tb_inst_label(func, 1 + i);
-		tb_inst_ret(func, TB_TYPE_I32(1), tb_inst_iconst(func, TB_TYPE_I32(1), nums[i]));
-	}
 	return func;
 }
 

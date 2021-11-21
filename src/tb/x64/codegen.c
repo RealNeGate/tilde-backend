@@ -533,7 +533,7 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					
 					// Evict the GPRs that are caller saved
 					for (size_t j = 0; j < 16; j++) {
-						if (ABI_CALLER_SAVED & (1u << j)) evict_gpr(ctx, f, j);
+						if (ABI_CALLER_SAVED & (1u << j)) evict_gpr(ctx, f, j, i);
 					}
 					
 					// Evict the XMMs that are caller saved
@@ -542,15 +542,15 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 						
 						if (j < 4 && (param_dt.count > 1 ||
 									  TB_IS_FLOAT_TYPE(param_dt.type))) {
-							evict_xmm(ctx, f, j);
+							evict_xmm(ctx, f, j, i);
 						}
 					}
 					
 					// evict return value
 					if (dt.count > 1 || TB_IS_FLOAT_TYPE(dt.type)) {
-						evict_xmm(ctx, f, XMM0);
+						evict_xmm(ctx, f, XMM0, i);
 					} else if (dt.type != TB_VOID) {
-						evict_gpr(ctx, f, RAX);
+						evict_gpr(ctx, f, RAX, i);
 					}
 					
 					// We need to reserve some registers until the function is
@@ -642,9 +642,9 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					// TODO(NeGate): Implement vector memset
 					
 					// rep stosb, ol' reliable
-					evict_gpr(ctx, f, RAX);
-					evict_gpr(ctx, f, RCX);
-					evict_gpr(ctx, f, RDI);
+					evict_gpr(ctx, f, RAX, i);
+					evict_gpr(ctx, f, RCX, i);
+					evict_gpr(ctx, f, RDI, i);
 					
 					TB_Register old_rdi_bind;
 					{
@@ -1116,8 +1116,8 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 			}
 			case TB_UDIV:
 			case TB_SDIV: {
-				evict_gpr(ctx, f, RAX);
-				evict_gpr(ctx, f, RDX);
+				evict_gpr(ctx, f, RAX, r);
+				evict_gpr(ctx, f, RDX, r);
 				
 				TB_Register a_reg = f->nodes.payload[r].i_arith.a;
 				TB_Register b_reg = f->nodes.payload[r].i_arith.b;
@@ -1267,7 +1267,7 @@ static void def_new_gpr(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, int dt_
 	for (size_t i = 14; i--;) {
 		GPR gpr = GPR_PRIORITY_LIST[i];
 		
-		if (evict_gpr(ctx, f, gpr)) {
+		if (evict_gpr(ctx, f, gpr, r)) {
 			ctx->gpr_desc[gpr] = r;
 			Val val = val_gpr(dt_type, gpr);
 			if (r != TB_REG_MAX) ctx->addr_desc[r] = val;
@@ -1301,7 +1301,7 @@ static void def_new_xmm(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Data
 	
 	// TODO(NeGate): Try figuring out which register is best to evict.
 	for (size_t i = 16; i--;) {
-		if (evict_xmm(ctx, f, i)) {
+		if (evict_xmm(ctx, f, i, r)) {
 			ctx->xmm_desc[i] = r;
 			ctx->addr_desc[r] = val_xmm(dt, i);
 			
@@ -1313,8 +1313,11 @@ static void def_new_xmm(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Data
 	abort();
 }
 
-static bool evict_gpr(Ctx* ctx, TB_Function* f, GPR g) {
+static bool evict_gpr(Ctx* ctx, TB_Function* f, GPR g, TB_Register r) {
 	TB_Register bound = ctx->gpr_desc[g];
+	
+	// if it dies... right now!! we don't need to spill it
+	if (ctx->intervals[bound] == r) return true;
 	
 	if (bound && bound != TB_REG_MAX) {
 		printf("   evicted %s\n", GPR_NAMES[g]);
@@ -1335,8 +1338,11 @@ static bool evict_gpr(Ctx* ctx, TB_Function* f, GPR g) {
 	return false;
 }
 
-static bool evict_xmm(Ctx* ctx, TB_Function* f, XMM x) {
+static bool evict_xmm(Ctx* ctx, TB_Function* f, XMM x, TB_Register r) {
 	TB_Register bound = ctx->xmm_desc[x];
+	
+	// if it dies... right now!! we don't need to spill it
+	if (ctx->intervals[bound] == r) return true;
 	
 	if (bound && bound != TB_REG_MAX) {
 		printf("   evicted XMM%d\n", x);
@@ -1390,6 +1396,14 @@ static void isel(Ctx* ctx, TB_Function* f, Val* v, const IselInfo* info,
 	TB_DataType dst_dt = f->nodes.dt[dst_reg];
 	bool is_xmm = dst_dt.count > 1 || TB_IS_FLOAT_TYPE(dst_dt.type);
 	
+	// (i8 | i16) => i32
+	TB_DataType prev_dt;
+	bool is_promoted = dst_dt.count == 1 && (dst_dt.type == TB_I8 || dst_dt.type == TB_I16);
+	if (is_promoted) {
+		prev_dt = dst_dt;
+		dst_dt = TB_TYPE_I32(1);
+	}
+	
 	// NOTE(NeGate): The operands are ordered for this "magic"
 	if (info->communitive && a->type < b->type) tb_swap(a, b);
 	
@@ -1424,6 +1438,8 @@ static void isel(Ctx* ctx, TB_Function* f, Val* v, const IselInfo* info,
 	if (!info->has_memory_dst && a->type == VAL_MEM) recycle = false;
 	
 	if (recycle) {
+		assert(av.type != VAL_MEM);
+		
 		// (a => dst) += b
 		kill(ctx, f, a_reg);
 		inst2(ctx, info->inst, &av, &bv, dst_dt.type);
@@ -1442,12 +1458,24 @@ static void isel(Ctx* ctx, TB_Function* f, Val* v, const IselInfo* info,
 		inst2(ctx, mov_type, v, &av, dst_dt.type);
 		inst2(ctx, info->inst, v, &bv, dst_dt.type);
 	}
+	
+	if (is_promoted) {
+		inst2(ctx, MOVZX, v, v, prev_dt.type);
+	}
 }
 
 static void isel_aliased(Ctx* ctx, TB_Function* f, Val* v, const IselInfo* info,
 						 TB_Register dst_reg, TB_Register src_reg, 
 						 const Val* src) {
 	TB_DataType dst_dt = f->nodes.dt[dst_reg];
+	
+	// (i8 | i16) => i32
+	TB_DataType prev_dt;
+	bool is_promoted = dst_dt.count == 1 && (dst_dt.type == TB_I8 || dst_dt.type == TB_I16);
+	if (is_promoted) {
+		prev_dt = dst_dt;
+		dst_dt = TB_TYPE_I32(1);
+	}
 	
 	bool recycle = src->type != VAL_IMM && ctx->intervals[src_reg] == dst_reg;
 	
@@ -1470,6 +1498,10 @@ static void isel_aliased(Ctx* ctx, TB_Function* f, Val* v, const IselInfo* info,
 		else if (dst_dt.type == TB_F32) mov_type = MOVSS;
 		inst2(ctx, mov_type, v, src, dst_dt.type);
 		inst2(ctx, info->inst, v, src, dst_dt.type);
+	}
+	
+	if (is_promoted) {
+		inst2(ctx, MOVZX, v, v, prev_dt.type);
 	}
 }
 

@@ -56,7 +56,7 @@ inline static void inst2(Ctx* ctx, int op, const Val* a, const Val* b, int dt_ty
 	// an RX and an RM (base, index, shift, disp)
 	uint8_t base = 0;
 	uint8_t rx = 0xFF;
-	if (inst->ext == EXT_NONE || inst->ext == EXT_DEF) {
+	if (inst->ext == EXT_NONE || inst->ext == EXT_DEF || inst->ext == EXT_DEF2) {
 		assert(dt_type == TB_I8 || dt_type == TB_I16 || dt_type == TB_I32 || dt_type == TB_I64 || dt_type == TB_PTR);
 		
 		// the destination can only be a GPR, no direction flag
@@ -64,7 +64,7 @@ inline static void inst2(Ctx* ctx, int op, const Val* a, const Val* b, int dt_ty
 		bool dir_flag = dir != is_gpr_only_dst;
 		
 		// Address size prefix
-		if (dt_type == TB_I16) {
+		if (dt_type == TB_I16 && inst->ext != EXT_DEF2) {
 			emit(0x66);
 		}
 		
@@ -94,9 +94,9 @@ inline static void inst2(Ctx* ctx, int op, const Val* a, const Val* b, int dt_ty
 		else __builtin_unreachable();
 		
 		// Opcode
-		if (inst->ext == EXT_DEF) {
-			// DEF instructions can only be 32bit and 64bit
-			assert(dt_type == TB_I32 || dt_type == TB_I64 || dt_type == TB_PTR);
+		if (inst->ext == EXT_DEF || inst->ext == EXT_DEF2) {
+			// DEF instructions can only be 32bit and 64bit... maybe?
+			//assert(dt_type == TB_I32 || dt_type == TB_I64 || dt_type == TB_PTR);
 			emit(0x0F);
 		}
 		

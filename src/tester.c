@@ -16,6 +16,9 @@ enum {
     TOKEN_DIVISION = '/',
     TOKEN_ASSIGN = '=',
     
+    TOKEN_BRACKET_OPEN = '[',
+    TOKEN_BRACKET_CLOSE = ']',
+    
     TOKEN_PAREN_OPEN = '(',
     TOKEN_PAREN_CLOSE = ')',
     
@@ -23,6 +26,7 @@ enum {
     TOKEN_BRACE_CLOSE = '}',
     
     TOKEN_IDENTIFIER = 256,
+	TOKEN_NUMBER,
     
     TOKEN_INVALID,
     TOKEN_STRING,
@@ -96,15 +100,6 @@ static void read(Lexer* restrict l) {
         // it's expected these are next to each other because
         // Windows, fast path a fallthrough
         if (*current != '\n') goto redo_lex;
-        case '\n': {
-			current++;
-			
-            // Do a branchless SIMD skip of up to 16 indentation spaces after a newline.
-            __m128i chars = _mm_loadu_si128((__m128i *)current);
-            int len = __builtin_ffs(~_mm_movemask_epi8(_mm_cmpeq_epi8(chars, _mm_set1_epi8(' '))));
-            current += len;
-            goto redo_lex;
-        }
         case ' ':
         case '\t':
         case '\v':
@@ -147,14 +142,19 @@ static void read(Lexer* restrict l) {
         do {
             current++;
         } while (*current != '\0' && *current != '\n');
-        break;
+		current += (*current == '\n');
+        goto redo_lex;
+		case '\n':
         case '+':
         case '-':
         case '/':
         case '*':
         case '.':
+        case ';':
         case '(':
         case ')':
+        case '[':
+        case ']':
         case '{':
         case '}':
         current++;
@@ -172,6 +172,12 @@ static void read(Lexer* restrict l) {
             l->token_type = TOKEN_IDENTIFIER;
             break;
         }
+		case '0' ... '9':
+		do {
+			current++;
+		} while (*current >= '0' && *current <= '9');
+        l->token_type = TOKEN_NUMBER;
+		break;
         default: 
         l->token_type = TOKEN_INVALID;
         abort();
@@ -206,7 +212,23 @@ static int def_count = 0;
 static char* def_names[256];
 static TB_DataType defs[256];
 
+static int var_count = 0;
+static char* var_names[256];
+static TB_Register vars[256];
+
 static TB_Function* current_fn;
+
+static TB_Register find_value(Lexer* l) {
+	int i = var_count;
+	while (i--) {
+		if (match(l, var_names[i])) {
+			read(l);
+			return vars[i];
+		}
+	}
+	
+	abort();
+}
 
 static TB_DataType parse_data_type(Lexer* l) {
     if (l->token_type != '[') abort();
@@ -214,32 +236,43 @@ static TB_DataType parse_data_type(Lexer* l) {
     read(l);
     if (l->token_type != TOKEN_IDENTIFIER) abort();
     
+	TB_DataType dt;
     if (match(l, "i8")) {
-        return TB_TYPE_I8(1);
+        dt = TB_TYPE_I8(1);
     } else if (match(l, "i16")) {
-        return TB_TYPE_I16(1);
+        dt = TB_TYPE_I16(1);
     } else if (match(l, "i32")) {
-        return TB_TYPE_I32(1);
+        dt = TB_TYPE_I32(1);
     } else if (match(l, "i64")) {
-        return TB_TYPE_I64(1);
+        dt = TB_TYPE_I64(1);
     } else if (match(l, "i128")) {
-        return TB_TYPE_I128(1);
+        dt = TB_TYPE_I128(1);
     } else if (match(l, "f32")) {
-        return TB_TYPE_F32(1);
+        dt = TB_TYPE_F32(1);
     } else if (match(l, "f64")) {
-        return TB_TYPE_F64(1);
+        dt = TB_TYPE_F64(1);
     } else if (match(l, "bool")) {
-        return TB_TYPE_I32(1);
+        dt = TB_TYPE_I32(1);
     } else if (match(l, "ptr")) {
-        return TB_TYPE_PTR();
+		dt = TB_TYPE_PTR();
     } else {
         int i = def_count;
         while (i--) {
-            if (match(l, def_names[i])) return defs[i];
+            if (match(l, def_names[i])) {
+				dt = defs[i];
+				goto found;
+			}
         }
         
         abort();
     }
+	
+	found:
+    read(l);
+    if (l->token_type != ']') abort();
+	
+    read(l);
+	return dt;
 }
 
 int main(int argc, char** argv) {
@@ -278,29 +311,112 @@ int main(int argc, char** argv) {
     // Parse file
     //
     Lexer l = { .current = text };
-    while (true) {
-        // either def, fn or EOF
-        read(&l);
-        if (l.token_type == '\0') break;
-        else if (l.token_type == TOKEN_IDENTIFIER) {
+	read(&l);
+	
+	while (l.token_type) {
+        // either def, fn
+		if (l.token_type == '\n') {
+			// skip it
+			read(&l);
+		} else if (l.token_type == TOKEN_IDENTIFIER) {
             if (match(&l, "fn")) {
                 read(&l);
                 
-                TB_DataType dt = parse_data_type(&l);
+                TB_DataType return_dt = parse_data_type(&l);
                 char* name = newstr(&l);
                 
-                current_fn = tb_function_create(m, name, dt);
+                current_fn = tb_function_create(m, name, return_dt);
                 free(name); // no longer needed
+				
+				var_count = 0;
                 
-                
+				if (l.token_type != '{') abort();
+				read(&l);
+				
+				if (l.token_type != '\n') abort();
+				read(&l);
+				
+                while (l.token_type && l.token_type != '}') {
+					if (match(&l, "ret")) {
+						read(&l);
+						
+						tb_inst_ret(current_fn, return_dt, find_value(&l));
+						
+						if (l.token_type != '\n') abort();
+						read(&l);
+					} else if (l.token_type == '\n') {
+						// skip it
+						read(&l);
+					} else {
+						char* dst_name = newstr(&l);
+						
+						if (l.token_type != '=') abort();
+						read(&l);
+						
+						TB_DataType dt = parse_data_type(&l);
+						
+						TB_Register dst;
+						if (l.token_type == TOKEN_NUMBER) {
+							// TODO(NeGate): Shitty :P
+							char* tmp = newstr(&l);
+							int num = atoi(tmp);
+							
+							dst = tb_inst_iconst(current_fn, dt, num);
+							
+							free(tmp);
+						} else if (l.token_type == TOKEN_IDENTIFIER && match(&l, "param")) {
+							read(&l);
+							
+							dst = tb_inst_param(current_fn, dt);
+							
+							if (l.token_type != '\n') abort();
+							read(&l);
+						} else {
+							int op = l.token_type;
+							read(&l);
+							
+							TB_Register a = find_value(&l);
+							TB_Register b = find_value(&l);
+							
+							// TODO(NeGate): Implement arithmatic behavior syntax
+							if (op == '+') dst = tb_inst_add(current_fn, dt, a, b, TB_ASSUME_NUW);
+							else if (op == '-') dst = tb_inst_sub(current_fn, dt, a, b, TB_ASSUME_NUW);
+							else if (op == '*') dst = tb_inst_mul(current_fn, dt, a, b, TB_ASSUME_NUW);
+							else if (op == '/') dst = tb_inst_div(current_fn, dt, a, b, false);
+							else abort();
+							
+							if (l.token_type != '\n') abort();
+							read(&l);
+						}
+						
+						int i = var_count++;
+						var_names[i] = dst_name;
+						vars[i] = dst;
+					}
+				}
+				
+				if (l.token_type != '}') abort();
+				read(&l);
+				
+				if (l.token_type != '\n') abort();
+				read(&l);
+				
+				tb_function_print(current_fn, stdout);
+				printf("\n\n\n");
+				
+				tb_module_compile_func(m, current_fn);
             } else if (match(&l, "def")) {
                 read(&l);
                 
+				char* name = newstr(&l);
                 TB_DataType dt = parse_data_type(&l);
                 
                 int i = def_count++;
-                def_names[i] = newstr(&l);
+                def_names[i] = name;
                 defs[i] = dt;
+				
+				if (l.token_type != '\n') abort();
+				read(&l);
             } else {
                 abort();
             }

@@ -175,6 +175,9 @@ typedef enum ExtMode {
     
     // DEF instructions have a 0F prefix
 	EXT_DEF,
+	
+	// same as DEF but for MOVZX and MOVSX
+	EXT_DEF2,
     
     // SSE instructions have a F3 0F prefix
     EXT_SSE_SS,
@@ -375,10 +378,10 @@ static void def_new_xmm(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Data
 
 // if something is bound to this GPR, it's spilled into a stack slot
 // returns true if it spilled
-static bool evict_gpr(Ctx* ctx, TB_Function* f, GPR g);
+static bool evict_gpr(Ctx* ctx, TB_Function* f, GPR g, TB_Register r);
 
 // same as evict_gpr(...) but for XMM
-static bool evict_xmm(Ctx* ctx, TB_Function* f, XMM x);
+static bool evict_xmm(Ctx* ctx, TB_Function* f, XMM x, TB_Register r);
 
 static void materialize(Ctx* ctx, TB_Function* f, Val* dst, const Val* src, TB_Register src_reg, TB_DataType dt);
 

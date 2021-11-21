@@ -36,7 +36,6 @@ static TB_ExternalID test_get_module_handle;
 int main(int argc, char** argv) {
 	TB_FeatureSet features = { 0 };
 	
-	// Currently it only supports binary output
 #if 0
 	FILE* f = fopen("./test_x64.o", "wb");
 	do_tests(f, TB_ARCH_X86_64, TB_SYSTEM_LINUX, &features);

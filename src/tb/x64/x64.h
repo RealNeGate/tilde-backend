@@ -221,9 +221,13 @@ static const GPR GPR_PRIORITY_LIST[] = {
 };*/
 
 typedef enum Inst1 {
-	NOT  = 0x02,
-	NEG  = 0x03,
-	IDIV = 0x07
+	// 0xF7
+    NOT  = 0xF702,
+	NEG  = 0xF703,
+	IDIV = 0xF707,
+    
+    // 0xFF
+    CALL_RM = 0xFF02
 } Inst1;
 
 static const Inst2 inst2_tbl[] = {

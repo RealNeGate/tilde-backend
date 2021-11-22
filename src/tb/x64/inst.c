@@ -8,11 +8,11 @@ inline static uint8_t rex(bool is_64bit, uint8_t rx, uint8_t base, uint8_t index
 	return 0x40 | (is_64bit ? 8 : 0) | (base >> 3) | ((index >> 3) << 1) | ((rx >> 3) << 2);
 }
 
-inline static void inst1(Ctx* ctx, Inst1 op, Val* r) {
-	if (r->type == VAL_GPR) {
+inline static void inst1(Ctx* ctx, Inst1 op, const Val* r) {
+    if (r->type == VAL_GPR) {
 		emit(rex(true, 0x00, r->gpr, 0x00));
-		emit(0xF7);
-		emit(mod_rx_rm(MOD_DIRECT, op, r->gpr));
+		emit((op >> 8) & 0xFF);
+		emit(mod_rx_rm(MOD_DIRECT, op & 0xFF, r->gpr));
 	} else if (r->type == VAL_MEM) {
 		GPR base = r->mem.base;
 		GPR index = r->mem.index;
@@ -22,7 +22,7 @@ inline static void inst1(Ctx* ctx, Inst1 op, Val* r) {
 		bool needs_index = (index != GPR_NONE) || (base & 7) == RSP;
 		
 		emit(rex(true, 0x00, base, index != GPR_NONE ? index : 0));
-		emit(0xF7);
+		emit((op >> 8) & 0xFF);
 		
 		// If it needs an index, it'll put RSP into the base slot
 		// and write the real base into the SIB
@@ -30,7 +30,7 @@ inline static void inst1(Ctx* ctx, Inst1 op, Val* r) {
 		if (disp == 0) mod = MOD_INDIRECT_DISP8;
 		else if (disp == (int8_t)disp) mod = MOD_INDIRECT_DISP8;
 		
-		emit(mod_rx_rm(mod, op, needs_index ? RSP : base));
+		emit(mod_rx_rm(mod, op & 0xFF, needs_index ? RSP : base));
 		if (needs_index) {
 			emit(mod_rx_rm(scale, (base & 7) == RSP ? RSP : index, base));
 		}

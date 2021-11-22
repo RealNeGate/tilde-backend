@@ -270,7 +270,9 @@ extern "C" {
 	
 	TB_API TB_Register tb_inst_array_access(TB_Function* f, TB_Register base, TB_Register index, uint32_t stride);
 	TB_API TB_Register tb_inst_member_access(TB_Function* f, TB_Register base, int32_t offset);
+    
 	TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Register* params);
+	TB_API TB_Register tb_inst_vcall(TB_Function* f, TB_DataType dt, TB_Register target, size_t param_count, const TB_Register* params);
 	TB_API TB_Register tb_inst_ecall(TB_Function* f, TB_DataType dt, const TB_ExternalID target, size_t param_count, const TB_Register* params);
 	
 	TB_API void tb_inst_memset(TB_Function* f, TB_Register dst, TB_Register val, TB_Register size, int align);

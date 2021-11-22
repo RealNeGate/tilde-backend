@@ -91,6 +91,8 @@ case TB_CMP_FLE: \
 X(p->cmp.a); \
 X(p->cmp.b); \
 break; \
+case TB_VCALL: \
+X(p->vcall.target); \
 case TB_CALL: \
 case TB_ICALL: \
 case TB_ECALL: \

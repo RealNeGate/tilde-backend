@@ -358,7 +358,7 @@ typedef struct TB_JobSystem {
 	HANDLE semaphore;
 	HANDLE threads[TB_MAX_THREADS];
 #else
-	sem_t semaphore;
+	sem_t* semaphore;
 	pthread_t threads[TB_MAX_THREADS];
 #endif
 	

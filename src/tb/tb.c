@@ -89,7 +89,7 @@ static void* job_system_thread_func(void* lpParam)
 #if _WIN32
 			WaitForSingleObjectEx(s->semaphore, -1, false);
 #else
-			sem_wait(&s->semaphore);
+			sem_wait(s->semaphore);
 #endif
 			continue;
 		}
@@ -187,7 +187,7 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 	
 	InitializeCriticalSection(&j->mutex);
 #else
-	assert(!sem_init(&j->semaphore, 0, max_threads));
+	j->semaphore = sem_open(strdup("BITCH"), 0, 0, max_threads);
 	
 	loop(i, max_threads) {
 		pthread_create(&j->threads[i], 0, job_system_thread_func, m);
@@ -226,7 +226,7 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
 	ReleaseSemaphore(s->semaphore, 1, 0);
 	LeaveCriticalSection(&s->mutex);
 #else
-	sem_post(&s->semaphore);
+	sem_post(s->semaphore);
 	pthread_mutex_unlock(&s->mutex);
 #endif
 	
@@ -243,13 +243,14 @@ TB_API bool tb_module_compile(TB_Module* m) {
 	m->compiled_functions.count = m->functions.count;
 	
 #if _WIN32
-	ReleaseSemaphore(m->jobs->semaphore, m->jobs->thread_count, 0);
+	ReleaseSemaphore(s->semaphore, s->thread_count, 0);
 	WaitForMultipleObjects(s->thread_count, s->threads, TRUE, -1);
 	loop(i, s->thread_count) CloseHandle(s->threads[i]);
 	
 	DeleteCriticalSection(&s->mutex);
 #else
 	// TODO(NeGate): Delete the stuff
+	sem_close(s->semaphore); 
 #endif
 	
 	return true;

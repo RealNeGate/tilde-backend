@@ -1317,7 +1317,7 @@ static bool evict_gpr(Ctx* ctx, TB_Function* f, GPR g, TB_Register r) {
 	TB_Register bound = ctx->gpr_desc[g];
 	
 	// if it dies... right now!! we don't need to spill it
-	if (ctx->intervals[bound] == r) return true;
+	if (bound != TB_REG_MAX && ctx->intervals[bound] == r) return true;
 	
 	if (bound && bound != TB_REG_MAX) {
 		printf("   evicted %s\n", GPR_NAMES[g]);
@@ -1342,7 +1342,7 @@ static bool evict_xmm(Ctx* ctx, TB_Function* f, XMM x, TB_Register r) {
 	TB_Register bound = ctx->xmm_desc[x];
 	
 	// if it dies... right now!! we don't need to spill it
-	if (ctx->intervals[bound] == r) return true;
+	if (bound != TB_REG_MAX && ctx->intervals[bound] == r) return true;
 	
 	if (bound && bound != TB_REG_MAX) {
 		printf("   evicted XMM%d\n", x);

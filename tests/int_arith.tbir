@@ -1,51 +1,51 @@
 # tests out integer arithmatic in all scalar types
-def T [i32]
+def T [i8]
 
-fn [T] add() {
-	a = [T] PARAM
-	b = [T] PARAM
-	c = [T] a + b
+fn [T] add {
+	a = [T] param
+	b = [T] param
+	c = [T] + a b
 	ret c
 }
 
-fn [T] sub() {
-	a = [T] PARAM
-	b = [T] PARAM
-	c = [T] a - b
+fn [T] sub {
+	a = [T] param
+	b = [T] param
+	c = [T] - a b
 	ret c
 }
 
-fn [T] rsub() {
-	a = [T] PARAM
-	b = [T] PARAM
-	c = [T] b - a
+fn [T] rsub {
+	a = [T] param
+	b = [T] param
+	c = [T] - b a
 	ret c
 }
 
-fun mul() {
-	a = [T] PARAM
-	b = [T] PARAM
-	c = [T] a * b
+fn [T] mul {
+	a = [T] param
+	b = [T] param
+	c = [T] * a b
 	ret c
 }
 
-fn [T] div() {
-	a = [T] PARAM
-	b = [T] PARAM
-	c = a / b
+fn [T] div {
+	a = [T] param
+	b = [T] param
+	c = [T] / a b
 	ret c
 }
 
-fn [T] div2() {
-	a = [T] PARAM
+fn [T] div2 {
+	a = [T] param
 	b = [T] 2
-	c = [T] a / b
+	c = [T] / a b
 	ret c
 }
 
-fn [T] mul2() {
-	a = [T] PARAM
+fn [T] mul2 {
+	a = [T] param
 	b = [T] 2	
-	c = [T] a * b
+	c = [T] * a b
 	ret c
 }

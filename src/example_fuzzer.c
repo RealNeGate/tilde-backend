@@ -136,7 +136,8 @@ int main(int argc, char** argv) {
 	
 	m = tb_module_create(TB_ARCH_X86_64,
 						 TB_SYSTEM_WINDOWS, &features,
-						 TB_OPT_O0, thread_count);
+                         TB_OPT_O0, thread_count,
+                         false);
 	
 	rng.inc = __builtin_bswap64(__rdtsc()) >> 7;
 	printf("Initial seed: 0x%llx 0x%llx\n", rng.state, rng.inc);

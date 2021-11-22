@@ -434,6 +434,26 @@ TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Functio
 	return r;
 }
 
+TB_API TB_Register tb_inst_vcall(TB_Function* f, TB_DataType dt, const TB_Register target, size_t param_count, const TB_Register* params) {
+	// Reserve space for the arguments
+	if (f->vla.count + param_count >= f->vla.capacity) {
+		// TODO(NeGate): This might be excessive for this array, idk :P
+		f->vla.capacity = tb_next_pow2(f->vla.count + param_count);
+		f->vla.data = realloc(f->vla.data, f->vla.capacity * sizeof(TB_Register));
+	}
+	
+	int param_start = f->vla.count;
+	memcpy(f->vla.data + f->vla.count, params, param_count * sizeof(TB_Register));
+	f->vla.count += param_count;
+	int param_end = f->vla.count;
+	
+	TB_Register r = tb_make_reg(f, TB_VCALL, dt);
+	f->nodes.payload[r].vcall.target = target;
+	f->nodes.payload[r].vcall.param_start = param_start;
+	f->nodes.payload[r].vcall.param_end = param_end;
+	return r;
+}
+
 TB_API TB_Register tb_inst_ecall(TB_Function* f, TB_DataType dt, const TB_ExternalID target, size_t param_count, const TB_Register* params) {
 	// Reserve space for the arguments
 	if (f->vla.count + param_count >= f->vla.capacity) {

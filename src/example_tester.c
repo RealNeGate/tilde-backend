@@ -1,5 +1,9 @@
 #include "tb/tb.h"
 
+void jit_import_print_num(int x) {
+    printf("OUT %d\n", x);
+}
+
 //
 // Generators
 //
@@ -71,6 +75,17 @@ TB_Function* gen_fact(TB_Module* m) {
 	return func;
 }
 
+TB_Function* gen_print(TB_Module* m) {
+	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_F32(1));
+	
+    TB_Register print = tb_inst_param(func, TB_TYPE_PTR());
+	TB_Register x = tb_inst_iconst(func, TB_TYPE_I32(1), 64);
+    
+    tb_inst_vcall(func, TB_TYPE_VOID(), print, 1, (TB_Register[]) { x });
+    tb_inst_ret(func, TB_TYPE_VOID(), TB_NULL_REG);
+	return func;
+}
+
 //
 // Testers
 //
@@ -127,6 +142,17 @@ static bool test_fact(TB_Module* m, void* func) {
 	return true;
 }
 
+static bool test_print(TB_Module* m, void* func) {
+	typedef void Print(int n);
+    typedef int F(Print* p);
+	F* f = (F*)func;
+    
+    f(jit_import_print_num);
+	f(jit_import_print_num);
+    
+	return true;
+}
+
 typedef TB_Function* GeneratorFunction(TB_Module* m);
 typedef bool TestFunction(TB_Module* m, void* func);
 
@@ -138,7 +164,8 @@ typedef struct Test {
 
 static const Test tests[] = {
 	{ "Fibonacci", gen_fib, test_fib },
-	{ "Factorial", gen_fact, test_fact }
+	{ "Factorial", gen_fact, test_fact },
+	{ "Print", gen_print, test_print }
 };
 
 enum {

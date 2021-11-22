@@ -82,6 +82,13 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 						  }
 					  });
 		
+		FOR_EACH_NODE(i, f, TB_VCALL, {
+						  int param_usage = CALL_NODE_PARAM_COUNT(f, i);
+						  if (caller_usage < param_usage) {
+							  caller_usage = param_usage;
+						  }
+					  });
+		
 		FOR_EACH_NODE(i, f, TB_ECALL, {
 						  int param_usage = CALL_NODE_PARAM_COUNT(f, i);
 						  if (caller_usage < param_usage) {
@@ -527,7 +534,8 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					break;
 				}
 				case TB_CALL:
-				case TB_ECALL: {
+				case TB_ECALL:
+				case TB_VCALL: {
 					int param_start = p->call.param_start;
 					int param_count = p->call.param_end - p->call.param_start;
 					
@@ -605,17 +613,27 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 						tb_emit_call_patch(f->module,
 										   source_func,
 										   target_func,
-										   code_pos() + 1);
-					} else {
+                                           code_pos() + 1);
+                        
+                        // CALL rel32
+                        emit(0xE8);
+                        emit4(0x0);
+					} else if (reg_type == TB_CALL) {
 						tb_emit_ecall_patch(f->module,
 											source_func,
 											p->ecall.target,
-											code_pos() + 1);
-					}
-					
-					// CALL rel32
-					emit(0xE8);
-					emit4(0x0);
+                                            code_pos() + 1);
+                        
+                        // CALL rel32
+                        emit(0xE8);
+                        emit4(0x0);
+					} else if (reg_type == TB_VCALL) {
+                        Val target_ptr;
+                        use(ctx, f, &target_ptr, p->vcall.target, i);
+                        
+                        // call r/m64
+                        inst1(ctx, CALL_RM, &target_ptr);
+                    }
 					
 					// Restore those saved slots
 					memcpy(reserved_gpr, ctx->gpr_desc, 16 * sizeof(TB_Register));
@@ -1317,7 +1335,7 @@ static bool evict_gpr(Ctx* ctx, TB_Function* f, GPR g, TB_Register r) {
 	TB_Register bound = ctx->gpr_desc[g];
 	
 	// if it dies... right now!! we don't need to spill it
-	if (bound != TB_REG_MAX && ctx->intervals[bound] == r) return true;
+	if (bound != TB_REG_MAX && ctx->intervals[bound] == (r - 1)) return true;
 	
 	if (bound && bound != TB_REG_MAX) {
 		printf("   evicted %s\n", GPR_NAMES[g]);
@@ -1342,7 +1360,7 @@ static bool evict_xmm(Ctx* ctx, TB_Function* f, XMM x, TB_Register r) {
 	TB_Register bound = ctx->xmm_desc[x];
 	
 	// if it dies... right now!! we don't need to spill it
-	if (bound != TB_REG_MAX && ctx->intervals[bound] == r) return true;
+	if (bound != TB_REG_MAX && ctx->intervals[bound] == (r - 1)) return true;
 	
 	if (bound && bound != TB_REG_MAX) {
 		printf("   evicted XMM%d\n", x);

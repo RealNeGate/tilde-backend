@@ -41,6 +41,7 @@ typedef enum TB_RegTypeEnum {
 	TB_LINE_INFO,
 	TB_ICALL, /* internal use only, inline call */
 	TB_CALL,
+    TB_VCALL, /* virtual call */
 	TB_ECALL, /* extern call */
 	
 	TB_LOAD,
@@ -232,6 +233,10 @@ typedef union TB_RegPayload {
 		int param_start, param_end;
 		TB_ExternalID target;
 	} ecall;
+	struct {
+		int param_start, param_end;
+		TB_Register target;
+	} vcall;
 	struct {
 		int param_start, param_end;
 		const TB_Function* target;

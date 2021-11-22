@@ -731,6 +731,15 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			}
 			fprintf(out, ")\n");
 			break;
+            case TB_VCALL:
+			fprintf(out, "  r%u\t=\tVCALL r%u(", i, p.vcall.target);
+			for (size_t j = p.vcall.param_start; j < p.vcall.param_end; j++) {
+				if (j != p.vcall.param_start) fprintf(out, ", ");
+				
+				fprintf(out, "r%u", f->vla.data[j]);
+			}
+			fprintf(out, ")\n");
+			break;
             case TB_SWITCH: {
 				fprintf(out, " SWITCH\t");
 				tb_print_type(out, dt);

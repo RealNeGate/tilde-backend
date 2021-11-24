@@ -111,7 +111,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	
 	// The prologue and epilogue generators need some storage
-	char* mini_out_buffer = tb_tls_push(tls, 64);
+	uint8_t* proepi_buffer = tb_tls_push(tls, PROEPI_BUFFER);
 	
 	// Buffer stores all the positions of each 
 	// function relative to the .text section start.
@@ -121,7 +121,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	// into the string table
 	uint32_t string_table_length = 0;
 	uint32_t string_table_mark = 4;
-	const char** string_table = malloc(m->compiled_functions.count * sizeof(const char*));
+	const char** string_table = malloc((m->externals.count + m->compiled_functions.count) * sizeof(const char*));
 	
 	const int number_of_sections = 4;
 	COFF_FileHeader header = {
@@ -166,16 +166,17 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
 		func_layout[i] = text_section.raw_data_size;
 		
-		// TODO(NeGate): This data could be arranged better for streaming
-		size_t prologue = code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
-														out_f->stack_usage);
+		uint64_t meta = out_f->prologue_epilogue_metadata;
+		uint64_t stack_usage = out_f->stack_usage;
 		
-		size_t epilogue = code_gen->get_epilogue_length(out_f->prologue_epilogue_metadata,
-														out_f->stack_usage);
+		size_t code_size = out_f->code_size;
+		size_t prologue = code_gen->get_prologue_length(meta, stack_usage);
+		size_t epilogue = code_gen->get_epilogue_length(meta, stack_usage);
+		assert(prologue + epilogue < PROEPI_BUFFER);
 		
 		text_section.raw_data_size += prologue;
 		text_section.raw_data_size += epilogue;
-		text_section.raw_data_size += m->compiled_functions.data[i].code_size;
+		text_section.raw_data_size += code_size;
 	}
 	
     TB_Emitter debugs_out = { 0 };
@@ -498,21 +499,8 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	debugs_section.raw_data_size = debugs_out.count;
 	debugt_section.raw_data_size = debugt_out.count;
 	
-	for (size_t i = 0; i < m->call_patches.count; i++) {
-		TB_FunctionPatch* p = &m->call_patches.data[i];
-		TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
-		uint8_t* code = out_f->code;
-		
-		// TODO(NeGate): Consider caching this value if it gets expensive to calculate.
-		uint32_t actual_pos = func_layout[p->func_id] + p->pos + 4;
-		
-		actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
-													out_f->stack_usage);
-		
-		// TODO(NeGate): Figure out how big they need to be on Aarch64
-		assert(m->target_arch == TB_ARCH_X86_64);
-		*((uint32_t*)&code[p->pos]) = func_layout[p->target_id] - actual_pos;
-	}
+	// Target specific: resolve internal call patches
+	code_gen->emit_call_patches(m, func_layout);
 	
 	text_section.raw_data_pos = sizeof(COFF_FileHeader) + (number_of_sections * sizeof(COFF_SectionHeader));
 	rdata_section.raw_data_pos = text_section.raw_data_pos + text_section.raw_data_size;
@@ -562,20 +550,20 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
 		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
 		
-		// prologue
-		size_t prologue_len = code_gen->emit_prologue(mini_out_buffer,
-													  out_f->prologue_epilogue_metadata,
-													  out_f->stack_usage);
-		fwrite(mini_out_buffer, prologue_len, 1, f);
+		uint64_t meta = out_f->prologue_epilogue_metadata;
+		uint64_t stack_usage = out_f->stack_usage;
+		const uint8_t* code = out_f->code;
+		size_t code_size = out_f->code_size;
 		
-		// body
-		fwrite(out_f->code, out_f->code_size, 1, f);
+		uint8_t* prologue = proepi_buffer;
+		size_t prologue_len = code_gen->emit_prologue(prologue, meta, stack_usage);
 		
-		// epilogue
-		size_t epilogue_len = code_gen->emit_epilogue(mini_out_buffer,
-													  out_f->prologue_epilogue_metadata,
-													  out_f->stack_usage);
-		fwrite(mini_out_buffer, epilogue_len, 1, f);
+		uint8_t* epilogue = proepi_buffer + prologue_len;
+		size_t epilogue_len = code_gen->emit_epilogue(epilogue, meta, stack_usage);
+		
+		fwrite(prologue, prologue_len, 1, f);
+		fwrite(code, code_size, 1, f);
+		fwrite(epilogue, epilogue_len, 1, f);
 	}
 	
 	assert(ftell(f) == rdata_section.raw_data_pos);
@@ -595,11 +583,13 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	for (size_t i = 0; i < m->const32_patches.count; i++) {
 		TB_ConstPool32Patch* p = &m->const32_patches.data[i];
 		TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
-		size_t actual_pos = func_layout[p->func_id] + p->pos;
 		
-		// TODO(NeGate): Consider caching this value if it gets expensive to calculate.
-		actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
-													out_f->stack_usage);
+		uint64_t meta = out_f->prologue_epilogue_metadata;
+		uint64_t stack_usage = out_f->stack_usage;
+		
+		size_t actual_pos = func_layout[p->func_id] 
+			+ code_gen->get_prologue_length(meta, stack_usage)
+			+ p->pos;
 		
 		fwrite(&(COFF_ImageReloc) {
 				   .Type = IMAGE_REL_AMD64_REL32,
@@ -612,11 +602,13 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	for (size_t i = 0; i < m->ecall_patches.count; i++) {
 		TB_ExternFunctionPatch* p = &m->ecall_patches.data[i];
 		TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
-		size_t actual_pos = func_layout[p->func_id] + p->pos;
 		
-		// TODO(NeGate): Consider caching this value if it gets expensive to calculate.
-		actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
-													out_f->stack_usage);
+		uint64_t meta = out_f->prologue_epilogue_metadata;
+		uint64_t stack_usage = out_f->stack_usage;
+		
+		size_t actual_pos = func_layout[p->func_id] 
+			+ code_gen->get_prologue_length(meta, stack_usage)
+			+ p->pos;
 		
 		fwrite(&(COFF_ImageReloc) {
 				   .Type = IMAGE_REL_AMD64_REL32,
@@ -758,13 +750,14 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 #if !TB_STRIP_LABELS
 	for (size_t i = 0; i < m->label_symbols.count; i++) {
 		TB_LabelSymbol* l = &m->label_symbols.data[i];
-		
 		TB_FunctionOutput* out_f = &m->compiled_functions.data[l->func_id];
-		size_t actual_pos = func_layout[l->func_id] + l->pos;
 		
-		// TODO(NeGate): Consider caching this value if it gets expensive to calculate.
-		actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
-													out_f->stack_usage);
+		uint64_t meta = out_f->prologue_epilogue_metadata;
+		uint64_t stack_usage = out_f->stack_usage;
+		
+		size_t actual_pos = func_layout[l->func_id] 
+			+ code_gen->get_prologue_length(meta, stack_usage)
+			+ l->pos;
 		
 		COFF_Symbol sym = {
 			.value = actual_pos,
@@ -789,6 +782,8 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		fwrite(s, 1, strlen(s) + 1, f);
 	}
 	
+	free(debugs_out.data);
+	free(debugt_out.data);
 	free(string_table);
 	free(func_layout);
 }

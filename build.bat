@@ -4,12 +4,8 @@ set clang_settings=-march=nehalem -O0 -Werror -Wall -Wno-unused-function -g -gco
 
 set tb_source_files=src/tb/tb.c ^
 	src/tb/tb_builder.c ^
-	src/tb/x64/codegen.c ^
-	src/tb/tb_opt_mem2reg.c ^
-	src/tb/tb_opt_inline.c ^
-	src/tb/tb_opt_dce.c ^
-	src/tb/tb_opt_sr.c ^
-	src/tb/tb_opt_canonical.c ^
+	src/tb/x64/x64.c ^
+	src/tb/opt/tb_opt.c ^
 	src/tb/tb_coff.c ^
 	src/tb/tb_elf64.c ^
 	src/tb/tb_jit_win32.c ^
@@ -17,4 +13,5 @@ set tb_source_files=src/tb/tb.c ^
 	src/tb/tb_helper.c
 
 IF NOT exist build (mkdir build)
-clang %clang_settings% src/example_main.c %tb_source_files% -o build/example.exe
+clang %clang_settings% src/example_tester.c %tb_source_files% -o build/example.exe
+

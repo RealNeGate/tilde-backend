@@ -1,4 +1,3 @@
-#include "tb_internal.h"
 
 bool tb_opt_dce(TB_Function* f) {
 	int changes = 0;

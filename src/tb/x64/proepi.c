@@ -22,7 +22,7 @@ size_t x64_get_epilogue_length(uint64_t saved, uint64_t stack_usage) {
 		+ __builtin_popcount(saved & 0x00FF);
 }
 
-size_t x64_emit_prologue(char out[64], uint64_t saved, uint64_t stack_usage) {
+size_t x64_emit_prologue(uint8_t out[], uint64_t saved, uint64_t stack_usage) {
 	// If the stack usage is zero we don't need a prologue
 	if (stack_usage == 8) return 0;
 	
@@ -58,7 +58,7 @@ size_t x64_emit_prologue(char out[64], uint64_t saved, uint64_t stack_usage) {
 	return used;
 }
 
-size_t x64_emit_epilogue(char out[64], uint64_t saved, uint64_t stack_usage) {
+size_t x64_emit_epilogue(uint8_t out[], uint64_t saved, uint64_t stack_usage) {
 	// if the stack isn't used then just return
 	if (stack_usage == 8) {
 		out[0] = 0xC3;

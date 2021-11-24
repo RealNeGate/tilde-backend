@@ -111,7 +111,7 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	
 	// The prologue and epilogue generators need some storage
-	char* mini_out_buffer = tb_tls_push(tls, 64);
+	uint8_t* proepi_buffer = tb_tls_push(tls, PROEPI_BUFFER);
 	
 	// Buffer stores all the positions of each 
 	// function relative to the .text section start.
@@ -235,35 +235,21 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
 		func_layout[i] = code_section.sh_size;
 		
-		// TODO(NeGate): This data could be arranged better for streaming
-		size_t prologue = code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
-														out_f->stack_usage);
+		uint64_t meta = out_f->prologue_epilogue_metadata;
+		uint64_t stack_usage = out_f->stack_usage;
 		
-		size_t epilogue = code_gen->get_epilogue_length(out_f->prologue_epilogue_metadata,
-														out_f->stack_usage);
+		size_t code_size = out_f->code_size;
+		size_t prologue = code_gen->get_prologue_length(meta, stack_usage);
+		size_t epilogue = code_gen->get_epilogue_length(meta, stack_usage);
+		assert(prologue + epilogue < PROEPI_BUFFER);
 		
 		code_section.sh_size += prologue;
 		code_section.sh_size += epilogue;
-		code_section.sh_size += out_f->code_size;
+		code_section.sh_size += code_size;
 	}
 	
-	// Internal call patches
-	for (size_t i = 0; i < m->call_patches.count; i++) {
-		TB_FunctionPatch* p = &m->call_patches.data[i];
-		TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
-		uint8_t* code = out_f->code;
-		
-		// TODO(NeGate): Consider caching this value if it gets expensive to calculate.
-		uint32_t actual_pos = func_layout[p->func_id] + p->pos + 4;
-		
-		actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
-													out_f->stack_usage);
-		
-		// TODO(NeGate): Figure out how big they need to be on Aarch64
-		assert(m->target_arch == TB_ARCH_X86_64);
-		*((uint32_t*)&code[p->pos]) = func_layout[p->target_id] - actual_pos;
-	}
-	
+	// Target specific: resolve internal call patches
+	code_gen->emit_call_patches(m, func_layout);
 	TB_Emitter stab = { 0 };
 	
 	// Symbol table:
@@ -332,19 +318,20 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
 		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
 		
-		// prologue
-		size_t prologue_len = code_gen->emit_prologue(mini_out_buffer,
-													  out_f->prologue_epilogue_metadata,
-													  out_f->stack_usage);
-		fwrite(mini_out_buffer, prologue_len, 1, f);
+		uint64_t meta = out_f->prologue_epilogue_metadata;
+		uint64_t stack_usage = out_f->stack_usage;
+		const uint8_t* code = out_f->code;
+		size_t code_size = out_f->code_size;
 		
-		fwrite(out_f->code, out_f->code_size, 1, f);
+		uint8_t* prologue = proepi_buffer;
+		size_t prologue_len = code_gen->emit_prologue(prologue, meta, stack_usage);
 		
-		// epilogue
-		size_t epilogue_len = code_gen->emit_epilogue(mini_out_buffer,
-													  out_f->prologue_epilogue_metadata,
-													  out_f->stack_usage);
-		fwrite(mini_out_buffer, epilogue_len, 1, f);
+		uint8_t* epilogue = proepi_buffer + prologue_len;
+		size_t epilogue_len = code_gen->emit_epilogue(epilogue, meta, stack_usage);
+		
+		fwrite(prologue, prologue_len, 1, f);
+		fwrite(code, code_size, 1, f);
+		fwrite(epilogue, epilogue_len, 1, f);
 	}
 	
 	assert(ftell(f) == data_section.sh_offset);
@@ -367,5 +354,7 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	fwrite(&bss_section, sizeof(bss_section), 1, f);
 	fwrite(&stab_section, sizeof(stab_section), 1, f);
 	
+	free(stab.data);
+	free(strtbl.data);
 	free(func_layout);
 }

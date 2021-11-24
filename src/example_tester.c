@@ -1,4 +1,5 @@
 #include "tb/tb.h"
+#include <time.h>
 
 void jit_import_print_num(int x) {
     printf("OUT %d\n", x);

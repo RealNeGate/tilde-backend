@@ -1,9 +1,3 @@
-#include "tb_internal.h"
-
-#if TB_HOST_ARCH == TB_HOST_X86_64
-// Needed for some of the fancier 
-#include <x86intrin.h>
-#endif
 
 bool tb_opt_load_elim(TB_Function* f) {
 	int changes = 0;

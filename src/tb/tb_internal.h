@@ -15,6 +15,8 @@
 // TODO(NeGate): Consider refactoring the internals of this... please
 #pragma once
 #include "tb.h"
+#include <time.h>
+#include <stdatomic.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -340,11 +342,6 @@ typedef struct TB_LabelSymbol {
 	uint32_t pos; // relative to the start of the function
 } TB_LabelSymbol;
 
-typedef struct CodegenThreadInfo {
-	TB_Module* m;
-	size_t id;
-} CodegenThreadInfo;
-
 typedef struct TB_JobSystem {
 #if _WIN32
 	CRITICAL_SECTION mutex;
@@ -452,36 +449,21 @@ struct TB_Module {
 	} code_regions[TB_MAX_THREADS];
 };
 
-typedef enum TB_DataflowPattern {
-	TB_DataflowPattern_Unknown,
-	TB_DataflowPattern_IntConstant,
-	TB_DataflowPattern_IntStep // y = mx + b
-} TB_DataflowPattern;
-
-typedef struct TB_RegisterDataflow {
-	TB_DataflowPattern pattern;
-	union {
-		struct {
-			uint64_t v;
-		} iconst;
-		struct {
-			TB_Register loop_label;
-			bool pre_iterator; // or post if false
-			uint64_t m, b;
-		} istep;
-	};
-} TB_RegisterDataflow;
-
 typedef struct TB_TemporaryStorage {
 	uint32_t used;
 	uint8_t data[];
 } TB_TemporaryStorage;
 
+// the maximum size the prologue and epilogue can be for any machine code impl
+#define PROEPI_BUFFER 512
+
 typedef struct ICodeGen {
+	void(*emit_call_patches)(TB_Module* m, uint32_t func_layout[]);
+	
 	size_t(*get_prologue_length)(uint64_t saved, uint64_t stack_usage);
 	size_t(*get_epilogue_length)(uint64_t saved, uint64_t stack_usage);
-	size_t(*emit_prologue)(char out[64], uint64_t saved, uint64_t stack_usage);
-	size_t(*emit_epilogue)(char out[64], uint64_t saved, uint64_t stack_usage);
+	size_t(*emit_prologue)(uint8_t out[], uint64_t saved, uint64_t stack_usage);
+	size_t(*emit_epilogue)(uint8_t out[], uint64_t saved, uint64_t stack_usage);
 	
 	TB_FunctionOutput(*compile_function)(TB_Function* f, const TB_FeatureSet* features, uint8_t* out);
 } ICodeGen;
@@ -645,4 +627,5 @@ void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id
 void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, size_t pos);
 #endif
 
+// NOTE(NeGate): Place all the codegen interfaces down here
 extern ICodeGen x64_fast_code_gen;

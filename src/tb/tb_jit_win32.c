@@ -18,7 +18,7 @@ void tb_module_export_jit(TB_Module* m) {
 	m->compiled_function_pos = malloc(m->compiled_functions.count * sizeof(void*));
 	
 	// The prologue and epilogue generators need some storage
-	char* mini_out_buffer = tb_tls_push(tls, 64);
+	uint8_t* proepi_buffer = tb_tls_push(tls, PROEPI_BUFFER);
 	
 	// Buffer stores all the positions of each 
 	// function relative to the .text section start.
@@ -72,22 +72,25 @@ void tb_module_export_jit(TB_Module* m) {
 		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
 		m->compiled_function_pos[i] = (void*)text_section;
 		
-		// prologue
-		size_t prologue_len = code_gen->emit_prologue(mini_out_buffer,
-													  out_f->prologue_epilogue_metadata,
-													  out_f->stack_usage);
-		memcpy(text_section, mini_out_buffer, prologue_len);
+		uint64_t meta = out_f->prologue_epilogue_metadata;
+		uint64_t stack_usage = out_f->stack_usage;
+		const uint8_t* code = out_f->code;
+		size_t code_size = out_f->code_size;
+		
+		uint8_t* prologue = proepi_buffer;
+		size_t prologue_len = code_gen->emit_prologue(prologue, meta, stack_usage);
+		
+		uint8_t* epilogue = proepi_buffer + prologue_len;
+		size_t epilogue_len = code_gen->emit_epilogue(epilogue, meta, stack_usage);
+		
+		// Copy into JIT region
+		memcpy(text_section, prologue, prologue_len);
 		text_section += prologue_len;
 		
-		// body
-		memcpy(text_section, m->compiled_functions.data[i].code, m->compiled_functions.data[i].code_size);
-		text_section += m->compiled_functions.data[i].code_size;
+		memcpy(text_section, code, code_size);
+		text_section += code_size;
 		
-		// epilogue
-		size_t epilogue_len = code_gen->emit_epilogue(mini_out_buffer,
-													  out_f->prologue_epilogue_metadata,
-													  out_f->stack_usage);
-		memcpy(text_section, mini_out_buffer, epilogue_len);
+		memcpy(text_section, epilogue, epilogue_len);
 		text_section += epilogue_len;
 	}
 #else

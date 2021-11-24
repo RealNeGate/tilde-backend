@@ -27,10 +27,8 @@ extern "C" {
 #include <assert.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <time.h>
 #include <string.h>
 #include <stdbool.h>
-#include <stdatomic.h>
 #include <inttypes.h>
 	
 #ifndef TB_MAX_THREADS
@@ -209,19 +207,37 @@ extern "C" {
 	// *******************************
 	// Public macros
 	// *******************************
-#define TB_TYPE_VOID() (TB_DataType){ .type = TB_VOID }
+#ifdef __cplusplus
+#define TB_TYPE_VOID() TB_DataType{ TB_VOID, 1 }
 	
-#define TB_TYPE_I8(c) (TB_DataType){ .type = TB_I8, .count = c }
-#define TB_TYPE_I16(c) (TB_DataType){ .type = TB_I16, .count = c }
-#define TB_TYPE_I32(c) (TB_DataType){ .type = TB_I32, .count = c }
-#define TB_TYPE_I64(c) (TB_DataType){ .type = TB_I64, .count = c }
-#define TB_TYPE_I128(c) (TB_DataType){ .type = TB_I128, .count = c }
+#define TB_TYPE_I8(c) TB_DataType{ TB_I8, c }
+#define TB_TYPE_I16(c) TB_DataType{ TB_I16, c }
+#define TB_TYPE_I32(c) TB_DataType{ TB_I32, c }
+#define TB_TYPE_I64(c) TB_DataType{ TB_I64, c }
+#define TB_TYPE_I128(c) TB_DataType{ TB_I128, c }
 	
-#define TB_TYPE_F32(c) (TB_DataType){ .type = TB_F32, .count = c }
-#define TB_TYPE_F64(c) (TB_DataType){ .type = TB_F64, .count = c }
+#define TB_TYPE_F32(c) TB_DataType{ TB_F32, c }
+#define TB_TYPE_F64(c) TB_DataType{ TB_F64, c }
 	
-#define TB_TYPE_BOOL(c) (TB_DataType){ .type = TB_BOOL, .count = c }
-#define TB_TYPE_PTR() (TB_DataType){ .type = TB_PTR, .count = 1 }
+#define TB_TYPE_BOOL(c) TB_DataType{ TB_BOOL, c }
+#define TB_TYPE_PTR() TB_DataType{ TB_PTR, 1 }
+	
+#else
+	
+#define TB_TYPE_VOID() (TB_DataType){ TB_VOID, 1 }
+	
+#define TB_TYPE_I8(c) (TB_DataType){ TB_I8, c }
+#define TB_TYPE_I16(c) (TB_DataType){ TB_I16, c }
+#define TB_TYPE_I32(c) (TB_DataType){ TB_I32, c }
+#define TB_TYPE_I64(c) (TB_DataType){ TB_I64, c }
+#define TB_TYPE_I128(c) (TB_DataType){ TB_I128, c }
+	
+#define TB_TYPE_F32(c) (TB_DataType){ TB_F32, c }
+#define TB_TYPE_F64(c) (TB_DataType){ TB_F64, c }
+	
+#define TB_TYPE_BOOL(c) (TB_DataType){ TB_BOOL, c }
+#define TB_TYPE_PTR() (TB_DataType){ TB_PTR, 1 }
+#endif
 	
 	// *******************************
 	// Public functions

@@ -1,4 +1,3 @@
-#include "tb_internal.h"
 
 static int tb_estimate_expr_pressure(const TB_Function* f, TB_Register i) {
 	switch (f->nodes.type[i]) {

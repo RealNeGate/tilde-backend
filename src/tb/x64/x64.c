@@ -1634,8 +1634,27 @@ static int get_data_type_size(const TB_DataType dt) {
 	}
 }
 
+void x64_emit_call_patches(TB_Module* m, uint32_t func_layout[]) {
+	for (size_t i = 0; i < m->call_patches.count; i++) {
+		TB_FunctionPatch* p = &m->call_patches.data[i];
+		TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
+		
+		uint64_t meta = out_f->prologue_epilogue_metadata;
+		uint64_t stack_usage = out_f->stack_usage;
+		uint8_t* code = out_f->code;
+		
+		size_t actual_pos = func_layout[p->func_id] 
+			+ x64_get_prologue_length(meta, stack_usage)
+			+ p->pos
+			+ 4;
+		
+		*((uint32_t*)&code[p->pos]) = func_layout[p->target_id] - actual_pos;
+	}
+}
+
 // I put it down here because i can :P
 ICodeGen x64_fast_code_gen = {
+	.emit_call_patches = x64_emit_call_patches,
 	.get_prologue_length = x64_get_prologue_length,
 	.get_epilogue_length = x64_get_epilogue_length,
 	.emit_prologue = x64_emit_prologue,

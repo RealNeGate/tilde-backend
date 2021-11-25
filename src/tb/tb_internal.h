@@ -66,6 +66,7 @@ typedef enum TB_RegTypeEnum {
     TB_STRING_CONST,
     
     // Casts
+    TB_TRUNCATE,
     TB_SIGN_EXT,
     TB_ZERO_EXT,
     
@@ -147,6 +148,7 @@ typedef union TB_RegPayload {
 	TB_Int128 i_const;
 	double f_const;
 	TB_Register ext;
+	TB_Register trunc;
 	struct {
 		TB_FileID file;
 		int line;
@@ -288,7 +290,7 @@ struct TB_FunctionOutput {
 };
 
 typedef struct TB_File {
-	const char* path;
+	char* path;
 } TB_File;
 
 typedef struct TB_NodeStream {

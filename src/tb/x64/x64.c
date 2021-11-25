@@ -952,6 +952,43 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 				*v = val_stack(dt, ctx->params[id]);
 				break;
 			}
+			case TB_TRUNCATE: {
+				Val src;
+				use(ctx, f, &src, p.ext, r);
+				def_new_gpr(ctx, f, v, r, dt.type);
+				
+				// TODO(NeGate): Implement recycle
+				if (dt.type == TB_PTR || dt.type == TB_I64 || dt.type == TB_I32) {
+					// 32bit operations automatically truncate
+					inst2(ctx, MOV, v, &src, dt.type);
+				} else {
+					uint64_t shift = 64 - (8 << (dt.type - TB_I8));
+					uint64_t mask = (~0ull) >> shift;
+					Val imm = val_imm(dt, mask);
+					
+					inst2(ctx, MOV, v, &src, dt.type);
+					inst2(ctx, AND, v, &imm, dt.type);
+				}
+				break;
+			}
+			case TB_ZERO_EXT: {
+				Val src;
+				use(ctx, f, &src, p.ext, r);
+				def_new_gpr(ctx, f, v, r, dt.type);
+				
+				// TODO(NeGate): Implement recycle
+				inst2(ctx, MOVZX, v, &src, dt.type);
+				break;
+			}
+			case TB_SIGN_EXT: {
+				Val src;
+				use(ctx, f, &src, p.ext, r);
+				def_new_gpr(ctx, f, v, r, dt.type);
+				
+				// TODO(NeGate): Implement recycle
+				inst2(ctx, MOVSX, v, &src, dt.type);
+				break;
+			}
 			case TB_NEG: {
 				Val src;
 				use(ctx, f, &src, p.unary, r);

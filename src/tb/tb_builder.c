@@ -11,6 +11,18 @@
 #include <x86intrin.h>
 #endif
 
+TB_API TB_DataType tb_function_get_node_dt(TB_Function* f, TB_Register r) {
+	assert(r < f->nodes.count);
+	return f->nodes.dt[r];
+}
+
+TB_API void tb_get_function_get_local_info(TB_Function* f, TB_Register r, int* size, int* align) {
+	assert(f->nodes.type[r] == TB_LOCAL);
+	
+	*size = f->nodes.payload[r].local.size;
+	*align = f->nodes.payload[r].local.alignment;
+}
+
 static TB_Register tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
 	// Cannot add registers to terminated basic blocks, except labels
 	// which start new basic blocks
@@ -177,6 +189,23 @@ static TB_Register tb_cse_arith(TB_Function* f, int type, TB_DataType dt, TB_Ari
 	return r;
 }
 
+TB_API TB_Register tb_inst_trunc(TB_Function* f, TB_Register src, TB_DataType dt) {
+	assert(f->current_label);
+	
+#if TB_FRONTEND_OPT
+	for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
+		if (f->nodes.type[i] == TB_TRUNCATE
+			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
+			&& f->nodes.payload[i].trunc == src) {
+			return i;
+		}
+	}
+#endif
+    
+    TB_Register r = tb_make_reg(f, TB_TRUNCATE, dt);
+	f->nodes.payload[r].trunc = src;
+	return r;
+}
 
 TB_API TB_Register tb_inst_sxt(TB_Function* f, TB_Register src, TB_DataType dt) {
 	assert(f->current_label);

@@ -174,44 +174,46 @@ enum {
 };
 
 int main(int argc, char** argv) {
-	clock_t t1 = clock();
-	
-	TB_FeatureSet features = { 0 };
-	TB_Module* m = tb_module_create(TB_ARCH_X86_64,
-									TB_SYSTEM_WINDOWS,
-									&features, TB_OPT_O0, 1,
-									false);
-	
-	for (size_t i = 0; i < NUM_TESTS; i++) {
-		TB_Function* f = tests[i].generate(m);
+	do {
+		clock_t t1 = clock();
+		TB_FeatureSet features = { 0 };
+		TB_Module* m = tb_module_create(TB_ARCH_X86_64,
+										TB_SYSTEM_WINDOWS,
+										&features, TB_OPT_O0, 1,
+										false);
 		
-		tb_function_print(f, stdout);
-		printf("\n\n\n");
+		for (size_t i = 0; i < NUM_TESTS; i++) {
+			TB_Function* f = tests[i].generate(m);
+			
+			tb_function_print(f, stdout);
+			printf("\n\n\n");
+			
+			tb_module_compile_func(m, f);
+		}
 		
-		tb_module_compile_func(m, f);
-	}
-	
-	tb_module_compile(m);
-	tb_module_export_jit(m);
-	
-	clock_t t2 = clock();
-	printf("compile took %f ms\n", ((t2 - t1) / (double)CLOCKS_PER_SEC) * 1000.0);
-	
-	int total_successes = 0;
-	for (size_t i = 0; i < NUM_TESTS; i++) {
-		printf("%s...\n", tests[i].name);
+		tb_module_compile(m);
+		tb_module_export_jit(m);
 		
-		void* func_ptr = tb_module_get_jit_func_by_id(m, i);
-		bool success = tests[i].test(m, func_ptr);
-		total_successes += success;
+		clock_t t2 = clock();
+		printf("compile took %f ms\n", ((t2 - t1) / (double)CLOCKS_PER_SEC) * 1000.0);
 		
-		if (success) printf("    DONE!\n");
-		else printf("    FAILED!\n");
-	}
+		int total_successes = 0;
+		for (size_t i = 0; i < NUM_TESTS; i++) {
+			printf("%s...\n", tests[i].name);
+			
+			void* func_ptr = tb_module_get_jit_func_by_id(m, i);
+			bool success = tests[i].test(m, func_ptr);
+			total_successes += success;
+			
+			if (success) printf("    DONE!\n");
+			else printf("    FAILED!\n");
+		}
+		
+		clock_t t3 = clock();
+		printf("tests took %f ms\n", ((t3 - t2) / (double)CLOCKS_PER_SEC) * 1000.0);
+		printf("results: %d / %d succeeded\n", total_successes, NUM_TESTS);
+		tb_module_destroy(m);
+	} while (true);
 	
-	clock_t t3 = clock();
-	printf("tests took %f ms\n", ((t3 - t2) / (double)CLOCKS_PER_SEC) * 1000.0);
-	printf("results: %d / %d succeeded\n", total_successes, NUM_TESTS);
-	tb_module_destroy(m);
 	return 0;
 }

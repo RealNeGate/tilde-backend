@@ -266,6 +266,9 @@ extern "C" {
 	TB_API TB_ExternalID tb_module_extern(TB_Module* m, const char* name);
 	TB_API TB_FileID tb_register_file(TB_Module* m, const char* path);
 	
+	//
+	// Function IR building
+	//
 	TB_API TB_Label tb_get_current_label(TB_Function* f);
 	TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line);
 	
@@ -274,6 +277,7 @@ extern "C" {
 	
 	TB_API TB_Register tb_inst_sxt(TB_Function* f, TB_Register src, TB_DataType dt);
 	TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt);
+	TB_API TB_Register tb_inst_trunc(TB_Function* f, TB_Register src, TB_DataType dt);
 	
 	TB_API TB_Register tb_inst_local(TB_Function* f, uint32_t size, uint32_t alignment);
 	TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr, uint32_t alignment);
@@ -343,6 +347,15 @@ extern "C" {
 	TB_API void tb_inst_ret(TB_Function* f, TB_DataType dt, TB_Register value);
 	
 	TB_API void tb_function_print(TB_Function* f, FILE* out);
+	
+	//
+	// Function IR access
+	//
+	TB_API void tb_get_function_get_local_info(TB_Function* f, TB_Register r, int* size, int* align);
+	// Returns the size and alignment of a LOCAL node, both must
+	// be valid addresses
+	
+	TB_API TB_DataType tb_function_get_node_dt(TB_Function* f, TB_Register r);
 	
 #ifdef __cplusplus
 }

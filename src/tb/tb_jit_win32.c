@@ -44,20 +44,8 @@ void tb_module_export_jit(TB_Module* m) {
 #error "Cannot compile JIT for this target architecture!"
 #endif
 	
-	// Patch the function calls
-	for (size_t i = 0; i < m->call_patches.count; i++) {
-		TB_FunctionPatch* p = &m->call_patches.data[i];
-		TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
-		uint8_t* code = m->compiled_functions.data[p->func_id].code;
-		
-		// TODO(NeGate): Consider caching this value if it gets expensive to calculate.
-		uint32_t actual_pos = func_layout[p->func_id] + p->pos + 4;
-		
-		actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
-													out_f->stack_usage);
-		
-		*((uint32_t*)&code[p->pos]) = func_layout[p->target_id] - actual_pos;
-	}
+	// Target specific: resolve internal call patches
+	code_gen->emit_call_patches(m, func_layout);
 	
 	// TODO(NeGate): Implement rdata
 	assert(m->const32_patches.count == 0);

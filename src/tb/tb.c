@@ -5,7 +5,9 @@
 #include <x86intrin.h>
 #endif
 
-#define CODE_OUTPUT_BUFFER (32 * 1024 * 1024)
+#define CODE_OUTPUT_BUFFER (256 * 1024 * 1024)
+
+static _Thread_local uint8_t* tb_thread_storage;
 
 // TODO(NeGate): Doesn't free the name, it's needed for later
 static void tb_function_free(TB_Function* f) {
@@ -22,9 +24,12 @@ static void tb_function_free(TB_Function* f) {
 	free(f->nodes.payload);
 #endif
 	
+	free(f->vla.data);
+	
 	f->nodes.type = NULL;
 	f->nodes.dt = NULL;
 	f->nodes.payload = NULL;
+	f->vla.data = NULL;
 	
 	f->is_ir_free = true;
 }
@@ -116,6 +121,8 @@ static void* job_system_thread_func(void* lpParam)
 	
 	m->code_regions[i].data = code;
 	m->code_regions[i].size = code_size;
+	
+	free(tb_thread_storage);
 	return 0;
 }
 
@@ -245,9 +252,16 @@ TB_API bool tb_module_compile(TB_Module* m) {
 #if _WIN32
 	ReleaseSemaphore(s->semaphore, s->thread_count, 0);
 	WaitForMultipleObjects(s->thread_count, s->threads, TRUE, -1);
-	loop(i, s->thread_count) CloseHandle(s->threads[i]);
+	
+	loop(i, s->thread_count) {
+		CloseHandle(s->threads[i]);
+		s->threads[i] = NULL;
+	}
 	
 	DeleteCriticalSection(&s->mutex);
+	CloseHandle(s->semaphore);
+	
+	s->semaphore = NULL;
 #else
 	// TODO(NeGate): Delete the stuff
 	sem_close(s->semaphore); 
@@ -267,20 +281,39 @@ TB_API size_t tb_DEBUG_module_get_full_node_count(TB_Module* m) {
 TB_API void tb_module_destroy(TB_Module* m) {
 	loop(i, m->functions.count) {
 		tb_function_free(&m->functions.data[i]);
+		
 		free(m->functions.data[i].name);
+		m->functions.data[i].name = NULL;
 	}
     
 #if _WIN32
 	loop(i, m->code_region_count) {
 		VirtualFree(m->code_regions[i].data, 0, MEM_RELEASE);
+		m->code_regions[i].data = NULL;
+	}
+	
+	if (m->jit_region) {
+		VirtualFree(m->jit_region, 0, MEM_RELEASE);
+		m->jit_region = NULL;
 	}
 #else
 	loop(i, m->code_region_count) {
 		munmap(m->code_regions[i].data, CODE_OUTPUT_BUFFER);
 	}
 #endif
+	
+	loop_range(i, 1, m->files.count) {
+		free(m->files.data[i].path);
+	}
     
+	free(m->jobs);
+	free(m->label_symbols.data);
+	free(m->const32_patches.data);
+	free(m->call_patches.data);
+	free(m->ecall_patches.data);
+	free(m->files.data);
 	free(m->functions.data);
+	free(m->externals.data);
 	free(m->compiled_functions.data);
 	free(m);
 }
@@ -477,8 +510,6 @@ TB_API TB_Label tb_get_current_label(TB_Function* f) {
 // block per thread that can run TB.
 //
 TB_TemporaryStorage* tb_tls_allocate() {
-	static _Thread_local uint8_t* tb_thread_storage;
-	
 	if (tb_thread_storage == NULL) {
 		tb_thread_storage = malloc(TB_TEMPORARY_STORAGE_SIZE);
 	}
@@ -603,6 +634,11 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			tb_print_type(out, dt);
 			fprintf(out, " SXT r%u\n", p.ext);
 			break;
+            case TB_TRUNCATE:
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " TRUNC r%u\n", p.trunc);
+			break;
 			case TB_MEMSET:
 			fprintf(out, "  MEMSET\t(r%d, r%d, r%d)\n", p.mem_op.dst, p.mem_op.src, p.mem_op.size);
 			break;
@@ -621,6 +657,7 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			break;
 			case TB_AND:
             case TB_OR:
+            case TB_XOR:
 			case TB_ADD:
             case TB_SUB:
             case TB_MUL:
@@ -636,6 +673,7 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			switch (type) {
                 case TB_AND: fprintf(out, "&"); break;
                 case TB_OR: fprintf(out, "|"); break;
+                case TB_XOR: fprintf(out, "^"); break;
                 case TB_ADD: fprintf(out, "+"); break;
                 case TB_SUB: fprintf(out, "-"); break;
                 case TB_MUL: fprintf(out, "*"); break;

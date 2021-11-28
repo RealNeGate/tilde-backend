@@ -2,7 +2,7 @@
 #include <x86intrin.h>
 #include <windows.h>
 
-#define TRIAL_COUNT 20000
+#define TRIAL_COUNT 50000 // 349525
 
 static uint32_t gen_random_any();
 static uint32_t gen_random(uint32_t min, uint32_t max);
@@ -40,7 +40,7 @@ static _Thread_local TB_Register var_pool[512];
 static TB_Module* m;
 
 static TB_Register cast_into(TB_Function* f, TB_Register in, TB_DataType to) {
-	TB_DataType dt = tb_function_get_node_dt(f, in);
+	TB_DataType dt = tb_node_get_data_type(f, in);
 	
 	if (dt.type < to.type) return tb_inst_zxt(f, in, to);
 	else if (dt.type > to.type) return tb_inst_trunc(f, in, to);

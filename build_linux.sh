@@ -6,9 +6,9 @@ tb_source_files="../src/tb/tb.c
 	../src/tb/opt/tb_opt.c
 	../src/tb/tb_coff.c 
 	../src/tb/tb_elf64.c 
-	../src/tb/tb_jit_win32.c 
-	../src/tb/tb_validate.c 
-	../src/tb/tb_helper.c"
+	../src/tb/tb_jit.c 
+	../src/tb/tb_posix.c 
+	../src/tb/tb_internal.c"
 
 cd build
 gcc $clang_settings $tb_source_files -lpthread -fPIC -c

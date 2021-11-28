@@ -11,9 +11,9 @@ set tb_source_files=../src/tb/tb.c ^
 	../src/tb/opt/tb_opt.c ^
 	../src/tb/tb_coff.c ^
 	../src/tb/tb_elf64.c ^
-	../src/tb/tb_jit_win32.c ^
-	../src/tb/tb_validate.c ^
-	../src/tb/tb_helper.c
+	../src/tb/tb_jit.c ^
+	../src/tb/tb_win32.c ^
+	../src/tb/tb_internal.c
 
 IF NOT exist build (mkdir build)
 
@@ -26,8 +26,8 @@ set tb_object_files=tb.o ^
 	tb_opt.o ^
 	tb_coff.o ^
 	tb_elf64.o ^
-	tb_jit_win32.o ^
-	tb_validate.o ^
-	tb_helper.o
+	tb_jit.o ^
+	tb_win32.o ^
+	tb_internal.o
 	
 llvm-ar rc tinybackend.lib %tb_object_files%

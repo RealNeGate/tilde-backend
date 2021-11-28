@@ -25,7 +25,6 @@ void tb_module_export_jit(TB_Module* m) {
 	uint32_t* func_layout = malloc(m->compiled_functions.count * sizeof(uint32_t));
 	size_t text_section_size = 0;
 	
-#if TB_HOST_ARCH == TB_HOST_X86_64
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
 		func_layout[i] = text_section_size;
 		
@@ -40,9 +39,6 @@ void tb_module_export_jit(TB_Module* m) {
 		text_section_size += epilogue;
 		text_section_size += m->compiled_functions.data[i].code_size;
 	}
-#else
-#error "Cannot compile JIT for this target architecture!"
-#endif
 	
 	// Target specific: resolve internal call patches
 	code_gen->emit_call_patches(m, func_layout);
@@ -52,10 +48,9 @@ void tb_module_export_jit(TB_Module* m) {
 	
 	// Output function
 	m->jit_region_size = text_section_size;
-	m->jit_region = VirtualAlloc(NULL, text_section_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	m->jit_region = tb_platform_valloc(text_section_size);
 	
 	uint8_t* text_section = m->jit_region;
-#if TB_HOST_ARCH == TB_HOST_X86_64
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
 		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
 		m->compiled_function_pos[i] = (void*)text_section;
@@ -81,15 +76,12 @@ void tb_module_export_jit(TB_Module* m) {
 		memcpy(text_section, epilogue, epilogue_len);
 		text_section += epilogue_len;
 	}
-#else
-#error "Cannot compile JIT for this target architecture!"
-#endif
 	
 	free(func_layout);
 	
 	// convert to executable
-	DWORD old_protect;
-	if (!VirtualProtect(m->jit_region, m->jit_region_size, PAGE_EXECUTE_READ, &old_protect)) {
+	if (!tb_platform_vprotect(m->jit_region, m->jit_region_size, true)) {
+		printf("FUCK!!!\n");
 		abort();
 	}
 }

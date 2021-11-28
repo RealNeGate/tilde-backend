@@ -193,6 +193,14 @@ void tb_find_live_intervals(const TB_Function* f, TB_Register intervals[]) {
 #undef X
 }
 
+void tb_find_use_count(const TB_Function* f, int use_count[]) {
+	for (size_t i = 0; i < f->nodes.count; i++) use_count[i] = 0;
+	
+#define X(reg) use_count[reg] += 1
+	FOR_EACH_REGISTER_IN_FUNC
+#undef X
+}
+
 size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_t end) {
 	size_t count = 0;
 	

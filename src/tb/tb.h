@@ -349,13 +349,29 @@ extern "C" {
 	TB_API void tb_function_print(TB_Function* f, FILE* out);
 	
 	//
-	// Function IR access
+	// IR access
 	//
+	TB_API TB_Register tb_node_get_last_register(TB_Function* f);
+	TB_API TB_DataType tb_node_get_data_type(TB_Function* f, TB_Register r);
+	
 	TB_API void tb_get_function_get_local_info(TB_Function* f, TB_Register r, int* size, int* align);
 	// Returns the size and alignment of a LOCAL node, both must
 	// be valid addresses
 	
-	TB_API TB_DataType tb_function_get_node_dt(TB_Function* f, TB_Register r);
+	TB_API bool tb_node_is_conditional(TB_Function* f, TB_Register r);
+	// is an IF node?
+	
+	TB_API bool tb_node_is_terminator(TB_Function* f, TB_Register r);
+	// is an IF, GOTO, RET, SWITCH, or LABEL node?
+	
+	TB_API TB_Register tb_node_store_get_address(TB_Function* f, TB_Register r);
+	TB_API TB_Register tb_node_store_get_value(TB_Function* f, TB_Register r);
+	
+	TB_API TB_Register tb_node_load_get_address(TB_Function* f, TB_Register r);
+	
+	TB_API TB_Register tb_node_arith_get_left(TB_Function* f, TB_Register r);
+	TB_API TB_Register tb_node_arith_get_right(TB_Function* f, TB_Register r);
+	// These work for any floating point, comparison, or integer arithmatic ops
 	
 #ifdef __cplusplus
 }

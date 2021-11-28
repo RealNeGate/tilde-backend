@@ -546,6 +546,15 @@ void tb_insert_op(TB_Function* f, TB_Register at);
 void tb_resize_node_stream(TB_Function* f, size_t cap);
 TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params, TB_Register at, const TB_Function* src_func, TB_Register src_base, int count);
 
+//
+// PLATFORM LAYER
+//
+void* tb_platform_valloc(size_t size);
+void tb_platform_vfree(void* ptr, size_t size);
+bool tb_platform_vprotect(void* ptr, size_t size, bool execute_read);
+// NOTE(NeGate): It's either execute-read or read-write, no other options... yet
+// returns false, if it failed
+
 inline static void tb_kill_op(TB_Function* f, TB_Register at) {
 	f->nodes.type[at] = TB_NULL;
 	f->nodes.dt[at] = (TB_DataType){ 0 };
@@ -595,6 +604,7 @@ __VA_ARGS__; \
 //
 // CONSTANT FOLDING UTILS
 //
+// TODO(NeGate): Drop i128
 TB_Int128 tb_fold_add(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b);
 TB_Int128 tb_fold_sub(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b);
 TB_Int128 tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b);
@@ -613,7 +623,8 @@ bool tb_opt_remove_pass_node(TB_Function* f);
 bool tb_opt_strength_reduction(TB_Function* f);
 bool tb_opt_compact_dead_regs(TB_Function* f);
 
-TB_API void tb_find_live_intervals(const TB_Function* f, TB_Register intervals[]);
+void tb_find_live_intervals(const TB_Function* f, TB_Register intervals[]);
+void tb_find_use_count(const TB_Function* f, int use_count[]);
 
 //
 // BACKEND UTILITIES

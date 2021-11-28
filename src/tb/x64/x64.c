@@ -8,11 +8,17 @@
 
 static int get_data_type_size(const TB_DataType dt);
 static PhiValue* find_phi(Ctx* ctx, TB_Register r);
+static bool is_address_node(TB_RegType t);
+
 static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Register bb_end);
 
 // Just handles the PHI nodes that we'll encounter when leaving `from`
 // into `to`
 static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_Register from_terminator, TB_Register to, TB_Register to_terminator);
+
+static void convert_l2r(Ctx* ctx, TB_Function* f, TB_Register r, Val* val);
+
+#define expect_lval(val) assert((val)->type == VAL_MEM && !(val)->mem.is_rvalue);
 
 TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* features, uint8_t* out) {
 	TB_TemporaryStorage* tls = tb_tls_allocate();
@@ -97,6 +103,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 					  });
 		
 		ctx->intervals = tb_tls_push(tls, f->nodes.count * sizeof(TB_Register));
+		ctx->use_count = tb_tls_push(tls, f->nodes.count * sizeof(int));
 		ctx->phis = tb_tls_push(tls, phi_count * sizeof(PhiValue));
 		
 		ctx->params = tb_tls_push(tls, f->parameter_count * sizeof(int32_t));
@@ -115,6 +122,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 	if (ctx->caller_usage > 0 && ctx->caller_usage < 4) ctx->caller_usage = 4;
 	
 	tb_find_live_intervals(f, ctx->intervals);
+	tb_find_use_count(f, ctx->use_count);
 	
 	// Create phi lookup table for later evaluation stages
 	FOR_EACH_NODE(i, f, TB_PHI2, {
@@ -263,12 +271,13 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 			if (dt.type != TB_VOID) {
 				Val value;
 				use(ctx, f, &value, p.ret.value, bb_end);
+				convert_l2r(ctx, f, p.ret.value, &value);
 				
 				if (value.dt.type == TB_F32 || value.dt.count > 1) {
 					// Float results use XMM0
 					Val dst = val_xmm(value.dt, XMM0);
 					
-					if (value.type != VAL_XMM || (value.type == VAL_XMM && value.xmm != XMM0)) {
+					if (is_value_xmm(&value, XMM0)) {
 						inst2(ctx, value.dt.count > 1 ? MOVAPS : MOVSS, &dst, &value, value.dt.type);
 					}
 				} else if (value.dt.type == TB_I8 ||
@@ -320,6 +329,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 			
 			Val cond;
 			use(ctx, f, &cond, p.if_.cond, bb_end);
+			convert_l2r(ctx, f, p.if_.cond, &cond);
 			
 			if (cond.type == VAL_IMM) {
 				TB_Label dst = (cond.imm ? if_true : if_false);
@@ -327,9 +337,16 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 				if (dst != f->nodes.payload[bb_end + 1].label.id) jmp(ctx, dst);
 			} else {
 				// Implicit convert into FLAGS
-				//assert();
-				//cond = x64_as_bool(f, ctx, out, cond, f->nodes.dt[cond_reg]);
-				assert(cond.type == VAL_FLAGS);
+				if (cond.type == VAL_GPR) {
+					inst2(ctx, TEST, &cond, &cond, cond.dt.type);
+					cond = val_flags(NE);
+				} else if (cond.type == VAL_MEM) {
+					Val imm = val_imm(cond.dt, 0);
+					inst2(ctx, CMP, &cond, &imm, cond.dt.type);
+					cond = val_flags(NE);
+				} else if (cond.type == VAL_FLAGS) {
+					// this is what we what
+				} else tb_todo();
 				
 				// Reorder the targets to avoid an extra JMP
 				TB_Label fallthrough_label = 0;
@@ -416,9 +433,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 }
 
 static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_Register from_terminator, TB_Register to, TB_Register to_terminator) {
-	for (size_t i = to; i < to_terminator; i++) {
-		if (f->nodes.type[i] != TB_PHI2) continue;
-		
+	for (size_t i = to; i < to_terminator; i++) if (f->nodes.type[i] == TB_PHI2) {
 		TB_RegPayload p = f->nodes.payload[i];
 		TB_DataType dt = f->nodes.dt[i];
 		assert(p.phi2.a_label != p.phi2.b_label);
@@ -428,12 +443,13 @@ static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_
 		else if (p.phi2.b_label == from) src = p.phi2.b;
 		else tb_unreachable();
 		
-		Val src_value;
-		use(ctx, f, &src_value, src, 0);
-		
 		PhiValue* phi = find_phi(ctx, i);
 		if (phi->value.type == VAL_NONE) {
 			// Initialize it
+			Val src_value;
+			use(ctx, f, &src_value, src, 0);
+			convert_l2r(ctx, f, src, &src_value);
+			
 			if (src_value.type == VAL_GPR && 
 				is_temporary_of_bb(ctx, f, src_value.gpr, from, from_terminator)) {
 				// Recycle old value
@@ -450,9 +466,7 @@ static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_
 			}
 		} else {
 			// Load value into existing phi node
-			if (!is_value_match(&phi->value, &src_value)) {
-				inst2(ctx, MOV, &phi->value, &src_value, dt.type);
-			}
+			store_into(ctx, f, dt, &phi->value, i, i, src);
 		}
 	}
 }
@@ -478,22 +492,22 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					break;
 				}
 				case TB_LOAD: {
-					// Load is a special case because in x64
-					// we can fold it into other instructions
-					// and thus it's only sometimes evaluated
-					// here.
 					TB_Register addr_reg = p->load.address;
+					bool explicit_load = ctx->use_count[i] > 1;
 					
-					bool explicit_load = true;
-					if (f->nodes.type[addr_reg] == TB_LOCAL ||
-						f->nodes.type[addr_reg] == TB_PARAM_ADDR) {
+					if (!explicit_load &&
+						(f->nodes.type[addr_reg] == TB_LOCAL ||
+						 f->nodes.type[addr_reg] == TB_PARAM_ADDR)) {
 						explicit_load = false;
 						
-						// If this load out-lives the next store it must be explicitly 
-						// loaded now since it might deviate from the memory.
+						// If this load out-lives the next side-effect
+						// that might change it
 						// TODO(NeGate): Implement noalias
 						for (size_t j = i + 1; j < bb_end; j++) {
-							if (f->nodes.type[j] == TB_STORE) {
+							if (f->nodes.type[j] == TB_STORE ||
+								f->nodes.type[j] == TB_CALL ||
+								f->nodes.type[j] == TB_VCALL ||
+								f->nodes.type[j] == TB_ECALL) {
 								explicit_load = (ctx->intervals[i] > j);
 								break;
 							}
@@ -502,8 +516,9 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					
 					if (explicit_load) {
 						Val v;
-						use(ctx, f, &v, p->load.address, i);
-						assert(v.type == VAL_MEM);
+						TB_DataType dt = f->nodes.dt[i];
+						load_into(ctx, f, dt, &v, i, addr_reg, TB_NULL_REG);
+						
 						def(ctx, f, v, i);
 					}
 					break;
@@ -513,24 +528,13 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					TB_Register val_reg = f->nodes.payload[i].store.value;
 					
 					// Eval address and cast to the correct type for the store
-					Val address, value;
+					Val address;
 					use(ctx, f, &address, addr_reg, i);
-					use(ctx, f, &value, val_reg, i);
 					
 					// Desugar booleans into bytes
 					if (dt.type == TB_BOOL) dt.type = TB_I8;
 					
-					if (value.type != VAL_MEM) {
-						inst2(ctx, MOV, &address, &value, dt.type);
-					} else {
-						Val temp;
-						def_new_gpr(ctx, f, &temp, i, dt.type);
-						
-						inst2(ctx, MOV, &temp, &value, dt.type);
-						inst2(ctx, MOV, &address, &temp, dt.type);
-						
-						kill(ctx, f, i);
-					}
+					store_into(ctx, f, dt, &address, i, addr_reg, val_reg);
 					break;
 				}
 				case TB_CALL:
@@ -575,6 +579,7 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 						
 						Val param;
 						use(ctx, f, &param, param_reg, i);
+						convert_l2r(ctx, f, param_reg, &param);
 						
 						if (j < 4) {
 							if (param.dt.count > 1 ||
@@ -629,7 +634,8 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
                         emit4(0x0);
 					} else if (reg_type == TB_VCALL) {
                         Val target_ptr;
-                        use(ctx, f, &target_ptr, p->vcall.target, i);
+                        use(ctx, f, &target_ptr, p->vcall.target, i); 
+						convert_l2r(ctx, f, p->vcall.target, &target_ptr);
                         
                         // call r/m64
                         inst1(ctx, CALL_RM, &target_ptr);
@@ -668,6 +674,7 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					{
 						Val param;
 						use(ctx, f, &param, dst_reg, i);
+						convert_l2r(ctx, f, dst_reg, &param);
 						
 						if (!is_value_gpr(&param, RDI)) {
 							Val dst = val_gpr(TB_PTR, RDI);
@@ -682,6 +689,7 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					{
 						Val param;
 						use(ctx, f, &param, val_reg, i);
+						convert_l2r(ctx, f, val_reg, &param);
 						
 						if (!is_value_gpr(&param, RAX)) {
 							Val dst = val_gpr(TB_PTR, RAX);
@@ -696,6 +704,7 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					{
 						Val param;
 						use(ctx, f, &param, size_reg, i);
+						convert_l2r(ctx, f, size_reg, &param);
 						
 						if (!is_value_gpr(&param, RCX)) {
 							Val dst = val_gpr(TB_PTR, RCX);
@@ -718,6 +727,15 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 				}
 				default:
 				tb_todo();
+			}
+			
+			// free temporaries
+			loop(i, 16) {
+				if (ctx->gpr_desc[i] == TB_REG_TEMP) ctx->gpr_desc[i] = 0;
+			}
+			
+			loop(i, 16) {
+				if (ctx->xmm_desc[i] == TB_REG_TEMP) ctx->xmm_desc[i] = 0;
 			}
 		}
 	}
@@ -863,51 +881,61 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 			case TB_ARRAY_ACCESS: {
 				Val base, index;
 				use(ctx, f, &base, p.array_access.base, r);
+				expect_lval(&base);
+				
 				use(ctx, f, &index, p.array_access.index, r);
+				convert_l2r(ctx, f, p.array_access.index, &index);
+				
 				uint32_t stride = p.array_access.stride;
+				int32_t disp = base.mem.disp;
 				
-				// We'll be allocating some registers temporarily
-				GPR temp_base = GPR_NONE;
-				GPR temp_index = GPR_NONE;
-				
-				// Load base
-				if (base.type == VAL_MEM) {
-					Val new_base;
-					def_new_gpr(ctx, f, &new_base, TB_REG_MAX /* reserved for a sec*/, dt.type);
-					inst2(ctx, MOV, &new_base, &base, dt.type);
-					
-					temp_base = new_base.gpr;
-					base = new_base;
-				}
-				
-				// Load index
 				if (index.type == VAL_MEM) {
-					Val new_index;
-					def_new_gpr(ctx, f, &new_index, TB_REG_MAX /* reserved for a sec*/, dt.type);
-					inst2(ctx, MOV, &new_index, &index, dt.type);
+					Val new_v;
+					def_new_gpr(ctx, f, &new_v, p.array_access.index, TB_I64);
+					inst2(ctx, MOV, &new_v, &index, TB_I64);
 					
-					temp_index = new_index.gpr;
-					index = new_index;
+					index = new_v;
 				}
 				
 				if (index.type == VAL_IMM) {
-					*v = val_base_disp(dt, base.gpr, index.imm * stride);
+					*v = base;
+					v->mem.disp += index.imm * stride;
 				} else if (index.type == VAL_GPR) {
-					def_new_gpr(ctx, f, v, r, dt.type);
+					GPR base_reg = base.mem.base;
 					
 					if (stride == 1 ||
 						stride == 2 ||
 						stride == 4 ||
 						stride == 8) {
 						Scale scale = __builtin_ffs(stride) - 1;
-						*v = val_base_index(dt, base.gpr, index.gpr, scale);
+						
+						if (base.mem.index != GPR_NONE) {
+							// nested indices a[x][y]
+							// lea dst, [base + index0 * scale0 + offset]
+							// lea dst, [dst + index1 * scale1] or add dst, index1
+							def_new_gpr(ctx, f, v, r, dt.type);
+							inst2(ctx, LEA, v, &base, TB_PTR);
+							
+							if (scale) {
+								Val addr = val_base_index(dt, v->gpr, index.gpr, scale);
+								inst2(ctx, LEA, v, &addr, TB_PTR);
+							}
+							else {
+								Val idx = val_gpr(TB_PTR, index.gpr);
+								inst2(ctx, ADD, v, &idx, TB_PTR);
+							}
+							
+							*v = val_base_disp(dt, v->gpr, 0);
+						}
+						else {
+							*v = val_base_index_disp(dt, base_reg, index.gpr, scale, disp);
+						}
 					} else {
 						// Resolve the index then add the base
-						//inst2(ctx, MOV, v, &base, dt.type);
-						
 						// TODO(NeGate): Improve this scaling method by
 						// adding ways to break down multiplies into bitshifts.
 						// int shifts_needed = __builtin_popcount(stride);
+						def_new_gpr(ctx, f, v, r, dt.type);
 						
 						emit(rex(true, v->gpr, index.gpr, 0));
 						emit(0x69);
@@ -916,33 +944,30 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 						
 						emit(rex(true, base.gpr, v->gpr, 0));
 						emit(0x01);
-						emit(mod_rx_rm(MOD_DIRECT, base.gpr, v->gpr));
+						emit(mod_rx_rm(MOD_DIRECT, base_reg, v->gpr));
+						
+						if (base.mem.index != GPR_NONE) {
+							// accumulate the index to the result
+							base.mem.base = v->gpr;
+							
+							inst2(ctx, LEA, v, &base, TB_PTR);
+						}
 					}
 				} else tb_todo();
-				
-				ctx->gpr_desc[temp_base] = 0;
-				ctx->gpr_desc[temp_index] = 0;
 				break;
 			}
 			case TB_MEMBER_ACCESS: {
 				use(ctx, f, v, p.member_access.base, r);
+				expect_lval(v);
 				
 				int32_t offset = p.member_access.offset;
 				if (v->type == VAL_MEM) {
 					v->mem.disp += offset;
-				} else if (v->type == VAL_GPR) {
-					// Convert into memory operand
-					*v = val_base_disp(dt, v->gpr, offset); 
 				} else tb_todo();
 				break;
 			}
 			case TB_LOAD: {
-				use(ctx, f, v, p.load.address, next);
-				assert(v->type == VAL_MEM);
-				
-				// Desugar booleans into bytes
-				v->dt = dt;
-				if (v->dt.type == TB_BOOL) v->dt.type = TB_I8;
+				load_into(ctx, f, dt, v, r, p.load.address, next);
 				break;
 			}
 			case TB_PARAM_ADDR: {
@@ -955,6 +980,7 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 			case TB_TRUNCATE: {
 				Val src;
 				use(ctx, f, &src, p.ext, r);
+				convert_l2r(ctx, f, p.ext, &src);
 				def_new_gpr(ctx, f, v, r, dt.type);
 				
 				// TODO(NeGate): Implement recycle
@@ -974,15 +1000,39 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 			case TB_ZERO_EXT: {
 				Val src;
 				use(ctx, f, &src, p.ext, r);
-				def_new_gpr(ctx, f, v, r, dt.type);
+				convert_l2r(ctx, f, p.ext, &src);
 				
-				// TODO(NeGate): Implement recycle
-				inst2(ctx, MOVZX, v, &src, dt.type);
+				if (src.dt.type == TB_I32 &&
+					dt.type == TB_I64 &&
+					ctx->intervals[p.ext] == r) {
+					assert(src.dt.count == 1);
+					assert(dt.count == 1);
+					
+					if (src.type != VAL_MEM) {
+						kill(ctx, f, p.ext);
+						def(ctx, f, src, r);
+						
+						*v = src;
+						v->dt.type = TB_I64;
+					}
+					else {
+						// for 32->64 memory, it needs to actually
+						// just do a 32bit load since it can't promote
+						// the load itself up without "over-reading"
+						def_new_gpr(ctx, f, v, r, TB_I64);
+						inst2(ctx, MOV, v, &src, TB_I32);
+					}
+				}
+				else {
+					def_new_gpr(ctx, f, v, r, dt.type);
+					inst2(ctx, MOVZX, v, &src, dt.type);
+				}
 				break;
 			}
 			case TB_SIGN_EXT: {
 				Val src;
 				use(ctx, f, &src, p.ext, r);
+				convert_l2r(ctx, f, p.ext, &src);
 				def_new_gpr(ctx, f, v, r, dt.type);
 				
 				// TODO(NeGate): Implement recycle
@@ -992,6 +1042,7 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 			case TB_NEG: {
 				Val src;
 				use(ctx, f, &src, p.unary, r);
+				convert_l2r(ctx, f, p.unary, &src);
 				def_new_gpr(ctx, f, v, r, dt.type);
 				
 				// TODO(NeGate): Implement recycle
@@ -1002,6 +1053,7 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 			case TB_NOT: {
 				Val src;
 				use(ctx, f, &src, p.unary, r);
+				convert_l2r(ctx, f, p.unary, &src);
 				def_new_gpr(ctx, f, v, r, dt.type);
 				
 				// TODO(NeGate): Implement recycle
@@ -1035,12 +1087,15 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 				if (a_reg == b_reg) {
 					Val src;
 					use(ctx, f, &src, a_reg, r);
+					convert_l2r(ctx, f, a_reg, &src);
 					
 					isel_aliased(ctx, f, v, info, r, a_reg, &src);
 				} else {
 					Val a, b;
 					use(ctx, f, &a, a_reg, r);
 					use(ctx, f, &b, b_reg, r);
+					convert_l2r(ctx, f, a_reg, &a);
+					convert_l2r(ctx, f, b_reg, &b);
 					
 					isel(ctx, f, v, info, r, a_reg, b_reg, &a, &b);
 				}
@@ -1069,12 +1124,15 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 				if (a_reg == b_reg) {
 					Val src;
 					use(ctx, f, &src, a_reg, r);
+					convert_l2r(ctx, f, a_reg, &src);
 					
 					isel_aliased(ctx, f, v, info, r, a_reg, &src);
 				} else {
 					Val a, b;
 					use(ctx, f, &a, a_reg, r);
 					use(ctx, f, &b, b_reg, r);
+					convert_l2r(ctx, f, a_reg, &a);
+					convert_l2r(ctx, f, b_reg, &b);
 					
 					if (dt.count == 1 &&
 						reg_type == TB_ADD &&
@@ -1120,6 +1178,7 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 				
 				Val a;
 				use(ctx, f, &a, a_reg, r);
+				convert_l2r(ctx, f, a_reg, &a);
 				
 				if (f->nodes.type[b_reg] == TB_INT_CONST) {
 					assert(f->nodes.payload[b_reg].i_const.hi == 0);
@@ -1180,6 +1239,8 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 				Val a, b;
 				use(ctx, f, &a, a_reg, r);
 				use(ctx, f, &b, b_reg, r);
+				convert_l2r(ctx, f, a_reg, &a);
+				convert_l2r(ctx, f, b_reg, &b);
 				
 				// needs to mov the a value into rdx:rax
 				Val rax = val_gpr(dt.type, RAX);
@@ -1221,6 +1282,8 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 				Val a, b;
 				use(ctx, f, &a, p.cmp.a, r);
 				use(ctx, f, &b, p.cmp.b, r);
+				convert_l2r(ctx, f, p.cmp.a, &a);
+				convert_l2r(ctx, f, p.cmp.b, &b);
 				
 				bool invert = false;
 				if (a.type == VAL_MEM && b.type == VAL_MEM) {
@@ -1274,6 +1337,81 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 	}
 }
 
+static void load_into(Ctx* ctx, TB_Function* f, TB_DataType dt, Val* v, TB_Register r, TB_Register addr, TB_Register next) {
+	use(ctx, f, v, addr, next);
+	
+	// Desugar booleans into bytes
+	if (v->dt.type == TB_BOOL) v->dt.type = TB_I8;
+	
+	if (v->mem.is_rvalue) {
+		// deref
+		Val new_v;
+		def_new_gpr(ctx, f, &new_v, r, v->dt.type);
+		inst2(ctx, MOV, &new_v, v, v->dt.type);
+		
+		*v = val_base_disp(v->dt, new_v.gpr, 0);
+	}
+	
+	v->dt = dt;
+	v->mem.is_rvalue = true;
+}
+
+static void store_into(Ctx* ctx, TB_Function* f, TB_DataType dt, const Val* dst, TB_Register r, TB_Register dst_reg, TB_Register val_reg) {
+	int op = MOV;
+	
+	// Peephole folded operation:
+	// OP dst, src
+	if (f->nodes.type[val_reg] >= TB_AND && f->nodes.type[val_reg] <= TB_SUB) {
+		TB_Register a = f->nodes.payload[val_reg].i_arith.a;
+		TB_Register b = f->nodes.payload[val_reg].i_arith.b;
+		
+		bool is_phi = f->nodes.type[r] == TB_PHI2;
+		bool folded = false;
+		if (is_phi) {
+			folded = is_phi_that_contains(f, r, a);
+		} else {
+			folded = (f->nodes.type[a] == TB_LOAD && f->nodes.payload[a].load.address == dst_reg);
+		}
+		
+		if (folded) {
+			switch (f->nodes.type[val_reg]) {
+				case TB_AND: op = AND; break;
+				case TB_OR: op = OR; break;
+				case TB_XOR: op = XOR; break;
+				case TB_ADD: op = ADD; break;
+				case TB_SUB: op = SUB; break;
+				default: tb_unreachable();
+			}
+			
+			val_reg = b;
+		}
+	}
+	
+	// Default case:
+	// mov dst, src
+	// or
+	// mov temp, src
+	// mov dst, temp
+	Val value;
+	use(ctx, f, &value, val_reg, r);
+	convert_l2r(ctx, f, val_reg, &value);
+	
+	// if they match and it's just a MOV, don't do it
+	if (op == MOV && is_value_match(dst, &value)) return;
+	
+	if (value.type != VAL_MEM) {
+		inst2(ctx, op, dst, &value, dt.type);
+	} else {
+		Val temp;
+		def_new_gpr(ctx, f, &temp, r, dt.type);
+		
+		inst2(ctx, MOV, &temp, &value, dt.type);
+		inst2(ctx, op, dst, &temp, dt.type);
+		
+		kill(ctx, f, r);
+	}
+}
+
 static void kill(Ctx* ctx, TB_Function* f, TB_Register r) {
 	printf("   kill r%u\n", r);
 	Val* v = &ctx->addr_desc[r];
@@ -1308,7 +1446,7 @@ static void def_new_gpr(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, int dt_
 				
 				Val val = val_gpr(dt_type, gpr);
 				ctx->gpr_desc[gpr] = r;
-				if (r != TB_REG_MAX) ctx->addr_desc[r] = val;
+				if (r != TB_REG_MAX && r != TB_REG_TEMP) ctx->addr_desc[r] = val;
 				
 				*v = val;
 				return;
@@ -1325,7 +1463,7 @@ static void def_new_gpr(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, int dt_
 		if (evict_gpr(ctx, f, gpr, r)) {
 			ctx->gpr_desc[gpr] = r;
 			Val val = val_gpr(dt_type, gpr);
-			if (r != TB_REG_MAX) ctx->addr_desc[r] = val;
+			if (r != TB_REG_MAX && r != TB_REG_TEMP) ctx->addr_desc[r] = val;
 			
 			*v = val;
 			return;
@@ -1343,9 +1481,11 @@ static void def_new_xmm(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Data
 				// ctx->regs_to_save |= (1u << (i + 32)) & ABI_CALLEE_SAVED;
 				
 				ctx->xmm_desc[i] = r;
-				ctx->addr_desc[r] = val_xmm(dt, i);
 				
-				*v = ctx->addr_desc[r];
+				Val val = val_xmm(dt, i);
+				if (r != TB_REG_MAX && r != TB_REG_TEMP) ctx->addr_desc[r] = val;
+				
+				*v = val;
 				printf("   allocated r%u <- XMM%d\n", r, i);
 				return;
 			}
@@ -1358,9 +1498,10 @@ static void def_new_xmm(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Data
 	for (size_t i = 16; i--;) {
 		if (evict_xmm(ctx, f, i, r)) {
 			ctx->xmm_desc[i] = r;
-			ctx->addr_desc[r] = val_xmm(dt, i);
+			Val val = val_xmm(dt, i);
+			if (r != TB_REG_MAX && r != TB_REG_TEMP) ctx->addr_desc[r] = val;
 			
-			*v = ctx->addr_desc[r];
+			*v = val;
 			return;
 		}
 	}
@@ -1487,7 +1628,9 @@ static void isel(Ctx* ctx, TB_Function* f, Val* v, const IselInfo* info,
 		bv = *b;
 	}
 	
-	bool recycle = a->type != VAL_IMM && ctx->intervals[a_reg] == dst_reg;
+	bool recycle = a->type != VAL_IMM &&
+		ctx->intervals[a_reg] == dst_reg &&
+		ctx->use_count[a_reg] == 1;
 	
 	// Can't recycle memory if the operation can't store directly into it
 	if (!info->has_memory_dst && a->type == VAL_MEM) recycle = false;
@@ -1643,12 +1786,58 @@ static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, GPR gpr, TB_Register bb
 	return false;
 }
 
+static void convert_l2r(Ctx* ctx, TB_Function* f, TB_Register r, Val* val) {
+	if (val->dt.type == TB_BOOL) val->dt.type = TB_I8;
+	
+	if (val->type == VAL_MEM) {
+		if (is_address_node(f->nodes.type[r])) {
+			assert(!val->mem.is_rvalue);
+			
+			Val new_v;
+			def_new_gpr(ctx, f, &new_v, TB_REG_TEMP, val->dt.type);
+			inst2(ctx, LEA, &new_v, val, val->dt.type);
+			
+			*val = new_v;
+		} else if (!val->mem.is_rvalue) {
+			// TODO(NeGate): Implement vector/float rvalue-conversion
+			Val new_v;
+			def_new_gpr(ctx, f, &new_v, r, val->dt.type);
+			inst2(ctx, MOV, &new_v, val, val->dt.type);
+			
+			*val = new_v;
+		}
+	}
+}
+
+// Is this a phi node? does it can the register `reg`?
+static bool is_phi_that_contains(TB_Function* f, TB_Register phi, TB_Register reg) {
+	if (f->nodes.type[phi] == TB_PHI1) {
+		return f->nodes.payload[phi].phi1.a == reg;
+	} else if (f->nodes.type[phi] == TB_PHI2) {
+		return f->nodes.payload[phi].phi2.a == reg || f->nodes.payload[phi].phi2.b == reg;
+	} else {
+		return false;
+	}
+}
+
 static PhiValue* find_phi(Ctx* ctx, TB_Register r) {
 	for (size_t i = 0; i < ctx->phi_count; i++) {
 		if (ctx->phis[i].reg == r) return &ctx->phis[i];
 	}
 	
 	return NULL;
+}
+
+static bool is_address_node(TB_RegType t) {
+	switch (t) {
+		case TB_LOCAL:
+		case TB_PARAM_ADDR:
+		case TB_ARRAY_ACCESS:
+		case TB_MEMBER_ACCESS:
+		return true;
+		default: 
+		return false;
+	}
 }
 
 static int get_data_type_size(const TB_DataType dt) {

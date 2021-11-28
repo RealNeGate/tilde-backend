@@ -8,7 +8,8 @@ set tb_source_files=src/tb/tb.c ^
 	src/tb/opt/tb_opt.c ^
 	src/tb/tb_coff.c ^
 	src/tb/tb_elf64.c ^
-	src/tb/tb_jit_win32.c ^
+	src/tb/tb_jit.c ^
+	src/tb/tb_win32.c ^
 	src/tb/tb_internal.c
 
 IF NOT exist build (mkdir build)

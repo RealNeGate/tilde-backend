@@ -20,6 +20,8 @@ bool tb_opt_dce(TB_Function* f) {
                 case TB_STORE:
                 case TB_LOAD:
                 case TB_CALL:
+				case TB_VCALL:
+				case TB_ECALL:
                 case TB_SWITCH:
                 case TB_PARAM:
 				case TB_MEMSET:

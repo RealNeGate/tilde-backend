@@ -11,7 +11,7 @@
 #include <x86intrin.h>
 #endif
 
-TB_API TB_DataType tb_function_get_node_dt(TB_Function* f, TB_Register r) {
+TB_API TB_DataType tb_node_get_data_type(TB_Function* f, TB_Register r) {
 	assert(r < f->nodes.count);
 	return f->nodes.dt[r];
 }
@@ -21,6 +21,41 @@ TB_API void tb_get_function_get_local_info(TB_Function* f, TB_Register r, int* s
 	
 	*size = f->nodes.payload[r].local.size;
 	*align = f->nodes.payload[r].local.alignment;
+}
+
+TB_API bool tb_node_is_conditional(TB_Function* f, TB_Register r) {
+	return f->nodes.type[r] == TB_IF;
+}
+
+TB_API bool tb_node_is_terminator(TB_Function* f, TB_Register r) {
+	return f->nodes.type[r] == TB_IF ||
+		f->nodes.type[r] == TB_GOTO ||
+		f->nodes.type[r] == TB_RET ||
+		f->nodes.type[r] == TB_LABEL;
+}
+
+TB_API TB_Register tb_node_get_last_register(TB_Function* f) {
+	return f->nodes.count - 1;
+}
+
+TB_API TB_Register tb_node_load_get_address(TB_Function* f, TB_Register r) {
+	assert(f->nodes.type[r] == TB_LOAD);
+	
+	return f->nodes.payload[r].load.address;
+}
+
+TB_API TB_Register tb_node_arith_get_left(TB_Function* f, TB_Register r) {
+	assert(f->nodes.type[r] >= TB_AND && f->nodes.type[r] <= TB_CMP_FLE);
+	
+	// TODO(NeGate): They share position in the union
+	return f->nodes.payload[r].i_arith.a;
+}
+
+TB_API TB_Register tb_node_arith_get_right(TB_Function* f, TB_Register r) {
+	assert(f->nodes.type[r] >= TB_AND && f->nodes.type[r] <= TB_CMP_FLE);
+	
+	// TODO(NeGate): They share position in the union
+	return f->nodes.payload[r].i_arith.b;
 }
 
 static TB_Register tb_make_reg(TB_Function* f, int type, TB_DataType dt) {

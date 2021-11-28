@@ -1,31 +1,22 @@
 #include "tb/tb.h"
+#include <time.h>
 
 static TB_Function* test_func_ref = NULL;
 TB_Function* test_fib(TB_Module* m);
 
-static size_t my_fib(size_t n) {
-	size_t a = 0, b = 1;
-	for (size_t i = 0; i < n - 1; i++) {
-		size_t c = a + b;
-		a = b;
-		b = c;
-	}
-	
-	return b;
-}
-
 TB_Function* test_fib(TB_Module* m) {
 	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I32(1));
-	test_func_ref = func;
 	
 	TB_Register n = tb_inst_param(func, TB_TYPE_I32(1));
+	TB_Label if_true = tb_inst_new_label_id(func);
+	TB_Label if_false = tb_inst_new_label_id(func);
 	
-	tb_inst_if(func, tb_inst_cmp_slt(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 2)), 1, 2);
+	tb_inst_if(func, tb_inst_cmp_slt(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 2)), if_true, if_false);
 	
-	tb_inst_label(func, 1); // .L1:
+	tb_inst_label(func, if_true); // .L1:
 	tb_inst_ret(func, TB_TYPE_I32(1), n);
 	
-	tb_inst_label(func, 2); // .L2:
+	tb_inst_label(func, if_false); // .L2:
 	
 	TB_Register n_minus_one = tb_inst_sub(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 1), TB_ASSUME_NUW);
 	
@@ -47,7 +38,8 @@ int main(int argc, char** argv) {
 	TB_FeatureSet features = { 0 };
 	TB_Module* m = tb_module_create(TB_ARCH_X86_64,
 									TB_SYSTEM_WINDOWS,
-									&features, TB_OPT_O0, 1);
+									&features, TB_OPT_O0, 1,
+									false);
 	
 	tb_module_compile_func(m, test_fib(m));
 	

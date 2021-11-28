@@ -51,6 +51,12 @@ inline static void inst2(Ctx* ctx, int op, const Val* a, const Val* b, int dt_ty
 	// operand size
 	uint8_t sz = (dt_type != TB_I8);
 	
+	// uses an immediate value that works as
+	// a sign extended 8 bit number
+	bool short_imm = (b->type == VAL_IMM &&
+					  b->imm == (int8_t)b->imm &&
+					  inst->op_i == 0x80);
+	
 	// All instructions that go through here are
 	// based on the ModRxRm encoding so we do need
 	// an RX and an RM (base, index, shift, disp)
@@ -106,8 +112,10 @@ inline static void inst2(Ctx* ctx, int op, const Val* a, const Val* b, int dt_ty
 		}
 		
 		// Immediates have a custom opcode
-		uint8_t op = b->type == VAL_IMM ? inst->op_i : inst->op;
-		emit(op | sz | (dir_flag ? 2 : 0));
+		uint8_t opcode = b->type == VAL_IMM ? inst->op_i : inst->op;
+		if (short_imm) opcode |= 2;
+		
+		emit(opcode | sz | (dir_flag ? 2 : 0));
 	}
 	else if (inst->ext == EXT_SSE_SS || inst->ext == EXT_SSE_PS) {
 		assert(b->type != VAL_IMM);
@@ -170,7 +178,7 @@ inline static void inst2(Ctx* ctx, int op, const Val* a, const Val* b, int dt_ty
 	} else tb_unreachable();
 	
 	if (b->type == VAL_IMM) {
-		if (dt_type == TB_I8) {
+		if (dt_type == TB_I8 || short_imm) {
 			assert(b->imm == (int8_t)b->imm);
 			emit((int8_t)b->imm);
 		} else if (dt_type == TB_I16) {

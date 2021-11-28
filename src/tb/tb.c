@@ -71,19 +71,7 @@ static void* job_system_thread_func(void* lpParam)
 	assert(i < TB_MAX_THREADS);
 	
 	size_t code_size = 0;
-	
-#if _WIN32
-	uint8_t* code = VirtualAlloc(NULL,
-								 CODE_OUTPUT_BUFFER,
-								 MEM_RESERVE | MEM_COMMIT,
-								 PAGE_READWRITE);
-#else
-	uint8_t* code = mmap(NULL,
-						 CODE_OUTPUT_BUFFER,
-						 PROT_READ | PROT_WRITE, 
-						 MAP_PRIVATE | MAP_ANONYMOUS,
-						 -1, 0);
-#endif
+	uint8_t* code = tb_platform_valloc(CODE_OUTPUT_BUFFER);
 	
 	while (s->running) {
 		uint32_t read_ptr = s->read_pointer;
@@ -286,28 +274,23 @@ TB_API void tb_module_destroy(TB_Module* m) {
 		m->functions.data[i].name = NULL;
 	}
     
-#if _WIN32
 	loop(i, m->code_region_count) {
-		VirtualFree(m->code_regions[i].data, 0, MEM_RELEASE);
-		m->code_regions[i].data = NULL;
+		tb_platform_vfree(m->code_regions[i].data, CODE_OUTPUT_BUFFER);
 	}
 	
 	if (m->jit_region) {
-		VirtualFree(m->jit_region, 0, MEM_RELEASE);
+		tb_platform_vfree(m->jit_region, m->jit_region_size);
 		m->jit_region = NULL;
 	}
-#else
-	loop(i, m->code_region_count) {
-		munmap(m->code_regions[i].data, CODE_OUTPUT_BUFFER);
-	}
-#endif
 	
 	loop_range(i, 1, m->files.count) {
 		free(m->files.data[i].path);
 	}
     
 	free(m->jobs);
+#if !TB_STRIP_LABELS
 	free(m->label_symbols.data);
+#endif
 	free(m->const32_patches.data);
 	free(m->call_patches.data);
 	free(m->ecall_patches.data);
@@ -579,11 +562,10 @@ static void tb_print_type(FILE* out, TB_DataType dt) {
 	switch (dt.type) {
         case TB_VOID:   printf("[void]   \t"); break;
         case TB_BOOL:   printf("[bool x %d]\t", dt.count); break;
-        case TB_I8:     printf("[i8 x %d]\t", dt.count); break;
+        case TB_I8:     printf("[i8  x %d]\t", dt.count); break;
         case TB_I16:    printf("[i16 x %d]\t", dt.count); break;
         case TB_I32:    printf("[i32 x %d]\t", dt.count); break;
         case TB_I64:    printf("[i64 x %d]\t", dt.count); break;
-        case TB_I128:   printf("[i128 x %d]\t", dt.count); break;
         case TB_PTR:    printf("[ptr]    \t"); break;
         case TB_F32:    printf("[f32 x %d]\t", dt.count); break;
         case TB_F64:    printf("[f64 x %d]\t", dt.count); break;
@@ -648,7 +630,7 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			case TB_MEMBER_ACCESS:
 			fprintf(out, "  r%u\t=\t", i);
 			tb_print_type(out, dt);
-			fprintf(out, " &r%u[r%d]\n", p.member_access.base, p.member_access.offset);
+			fprintf(out, " r%u.data[%d]\n", p.member_access.base, p.member_access.offset);
 			break;
 			case TB_ARRAY_ACCESS:
 			fprintf(out, "  r%u\t=\t", i);

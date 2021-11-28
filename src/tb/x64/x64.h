@@ -8,6 +8,9 @@
 
 _Static_assert(sizeof(float) == sizeof(uint32_t), "Float needs to be a 32-bit single float!");
 
+// can be cleared after the side effect that originally created it
+#define TB_REG_TEMP (((TB_Register)INT32_MAX) - 1)
+
 typedef union Cvt_F32U32 {
 	float f;
 	uint32_t i;
@@ -72,6 +75,7 @@ typedef struct Val {
 			GPR base : 8;
 			GPR index : 8;
 			Scale scale : 8;
+			bool is_rvalue;
 			int32_t disp;
 		} mem;
         int32_t imm;
@@ -128,6 +132,7 @@ typedef struct Ctx {
 	// Some analysis crap
 	int32_t* params;
 	TB_Register* intervals;
+	int* use_count;
 	PhiValue* phis;
 	ReturnPatch* ret_patches;
 	
@@ -233,7 +238,7 @@ typedef enum Inst1 {
 static const Inst2 inst2_tbl[] = {
 	[ADD] = { 0x00, 0x80, 0x00 },
 	[AND] = { 0x20, 0x80, 0x04 },
-	[OR]  = { 0x08, 0x80, 0x00 },
+	[OR]  = { 0x08, 0x80, 0x01 },
 	[SUB] = { 0x28, 0x80, 0x05 },
 	[XOR] = { 0x30, 0x80, 0x06 },
 	[CMP] = { 0x38, 0x80, 0x07 },
@@ -286,6 +291,14 @@ inline static Val val_xmm(TB_DataType dt, XMM x) {
 	};
 }
 
+inline static Val val_flags(Cond c) {
+	return (Val) {
+		.type = VAL_FLAGS,
+		.dt = TB_TYPE_BOOL(1),
+		.cond = c
+	};
+}
+
 inline static Val val_imm(TB_DataType dt, int32_t imm) {
 	return (Val) {
 		.type = VAL_IMM,
@@ -333,11 +346,31 @@ inline static Val val_base_index(TB_DataType dt, GPR b, GPR i, Scale s) {
 	};
 }
 
+inline static Val val_base_index_disp(TB_DataType dt, GPR b, GPR i, Scale s, int d) {
+	return (Val) {
+		.type = VAL_MEM,
+		.dt = dt,
+		.mem = {
+			.base = b,
+			.index = i,
+			.scale = s,
+			.disp = d
+		}
+	};
+}
+
 inline static bool is_value_gpr(const Val* v, GPR g) {
 	if (v->type != VAL_GPR) return false;
 	
 	return (v->gpr == g);
 }
+
+inline static bool is_value_xmm(const Val* v, XMM x) {
+	if (v->type != VAL_XMM) return false;
+	
+	return (v->xmm == x);
+}
+
 
 inline static bool is_value_match(const Val* a, const Val* b) {
 	if (a->type != b->type) return false;
@@ -359,16 +392,8 @@ inline static bool is_value_match(const Val* a, const Val* b) {
 static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, GPR gpr, TB_Register bb, TB_Register bb_end);
 
 // Evaluates the virtual register if not already, outputs to `r`
+// if `rval` is true, then we return addresses via an direct registers or LEA.
 static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register next);
-
-// Same as use(...) except it always returns a memory operand of
-// the virtual register as a pointer, if it's a constant integer it's
-// reintepreted as a pointer, locals? pointer, addition? pointer arithmatic
-//static void use_lval(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register next);
-
-// Same as use(...) except it converts the value into a register,
-// GPR for integers, XMM for vector and floats
-static void use_as_reg(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register next);
 
 static void kill(Ctx* ctx, TB_Function* f, TB_Register r);
 
@@ -403,3 +428,8 @@ static void isel_aliased(Ctx* ctx, TB_Function* f, Val* v, const IselInfo* info,
 // Returns true if any virtual registers were unused and now gone.
 static bool garbage_collect_gpr(Ctx* ctx, TB_Function* f, TB_Register r);
 static bool garbage_collect_xmm(Ctx* ctx, TB_Function* f, TB_Register r);
+
+static bool is_phi_that_contains(TB_Function* f, TB_Register phi, TB_Register reg);
+static void store_into(Ctx* ctx, TB_Function* f, TB_DataType dt, const Val* dst, TB_Register r, TB_Register dst_reg, TB_Register val_reg);
+static void load_into(Ctx* ctx, TB_Function* f, TB_DataType dt, Val* v, TB_Register r, TB_Register addr, TB_Register next);
+

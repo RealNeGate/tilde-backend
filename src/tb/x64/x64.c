@@ -537,6 +537,15 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					// Desugar booleans into bytes
 					if (dt.type == TB_BOOL) dt.type = TB_I8;
 					
+					if (address.mem.is_rvalue) {
+						// deref
+						Val new_v;
+						def_new_gpr(ctx, f, &new_v, i, TB_PTR);
+						inst2(ctx, MOV, &new_v, &address, TB_PTR);
+						
+						address = val_base_disp(dt, new_v.gpr, 0);
+					}
+					
 					store_into(ctx, f, dt, &address, i, addr_reg, val_reg);
 					break;
 				}
@@ -939,11 +948,13 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 			}
 			case TB_MEMBER_ACCESS: {
 				use(ctx, f, v, p.member_access.base, r);
-				expect_lval(v);
 				
 				int32_t offset = p.member_access.offset;
 				if (v->type == VAL_MEM) {
+					assert(!v->mem.is_rvalue);
 					v->mem.disp += offset;
+				} else if (v->type == VAL_GPR) {
+					*v = val_base_disp(TB_TYPE_PTR, v->gpr, offset);
 				} else tb_todo();
 				break;
 			}
@@ -1326,8 +1337,8 @@ static void load_into(Ctx* ctx, TB_Function* f, TB_DataType dt, Val* v, TB_Regis
 	if (v->mem.is_rvalue) {
 		// deref
 		Val new_v;
-		def_new_gpr(ctx, f, &new_v, r, v->dt.type);
-		inst2(ctx, MOV, &new_v, v, v->dt.type);
+		def_new_gpr(ctx, f, &new_v, r, TB_PTR);
+		inst2(ctx, MOV, &new_v, v, TB_PTR);
 		
 		*v = val_base_disp(v->dt, new_v.gpr, 0);
 	}

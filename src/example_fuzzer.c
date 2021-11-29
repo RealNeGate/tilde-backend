@@ -121,7 +121,7 @@ static __stdcall int ir_gen(FuzzerInfo* i) {
 				tb_get_function_get_local_info(f, addr, &size, &align);
 				
 				// just use the type of the allocation
-				dt = align == 8 ? TB_TYPE_I64(1) : TB_TYPE_I32(1);
+				dt = align == 8 ? TB_TYPE_I64 : TB_TYPE_I32;
 				
 				tb_inst_store(f, dt, addr, pool[gen_random(0, pool_size)], align);
 			} else if (rng == 3) {

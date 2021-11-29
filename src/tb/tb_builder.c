@@ -303,7 +303,7 @@ TB_API TB_Register tb_inst_param(TB_Function* f, TB_DataType dt) {
 }
 
 TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line) {
-	TB_Register r = tb_make_reg(f, TB_LINE_INFO, TB_TYPE_VOID());
+	TB_Register r = tb_make_reg(f, TB_LINE_INFO, TB_TYPE_VOID);
 	f->nodes.payload[r].line_info.file = file;
 	f->nodes.payload[r].line_info.line = line;
 	f->nodes.payload[r].line_info.pos = 0;
@@ -316,7 +316,7 @@ TB_API TB_Register tb_inst_param_addr(TB_Function* f, TB_Register param) {
     
 	int param_size = f->nodes.payload[param].param.size;
 	
-	TB_Register r = tb_make_reg(f, TB_PARAM_ADDR, TB_TYPE_PTR());
+	TB_Register r = tb_make_reg(f, TB_PARAM_ADDR, TB_TYPE_PTR);
 	f->nodes.payload[r].param_addr.param = param;
 	f->nodes.payload[r].param_addr.size = param_size;
 	f->nodes.payload[r].param_addr.alignment = param_size;
@@ -324,7 +324,7 @@ TB_API TB_Register tb_inst_param_addr(TB_Function* f, TB_Register param) {
 }
 
 TB_API TB_Register tb_inst_local(TB_Function* f, uint32_t size, uint32_t alignment) {
-	TB_Register r = tb_make_reg(f, TB_LOCAL, TB_TYPE_PTR());
+	TB_Register r = tb_make_reg(f, TB_LOCAL, TB_TYPE_PTR);
 	f->nodes.payload[r].local.alignment = alignment;
 	f->nodes.payload[r].local.size = size;
 	return r;
@@ -464,7 +464,7 @@ TB_API TB_Register tb_inst_fconst(TB_Function* f, TB_DataType dt, double imm) {
 }
 
 TB_API TB_Register tb_inst_array_access(TB_Function* f, TB_Register base, TB_Register index, uint32_t stride) {
-	TB_Register r = tb_make_reg(f, TB_ARRAY_ACCESS, TB_TYPE_PTR());
+	TB_Register r = tb_make_reg(f, TB_ARRAY_ACCESS, TB_TYPE_PTR);
 	f->nodes.payload[r].array_access.base = base;
 	f->nodes.payload[r].array_access.index = index;
 	f->nodes.payload[r].array_access.stride = stride;
@@ -472,7 +472,7 @@ TB_API TB_Register tb_inst_array_access(TB_Function* f, TB_Register base, TB_Reg
 }
 
 TB_API TB_Register tb_inst_member_access(TB_Function* f, TB_Register base, int32_t offset) {
-	TB_Register r = tb_make_reg(f, TB_MEMBER_ACCESS, TB_TYPE_PTR());
+	TB_Register r = tb_make_reg(f, TB_MEMBER_ACCESS, TB_TYPE_PTR);
 	f->nodes.payload[r].member_access.base = base;
 	f->nodes.payload[r].member_access.offset = offset;
 	return r;
@@ -539,7 +539,7 @@ TB_API TB_Register tb_inst_ecall(TB_Function* f, TB_DataType dt, const TB_Extern
 }
 
 TB_API void tb_inst_memset(TB_Function* f, TB_Register dst, TB_Register val, TB_Register size, int align) {
-	TB_Register r = tb_make_reg(f, TB_MEMSET, TB_TYPE_PTR());
+	TB_Register r = tb_make_reg(f, TB_MEMSET, TB_TYPE_PTR);
 	f->nodes.payload[r].mem_op.dst = dst;
 	f->nodes.payload[r].mem_op.src = val;
 	f->nodes.payload[r].mem_op.size = size;
@@ -547,7 +547,7 @@ TB_API void tb_inst_memset(TB_Function* f, TB_Register dst, TB_Register val, TB_
 }
 
 TB_API void tb_inst_memcpy(TB_Function* f, TB_Register dst, TB_Register src, TB_Register size, int align) {
-	TB_Register r = tb_make_reg(f, TB_MEMCPY, TB_TYPE_PTR());
+	TB_Register r = tb_make_reg(f, TB_MEMCPY, TB_TYPE_PTR);
 	f->nodes.payload[r].mem_op.dst = dst;
 	f->nodes.payload[r].mem_op.src = src;
 	f->nodes.payload[r].mem_op.size = size;
@@ -688,7 +688,7 @@ TB_API TB_Register tb_inst_fdiv(TB_Function* f, TB_DataType dt, TB_Register a, T
 }
 
 TB_API TB_Register tb_inst_cmp_eq(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_EQ, TB_TYPE_BOOL(1));
+	TB_Register r = tb_make_reg(f, TB_CMP_EQ, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = a;
 	f->nodes.payload[r].cmp.b = b;
 	f->nodes.payload[r].cmp.dt = dt;
@@ -696,7 +696,7 @@ TB_API TB_Register tb_inst_cmp_eq(TB_Function* f, TB_DataType dt, TB_Register a,
 }
 
 TB_API TB_Register tb_inst_cmp_ne(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_NE, TB_TYPE_BOOL(1));
+	TB_Register r = tb_make_reg(f, TB_CMP_NE, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = a;
 	f->nodes.payload[r].cmp.b = b;
 	f->nodes.payload[r].cmp.dt = dt;
@@ -704,7 +704,7 @@ TB_API TB_Register tb_inst_cmp_ne(TB_Function* f, TB_DataType dt, TB_Register a,
 }
 
 TB_API TB_Register tb_inst_cmp_slt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_SLT, TB_TYPE_BOOL(1));
+	TB_Register r = tb_make_reg(f, TB_CMP_SLT, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = a;
 	f->nodes.payload[r].cmp.b = b;
 	f->nodes.payload[r].cmp.dt = dt;
@@ -712,7 +712,7 @@ TB_API TB_Register tb_inst_cmp_slt(TB_Function* f, TB_DataType dt, TB_Register a
 }
 
 TB_API TB_Register tb_inst_cmp_sle(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_SLE, TB_TYPE_BOOL(1));
+	TB_Register r = tb_make_reg(f, TB_CMP_SLE, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = a;
 	f->nodes.payload[r].cmp.b = b;
 	f->nodes.payload[r].cmp.dt = dt;
@@ -720,7 +720,7 @@ TB_API TB_Register tb_inst_cmp_sle(TB_Function* f, TB_DataType dt, TB_Register a
 }
 
 TB_API TB_Register tb_inst_cmp_sgt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_SLT, TB_TYPE_BOOL(1));
+	TB_Register r = tb_make_reg(f, TB_CMP_SLT, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = b;
 	f->nodes.payload[r].cmp.b = a;
 	f->nodes.payload[r].cmp.dt = dt;
@@ -728,7 +728,7 @@ TB_API TB_Register tb_inst_cmp_sgt(TB_Function* f, TB_DataType dt, TB_Register a
 }
 
 TB_API TB_Register tb_inst_cmp_sge(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_SLE, TB_TYPE_BOOL(1));
+	TB_Register r = tb_make_reg(f, TB_CMP_SLE, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = b;
 	f->nodes.payload[r].cmp.b = a;
 	f->nodes.payload[r].cmp.dt = dt;
@@ -736,7 +736,7 @@ TB_API TB_Register tb_inst_cmp_sge(TB_Function* f, TB_DataType dt, TB_Register a
 }
 
 TB_API TB_Register tb_inst_cmp_ult(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_ULT, TB_TYPE_BOOL(1));
+	TB_Register r = tb_make_reg(f, TB_CMP_ULT, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = a;
 	f->nodes.payload[r].cmp.b = b;
 	f->nodes.payload[r].cmp.dt = dt;
@@ -744,7 +744,7 @@ TB_API TB_Register tb_inst_cmp_ult(TB_Function* f, TB_DataType dt, TB_Register a
 }
 
 TB_API TB_Register tb_inst_cmp_ule(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_ULE, TB_TYPE_BOOL(1));
+	TB_Register r = tb_make_reg(f, TB_CMP_ULE, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = a;
 	f->nodes.payload[r].cmp.b = b;
 	f->nodes.payload[r].cmp.dt = dt;
@@ -752,7 +752,7 @@ TB_API TB_Register tb_inst_cmp_ule(TB_Function* f, TB_DataType dt, TB_Register a
 }
 
 TB_API TB_Register tb_inst_cmp_ugt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_ULT, TB_TYPE_BOOL(1));
+	TB_Register r = tb_make_reg(f, TB_CMP_ULT, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = b;
 	f->nodes.payload[r].cmp.b = a;
 	f->nodes.payload[r].cmp.dt = dt;
@@ -760,7 +760,7 @@ TB_API TB_Register tb_inst_cmp_ugt(TB_Function* f, TB_DataType dt, TB_Register a
 }
 
 TB_API TB_Register tb_inst_cmp_uge(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_ULE, TB_TYPE_BOOL(1));
+	TB_Register r = tb_make_reg(f, TB_CMP_ULE, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = b;
 	f->nodes.payload[r].cmp.b = a;
 	f->nodes.payload[r].cmp.dt = dt;
@@ -768,7 +768,7 @@ TB_API TB_Register tb_inst_cmp_uge(TB_Function* f, TB_DataType dt, TB_Register a
 }
 
 TB_API TB_Register tb_inst_cmp_flt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_FLT, TB_TYPE_BOOL(1));
+	TB_Register r = tb_make_reg(f, TB_CMP_FLT, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = a;
 	f->nodes.payload[r].cmp.b = b;
 	f->nodes.payload[r].cmp.dt = dt;
@@ -776,7 +776,7 @@ TB_API TB_Register tb_inst_cmp_flt(TB_Function* f, TB_DataType dt, TB_Register a
 }
 
 TB_API TB_Register tb_inst_cmp_fle(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_FLE, TB_TYPE_BOOL(1));
+	TB_Register r = tb_make_reg(f, TB_CMP_FLE, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = a;
 	f->nodes.payload[r].cmp.b = b;
 	f->nodes.payload[r].cmp.dt = dt;
@@ -784,7 +784,7 @@ TB_API TB_Register tb_inst_cmp_fle(TB_Function* f, TB_DataType dt, TB_Register a
 }
 
 TB_API TB_Register tb_inst_cmp_fgt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_FLT, TB_TYPE_BOOL(1));
+	TB_Register r = tb_make_reg(f, TB_CMP_FLT, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = b;
 	f->nodes.payload[r].cmp.b = a;
 	f->nodes.payload[r].cmp.dt = dt;
@@ -792,7 +792,7 @@ TB_API TB_Register tb_inst_cmp_fgt(TB_Function* f, TB_DataType dt, TB_Register a
 }
 
 TB_API TB_Register tb_inst_cmp_fge(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_FLE, TB_TYPE_BOOL(1));
+	TB_Register r = tb_make_reg(f, TB_CMP_FLE, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = b;
 	f->nodes.payload[r].cmp.b = a;
 	f->nodes.payload[r].cmp.dt = dt;
@@ -816,7 +816,7 @@ TB_API TB_Label tb_inst_new_label_id(TB_Function* f) {
 TB_API TB_Register tb_inst_label(TB_Function* f, TB_Label id) {
 	assert(id < f->label_count);
 	
-	TB_Register r = tb_make_reg(f, TB_LABEL, TB_TYPE_PTR());
+	TB_Register r = tb_make_reg(f, TB_LABEL, TB_TYPE_PTR);
 	f->nodes.payload[r].label.id = id;
 	f->nodes.payload[r].label.terminator = TB_NULL_REG;
 	f->nodes.payload[r].label.is_loop = false;
@@ -840,7 +840,7 @@ TB_API void tb_inst_goto(TB_Function* f, TB_Label id) {
         return;
     }
     
-	TB_Register r = tb_make_reg(f, TB_GOTO, TB_TYPE_VOID());
+	TB_Register r = tb_make_reg(f, TB_GOTO, TB_TYPE_VOID);
 	f->nodes.payload[r].goto_.label = id;
     
 	assert(f->current_label);
@@ -849,7 +849,7 @@ TB_API void tb_inst_goto(TB_Function* f, TB_Label id) {
 }
 
 TB_API TB_Register tb_inst_if(TB_Function* f, TB_Register cond, TB_Label if_true, TB_Label if_false) {
-	TB_Register r = tb_make_reg(f, TB_IF, TB_TYPE_VOID());
+	TB_Register r = tb_make_reg(f, TB_IF, TB_TYPE_VOID);
 	f->nodes.payload[r].if_.cond = cond;
 	f->nodes.payload[r].if_.if_true = if_true;
 	f->nodes.payload[r].if_.if_false = if_false;

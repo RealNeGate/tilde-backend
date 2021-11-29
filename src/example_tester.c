@@ -9,40 +9,40 @@ void jit_import_print_num(int x) {
 // Generators
 //
 TB_Function* gen_fib(TB_Module* m) {
-	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I32(1));
+	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I32);
 	
-	TB_Register n = tb_inst_param(func, TB_TYPE_I32(1));
+	TB_Register n = tb_inst_param(func, TB_TYPE_I32);
 	TB_Label if_true = tb_inst_new_label_id(func);
 	TB_Label if_false = tb_inst_new_label_id(func);
 	
-	tb_inst_if(func, tb_inst_cmp_slt(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 2)), if_true, if_false);
+	tb_inst_if(func, tb_inst_cmp_slt(func, TB_TYPE_I32, n, tb_inst_iconst(func, TB_TYPE_I32, 2)), if_true, if_false);
 	
 	tb_inst_label(func, if_true); // .L1:
-	tb_inst_ret(func, TB_TYPE_I32(1), n);
+	tb_inst_ret(func, TB_TYPE_I32, n);
 	
 	tb_inst_label(func, if_false); // .L2:
 	
-	TB_Register n_minus_one = tb_inst_sub(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 1), TB_ASSUME_NUW);
+	TB_Register n_minus_one = tb_inst_sub(func, TB_TYPE_I32, n, tb_inst_iconst(func, TB_TYPE_I32, 1), TB_ASSUME_NUW);
 	
-	TB_Register call1 = tb_inst_call(func, TB_TYPE_I32(1), func, 1, (TB_Register[]) { n_minus_one });
+	TB_Register call1 = tb_inst_call(func, TB_TYPE_I32, func, 1, (TB_Register[]) { n_minus_one });
 	
-	TB_Register n_minus_two = tb_inst_sub(func, TB_TYPE_I32(1), n, tb_inst_iconst(func, TB_TYPE_I32(1), 2), TB_ASSUME_NUW);
+	TB_Register n_minus_two = tb_inst_sub(func, TB_TYPE_I32, n, tb_inst_iconst(func, TB_TYPE_I32, 2), TB_ASSUME_NUW);
 	
-	TB_Register call2 = tb_inst_call(func, TB_TYPE_I32(1), func, 1, (TB_Register[]) { n_minus_two });
+	TB_Register call2 = tb_inst_call(func, TB_TYPE_I32, func, 1, (TB_Register[]) { n_minus_two });
 	
-	TB_Register sum = tb_inst_add(func, TB_TYPE_I32(1), call1, call2, TB_ASSUME_NUW);
-	tb_inst_ret(func, TB_TYPE_I32(1), sum);
+	TB_Register sum = tb_inst_add(func, TB_TYPE_I32, call1, call2, TB_ASSUME_NUW);
+	tb_inst_ret(func, TB_TYPE_I32, sum);
 	
 	return func;
 }
 
 TB_Function* gen_fact(TB_Module* m) {
-	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_F32(1));
+	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_F32);
 	
-	TB_Register n = tb_inst_param(func, TB_TYPE_I32(1));
+	TB_Register n = tb_inst_param(func, TB_TYPE_I32);
 	TB_Register n_addr = tb_inst_param_addr(func, n);
 	TB_Register f_addr = tb_inst_local(func, 4, 4);
-	tb_inst_store(func, TB_TYPE_I32(1), f_addr, tb_inst_iconst(func, TB_TYPE_I32(1), 1), 4);
+	tb_inst_store(func, TB_TYPE_I32, f_addr, tb_inst_iconst(func, TB_TYPE_I32, 1), 4);
 	
 	TB_Label loop_entry = tb_inst_new_label_id(func);
 	TB_Label loop_body = tb_inst_new_label_id(func);
@@ -51,8 +51,8 @@ TB_Function* gen_fact(TB_Module* m) {
 	// Loop entry
 	{
 		tb_inst_label(func, loop_entry);
-		TB_Register n_ld = tb_inst_load(func, TB_TYPE_I32(1), n_addr, 4);
-		tb_inst_if(func, tb_inst_cmp_ne(func, TB_TYPE_I32(1), n_ld, tb_inst_iconst(func, TB_TYPE_I32(1), 0)), loop_body, loop_exit);
+		TB_Register n_ld = tb_inst_load(func, TB_TYPE_I32, n_addr, 4);
+		tb_inst_if(func, tb_inst_cmp_ne(func, TB_TYPE_I32, n_ld, tb_inst_iconst(func, TB_TYPE_I32, 0)), loop_body, loop_exit);
 	}
 	
 	// Loop body
@@ -60,30 +60,30 @@ TB_Function* gen_fact(TB_Module* m) {
 		tb_inst_label(func, loop_body);
 		
 		// f = f * n
-		TB_Register f_ld = tb_inst_load(func, TB_TYPE_I32(1), f_addr, 4);
-		TB_Register n_ld = tb_inst_load(func, TB_TYPE_I32(1), n_addr, 4);
-		tb_inst_store(func, TB_TYPE_I32(1), f_addr, tb_inst_mul(func, TB_TYPE_I32(1), f_ld, n_ld, TB_ASSUME_NUW), 4);
+		TB_Register f_ld = tb_inst_load(func, TB_TYPE_I32, f_addr, 4);
+		TB_Register n_ld = tb_inst_load(func, TB_TYPE_I32, n_addr, 4);
+		tb_inst_store(func, TB_TYPE_I32, f_addr, tb_inst_mul(func, TB_TYPE_I32, f_ld, n_ld, TB_ASSUME_NUW), 4);
 		
 		// n = n - 1
-		TB_Register n_ld2 = tb_inst_load(func, TB_TYPE_I32(1), n_addr, 4);
-		tb_inst_store(func, TB_TYPE_I32(1), n_addr, tb_inst_sub(func, TB_TYPE_I32(1), n_ld2, tb_inst_iconst(func, TB_TYPE_I32(1), 1), TB_ASSUME_NUW), 4);
+		TB_Register n_ld2 = tb_inst_load(func, TB_TYPE_I32, n_addr, 4);
+		tb_inst_store(func, TB_TYPE_I32, n_addr, tb_inst_sub(func, TB_TYPE_I32, n_ld2, tb_inst_iconst(func, TB_TYPE_I32, 1), TB_ASSUME_NUW), 4);
 		
 		tb_inst_goto(func, loop_entry);
 	}
 	
 	tb_inst_label(func, loop_exit);
-	tb_inst_ret(func, TB_TYPE_I32(1), tb_inst_load(func, TB_TYPE_I32(1), f_addr, 4));
+	tb_inst_ret(func, TB_TYPE_I32, tb_inst_load(func, TB_TYPE_I32, f_addr, 4));
 	return func;
 }
 
 TB_Function* gen_print(TB_Module* m) {
-	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_F32(1));
+	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_F32);
 	
-    TB_Register print = tb_inst_param(func, TB_TYPE_PTR());
-	TB_Register x = tb_inst_iconst(func, TB_TYPE_I32(1), 64);
+    TB_Register print = tb_inst_param(func, TB_TYPE_PTR);
+	TB_Register x = tb_inst_iconst(func, TB_TYPE_I32, 64);
     
-    tb_inst_vcall(func, TB_TYPE_VOID(), print, 1, (TB_Register[]) { x });
-    tb_inst_ret(func, TB_TYPE_VOID(), TB_NULL_REG);
+    tb_inst_vcall(func, TB_TYPE_VOID, print, 1, (TB_Register[]) { x });
+    tb_inst_ret(func, TB_TYPE_VOID, TB_NULL_REG);
 	return func;
 }
 

@@ -294,7 +294,7 @@ inline static Val val_xmm(TB_DataType dt, XMM x) {
 inline static Val val_flags(Cond c) {
 	return (Val) {
 		.type = VAL_FLAGS,
-		.dt = TB_TYPE_BOOL(1),
+		.dt = TB_TYPE_BOOL,
 		.cond = c
 	};
 }

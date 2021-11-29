@@ -433,7 +433,7 @@ TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataTy
     
 	// Entry label
 	f->nodes.type[1] = TB_LABEL;
-	f->nodes.dt[1] = TB_TYPE_PTR();
+	f->nodes.dt[1] = TB_TYPE_PTR;
 	f->nodes.payload[1].label.id = 0;
 	f->nodes.payload[1].label.terminator = TB_NULL_REG;
 	f->nodes.payload[1].label.is_loop = false;

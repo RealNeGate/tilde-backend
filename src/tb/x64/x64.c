@@ -563,15 +563,8 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 						evict_xmm(ctx, f, XMM0, i);
 					} else if (dt.type != TB_VOID) {
 						evict_gpr(ctx, f, RAX, i);
+						ctx->gpr_desc[RAX] = TB_REG_TEMP;
 					}
-					
-					// We need to reserve some registers until the function is
-					// done so we save out all the bindings and restore it right
-					// after the function call.
-					TB_Register reserved_gpr[16];
-					TB_Register reserved_xmm[16];
-					memcpy(reserved_gpr, ctx->gpr_desc, 16 * sizeof(TB_Register));
-					memcpy(reserved_xmm, ctx->xmm_desc, 16 * sizeof(TB_Register));
 					
 					// evaluate parameters
 					for (size_t j = 0; j < param_count; j++) {
@@ -593,7 +586,7 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 									  TB_F32);
 								
 								// reserve for a bit
-								ctx->xmm_desc[j] = TB_REG_MAX;
+								ctx->xmm_desc[j] = TB_REG_TEMP;
 							} else if (param.dt.type != TB_VOID) {
 								Val dst = val_gpr(param.dt.type, GPR_PARAMETERS[j]);
 								if (!is_value_gpr(&param, GPR_PARAMETERS[j])) {
@@ -601,7 +594,7 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 								}
 								
 								// reserve for a bit
-								ctx->gpr_desc[GPR_PARAMETERS[j]] = TB_REG_MAX;
+								ctx->gpr_desc[GPR_PARAMETERS[j]] = TB_REG_TEMP;
 							}
 						} else {
 							// parameter is in memory
@@ -641,10 +634,6 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
                         inst1(ctx, CALL_RM, &target_ptr);
                     }
 					
-					// Restore those saved slots
-					memcpy(reserved_gpr, ctx->gpr_desc, 16 * sizeof(TB_Register));
-					memcpy(reserved_xmm, ctx->xmm_desc, 16 * sizeof(TB_Register));
-					
 					// the return value
 					if (dt.type == TB_VOID) {
 						/* none */
@@ -670,7 +659,6 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					evict_gpr(ctx, f, RCX, i);
 					evict_gpr(ctx, f, RDI, i);
 					
-					TB_Register old_rdi_bind;
 					{
 						Val param;
 						use(ctx, f, &param, dst_reg, i);
@@ -680,12 +668,9 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 							Val dst = val_gpr(TB_PTR, RDI);
 							inst2(ctx, MOV, &dst, &param, TB_PTR);
 						}
-						
-						old_rdi_bind = ctx->gpr_desc[RDI];
-						ctx->gpr_desc[RDI] = TB_REG_MAX; // reserved it for a sec
+						ctx->gpr_desc[RDI] = TB_REG_TEMP;
 					}
 					
-					TB_Register old_rax_bind;
 					{
 						Val param;
 						use(ctx, f, &param, val_reg, i);
@@ -695,12 +680,9 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 							Val dst = val_gpr(TB_PTR, RAX);
 							inst2(ctx, MOV, &dst, &param, TB_PTR);
 						}
-						
-						old_rax_bind = ctx->gpr_desc[RAX];
-						ctx->gpr_desc[RAX] = TB_REG_MAX; // reserved it for a sec
+						ctx->gpr_desc[RAX] = TB_REG_TEMP;
 					}
 					
-					TB_Register old_rcx_bind;
 					{
 						Val param;
 						use(ctx, f, &param, size_reg, i);
@@ -710,19 +692,12 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 							Val dst = val_gpr(TB_PTR, RCX);
 							inst2(ctx, MOV, &dst, &param, TB_PTR);
 						}
-						
-						old_rcx_bind = ctx->gpr_desc[RCX];
-						ctx->gpr_desc[RCX] = TB_REG_MAX; // reserved it for a sec
+						ctx->gpr_desc[RCX] = TB_REG_TEMP;
 					}
 					
 					// rep stosb
 					emit(0xF3);
 					emit(0xAA);
-					
-					// restore GPR descriptors
-					ctx->gpr_desc[RDI] = old_rdi_bind;
-					ctx->gpr_desc[RAX] = old_rax_bind;
-					ctx->gpr_desc[RCX] = old_rcx_bind;
 					break;
 				}
 				default:
@@ -881,7 +856,11 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 			case TB_ARRAY_ACCESS: {
 				Val base, index;
 				use(ctx, f, &base, p.array_access.base, r);
-				expect_lval(&base);
+				if (base.type == VAL_MEM) {
+					assert(!base.mem.is_rvalue);
+				} else if (base.type == VAL_GPR) {
+					base = val_base_disp(TB_TYPE_PTR, base.gpr, 0);
+				} else tb_todo();
 				
 				use(ctx, f, &index, p.array_access.index, r);
 				convert_l2r(ctx, f, p.array_access.index, &index);
@@ -1524,6 +1503,8 @@ static bool evict_gpr(Ctx* ctx, TB_Function* f, GPR g, TB_Register r) {
 		// spill it
 		ctx->stack_usage = align_up(ctx->stack_usage + 8, 8);
 		Val dst = val_stack(f->nodes.dt[bound], -ctx->stack_usage);
+		dst.mem.is_rvalue = true;
+		
 		Val src = val_gpr(TB_I64, g);
 		
 		inst2(ctx, MOV, &dst, &src, TB_I64);
@@ -1597,7 +1578,7 @@ static void isel(Ctx* ctx, TB_Function* f, Val* v, const IselInfo* info,
 	bool is_promoted = dst_dt.count == 1 && (dst_dt.type == TB_I8 || dst_dt.type == TB_I16);
 	if (is_promoted) {
 		prev_dt = dst_dt;
-		dst_dt = TB_TYPE_I32(1);
+		dst_dt = TB_TYPE_I32;
 	}
 	
 	// NOTE(NeGate): The operands are ordered for this "magic"
@@ -1672,7 +1653,7 @@ static void isel_aliased(Ctx* ctx, TB_Function* f, Val* v, const IselInfo* info,
 	bool is_promoted = dst_dt.count == 1 && (dst_dt.type == TB_I8 || dst_dt.type == TB_I16);
 	if (is_promoted) {
 		prev_dt = dst_dt;
-		dst_dt = TB_TYPE_I32(1);
+		dst_dt = TB_TYPE_I32;
 	}
 	
 	bool recycle = src->type != VAL_IMM && ctx->intervals[src_reg] == dst_reg;

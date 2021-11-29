@@ -519,7 +519,10 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 						TB_DataType dt = f->nodes.dt[i];
 						load_into(ctx, f, dt, &v, i, addr_reg, TB_NULL_REG);
 						
-						def(ctx, f, v, i);
+						// Load into GPR
+						Val storage;
+						def_new_gpr(ctx, f, &storage, i, dt.type);
+						inst2(ctx, MOV, &storage, &v, dt.type);
 					}
 					break;
 				}
@@ -804,23 +807,22 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 				break;
 			}
 			case TB_INT_CONST: {
-				assert(p.i_const.hi == 0);
-				
-				if (p.i_const.lo > UINT32_MAX) {
-					// explicit mov
-					assert(dt.type == TB_I64 || dt.type == TB_PTR || dt.type == TB_I128);
-					
-					def_new_gpr(ctx, f, v, r, dt.type);
-					
-					// mov reg64, imm64
-					emit(rex(true, 0x0, v->gpr, 0));
-					emit(0xB8 + (v->gpr & 0b111));
-					emit8(p.i_const.lo);
+				int32_t imm32 = (int32_t)p.i_const;
+				if (p.i_const == imm32) {
+					// 32bit immediate case
+					*v = val_imm(dt, imm32);
 					break;
 				}
 				
-				// 32bit immediate case
-				*v = val_imm(dt, p.i_const.lo);
+				// explicit mov
+				assert(dt.type == TB_I64 || dt.type == TB_PTR);
+				
+				def_new_gpr(ctx, f, v, r, dt.type);
+				
+				// mov reg64, imm64
+				emit(rex(true, 0x0, v->gpr, 0));
+				emit(0xB8 + (v->gpr & 0b111));
+				emit8(p.i_const);
 				break;
 			}
 			case TB_FLOAT_CONST: {
@@ -1160,8 +1162,7 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 				convert_l2r(ctx, f, a_reg, &a);
 				
 				if (f->nodes.type[b_reg] == TB_INT_CONST) {
-					assert(f->nodes.payload[b_reg].i_const.hi == 0);
-					assert(f->nodes.payload[b_reg].i_const.lo < 64);
+					assert(f->nodes.payload[b_reg].i_const < 64);
 					
 					if (f->nodes.type[next] == TB_RET) {
 						// The destination is now RAX since that'll save us a move
@@ -1176,7 +1177,7 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 						}
 						
 						bool is_64bit = dt.type == TB_I64 || dt.type == TB_PTR;
-						if (f->nodes.payload[b_reg].i_const.lo == 1) {
+						if (f->nodes.payload[b_reg].i_const == 1) {
 							// lea _0, [_1 + _1]
 							emit(rex(is_64bit, dst_gpr, a.gpr, a.gpr));
 							emit(0x8D);
@@ -1186,7 +1187,7 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 							emit(rex(is_64bit, 0x00, dst_gpr, 0x00));
 							emit(dt.type == TB_I8 ? 0xC0 : 0xC1);
 							emit(mod_rx_rm(MOD_DIRECT, 0x04, dst_gpr));
-							emit(f->nodes.payload[b_reg].i_const.lo);
+							emit(f->nodes.payload[b_reg].i_const);
 						}
 						break;
 					} else {
@@ -1200,7 +1201,7 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 						emit(rex(is_64bit, 0x00, dst_gpr, 0x00));
 						emit(dt.type == TB_I8 ? 0xC0 : 0xC1);
 						emit(mod_rx_rm(MOD_DIRECT, 0x04, dst_gpr));
-						emit(f->nodes.payload[b_reg].i_const.lo);
+						emit(f->nodes.payload[b_reg].i_const);
 						break;
 					}
 				}

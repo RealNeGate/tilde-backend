@@ -145,7 +145,7 @@ typedef union TB_RegPayload {
 	// NOTE(NeGate): Shouldn't exceed 128bits for any option
 	uint32_t raw[4];
 	
-	TB_Int128 i_const;
+	uint64_t i_const;
 	double f_const;
 	TB_Register ext;
 	TB_Register trunc;
@@ -605,10 +605,10 @@ __VA_ARGS__; \
 // CONSTANT FOLDING UTILS
 //
 // TODO(NeGate): Drop i128
-TB_Int128 tb_fold_add(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b);
-TB_Int128 tb_fold_sub(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b);
-TB_Int128 tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b);
-TB_Int128 tb_fold_div(TB_DataType dt, TB_Int128 a, TB_Int128 b);
+uint64_t tb_fold_add(TB_ArithmaticBehavior ab, TB_DataType dt, uint64_t a, uint64_t b);
+uint64_t tb_fold_sub(TB_ArithmaticBehavior ab, TB_DataType dt, uint64_t a, uint64_t b);
+uint64_t tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, uint64_t a, uint64_t b);
+uint64_t tb_fold_div(TB_DataType dt, uint64_t a, uint64_t b);
 
 //
 // OPTIMIZATION FUNCTIONS

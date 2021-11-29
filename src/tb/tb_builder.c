@@ -73,87 +73,67 @@ static TB_Register tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
 	return r;
 }
 
-TB_Int128 tb_fold_add(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b) {
-	assert(a.hi == 0 && b.hi == 0);
-    if (dt.type == TB_I128) {
-		tb_todo();
-	} else {
-		uint64_t shift = 64 - (8 << (dt.type - TB_I8));
-		uint64_t mask = (~0ull) >> shift;
+uint64_t tb_fold_add(TB_ArithmaticBehavior ab, TB_DataType dt, uint64_t a, uint64_t b) {
+	uint64_t shift = 64 - (8 << (dt.type - TB_I8));
+	uint64_t mask = (~0ull) >> shift;
+	
+	uint64_t sum;
+	if (__builtin_add_overflow(a << shift, b << shift, &sum)) {
+		sum >>= shift;
 		
-		uint64_t sum;
-		if (__builtin_add_overflow(a.lo << shift, b.lo << shift, &sum)) {
-			sum >>= shift;
-			
-			if (ab == TB_CAN_WRAP) sum &= mask;
-			else if (ab == TB_SATURATED_UNSIGNED) sum = mask;
-			//else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
-		}
-		
+		if (ab == TB_CAN_WRAP) sum &= mask;
+		else if (ab == TB_SATURATED_UNSIGNED) sum = mask;
+		//else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
+	}
+	
+	sum = (sum >> shift) & mask;
+	return sum;
+}
+
+uint64_t tb_fold_sub(TB_ArithmaticBehavior ab, TB_DataType dt, uint64_t a, uint64_t b) {
+	uint64_t shift = 64 - (8 << (dt.type - TB_I8));
+	uint64_t mask = (~0ull) >> shift;
+	
+	uint64_t sum;
+	if (__builtin_sub_overflow(a << shift, b << shift, &sum)) {
 		sum = (sum >> shift) & mask;
-		return (TB_Int128) { sum }; 
+		
+		if (ab == TB_CAN_WRAP) sum &= mask;
+		else if (ab == TB_SATURATED_UNSIGNED) sum = 0;
+		//else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
+	} else {
+		sum = (sum >> shift) & mask;
 	}
+	
+	return sum;
 }
 
-TB_Int128 tb_fold_sub(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b) {
-	assert(a.hi == 0 && b.hi == 0);
-    if (dt.type == TB_I128) {
-		tb_todo();
+uint64_t tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, uint64_t a, uint64_t b) {
+	uint64_t shift = 64 - (8 << (dt.type - TB_I8));
+	uint64_t mask = (~0ull) >> shift;
+	
+	uint64_t sum;
+	if (__builtin_mul_overflow(a << shift, b << shift, &sum)) {
+		sum = (sum >> shift) & mask;
+		
+		if (ab == TB_CAN_WRAP) sum &= mask;
+		else if (ab == TB_SATURATED_UNSIGNED) sum = 0;
+		//else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
 	} else {
-		uint64_t shift = 64 - (8 << (dt.type - TB_I8));
-		uint64_t mask = (~0ull) >> shift;
-		
-		uint64_t sum;
-		if (__builtin_sub_overflow(a.lo << shift, b.lo << shift, &sum)) {
-			sum = (sum >> shift) & mask;
-			
-			if (ab == TB_CAN_WRAP) sum &= mask;
-			else if (ab == TB_SATURATED_UNSIGNED) sum = 0;
-			//else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
-		} else {
-			sum = (sum >> shift) & mask;
-		}
-		
-		return (TB_Int128) { sum }; 
+		sum = (sum >> shift) & mask;
 	}
+	
+	return sum;
 }
 
-TB_Int128 tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, TB_Int128 a, TB_Int128 b) {
-	assert(a.hi == 0 && b.hi == 0);
-    if (dt.type == TB_I128) {
-		tb_todo();
-	} else {
-		uint64_t shift = 64 - (8 << (dt.type - TB_I8));
-		uint64_t mask = (~0ull) >> shift;
-		
-		uint64_t sum;
-		if (__builtin_mul_overflow(a.lo << shift, b.lo << shift, &sum)) {
-			sum = (sum >> shift) & mask;
-			
-			if (ab == TB_CAN_WRAP) sum &= mask;
-			else if (ab == TB_SATURATED_UNSIGNED) sum = 0;
-			//else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
-		} else {
-			sum = (sum >> shift) & mask;
-		}
-		
-		return (TB_Int128) { sum }; 
-	}
-}
-
-TB_Int128 tb_fold_div(TB_DataType dt, TB_Int128 a, TB_Int128 b) {
-	assert(a.hi == 0 && b.hi == 0);
-    if (dt.type == TB_I128) {
-		tb_todo();
-	} else {
-		uint64_t shift = 64 - (8 << (dt.type - TB_I8));
-		uint64_t mask = (~0ull) >> shift;
-		
-		if (b.lo == 0) return (TB_Int128) { 0 };
-		uint64_t q = (a.lo << shift) / (b.lo << shift);
-		
-		return (TB_Int128) { (q >> shift) & mask }; 
-	}
+uint64_t tb_fold_div(TB_DataType dt, uint64_t a, uint64_t b) {
+	uint64_t shift = 64 - (8 << (dt.type - TB_I8));
+	uint64_t mask = (~0ull) >> shift;
+	
+	if (b == 0) return (uint64_t) { 0 };
+	uint64_t q = (a << shift) / (b << shift);
+	
+	return (q >> shift) & mask; 
 }
 
 // literally only used in `tb_cse_arith` i just don't wanna
@@ -216,7 +196,7 @@ static TB_Register tb_cse_arith(TB_Function* f, int type, TB_DataType dt, TB_Ari
 	}
 #endif
 #endif
-    
+	
 	TB_Register r = tb_make_reg(f, type, dt);
 	f->nodes.payload[r].i_arith.arith_behavior = arith_behavior;
 	f->nodes.payload[r].i_arith.a = a;
@@ -236,8 +216,8 @@ TB_API TB_Register tb_inst_trunc(TB_Function* f, TB_Register src, TB_DataType dt
 		}
 	}
 #endif
-    
-    TB_Register r = tb_make_reg(f, TB_TRUNCATE, dt);
+	
+	TB_Register r = tb_make_reg(f, TB_TRUNCATE, dt);
 	f->nodes.payload[r].trunc = src;
 	return r;
 }
@@ -254,14 +234,14 @@ TB_API TB_Register tb_inst_sxt(TB_Function* f, TB_Register src, TB_DataType dt) 
 		}
 	}
 #endif
-    
-    TB_Register r = tb_make_reg(f, TB_SIGN_EXT, dt);
+	
+	TB_Register r = tb_make_reg(f, TB_SIGN_EXT, dt);
 	f->nodes.payload[r].ext = src;
 	return r;
 }
 
 TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt) {
-    assert(f->current_label);
+	assert(f->current_label);
 	
 #if TB_FRONTEND_OPT
 	for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
@@ -272,7 +252,7 @@ TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt) 
 		}
 	}
 #endif
-    
+	
 	TB_Register r = tb_make_reg(f, TB_ZERO_EXT, dt);
 	f->nodes.payload[r].ext = src;
 	return r;
@@ -281,21 +261,21 @@ TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt) 
 TB_API TB_Register tb_inst_param(TB_Function* f, TB_DataType dt) {
 	TB_Register r = tb_make_reg(f, TB_PARAM, dt);
 	f->nodes.payload[r].param.id = f->parameter_count++;
-    
-    // TODO(NeGate): It's currently assuming that all pointers are 8bytes big,
-    // which is untrue for some platforms.
+	
+	// TODO(NeGate): It's currently assuming that all pointers are 8bytes big,
+	// which is untrue for some platforms.
 	int param_size = 0;
 	switch (dt.type) {
-        case TB_I8:  param_size = 1; break;
-        case TB_I16: param_size = 2; break;
-        case TB_I32: param_size = 4; break;
-        case TB_I64: param_size = 8; break;
-        case TB_F32: param_size = 4; break;
-        case TB_F64: param_size = 8; break;
-        case TB_PTR: param_size = 8; break;
-        default: break;
+		case TB_I8:  param_size = 1; break;
+		case TB_I16: param_size = 2; break;
+		case TB_I32: param_size = 4; break;
+		case TB_I64: param_size = 8; break;
+		case TB_F32: param_size = 4; break;
+		case TB_F64: param_size = 8; break;
+		case TB_PTR: param_size = 8; break;
+		default: break;
 	}
-    
+	
 	assert(param_size);
 	assert(dt.count > 0);
 	f->nodes.payload[r].param.size = param_size * dt.count;
@@ -313,7 +293,7 @@ TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line) {
 
 TB_API TB_Register tb_inst_param_addr(TB_Function* f, TB_Register param) {
 	assert(f->nodes.type[param] == TB_PARAM);
-    
+	
 	int param_size = f->nodes.payload[param].param.size;
 	
 	TB_Register r = tb_make_reg(f, TB_PARAM_ADDR, TB_TYPE_PTR);
@@ -334,7 +314,7 @@ TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr
 	assert(f->current_label);
 	
 #if TB_FRONTEND_OPT
-    for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
+	for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
 		if (f->nodes.type[i] == TB_LOAD
 			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
 			&& f->nodes.payload[i].load.address == addr
@@ -360,7 +340,7 @@ TB_API void tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_R
 
 TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) {
 	assert(f->current_label);
-    
+	
 #if TB_FRONTEND_OPT
 #if TB_HOST_ARCH == TB_HOST_X86_64
 	size_t aligned_start = ((f->current_label + 15) / 16) * 16;
@@ -397,64 +377,24 @@ TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) 
 	}
 #else
 	for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
-		if (f->nodes.type[i] == TB_LOAD
+		if (f->nodes.type[i] == TB_INT_CONST
 			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
-			&& f->nodes.payload[i].i_const.lo == imm
-			&& f->nodes.payload[i].i_const.hi == 0) {
+			&& f->nodes.payload[i].i_const == imm) {
 			return i;
 		}
 	}
 #endif
 #endif
 	
-	assert(dt.type == TB_BOOL || (dt.type >= TB_I8 && dt.type <= TB_I128));
+	assert(dt.type == TB_BOOL || (dt.type >= TB_I8 && dt.type <= TB_I64));
 	
 	uint64_t mask = (~0ull) >> (64 - (8 << (dt.type - TB_I8)));
 	((void)mask);
 	assert((imm & mask) == imm);
 	
 	TB_Register r = tb_make_reg(f, TB_INT_CONST, dt);
-	f->nodes.payload[r].i_const.hi = 0;
-	f->nodes.payload[r].i_const.lo = imm;
+	f->nodes.payload[r].i_const = imm;
 	return r;
-}
-
-TB_API TB_Register tb_inst_iconst128(TB_Function* f, TB_DataType dt, TB_Int128 imm) {
-	if (dt.type == TB_I128) {
-		TB_Register r = tb_make_reg(f, TB_INT_CONST, dt);
-		f->nodes.payload[r].i_const.lo = imm.lo;
-		f->nodes.payload[r].i_const.hi = imm.hi;
-		return r;
-	}
-	else if (dt.type == TB_I64) {
-		// Truncate
-		TB_Register r = tb_make_reg(f, TB_INT_CONST, dt);
-		f->nodes.payload[r].i_const.lo = imm.lo;
-		f->nodes.payload[r].i_const.hi = 0;
-		return r;
-	}
-	else if (dt.type == TB_I32) {
-		// Truncate
-		TB_Register r = tb_make_reg(f, TB_INT_CONST, dt);
-		f->nodes.payload[r].i_const.lo = imm.lo & 0xFFFFFFFFull;
-		f->nodes.payload[r].i_const.hi = 0;
-		return r;
-	}
-	else if (dt.type == TB_I16) {
-		// Truncate
-		TB_Register r = tb_make_reg(f, TB_INT_CONST, dt);
-		f->nodes.payload[r].i_const.lo = imm.lo & 0xFFFFull;
-		f->nodes.payload[r].i_const.hi = 0;
-		return r;
-	}
-	else if (dt.type == TB_I8) {
-		// Truncate
-		TB_Register r = tb_make_reg(f, TB_INT_CONST, dt);
-		f->nodes.payload[r].i_const.lo = imm.lo & 0xFFull;
-		f->nodes.payload[r].i_const.hi = 0;
-		return r;
-	}
-	else tb_todo();
 }
 
 TB_API TB_Register tb_inst_fconst(TB_Function* f, TB_DataType dt, double imm) {
@@ -584,14 +524,14 @@ TB_API TB_Register tb_inst_xor(TB_Function* f, TB_DataType dt, TB_Register a, TB
 TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
 	if (f->nodes.type[a] == TB_INT_CONST) tb_swap(a, b);
 	
-    TB_RegType a_type = f->nodes.type[a];
+	TB_RegType a_type = f->nodes.type[a];
 	TB_RegType b_type = f->nodes.type[b];
 	
 	if (a_type == TB_INT_CONST && b_type == TB_INT_CONST) {
-		TB_Int128 sum = tb_fold_add(arith_behavior, dt, f->nodes.payload[a].i_const, f->nodes.payload[b].i_const);
+		uint64_t sum = tb_fold_add(arith_behavior, dt, f->nodes.payload[a].i_const, f->nodes.payload[b].i_const);
 		
-		return tb_inst_iconst128(f, dt, sum);
-	} else if (b_type == TB_INT_CONST && f->nodes.payload[b].i_const.lo == 0) {
+		return tb_inst_iconst(f, dt, sum);
+	} else if (b_type == TB_INT_CONST && f->nodes.payload[b].i_const == 0) {
 		return a;
 	} else if (a_type == TB_ADD) {
 		// reassoc
@@ -599,7 +539,7 @@ TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB
 		TB_Register ab = f->nodes.payload[a].i_arith.b;
 		
 		return tb_inst_add(f, dt, aa, tb_inst_add(f, dt, ab, b, arith_behavior), arith_behavior);
-    }
+	}
 	
 	return tb_cse_arith(f, TB_ADD, dt, arith_behavior, a, b);
 }
@@ -608,22 +548,22 @@ TB_API TB_Register tb_inst_sub(TB_Function* f, TB_DataType dt, TB_Register a, TB
 	if (a == b) return tb_inst_iconst(f, dt, 0);
 	
 	if (f->nodes.type[a] == TB_INT_CONST && f->nodes.type[b] == TB_INT_CONST) {
-		TB_Int128 sum = tb_fold_sub(arith_behavior, dt, f->nodes.payload[a].i_const, f->nodes.payload[b].i_const);
+		uint64_t sum = tb_fold_sub(arith_behavior, dt, f->nodes.payload[a].i_const, f->nodes.payload[b].i_const);
 		
-		return tb_inst_iconst128(f, dt, sum);
+		return tb_inst_iconst(f, dt, sum);
 	}
 	
 	return tb_cse_arith(f, TB_SUB, dt, arith_behavior, a, b);
 }
 
 TB_API TB_Register tb_inst_mul(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
-    TB_RegType a_type = f->nodes.type[a];
+	TB_RegType a_type = f->nodes.type[a];
 	TB_RegType b_type = f->nodes.type[b];
 	
 	if (a_type == TB_INT_CONST && b_type == TB_INT_CONST) {
-		TB_Int128 sum = tb_fold_mul(arith_behavior, dt, f->nodes.payload[a].i_const, f->nodes.payload[b].i_const);
+		uint64_t sum = tb_fold_mul(arith_behavior, dt, f->nodes.payload[a].i_const, f->nodes.payload[b].i_const);
 		
-		return tb_inst_iconst128(f, dt, sum);
+		return tb_inst_iconst(f, dt, sum);
 	}
 	
 	return tb_cse_arith(f, TB_MUL, dt, arith_behavior, a, b);
@@ -634,29 +574,29 @@ TB_API TB_Register tb_inst_div(TB_Function* f, TB_DataType dt, TB_Register a, TB
 	TB_RegType b_type = f->nodes.type[b];
 	
 	if (a_type == TB_INT_CONST && b_type == TB_INT_CONST) {
-		TB_Int128 sum = tb_fold_div(dt, f->nodes.payload[a].i_const, f->nodes.payload[b].i_const);
+		uint64_t sum = tb_fold_div(dt, f->nodes.payload[a].i_const, f->nodes.payload[b].i_const);
 		
-		return tb_inst_iconst128(f, dt, sum);
+		return tb_inst_iconst(f, dt, sum);
 	}
 	
 	// division can't wrap or overflow
-    return tb_cse_arith(f, signedness ? TB_SDIV : TB_UDIV, dt, TB_ASSUME_NUW, a, b);
+	return tb_cse_arith(f, signedness ? TB_SDIV : TB_UDIV, dt, TB_ASSUME_NUW, a, b);
 }
 
 TB_API TB_Register tb_inst_shl(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
-    return tb_cse_arith(f, TB_SHL, dt, arith_behavior, a, b);
+	return tb_cse_arith(f, TB_SHL, dt, arith_behavior, a, b);
 }
 
 // TODO(NeGate): Maybe i should split the bitshift operations into a separate kind of
 // operator that has different arithmatic behaviors, maybe like trap on a large shift amount
 TB_API TB_Register tb_inst_sar(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-    // shift right can't wrap or overflow
-    return tb_cse_arith(f, TB_SAR, dt, TB_ASSUME_NUW, a, b);
+	// shift right can't wrap or overflow
+	return tb_cse_arith(f, TB_SAR, dt, TB_ASSUME_NUW, a, b);
 }
 
 TB_API TB_Register tb_inst_shr(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-    // shift right can't wrap or overflow
-    return tb_cse_arith(f, TB_SHR, dt, TB_ASSUME_NUW, a, b);
+	// shift right can't wrap or overflow
+	return tb_cse_arith(f, TB_SHR, dt, TB_ASSUME_NUW, a, b);
 }
 
 TB_API TB_Register tb_inst_fadd(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
@@ -820,29 +760,29 @@ TB_API TB_Register tb_inst_label(TB_Function* f, TB_Label id) {
 	f->nodes.payload[r].label.id = id;
 	f->nodes.payload[r].label.terminator = TB_NULL_REG;
 	f->nodes.payload[r].label.is_loop = false;
-    
+	
 	if (f->current_label) {
 		f->nodes.payload[f->current_label].label.terminator = r;
 	}
-    
+	
 	f->current_label = r;
 	return r;
 }
 
 TB_API void tb_inst_goto(TB_Function* f, TB_Label id) {
-    if (f->current_label == TB_NULL_REG) {
-        // Was placed after a terminator instruction,
-        // just omit this to avoid any issues it's not
-        // a big deal for example:
-        // RET x
-        // ~~GOTO .L5~~
-        // .L4:
-        return;
-    }
-    
+	if (f->current_label == TB_NULL_REG) {
+		// Was placed after a terminator instruction,
+		// just omit this to avoid any issues it's not
+		// a big deal for example:
+		// RET x
+		// ~~GOTO .L5~~
+		// .L4:
+		return;
+	}
+	
 	TB_Register r = tb_make_reg(f, TB_GOTO, TB_TYPE_VOID);
 	f->nodes.payload[r].goto_.label = id;
-    
+	
 	assert(f->current_label);
 	f->nodes.payload[f->current_label].label.terminator = r;
 	f->current_label = TB_NULL_REG;
@@ -853,7 +793,7 @@ TB_API TB_Register tb_inst_if(TB_Function* f, TB_Register cond, TB_Label if_true
 	f->nodes.payload[r].if_.cond = cond;
 	f->nodes.payload[r].if_.if_true = if_true;
 	f->nodes.payload[r].if_.if_false = if_false;
-    
+	
 	assert(f->current_label);
 	f->nodes.payload[f->current_label].label.terminator = r;
 	f->current_label = TB_NULL_REG;
@@ -890,7 +830,7 @@ TB_API void tb_inst_switch(TB_Function* f, TB_DataType dt, TB_Register key, TB_L
 TB_API void tb_inst_ret(TB_Function* f, TB_DataType dt, TB_Register value) {
 	TB_Register r = tb_make_reg(f, TB_RET, dt);
 	f->nodes.payload[r].ret.value = value;
-    
+	
 	assert(f->current_label);
 	f->nodes.payload[f->current_label].label.terminator = r;
 	f->current_label = TB_NULL_REG;
@@ -903,7 +843,7 @@ void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, siz
 		m->label_symbols.capacity *= 2;
 		m->label_symbols.data = realloc(m->label_symbols.data, m->label_symbols.capacity * sizeof(TB_ConstPool32Patch));
 	}
-    
+	
 	size_t r = m->label_symbols.count++;
 	m->label_symbols.data[r] = (TB_LabelSymbol){
 		.func_id = func_id,
@@ -919,7 +859,7 @@ uint32_t tb_emit_const32_patch(TB_Module* m, uint32_t func_id, size_t pos, uint3
 		m->const32_patches.capacity *= 2;
 		m->const32_patches.data = realloc(m->const32_patches.data, m->const32_patches.capacity * sizeof(TB_ConstPool32Patch));
 	}
-    
+	
 	size_t r = m->const32_patches.count++;
 	m->const32_patches.data[r] = (TB_ConstPool32Patch){
 		.func_id = func_id,

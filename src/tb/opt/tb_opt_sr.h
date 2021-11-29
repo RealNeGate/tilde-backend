@@ -8,11 +8,10 @@ bool tb_opt_strength_reduction(TB_Function* f) {
 			TB_DataType dt = f->nodes.dt[i];
 			
 			if (f->nodes.type[b] == TB_INT_CONST) {
-				TB_Int128 b_const = f->nodes.payload[b].i_const;
-				assert(b_const.hi == 0);
+				uint64_t b_const = f->nodes.payload[b].i_const;
 				
-				int log2 = __builtin_ffs(b_const.lo) - 1;
-				if (b_const.lo == (1 << log2)) {
+				int log2 = __builtin_ffs(b_const) - 1;
+				if (b_const == (1 << log2)) {
 					// It's a power of two, swap in a left-shift
 					TB_Register new_op = i - 1;
 					tb_insert_op(f, new_op);
@@ -20,7 +19,7 @@ bool tb_opt_strength_reduction(TB_Function* f) {
 					f->nodes.type[new_op] = TB_INT_CONST;
 					f->nodes.dt[new_op] = dt;
 					f->nodes.payload[new_op] = (TB_RegPayload){
-						.i_const.lo = log2
+						.i_const = log2
 					};
 					
 					// shift over `i` because it's infront of the insertion

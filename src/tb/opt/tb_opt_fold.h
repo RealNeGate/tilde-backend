@@ -63,10 +63,10 @@ bool tb_opt_fold(TB_Function* f) {
 			f->nodes.type[i] <= TB_SDIV &&
 			f->nodes.type[a] == TB_INT_CONST &&
 			f->nodes.type[b] == TB_INT_CONST) {
-			TB_Int128 ai = f->nodes.payload[a].i_const;
-			TB_Int128 bi = f->nodes.payload[b].i_const;
+			uint64_t ai = f->nodes.payload[a].i_const;
+			uint64_t bi = f->nodes.payload[b].i_const;
 			
-			TB_Int128 result;
+			uint64_t result;
 			switch (f->nodes.type[i]) {
 				case TB_ADD:
 				result = tb_fold_add(ab, dt, ai, bi);

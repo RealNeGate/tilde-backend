@@ -82,10 +82,9 @@ bool tb_opt_canonicalize(TB_Function* f) {
 			TB_Register index = f->nodes.payload[i].array_access.index;
 			
 			if (f->nodes.type[index] == TB_INT_CONST) {
-				TB_Int128 index_imm = f->nodes.payload[index].i_const;
-				assert(index_imm.hi == 0);
+				uint64_t index_imm = f->nodes.payload[index].i_const;
 				
-				if (index_imm.lo == 0) {
+				if (index_imm == 0) {
 					f->nodes.type[i] = TB_PASS;
 					f->nodes.payload[i].pass = base;
 					changes++;

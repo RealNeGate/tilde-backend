@@ -590,13 +590,7 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
             case TB_INT_CONST:
 			fprintf(out, "  r%u\t=\t", i);
 			tb_print_type(out, dt);
-            
-			if (p.i_const.hi) {
-				fprintf(out, " %" PRIx64 "%" PRIx64 "\n", p.i_const.hi, p.i_const.lo);
-			}
-			else {
-				fprintf(out, " %" PRIu64 "\n", p.i_const.lo);
-			}
+			fprintf(out, " %" PRIu64 "\n", p.i_const);
 			break;
 			case TB_LINE_INFO:
 			//fprintf(out, "  # LOC %s:%d\n", f->module->files.data[p.line_info.file].path, p.line_info.line);

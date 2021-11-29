@@ -537,7 +537,7 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					// Desugar booleans into bytes
 					if (dt.type == TB_BOOL) dt.type = TB_I8;
 					
-					if (address.mem.is_rvalue) {
+					if (address.type == VAL_MEM && address.mem.is_rvalue) {
 						// deref
 						Val new_v;
 						def_new_gpr(ctx, f, &new_v, i, TB_PTR);
@@ -545,7 +545,10 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 						
 						address = val_base_disp(dt, new_v.gpr, 0);
 					}
-					
+					else if (address.type == VAL_GPR) {
+						address = val_base_disp(TB_TYPE_PTR, address.gpr, 0);
+					}
+
 					store_into(ctx, f, dt, &address, i, addr_reg, val_reg);
 					break;
 				}
@@ -868,7 +871,14 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 				Val base, index;
 				use(ctx, f, &base, p.array_access.base, r);
 				if (base.type == VAL_MEM) {
-					assert(!base.mem.is_rvalue);
+					if (base.mem.is_rvalue) {
+						Val new_val = base;
+
+						def_new_gpr(ctx, f, &new_val, r, TB_PTR);
+						inst2(ctx, MOV, &new_val, &base, TB_PTR);
+
+						base = val_base_disp(TB_TYPE_PTR, new_val.gpr, 0);
+					}
 				} else if (base.type == VAL_GPR) {
 					base = val_base_disp(TB_TYPE_PTR, base.gpr, 0);
 				} else tb_todo();
@@ -949,10 +959,20 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 			case TB_MEMBER_ACCESS: {
 				use(ctx, f, v, p.member_access.base, r);
 				
+				// TODO(NeGate): Refactor this bs
 				int32_t offset = p.member_access.offset;
 				if (v->type == VAL_MEM) {
-					assert(!v->mem.is_rvalue);
-					v->mem.disp += offset;
+					if (v->mem.is_rvalue) {
+						Val addr = *v;
+
+						def_new_gpr(ctx, f, v, r, TB_PTR);
+						inst2(ctx, MOV, v, &addr, TB_PTR);
+
+						*v = val_base_disp(TB_TYPE_PTR, v->gpr, offset);
+					}
+					else {
+						v->mem.disp += offset;
+					}
 				} else if (v->type == VAL_GPR) {
 					*v = val_base_disp(TB_TYPE_PTR, v->gpr, offset);
 				} else tb_todo();

@@ -2,9 +2,6 @@
 bool tb_opt_load_elim(TB_Function* f) {
 	int changes = 0;
 	
-	tb_function_print(f, stdout);
-	printf("\n\n\n");
-	
 	loop(i, f->nodes.count) {
 		if (f->nodes.type[i] != TB_LOAD) continue;
 		
@@ -68,6 +65,15 @@ bool tb_opt_fold(TB_Function* f) {
 			
 			uint64_t result;
 			switch (f->nodes.type[i]) {
+				case TB_AND:
+				result = ai & bi;
+				break;
+				case TB_XOR:
+				result = ai ^ bi;
+				break;
+				case TB_OR:
+				result = ai | bi;
+				break;
 				case TB_ADD:
 				result = tb_fold_add(ab, dt, ai, bi);
 				break;
@@ -78,6 +84,9 @@ bool tb_opt_fold(TB_Function* f) {
 				result = tb_fold_mul(ab, dt, ai, bi);
 				break;
 				case TB_UDIV:
+				result = tb_fold_div(dt, ai, bi);
+				break;
+				case TB_SDIV:
 				result = tb_fold_div(dt, ai, bi);
 				break;
 				default: 

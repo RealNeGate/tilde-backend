@@ -45,8 +45,7 @@ inline static void inst2(Ctx* ctx, int op, const Val* a, const Val* b, int dt_ty
 	const Inst2* inst = &inst2_tbl[op];
 	
 	bool dir = b->type == VAL_MEM;
-	if (dir) tb_swap(a, b);
-	//  || inst->op == 0xAF
+	if (dir || inst->op == 0xAF) tb_swap(a, b);
 	
 	// operand size
 	uint8_t sz = (dt_type != TB_I8);

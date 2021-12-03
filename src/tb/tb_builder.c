@@ -34,6 +34,10 @@ TB_API bool tb_node_is_terminator(TB_Function* f, TB_Register r) {
 		f->nodes.type[r] == TB_LABEL;
 }
 
+TB_API bool tb_node_is_label(TB_Function* f, TB_Register r) {
+	return f->nodes.type[r] == TB_LABEL;
+}
+
 TB_API TB_Register tb_node_get_last_register(TB_Function* f) {
 	return f->nodes.count - 1;
 }
@@ -386,7 +390,7 @@ TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) 
 #endif
 #endif
 	
-	assert(dt.type == TB_BOOL || (dt.type >= TB_I8 && dt.type <= TB_I64));
+	assert(dt.type == TB_BOOL || dt.type == TB_PTR || (dt.type >= TB_I8 && dt.type <= TB_I64));
 	
 	uint64_t mask = (~0ull) >> (64 - (8 << (dt.type - TB_I8)));
 	((void)mask);
@@ -415,6 +419,18 @@ TB_API TB_Register tb_inst_member_access(TB_Function* f, TB_Register base, int32
 	TB_Register r = tb_make_reg(f, TB_MEMBER_ACCESS, TB_TYPE_PTR);
 	f->nodes.payload[r].member_access.base = base;
 	f->nodes.payload[r].member_access.offset = offset;
+	return r;
+}
+
+TB_API TB_Register tb_inst_get_func_address(TB_Function* f, const TB_Function* target) {
+	TB_Register r = tb_make_reg(f, TB_FUNC_ADDRESS, TB_TYPE_PTR);
+	f->nodes.payload[r].func_addr = target;
+	return r;
+}
+
+TB_API TB_Register tb_inst_get_extern_address(TB_Function* f, TB_ExternalID target) {
+	TB_Register r = tb_make_reg(f, TB_EFUNC_ADDRESS, TB_TYPE_PTR);
+	f->nodes.payload[r].efunc_addr = target;
 	return r;
 }
 
@@ -643,64 +659,32 @@ TB_API TB_Register tb_inst_cmp_ne(TB_Function* f, TB_DataType dt, TB_Register a,
 	return r;
 }
 
-TB_API TB_Register tb_inst_cmp_slt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_SLT, TB_TYPE_BOOL);
+TB_API TB_Register tb_inst_cmp_ilt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness) {
+	TB_Register r = tb_make_reg(f, signedness ? TB_CMP_SLT : TB_CMP_ULT, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = a;
 	f->nodes.payload[r].cmp.b = b;
 	f->nodes.payload[r].cmp.dt = dt;
 	return r;
 }
 
-TB_API TB_Register tb_inst_cmp_sle(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_SLE, TB_TYPE_BOOL);
+TB_API TB_Register tb_inst_cmp_ile(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness) {
+	TB_Register r = tb_make_reg(f, signedness ? TB_CMP_SLE : TB_CMP_ULE, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = a;
 	f->nodes.payload[r].cmp.b = b;
 	f->nodes.payload[r].cmp.dt = dt;
 	return r;
 }
 
-TB_API TB_Register tb_inst_cmp_sgt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_SLT, TB_TYPE_BOOL);
+TB_API TB_Register tb_inst_cmp_igt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness) {
+	TB_Register r = tb_make_reg(f, signedness ? TB_CMP_SLT : TB_CMP_ULT, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = b;
 	f->nodes.payload[r].cmp.b = a;
 	f->nodes.payload[r].cmp.dt = dt;
 	return r;
 }
 
-TB_API TB_Register tb_inst_cmp_sge(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_SLE, TB_TYPE_BOOL);
-	f->nodes.payload[r].cmp.a = b;
-	f->nodes.payload[r].cmp.b = a;
-	f->nodes.payload[r].cmp.dt = dt;
-	return r;
-}
-
-TB_API TB_Register tb_inst_cmp_ult(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_ULT, TB_TYPE_BOOL);
-	f->nodes.payload[r].cmp.a = a;
-	f->nodes.payload[r].cmp.b = b;
-	f->nodes.payload[r].cmp.dt = dt;
-	return r;
-}
-
-TB_API TB_Register tb_inst_cmp_ule(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_ULE, TB_TYPE_BOOL);
-	f->nodes.payload[r].cmp.a = a;
-	f->nodes.payload[r].cmp.b = b;
-	f->nodes.payload[r].cmp.dt = dt;
-	return r;
-}
-
-TB_API TB_Register tb_inst_cmp_ugt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_ULT, TB_TYPE_BOOL);
-	f->nodes.payload[r].cmp.a = b;
-	f->nodes.payload[r].cmp.b = a;
-	f->nodes.payload[r].cmp.dt = dt;
-	return r;
-}
-
-TB_API TB_Register tb_inst_cmp_uge(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_CMP_ULE, TB_TYPE_BOOL);
+TB_API TB_Register tb_inst_cmp_ige(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness) {
+	TB_Register r = tb_make_reg(f, signedness ? TB_CMP_SLE : TB_CMP_ULE, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = b;
 	f->nodes.payload[r].cmp.b = a;
 	f->nodes.payload[r].cmp.dt = dt;

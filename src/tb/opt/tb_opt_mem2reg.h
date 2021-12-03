@@ -1,165 +1,239 @@
 
-static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_DataType* dst_dt);
+static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address);
 static TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count);
-static bool tb_mem2reg_single_reg(TB_Function* f, TB_TemporaryStorage* tls, int label_count, TB_Register address, TB_Register initial_value);
-static TB_Register tb_walk_for_intermediate_phi(TB_Function* f, TB_Label label_count, TB_Label l, TB_Register* first_revision, TB_Register* last_revision, TB_Label** preds, int* pred_count);
+static TB_Register tb_walk_for_intermediate_phi(TB_Function* f,
+												TB_Label label_count,
+												TB_Label l,
+												TB_Register first_revision[restrict label_count],
+												TB_Register last_revision[restrict label_count],
+												TB_Label* preds[restrict label_count],
+												int pred_count[restrict label_count]);
 
-bool tb_opt_mem2reg(TB_Function* f) {
+bool tb_opt_hoist_locals(TB_Function* f) {
 	int changes = 0;
-	TB_TemporaryStorage* tls = tb_tls_allocate();
 	
-	int label_count = 0;
-	for (TB_Register i = 1; i < f->nodes.count; i++) {
-		if (f->nodes.type[i] == TB_LABEL) label_count++;
-	}
+	TB_Register entry_terminator = f->nodes.payload[1].label.terminator;
 	
-	for (TB_Register i = 1; i < f->nodes.count; i++) {
-		if (f->nodes.type[i] == TB_LOCAL || f->nodes.type[i] == TB_PARAM_ADDR) {
-			// Make sure that the stack slots are coherent
-			TB_DataType initial_dt;
-			if (!tb_is_stack_slot_coherent(f, i, &initial_dt)) continue;
+	for (TB_Register i = entry_terminator; i < f->nodes.count; i++) {
+		if (f->nodes.type[i] == TB_LOCAL) {
+			// move to the entry block
+			// try replacing a NOP
+			TB_Register new_reg = TB_NULL_REG;
 			
-			TB_Register initial_val = TB_NULL_REG;
-			if (f->nodes.type[i] == TB_PARAM_ADDR) {
-				initial_val = f->nodes.payload[i].param_addr.param;
+			for (TB_Register j = 1; i < entry_terminator; j++) {
+				if (f->nodes.type[j] == TB_NULL) {
+					new_reg = j;
+					break;
+				}
 			}
 			
-			tls->used = 0;
-			changes += tb_mem2reg_single_reg(f, tls, label_count, i, initial_val);
+			if (!new_reg) {
+				// Insert new node
+				new_reg = entry_terminator;
+				tb_insert_op(f, entry_terminator);
+				
+				// account for the insertion
+				entry_terminator++;
+				i++;
+			}
 			
-			//tb_function_print(f);
+			f->nodes.dt[new_reg] = f->nodes.dt[i];
+			f->nodes.type[new_reg] = f->nodes.type[i];
+			f->nodes.payload[new_reg] = f->nodes.payload[i];
+			
+			tb_kill_op(f, i);
+			tb_function_find_replace_reg(f, i, new_reg);
+			changes++;
 		}
 	}
 	
 	return changes;
 }
 
-// NOTE(NeGate): a stack slot is coherent when all loads and stores share
-// the same type and properties.
-static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_DataType* dst_dt) {
-	bool initialized = false;
-	TB_DataType dt;
+// NOTE(NeGate): All locals were moved into the first basic block by
+// opt_hoist_locals earlier
+bool tb_opt_mem2reg(TB_Function* f) {
+	TB_TemporaryStorage* tls = tb_tls_allocate();
 	
-	// pick the first load/store and use that as the baseline
-	for (TB_Register i = address; i < f->nodes.count; i++) {
-		if (f->nodes.type[i] == TB_LOAD && f->nodes.payload[i].load.address == address) {
-			if (!initialized) dt = f->nodes.dt[i];
-			else if (TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[i])) return false;
-		} else if (f->nodes.type[i] == TB_STORE && f->nodes.payload[i].store.address == address) {
-			if (!initialized) dt = f->nodes.dt[i];
-			else if (TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[i])) return false;
-		} else if (f->nodes.type[i] == TB_MEMSET && f->nodes.payload[i].mem_op.dst == address) {
-			return false;
+	size_t to_promote_count = 0;
+	TB_Register* to_promote = tb_tls_push(tls, 0);
+	
+	TB_Register entry_terminator = f->nodes.payload[1].label.terminator;
+	loop_range(i, 1, entry_terminator) {
+		if (f->nodes.type[i] == TB_LOCAL || f->nodes.type[i] == TB_PARAM_ADDR) {
+			if (tb_is_stack_slot_coherent(f, i)) {
+				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = i;
+				to_promote_count++;
+			}
 		}
 	}
 	
-	assert(dst_dt);
-	*dst_dt = dt;
-	return true;
-}
-
-// TODO(NeGate): Optimize this for speed...
-static bool tb_mem2reg_single_reg(TB_Function* f, TB_TemporaryStorage* tls, int label_count, TB_Register address, TB_Register initial_value) {
-	// Perform local value numbering on all basic blocks
+	if (to_promote_count == 0) {
+		// doesn't need to mem2reg
+		return false;
+	}
+	
+	int label_count = f->label_count;
 	TB_Register* first_revision = tb_tls_push(tls, label_count * sizeof(TB_Register));
 	TB_Register* last_revision = tb_tls_push(tls, label_count * sizeof(TB_Register));
-	memset(first_revision, 0, label_count * sizeof(TB_Register));
-	memset(last_revision, 0, label_count * sizeof(TB_Register));
 	
-	int changes = 0;
-	TB_Label current_label = 0;
-	TB_Register latest = initial_value;
-	for (TB_Register i = 1; i < f->nodes.count; i++) {
-		if (f->nodes.type[i] == TB_LABEL) {
-			current_label = f->nodes.payload[i].label.id;
-			
-			first_revision[current_label] = initial_value;
-			last_revision[current_label] = initial_value;
-			initial_value = 0;
-		} else if (f->nodes.type[i] == TB_LOAD && f->nodes.payload[i].load.address == address) {
-			if (first_revision[current_label] == 0) first_revision[current_label] = i;
-			
-			// convert to internal pass
-			f->nodes.type[i] = TB_PASS;
-			f->nodes.payload[i].pass = latest;
-			changes++;
-		} else if (f->nodes.type[i] == TB_STORE && f->nodes.payload[i].store.address == address) {
-			last_revision[current_label] = latest = f->nodes.payload[i].store.value;
-			
-			// kill store
-			tb_kill_op(f, i);
-			changes++;
-		}
-	}
-	
-	// Early out: if the local is not changed then we don't need PHI nodes
-	bool immutable = true;
-	for (size_t i = 0; i < label_count; i++) {
-		if (last_revision[i]) {
-			immutable = false;
-			break;
-		}
-	}
-	
-	if (immutable) return changes;
-	
-	// Calculate all the immediate predecessors, we'll be using them
-	// to fill in the PHI nodes
 	int* pred_count = tb_tls_push(tls, label_count * sizeof(int));
 	TB_Label** preds = tb_tls_push(tls, label_count * sizeof(TB_Label*));
 	
-	// First basic block has no predecessors
-	pred_count[0] = 0;
-	preds[0] = NULL;
-	
-	for (TB_Label i = 1; i < label_count; i++) {
-		preds[i] = (TB_Label*)&tls->data[tls->used];
-		tb_calculate_immediate_predeccessors(f, tls, i, &pred_count[i]);
+	loop(i, to_promote_count) {
+		size_t saved = tls->used;
+		TB_Register address = to_promote[i];
+		
+		memset(first_revision, 0, label_count * sizeof(TB_Register));
+		memset(last_revision, 0, label_count * sizeof(TB_Register));
+		
+		TB_Register initial_value = TB_NULL_REG;
+		if (f->nodes.type[address] == TB_PARAM_ADDR) {
+			initial_value = f->nodes.payload[address].param_addr.param;
+		}
+		
+		//
+		// Perform local value numbering on all basic blocks
+		//
+		TB_Register latest = initial_value;
+		TB_Label current_label = 0;
+		loop(j, f->nodes.count) {
+			TB_RegType reg_type = f->nodes.type[j];
+			TB_RegPayload p = f->nodes.payload[j];
+			
+			if (reg_type == TB_LABEL) {
+				current_label = p.label.id;
+				
+				first_revision[current_label] = initial_value;
+				last_revision[current_label] = initial_value;
+				initial_value = 0;
+			} else if (reg_type == TB_LOAD && p.load.address == address) {
+				if (first_revision[current_label] == 0) {
+					first_revision[current_label] = j;
+				}
+				
+				// convert to internal pass
+				f->nodes.type[j] = TB_PASS;
+				f->nodes.payload[j] = (TB_RegPayload) { .pass = latest };
+			} else if (reg_type == TB_STORE && p.store.address == address) {
+				last_revision[current_label] = latest = p.store.value;
+				
+				// kill store
+				tb_kill_op(f, j);
+			}
+		}
+		
+		// Early out: if the local is not changed then we don't need PHI nodes
+		bool immutable = true;
+		loop(j, label_count) if (first_revision[j] != last_revision[j]) {
+			immutable = false;
+			break;
+		}
+		
+		if (immutable) continue;
+		
+		//
+		// Calculate all the immediate predecessors
+		// First BB has no predecessors
+		//
+		pred_count[0] = 0;
+		preds[0] = NULL;
+		
+		loop_range(j, 1, label_count) {
+			preds[j] = (TB_Label*)tb_tls_push(tls, 0);
+			tb_calculate_immediate_predeccessors(f, tls, j, &pred_count[j]);
+		}
+		
+		//
+		// Insert PHI nodes
+		//
+		// this is done by finding all BBs which disagree
+		// on the last_revision
+		//
+		loop_range(j, 1, label_count) if (first_revision[j]) {
+			tb_walk_for_intermediate_phi(f, label_count, j, first_revision, last_revision, preds, pred_count);
+		}
+		
+		tls->used = saved;
 	}
 	
-	// Insert intermediate PHI nodes
-	//
-	// success means it inserts a PHI node, if don't make any
-	// more changes it's complete
-	for (TB_Label i = 1; i < label_count; i++) {
-		if (first_revision[i] == 0) continue;
+	return true;
+}
+
+static TB_Register tb_walk_for_intermediate_phi(TB_Function* f,
+												TB_Label label_count,
+												TB_Label l,
+												TB_Register first_revision[restrict label_count],
+												TB_Register last_revision[restrict label_count],
+												TB_Label* preds[restrict label_count],
+												int pred_count[restrict label_count]) {
+	if (pred_count[l] == 0) return last_revision[l];
+	
+	int first = preds[l][0];
+	bool agree = true;
+	loop_range(k, 1, pred_count[l]) if (first != preds[l][k]) {
+		agree = false;
+		break;
+	}
+	
+	if (agree && last_revision[l]) return last_revision[l];
+	
+	if (pred_count[l] == 1) {
+		TB_Register a = tb_walk_for_intermediate_phi(f, label_count, preds[l][0], first_revision, last_revision, preds, pred_count);
 		
-		// TODO(NeGate): There's probably smarter ways than crap loads of recursion... :P
-		for (int j = 0; j < pred_count[i]; j++) {
-			tb_walk_for_intermediate_phi(f, label_count, preds[i][j], first_revision, last_revision, preds, pred_count);
+		last_revision[l] = a;
+		return a;
+	}
+	
+	// TODO(NeGate): Implement phi with n-parameters
+	assert(pred_count[l] == 2);
+	
+	// Insert intermediate node
+	TB_Register label_reg = tb_find_reg_from_label(f, l);
+	
+	TB_Register new_phi_reg = label_reg + 1;
+	tb_insert_op(f, new_phi_reg);
+	
+	// Update the first and last revisions
+	loop(k, label_count) {
+		if (first_revision[k] + 1 >= new_phi_reg) first_revision[k]++;
+		if ( last_revision[k] + 1 >= new_phi_reg)  last_revision[k]++;
+	}
+	
+	first_revision[l] = new_phi_reg;
+	
+	// TODO(NeGate): This is to force any loops to early out
+	int saved_pred_count = pred_count[l];
+	pred_count[l] = 0;
+	
+	// add phi node
+	TB_Register a = tb_walk_for_intermediate_phi(f, label_count, preds[l][0], first_revision, last_revision, preds, pred_count);
+	TB_Register b = tb_walk_for_intermediate_phi(f, label_count, preds[l][1], first_revision, last_revision, preds, pred_count);
+	
+	f->nodes.type[new_phi_reg] = TB_PHI2;
+	f->nodes.dt[new_phi_reg] = f->nodes.dt[a];
+	f->nodes.payload[new_phi_reg] = (TB_RegPayload){
+		.phi2 = {
+			.a_label = tb_find_reg_from_label(f, preds[l][0]),
+			.a = a,
+			.b_label = tb_find_reg_from_label(f, preds[l][1]),
+			.b = b
+		}
+	};
+	
+	last_revision[l] = new_phi_reg;
+	pred_count[l] = saved_pred_count;
+	
+	// Any PASSes which used the PHI node's inputs should be converted
+	// to PASSes to said PHI node
+	//TB_Register terminator = f->nodes.payload[label_reg].label.terminator;
+	loop_range(i, 1, f->nodes.count) {
+		if (f->nodes.type[i] == TB_PASS && (f->nodes.payload[i].pass == a || f->nodes.payload[i].pass == b)) {
+			f->nodes.payload[i].pass = new_phi_reg;
 		}
 	}
 	
-	// Stitch the basic block revisions together
-	for (TB_Label i = 1; i < label_count; i++) {
-		if (first_revision[i] == 0) continue;
-		
-		size_t tls_saved = tls->used;
-		
-		// PHI2+ should have been handled by the intermediate PHI node insertion
-		if (pred_count[i] == 1) {
-			TB_Label pred_label = preds[i][0];
-			TB_Register pred_label_reg = tb_find_reg_from_label(f, pred_label);
-			TB_Register last_rev_in_pred = last_revision[pred_label];
-			
-			TB_Register first_rev_in_bb = first_revision[i];
-			
-			// TODO(NeGate): If this is 0, then we need to insert a
-			// PHI node in the predecessor going up the chain
-			assert(last_rev_in_pred != 0);
-			
-			// promote pass into PHI1
-			assert(f->nodes.type[first_rev_in_bb] == TB_PASS);
-			f->nodes.type[first_rev_in_bb] = TB_PHI1;
-			f->nodes.payload[first_rev_in_bb].phi1.a = last_rev_in_pred;
-			f->nodes.payload[first_rev_in_bb].phi1.a_label = pred_label_reg;
-			changes++;
-		}
-		
-		tls->used = tls_saved;
-	}
-	
-	return changes;
+	return new_phi_reg;
 }
 
 static TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count) {
@@ -203,65 +277,28 @@ static TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_Tempora
 	return preds;
 }
 
-static TB_Register tb_walk_for_intermediate_phi(TB_Function* f, TB_Label label_count, TB_Label l, TB_Register* first_revision, TB_Register* last_revision, TB_Label** preds, int* pred_count) {
-	TB_Register last_rev_in_pred = last_revision[l];
-	if (last_rev_in_pred) return last_rev_in_pred;
+// NOTE(NeGate): a stack slot is coherent when all loads and stores share
+// the same type and properties.
+static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address) {
+	bool initialized = false;
+	TB_DataType dt;
 	
-	// Insert intermediate node
-	TB_Register label_reg = tb_find_reg_from_label(f, l);
-	
-	TB_Register new_phi_reg = label_reg + 1;
-	tb_insert_op(f, new_phi_reg);
-	
-	// Update the first and last revisions
-	for (int i = 0; i < label_count; i++) {
-		if (first_revision[i] + 1 >= new_phi_reg) first_revision[i]++;
-		if (last_revision[i] + 1 >= new_phi_reg) last_revision[i]++;
-	}
-	
-	last_revision[l] = new_phi_reg;
-	
-	// Insert intermediate phi nodes
-	TB_Register a = TB_NULL_REG;
-	TB_Register b = TB_NULL_REG;
-	if (pred_count[l] == 1) {
-		a = tb_walk_for_intermediate_phi(f, label_count, preds[l][0], first_revision, last_revision, preds, pred_count);
-		
-		f->nodes.type[new_phi_reg] = TB_PHI1;
-		// They should both match so it doesn't matter
-		f->nodes.dt[new_phi_reg] = f->nodes.dt[a];
-		f->nodes.payload[new_phi_reg] = (TB_RegPayload){
-			.phi1 = {
-				.a_label = tb_find_reg_from_label(f, preds[l][0]),
-				.a = a
-			}
-		};
-	} else if (pred_count[l] == 2) {
-		a = tb_walk_for_intermediate_phi(f, label_count, preds[l][0], first_revision, last_revision, preds, pred_count);
-		b = tb_walk_for_intermediate_phi(f, label_count, preds[l][1], first_revision, last_revision, preds, pred_count);
-		
-		f->nodes.type[new_phi_reg] = TB_PHI2;
-		// They should both match so it doesn't matter
-		f->nodes.dt[new_phi_reg] = f->nodes.dt[a];
-		f->nodes.payload[new_phi_reg] = (TB_RegPayload){
-			.phi2 = {
-				.a_label = tb_find_reg_from_label(f, preds[l][0]),
-				.a = a,
-				.b_label = tb_find_reg_from_label(f, preds[l][1]),
-				.b = b
-			}
-		};
-	} else tb_todo();
-	
-	// Any PASSes which used the PHI node's inputs should be converted
-	// to PASSes to said PHI node
-	TB_Register terminator = f->nodes.payload[label_reg].label.terminator;
-	for (TB_Register i = label_reg + 1; i < terminator; i++) {
-		if (f->nodes.type[i] == TB_PASS && (f->nodes.payload[i].pass == a || f->nodes.payload[i].pass == b)) {
-			f->nodes.payload[i].pass = new_phi_reg;
+	// pick the first load/store and use that as the baseline
+	for (TB_Register i = address; i < f->nodes.count; i++) {
+		if (f->nodes.type[i] == TB_LOAD && f->nodes.payload[i].load.address == address) {
+			if (!initialized) dt = f->nodes.dt[i];
+			else if (TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[i])) return false;
+		} else if (f->nodes.type[i] == TB_STORE && f->nodes.payload[i].store.address == address) {
+			if (!initialized) dt = f->nodes.dt[i];
+			else if (TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[i])) return false;
+		} else if (f->nodes.type[i] == TB_MEMSET && f->nodes.payload[i].mem_op.dst == address) {
+			return false;
+		} else if (f->nodes.type[i] == TB_ARRAY_ACCESS && f->nodes.payload[i].array_access.base == address) {
+			return false;
+		} else if (f->nodes.type[i] == TB_MEMBER_ACCESS && f->nodes.payload[i].member_access.base == address) {
+			return false;
 		}
 	}
 	
-	last_revision[l] = new_phi_reg;
-	return new_phi_reg;
+	return true;
 }

@@ -60,6 +60,9 @@ typedef enum TB_RegTypeEnum {
     TB_IF,
     TB_RET,
 	
+	TB_FUNC_ADDRESS,
+	TB_EFUNC_ADDRESS,
+	
 	// Immediates
 	TB_INT_CONST,
     TB_FLOAT_CONST,
@@ -149,6 +152,8 @@ typedef union TB_RegPayload {
 	double f_const;
 	TB_Register ext;
 	TB_Register trunc;
+	const TB_Function* func_addr;
+	TB_ExternalID efunc_addr;
 	struct {
 		TB_FileID file;
 		int line;
@@ -163,7 +168,7 @@ typedef union TB_RegPayload {
 	struct {
 		TB_Register base;
 		TB_Register index;
-		uint32_t stride;
+		int32_t stride;
 	} array_access;
 	struct {
 		uint32_t id;
@@ -564,6 +569,9 @@ inline static void tb_kill_op(TB_Function* f, TB_Register at) {
 //
 // HELPER FUNCTIONS
 //
+#define TB_LIKELY(x)      __builtin_expect(!!(x), 1)
+#define TB_UNLIKELY(x)    __builtin_expect(!!(x), 0)
+
 #define CALL_NODE_PARAM_COUNT(f, i) \
 ((f)->nodes.payload[i].call.param_end - (f)->nodes.payload[i].call.param_start)
 
@@ -618,6 +626,7 @@ bool tb_opt_dce(TB_Function* f);
 bool tb_opt_fold(TB_Function* f);
 bool tb_opt_load_elim(TB_Function* f);
 bool tb_opt_inline(TB_Function* f);
+bool tb_opt_hoist_locals(TB_Function* f);
 bool tb_opt_canonicalize(TB_Function* f);
 bool tb_opt_remove_pass_node(TB_Function* f);
 bool tb_opt_strength_reduction(TB_Function* f);

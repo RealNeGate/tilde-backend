@@ -299,6 +299,9 @@ extern "C" {
 	TB_API TB_Register tb_inst_array_access(TB_Function* f, TB_Register base, TB_Register index, uint32_t stride);
 	TB_API TB_Register tb_inst_member_access(TB_Function* f, TB_Register base, int32_t offset);
     
+	TB_API TB_Register tb_inst_get_func_address(TB_Function* f, const TB_Function* target);
+	TB_API TB_Register tb_inst_get_extern_address(TB_Function* f, TB_ExternalID target);
+	
 	TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Register* params);
 	TB_API TB_Register tb_inst_vcall(TB_Function* f, TB_DataType dt, TB_Register target, size_t param_count, const TB_Register* params);
 	TB_API TB_Register tb_inst_ecall(TB_Function* f, TB_DataType dt, const TB_ExternalID target, size_t param_count, const TB_Register* params);
@@ -329,15 +332,10 @@ extern "C" {
 	TB_API TB_Register tb_inst_cmp_eq(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
 	TB_API TB_Register tb_inst_cmp_ne(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
 	
-	TB_API TB_Register tb_inst_cmp_slt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	TB_API TB_Register tb_inst_cmp_sle(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	TB_API TB_Register tb_inst_cmp_sgt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	TB_API TB_Register tb_inst_cmp_sge(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	
-	TB_API TB_Register tb_inst_cmp_ult(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	TB_API TB_Register tb_inst_cmp_ule(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	TB_API TB_Register tb_inst_cmp_ugt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	TB_API TB_Register tb_inst_cmp_uge(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
+	TB_API TB_Register tb_inst_cmp_ilt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness);
+	TB_API TB_Register tb_inst_cmp_ile(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness);
+	TB_API TB_Register tb_inst_cmp_igt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness);
+	TB_API TB_Register tb_inst_cmp_ige(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness);
 	
 	TB_API TB_Register tb_inst_cmp_flt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
 	TB_API TB_Register tb_inst_cmp_fle(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
@@ -371,6 +369,8 @@ extern "C" {
 	
 	TB_API bool tb_node_is_terminator(TB_Function* f, TB_Register r);
 	// is an IF, GOTO, RET, SWITCH, or LABEL node?
+	
+	TB_API bool tb_node_is_label(TB_Function* f, TB_Register r);
 	
 	TB_API TB_Register tb_node_store_get_address(TB_Function* f, TB_Register r);
 	TB_API TB_Register tb_node_store_get_value(TB_Function* f, TB_Register r);

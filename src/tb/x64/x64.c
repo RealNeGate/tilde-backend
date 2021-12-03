@@ -17,6 +17,7 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_Register from_terminator, TB_Register to, TB_Register to_terminator);
 
 static void convert_l2r(Ctx* ctx, TB_Function* f, TB_Register r, Val* val);
+static void convert_to_address(Ctx* ctx, TB_Function* f, Val* restrict val, TB_Register r);
 
 #define expect_lval(val) assert((val)->type == VAL_MEM && !(val)->mem.is_rvalue);
 
@@ -533,22 +534,8 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					// Eval address and cast to the correct type for the store
 					Val address;
 					use(ctx, f, &address, addr_reg, i);
+					convert_to_address(ctx, f, &address, i);
 					
-					// Desugar booleans into bytes
-					if (dt.type == TB_BOOL) dt.type = TB_I8;
-					
-					if (address.type == VAL_MEM && address.mem.is_rvalue) {
-						// deref
-						Val new_v;
-						def_new_gpr(ctx, f, &new_v, i, TB_PTR);
-						inst2(ctx, MOV, &new_v, &address, TB_PTR);
-						
-						address = val_base_disp(dt, new_v.gpr, 0);
-					}
-					else if (address.type == VAL_GPR) {
-						address = val_base_disp(TB_TYPE_PTR, address.gpr, 0);
-					}
-
 					store_into(ctx, f, dt, &address, i, addr_reg, val_reg);
 					break;
 				}
@@ -631,7 +618,7 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
                         // CALL rel32
                         emit(0xE8);
                         emit4(0x0);
-					} else if (reg_type == TB_CALL) {
+					} else if (reg_type == TB_ECALL) {
 						tb_emit_ecall_patch(f->module,
 											source_func,
 											p->ecall.target,
@@ -720,13 +707,16 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 			}
 			
 			// free temporaries
-			loop(i, 16) {
-				if (ctx->gpr_desc[i] == TB_REG_TEMP) ctx->gpr_desc[i] = 0;
+			loop(j, 16) {
+				if (ctx->gpr_desc[j] == TB_REG_TEMP) ctx->gpr_desc[j] = 0;
 			}
 			
-			loop(i, 16) {
-				if (ctx->xmm_desc[i] == TB_REG_TEMP) ctx->xmm_desc[i] = 0;
+			loop(j, 16) {
+				if (ctx->xmm_desc[j] == TB_REG_TEMP) ctx->xmm_desc[j] = 0;
 			}
+			
+			garbage_collect_gpr(ctx, f, i - 1);
+			garbage_collect_xmm(ctx, f, i - 1);
 		}
 	}
 }
@@ -814,7 +804,6 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 			tb_unreachable();
 			case TB_PHI1: {
 				TB_Register phi = f->nodes.payload[r].phi1.a;
-				
 				*v = find_phi(ctx, phi)->value;
 				break;
 			}
@@ -870,18 +859,7 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 			case TB_ARRAY_ACCESS: {
 				Val base, index;
 				use(ctx, f, &base, p.array_access.base, r);
-				if (base.type == VAL_MEM) {
-					if (base.mem.is_rvalue) {
-						Val new_val = base;
-
-						def_new_gpr(ctx, f, &new_val, r, TB_PTR);
-						inst2(ctx, MOV, &new_val, &base, TB_PTR);
-
-						base = val_base_disp(TB_TYPE_PTR, new_val.gpr, 0);
-					}
-				} else if (base.type == VAL_GPR) {
-					base = val_base_disp(TB_TYPE_PTR, base.gpr, 0);
-				} else tb_todo();
+				convert_to_address(ctx, f, &base, p.array_access.base);
 				
 				use(ctx, f, &index, p.array_access.index, r);
 				convert_l2r(ctx, f, p.array_access.index, &index);
@@ -959,23 +937,39 @@ static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register nex
 			case TB_MEMBER_ACCESS: {
 				use(ctx, f, v, p.member_access.base, r);
 				
-				// TODO(NeGate): Refactor this bs
-				int32_t offset = p.member_access.offset;
-				if (v->type == VAL_MEM) {
-					if (v->mem.is_rvalue) {
-						Val addr = *v;
-
-						def_new_gpr(ctx, f, v, r, TB_PTR);
-						inst2(ctx, MOV, v, &addr, TB_PTR);
-
-						*v = val_base_disp(TB_TYPE_PTR, v->gpr, offset);
-					}
-					else {
-						v->mem.disp += offset;
-					}
-				} else if (v->type == VAL_GPR) {
-					*v = val_base_disp(TB_TYPE_PTR, v->gpr, offset);
-				} else tb_todo();
+				convert_to_address(ctx, f, v, p.member_access.base);
+				v->mem.disp += p.member_access.offset;
+				break;
+			}
+			case TB_FUNC_ADDRESS: {
+				int source_func = f - f->module->functions.data;
+				def_new_gpr(ctx, f, v, r, TB_PTR);
+				
+				emit(rex(true, v->gpr, RBP, 0));
+				emit(0x8D);
+				emit(mod_rx_rm(MOD_INDIRECT, v->gpr, RBP));
+				emit4(0x0);
+				
+				int target_func = p.func_addr - f->module->functions.data;
+				tb_emit_call_patch(f->module,
+								   source_func,
+								   target_func,
+								   code_pos() - 4);
+				break;
+			}
+			case TB_EFUNC_ADDRESS: {
+				int source_func = f - f->module->functions.data;
+				def_new_gpr(ctx, f, v, r, TB_PTR);
+				
+				emit(rex(true, v->gpr, RBP, 0));
+				emit(0x8D);
+				emit(mod_rx_rm(MOD_INDIRECT, v->gpr, RBP));
+				emit4(0x0);
+				
+				tb_emit_ecall_patch(f->module,
+									source_func,
+									p.efunc_addr,
+									code_pos() - 4);
 				break;
 			}
 			case TB_LOAD: {
@@ -1368,20 +1362,25 @@ static void load_into(Ctx* ctx, TB_Function* f, TB_DataType dt, Val* v, TB_Regis
 }
 
 static void store_into(Ctx* ctx, TB_Function* f, TB_DataType dt, const Val* dst, TB_Register r, TB_Register dst_reg, TB_Register val_reg) {
+	// Desugar booleans into bytes
+	if (dt.type == TB_BOOL) dt.type = TB_I8;
+	
 	int op = MOV;
 	
 	// Peephole folded operation:
 	// OP dst, src
-	if (f->nodes.type[val_reg] >= TB_AND && f->nodes.type[val_reg] <= TB_SUB) {
+	if (f->nodes.type[val_reg] >= TB_AND && f->nodes.type[val_reg] <= TB_MUL) {
 		TB_Register a = f->nodes.payload[val_reg].i_arith.a;
 		TB_Register b = f->nodes.payload[val_reg].i_arith.b;
 		
 		bool is_phi = f->nodes.type[r] == TB_PHI2;
 		bool folded = false;
 		if (is_phi) {
-			folded = is_phi_that_contains(f, r, a);
+			folded = is_phi_that_contains(f, r, val_reg);
+			folded |= (f->nodes.type[val_reg] == TB_MUL && dst->type == VAL_GPR);
 		} else {
-			folded = (f->nodes.type[a] == TB_LOAD && f->nodes.payload[a].load.address == dst_reg);
+			folded = (f->nodes.type[a] == TB_LOAD && f->nodes.payload[a].load.address == dst_reg) &&
+				(f->nodes.type[val_reg] != TB_MUL);
 		}
 		
 		if (folded) {
@@ -1391,6 +1390,7 @@ static void store_into(Ctx* ctx, TB_Function* f, TB_DataType dt, const Val* dst,
 				case TB_XOR: op = XOR; break;
 				case TB_ADD: op = ADD; break;
 				case TB_SUB: op = SUB; break;
+				case TB_MUL: op = IMUL; break;
 				default: tb_unreachable();
 			}
 			
@@ -1820,6 +1820,34 @@ static void convert_l2r(Ctx* ctx, TB_Function* f, TB_Register r, Val* val) {
 			*val = new_v;
 		}
 	}
+}
+
+static void convert_to_address(Ctx* ctx, TB_Function* f, Val* restrict val, TB_Register r) {
+	if (val->type == VAL_MEM) {
+		if (val->mem.is_rvalue) {
+			Val new_val;
+			def_new_gpr(ctx, f, &new_val, r, TB_PTR);
+			inst2(ctx, MOV, &new_val, val, TB_PTR);
+			
+			*val = val_base_disp(TB_TYPE_PTR, new_val.gpr, 0);
+		}
+	}
+	else if (val->type == VAL_GPR) {
+		*val = val_base_disp(TB_TYPE_PTR, val->gpr, 0);
+	}
+	else if (val->type == VAL_IMM) {
+		Val new_val;
+		def_new_gpr(ctx, f, &new_val, r, TB_PTR);
+		
+		// TODO(NeGate): implement a shared "load immediate into register" function
+		// mov reg64, imm64
+		emit(rex(true, 0x0, new_val.gpr, 0));
+		emit(0xB8 + (new_val.gpr & 0b111));
+		emit8(val->imm);
+		
+		*val = val_base_disp(TB_TYPE_PTR, new_val.gpr, 0);
+	}
+	else tb_todo();
 }
 
 // Is this a phi node? does it can the register `reg`?

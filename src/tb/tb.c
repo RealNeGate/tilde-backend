@@ -34,22 +34,27 @@ static void tb_function_free(TB_Function* f) {
 	f->is_ir_free = true;
 }
 
-#define OPT(x) if (tb_opt_ ## x (f)) goto repeat_opt
+#define OPT(x) if (tb_opt_ ## x (f)) { \
+printf("%s   ", #x); \
+tb_function_print(f, stdout); \
+printf("\n\n\n"); \
+goto repeat_opt; \
+}
+
 static void tb_optimize_func(TB_Function* f) {
 	repeat_opt: {
-		//tb_function_print(f, stdout);
-		//printf("\n\n\n");
-		
 		OPT(remove_pass_node);
 		OPT(canonicalize);
 		OPT(fold);
 		OPT(load_elim);
 		OPT(strength_reduction);
-		OPT(mem2reg);
 		OPT(dce);
+		OPT(hoist_locals);
+		OPT(mem2reg);
 		OPT(compact_dead_regs);
 	}
 	
+	printf("FINAL   ");
 	tb_function_print(f, stdout);
 	printf("\n\n\n");
 }
@@ -629,7 +634,7 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			case TB_ARRAY_ACCESS:
 			fprintf(out, "  r%u\t=\t", i);
 			tb_print_type(out, dt);
-			fprintf(out, " &r%u[r%u * %u]\n", p.array_access.base, p.array_access.index, p.array_access.stride);
+			fprintf(out, " &r%u[r%u * %d]\n", p.array_access.base, p.array_access.index, p.array_access.stride);
 			break;
 			case TB_AND:
             case TB_OR:

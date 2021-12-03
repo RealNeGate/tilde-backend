@@ -87,7 +87,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 	for (size_t i = 0; i < count; i++) {
 		TB_Function* func = test_functions[i](m);
         
-        tb_function_print(func, stdout);
+        //tb_function_print(func, stdout);
         tb_module_compile_func(m, func);
 	}
     
@@ -484,7 +484,7 @@ TB_Function* test_fib(TB_Module* m) {
 	TB_Label if_false = tb_inst_new_label_id(func);
 	
 	// if (n < 2)
-	tb_inst_if(func, tb_inst_cmp_slt(func, TB_TYPE_I32, n, tb_inst_iconst(func, TB_TYPE_I32, 2)), if_true, if_false);
+	tb_inst_if(func, tb_inst_cmp_ilt(func, TB_TYPE_I32, n, tb_inst_iconst(func, TB_TYPE_I32, 2), true), if_true, if_false);
 	
 	// then
 	{
@@ -525,7 +525,7 @@ TB_Function* test_fact(TB_Module* m) {
 	{
 		tb_inst_label(func, loop_entry);
 		TB_Register n_ld = tb_inst_load(func, TB_TYPE_I32, n_addr, 4);
-		tb_inst_if(func, tb_inst_cmp_slt(func, TB_TYPE_I32, n_ld, tb_inst_iconst(func, TB_TYPE_I32, 0)), loop_body, loop_exit);
+		tb_inst_if(func, tb_inst_cmp_ilt(func, TB_TYPE_I32, n_ld, tb_inst_iconst(func, TB_TYPE_I32, 0), true), loop_body, loop_exit);
 	}
 	
 	// Loop body
@@ -570,7 +570,7 @@ TB_Function* test_foo(TB_Module* m) {
 }
 
 TB_Function* test_entry(TB_Module* m) {
-	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_I32);
+	TB_Function* func = tb_function_create(m, __FUNCTION__, TB_TYPE_PTR);
 	
 	TB_Register a = tb_inst_param(func, TB_TYPE_I32);
 	TB_Register ap = tb_inst_param_addr(func, a);
@@ -582,12 +582,10 @@ TB_Function* test_entry(TB_Module* m) {
 					  tb_inst_iconst(func, TB_TYPE_I64, 0)
 				  });
 	
-	TB_Register result = tb_inst_call(func, TB_TYPE_I32, test_foo_func_ref, 2, (TB_Register[]) { al, b });
-	tb_inst_ret(func, TB_TYPE_I32, result);
+	tb_inst_call(func, TB_TYPE_I32, test_foo_func_ref, 2, (TB_Register[]) { al, b });
 	
-	//TB_Register num = tb_inst_iconst(func, TB_TYPE_I32, 45);
-	//TB_Register result = tb_inst_call(func, TB_TYPE_I32, test_fib_func_ref, 1, &num);
-	//tb_inst_ret(func, TB_TYPE_I32, result);
+	TB_Register ptr = tb_inst_get_func_address(func, test_fib_func_ref);
+	tb_inst_ret(func, TB_TYPE_PTR, ptr);
 	
 	return func;
 }

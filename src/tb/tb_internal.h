@@ -349,35 +349,37 @@ typedef struct TB_LabelSymbol {
 	uint32_t pos; // relative to the start of the function
 } TB_LabelSymbol;
 
-typedef struct TB_JobSystem {
+typedef struct TB_FifoQueue {
 #if _WIN32
-	CRITICAL_SECTION mutex;
+	HANDLE semaphore;
 #else
-	pthread_mutex_t mutex;
+	sem_t* semaphore;
 #endif
 	
-	// FIFO queue
-	_Atomic bool running;
 	_Atomic uint32_t read_pointer;
 	_Atomic uint32_t write_pointer;
-	
+	TB_Function* functions[MAX_JOBS_PER_JOB_SYSTEM];
+} TB_FifoQueue;
+
+typedef struct TB_JobSystem {
+	// FIFO queue
+	_Atomic bool running;
 	uint32_t thread_count;
 	
 #if _WIN32
-	HANDLE semaphore;
 	HANDLE threads[TB_MAX_THREADS];
 #else
-	sem_t* semaphore;
 	pthread_t threads[TB_MAX_THREADS];
 #endif
 	
-	TB_Function* functions[MAX_JOBS_PER_JOB_SYSTEM];
+	// avoid false sharing
+	_Alignas(64) TB_FifoQueue queue[TB_MAX_THREADS];
 } TB_JobSystem;
 
-// This might be getting too 
 struct TB_Module {
 	bool preserve_ir_after_submit;
 	int optimization_level;
+	int max_threads;
     
 	TB_Arch target_arch;
 	TB_System target_system;
@@ -397,16 +399,24 @@ struct TB_Module {
 	} label_symbols;
 #endif
 	
+#if _WIN32
+	CRITICAL_SECTION patch_mutex;
+#else
+	pthread_mutex_t patch_mutex;
+#endif
+	
 	struct {
 		size_t count;
 		size_t capacity;
 		TB_ConstPool32Patch* data;
 	} const32_patches;
     
+	// NOTE(NeGate): There's going to be one array 
+	// per thread.
 	struct {
-		size_t count;
-		size_t capacity;
-		TB_FunctionPatch* data;
+		size_t count[TB_MAX_THREADS];
+		size_t capacity[TB_MAX_THREADS];
+		TB_FunctionPatch* data[TB_MAX_THREADS];
 	} call_patches;
     
 	struct {
@@ -472,7 +482,7 @@ typedef struct ICodeGen {
 	size_t(*emit_prologue)(uint8_t out[], uint64_t saved, uint64_t stack_usage);
 	size_t(*emit_epilogue)(uint8_t out[], uint64_t saved, uint64_t stack_usage);
 	
-	TB_FunctionOutput(*compile_function)(TB_Function* f, const TB_FeatureSet* features, uint8_t* out);
+	TB_FunctionOutput(*compile_function)(TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
 } ICodeGen;
 
 // Used internally for some optimizations
@@ -560,6 +570,14 @@ bool tb_platform_vprotect(void* ptr, size_t size, bool execute_read);
 // NOTE(NeGate): It's either execute-read or read-write, no other options... yet
 // returns false, if it failed
 
+void* tb_platform_heap_alloc(size_t size);
+void* tb_platform_heap_realloc(void* ptr, size_t size);
+void tb_platform_heap_free(void* ptr);
+
+char* tb_platform_string_alloc(const char* str);
+void tb_platform_string_free();
+// frees all strings allocated
+
 inline static void tb_kill_op(TB_Function* f, TB_Register at) {
 	f->nodes.type[at] = TB_NULL;
 	f->nodes.dt[at] = (TB_DataType){ 0 };
@@ -641,9 +659,8 @@ void tb_find_use_count(const TB_Function* f, int use_count[]);
 // TODO(NeGate): Not thread safe yet
 uint32_t tb_emit_const32_patch(TB_Module* m, uint32_t func_id, size_t pos, uint32_t data);
 
-void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size_t pos);
-
-void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id, size_t pos);
+void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size_t pos, size_t local_thread_id);
+void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id, size_t pos, size_t local_thread_id);
 
 #if !TB_STRIP_LABELS
 void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, size_t pos);

@@ -123,6 +123,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	uint32_t string_table_mark = 4;
 	const char** string_table = malloc((m->externals.count + m->compiled_functions.count) * sizeof(const char*));
 	
+	// drops the debug sections if no line info exists
 	const int number_of_sections = 4;
 	COFF_FileHeader header = {
 		.num_sections = number_of_sections,
@@ -464,7 +465,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		//
 		// Write type table
 		//
-		{
+		if (m->line_info_count != 0) {
 			uint32_t field_len;
 			uint32_t typeindex = 0x1000;
 			uint32_t idx_arglist;
@@ -725,7 +726,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	
 	for (size_t i = 0; i < m->externals.count; i++) {
 		COFF_Symbol sym = {
-			.value = func_layout[i],
+			.value = 0,
 			.section_number = 0,
 			.storage_class = IMAGE_SYM_CLASS_EXTERNAL
 		};

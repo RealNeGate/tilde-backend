@@ -210,16 +210,30 @@ static TB_Register tb_walk_for_intermediate_phi(TB_Function* f,
 	TB_Register a = tb_walk_for_intermediate_phi(f, label_count, preds[l][0], first_revision, last_revision, preds, pred_count);
 	TB_Register b = tb_walk_for_intermediate_phi(f, label_count, preds[l][1], first_revision, last_revision, preds, pred_count);
 	
-	f->nodes.type[new_phi_reg] = TB_PHI2;
-	f->nodes.dt[new_phi_reg] = f->nodes.dt[a];
-	f->nodes.payload[new_phi_reg] = (TB_RegPayload){
-		.phi2 = {
-			.a_label = tb_find_reg_from_label(f, preds[l][0]),
-			.a = a,
-			.b_label = tb_find_reg_from_label(f, preds[l][1]),
-			.b = b
-		}
-	};
+	if (a == 0 && b == 0) {
+		abort();
+	}
+	else if (a == 0 || b == 0) {
+		TB_Register src = a ? a : b;
+
+		f->nodes.type[new_phi_reg] = TB_PASS;
+		f->nodes.dt[new_phi_reg] = f->nodes.dt[src];
+		f->nodes.payload[new_phi_reg] = (TB_RegPayload){
+			.pass = src
+		};
+	}
+	else {
+		f->nodes.type[new_phi_reg] = TB_PHI2;
+		f->nodes.dt[new_phi_reg] = f->nodes.dt[a];
+		f->nodes.payload[new_phi_reg] = (TB_RegPayload){
+			.phi2 = {
+				.a_label = tb_find_reg_from_label(f, preds[l][0]),
+				.a = a,
+				.b_label = tb_find_reg_from_label(f, preds[l][1]),
+				.b = b
+			}
+		};
+	}
 	
 	last_revision[l] = new_phi_reg;
 	pred_count[l] = saved_pred_count;
@@ -229,7 +243,7 @@ static TB_Register tb_walk_for_intermediate_phi(TB_Function* f,
 	//TB_Register terminator = f->nodes.payload[label_reg].label.terminator;
 	loop_range(i, 1, f->nodes.count) {
 		if (f->nodes.type[i] == TB_PASS && (f->nodes.payload[i].pass == a || f->nodes.payload[i].pass == b)) {
-			f->nodes.payload[i].pass = new_phi_reg;
+			if (i != new_phi_reg) f->nodes.payload[i].pass = new_phi_reg;
 		}
 	}
 	

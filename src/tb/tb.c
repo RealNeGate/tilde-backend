@@ -9,22 +9,28 @@
 
 static _Thread_local uint8_t* tb_thread_storage;
 
+static _Atomic int total_tid;
+static _Thread_local int tid;
+
+static int get_local_thread_id() {
+	// the value it spits out is zero-based, but
+	// the TIDs consider zero as a NULL space.
+	if (tid == 0) {
+		int new_id = total_tid++;
+		tid = new_id + 1;
+	}
+	
+	return tid - 1;
+}
+
 // TODO(NeGate): Doesn't free the name, it's needed for later
 static void tb_function_free(TB_Function* f) {
 	if (f->is_ir_free) return;
 	
-#if _WIN32
-	// Windows is different :P
-	_aligned_free(f->nodes.type);
-	_aligned_free(f->nodes.dt);
-	_aligned_free(f->nodes.payload);
-#else
-	free(f->nodes.type);
-	free(f->nodes.dt);
-	free(f->nodes.payload);
-#endif
-	
-	free(f->vla.data);
+	tb_platform_heap_free(f->nodes.type);
+	tb_platform_heap_free(f->nodes.dt);
+	tb_platform_heap_free(f->nodes.payload);
+	tb_platform_heap_free(f->vla.data);
 	
 	f->nodes.type = NULL;
 	f->nodes.dt = NULL;
@@ -78,23 +84,28 @@ static void* job_system_thread_func(void* lpParam)
 	size_t code_size = 0;
 	uint8_t* code = tb_platform_valloc(CODE_OUTPUT_BUFFER);
 	
-	while (s->running) {
-		uint32_t read_ptr = s->read_pointer;
+	TB_FifoQueue* restrict q = &s->queue[i];
+	while (true) {
+		uint32_t read_ptr = q->read_pointer;
 		uint32_t new_read_ptr = (read_ptr + 1) % MAX_JOBS_PER_JOB_SYSTEM;
 		
-		if (read_ptr == s->write_pointer) {
+		if (read_ptr == q->write_pointer) {
 			// Nothing to do, just wait
+			//printf("We waitin'\n");
 #if _WIN32
-			WaitForSingleObjectEx(s->semaphore, -1, false);
+			WaitForSingleObjectEx(q->semaphore, -1, false);
 #else
-			sem_wait(s->semaphore);
+			sem_wait(q->semaphore);
 #endif
+			
+			// only actually shut off if we run out and are told to stop.
+			if (s->running == false) break;
 			continue;
 		}
 		
-		if (atomic_compare_exchange_strong(&s->read_pointer, &read_ptr, new_read_ptr)) {
+		if (atomic_compare_exchange_strong(&q->read_pointer, &read_ptr, new_read_ptr)) {
 			// Compile function
-			TB_Function* f = s->functions[read_ptr];
+			TB_Function* f = q->functions[read_ptr];
 			size_t index = f - m->functions.data;
 			assert(f->validated);
 			
@@ -103,7 +114,7 @@ static void* job_system_thread_func(void* lpParam)
 			}
 			
 			TB_FunctionOutput* out = &m->compiled_functions.data[index];
-			*out = gen->compile_function(f, &m->features, &code[code_size]);
+			*out = gen->compile_function(f, &m->features, &code[code_size], i);
 			code_size += out->code_size;
 			
 			// Free the IR, no longer needed,
@@ -115,7 +126,7 @@ static void* job_system_thread_func(void* lpParam)
 	m->code_regions[i].data = code;
 	m->code_regions[i].size = code_size;
 	
-	free(tb_thread_storage);
+	tb_platform_vfree(tb_thread_storage, TB_TEMPORARY_STORAGE_SIZE);
 	return 0;
 }
 
@@ -126,8 +137,10 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
                                    int max_threads,
                                    bool preserve_ir_after_submit) {
 	assert(max_threads >= 1 && max_threads <= TB_MAX_THREADS);
-	TB_Module* m = calloc(1, sizeof(TB_Module));
-    
+	TB_Module* m = tb_platform_heap_alloc(sizeof(TB_Module));
+    memset(m, 0, sizeof(TB_Module));
+	
+	m->max_threads = max_threads;
     m->preserve_ir_after_submit = preserve_ir_after_submit;
 	m->optimization_level = optimization_level;
 	m->target_arch = target_arch;
@@ -137,63 +150,68 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 #if !TB_STRIP_LABELS
 	m->label_symbols.count = 0;
 	m->label_symbols.capacity = 64;
-	m->label_symbols.data = malloc(64 * sizeof(TB_LabelSymbol));
+	m->label_symbols.data = tb_platform_heap_alloc(64 * sizeof(TB_LabelSymbol));
 #endif
 	
 	m->const32_patches.count = 0;
 	m->const32_patches.capacity = 64;
-	m->const32_patches.data = malloc(64 * sizeof(TB_ConstPool32Patch));
+	m->const32_patches.data = tb_platform_heap_alloc(64 * sizeof(TB_ConstPool32Patch));
     
-	m->call_patches.count = 0;
-	m->call_patches.capacity = 64;
-	m->call_patches.data = malloc(64 * sizeof(TB_FunctionPatch));
+	for (int i = 0; i < max_threads; i++) {
+		m->call_patches.count[i] = 0;
+		m->call_patches.capacity[i] = 64;
+		m->call_patches.data[i] = tb_platform_heap_alloc(64 * sizeof(TB_FunctionPatch));
+	}
 	
 	m->ecall_patches.count = 0;
 	m->ecall_patches.capacity = 64;
-	m->ecall_patches.data = malloc(64 * sizeof(TB_ExternFunctionPatch));
+	m->ecall_patches.data = tb_platform_heap_alloc(64 * sizeof(TB_ExternFunctionPatch));
+	
+	m->externals.count = 0;
+	m->externals.capacity = 64;
+	m->externals.data = tb_platform_heap_alloc(64 * sizeof(TB_External));
 	
 	m->files.count = 1;
 	m->files.capacity = 64;
-	m->files.data = malloc(64 * sizeof(TB_File));
+	m->files.data = tb_platform_heap_alloc(64 * sizeof(TB_File));
     m->files.data[0] = (TB_File){ 0 };
 	
 	m->functions.count = 0;
-	m->functions.data = malloc(TB_MAX_FUNCTIONS * sizeof(TB_Function));
+	m->functions.data = tb_platform_heap_alloc(TB_MAX_FUNCTIONS * sizeof(TB_Function));
     
 	m->compiled_functions.count = 0;
-	m->compiled_functions.data = malloc(TB_MAX_FUNCTIONS * sizeof(TB_FunctionOutput));
+	m->compiled_functions.data = tb_platform_heap_alloc(TB_MAX_FUNCTIONS * sizeof(TB_FunctionOutput));
     
 	m->line_info_count = 0;
 	
-	TB_JobSystem* j = calloc(1, sizeof(TB_JobSystem));
+	TB_JobSystem* j = tb_platform_heap_alloc(sizeof(TB_JobSystem));
+	// TODO(NeGate): Kinda expensive but pretend it isn't lol
+	memset(j, 0, sizeof(TB_JobSystem));
+	
 	m->jobs = j;
 	
 	j->running = true;
-	j->write_pointer = 0;
-	j->read_pointer = 0;
 	j->thread_count = max_threads;
 	
 #ifdef _WIN32
-	j->semaphore = CreateSemaphoreExA(0,
-									  max_threads, max_threads,
-									  0, 0,
-									  SEMAPHORE_ALL_ACCESS);
-	
 	loop(i, max_threads) {
+		j->queue[i].semaphore = CreateSemaphoreExA(0, 1, 1, 0, 0, SEMAPHORE_ALL_ACCESS);
 		j->threads[i] = CreateThread(0, 4 * 1024 * 1024,
 									 job_system_thread_func,
 									 m, 0, 0);
 	}
 	
-	InitializeCriticalSection(&j->mutex);
+	InitializeCriticalSection(&m->patch_mutex);
 #else
-	j->semaphore = sem_open(strdup("BITCH"), 0, 0, max_threads);
-	
 	loop(i, max_threads) {
 		pthread_create(&j->threads[i], 0, job_system_thread_func, m);
+		
+		char temp[10];
+		sprintf("BITCH%zu", i);
+		j->queue[i].semaphore = sem_open(strdup(temp), 0, 0, max_threads);
 	}
 	
-	pthread_mutex_init(&j->mutex, NULL);
+	pthread_mutex_init(&m->patch_mutex, NULL);
 #endif
 	
 	return m;
@@ -201,17 +219,13 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 
 TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
 	if (!tb_validate(f)) abort();
-	TB_JobSystem* s = m->jobs;
 	
-#if _WIN32
-	EnterCriticalSection(&s->mutex);
-#else
-	pthread_mutex_lock(&s->mutex);
-#endif
+	int id = get_local_thread_id();
+	TB_FifoQueue* restrict q = &m->jobs->queue[id];
 	
-	uint32_t write_ptr = s->write_pointer;
+	uint32_t write_ptr = q->write_pointer;
 	uint32_t new_write_ptr = (write_ptr + 1) % MAX_JOBS_PER_JOB_SYSTEM;
-	while (new_write_ptr == s->read_pointer) { 
+	while (new_write_ptr == q->read_pointer) {
 #if _WIN32
 		SwitchToThread();
 #else
@@ -219,15 +233,13 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
 #endif
 	}
 	
-	s->functions[write_ptr] = f;
-	s->write_pointer = new_write_ptr;
+	q->functions[write_ptr] = f;
+	q->write_pointer = new_write_ptr;
 	
 #if _WIN32
-	ReleaseSemaphore(s->semaphore, 1, 0);
-	LeaveCriticalSection(&s->mutex);
+	ReleaseSemaphore(q->semaphore, 1, 0);
 #else
-	sem_post(s->semaphore);
-	pthread_mutex_unlock(&s->mutex);
+	sem_post(q->semaphore);
 #endif
 	
 	return true;
@@ -235,29 +247,28 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
 
 TB_API bool tb_module_compile(TB_Module* m) {
 	TB_JobSystem* s = m->jobs;
-	
-	while (s->write_pointer != s->read_pointer) {
-		__builtin_ia32_pause();
-	}
 	s->running = false;
-	m->compiled_functions.count = m->functions.count;
 	
 #if _WIN32
-	ReleaseSemaphore(s->semaphore, s->thread_count, 0);
+	loop(i, s->thread_count) {
+		ReleaseSemaphore(s->queue[i].semaphore, 1, 0);
+	}
+	
 	WaitForMultipleObjects(s->thread_count, s->threads, TRUE, -1);
 	
 	loop(i, s->thread_count) {
 		CloseHandle(s->threads[i]);
+		CloseHandle(s->queue[i].semaphore);
+		
 		s->threads[i] = NULL;
 	}
 	
-	DeleteCriticalSection(&s->mutex);
-	CloseHandle(s->semaphore);
-	
-	s->semaphore = NULL;
+	DeleteCriticalSection(&m->patch_mutex);
+	m->compiled_functions.count = m->functions.count;
 #else
-	// TODO(NeGate): Delete the stuff
-	sem_close(s->semaphore); 
+	// TODO(NeGate): Delete the mutexes and fix this
+	// sem_close(s->semaphore); 
+#error "Fix this!"
 #endif
 	
 	return true;
@@ -274,9 +285,6 @@ TB_API size_t tb_DEBUG_module_get_full_node_count(TB_Module* m) {
 TB_API void tb_module_destroy(TB_Module* m) {
 	loop(i, m->functions.count) {
 		tb_function_free(&m->functions.data[i]);
-		
-		free(m->functions.data[i].name);
-		m->functions.data[i].name = NULL;
 	}
     
 	loop(i, m->code_region_count) {
@@ -289,21 +297,25 @@ TB_API void tb_module_destroy(TB_Module* m) {
 	}
 	
 	loop_range(i, 1, m->files.count) {
-		free(m->files.data[i].path);
+		tb_platform_heap_free(m->files.data[i].path);
 	}
-    
-	free(m->jobs);
+	
+	loop(i, m->max_threads) {
+		tb_platform_heap_free(m->call_patches.data[i]);
+	}
+	
+	tb_platform_string_free();
+	tb_platform_heap_free(m->jobs);
 #if !TB_STRIP_LABELS
-	free(m->label_symbols.data);
+	tb_platform_heap_free(m->label_symbols.data);
 #endif
-	free(m->const32_patches.data);
-	free(m->call_patches.data);
-	free(m->ecall_patches.data);
-	free(m->files.data);
-	free(m->functions.data);
-	free(m->externals.data);
-	free(m->compiled_functions.data);
-	free(m);
+	tb_platform_heap_free(m->const32_patches.data);
+	tb_platform_heap_free(m->ecall_patches.data);
+	tb_platform_heap_free(m->files.data);
+	tb_platform_heap_free(m->functions.data);
+	tb_platform_heap_free(m->externals.data);
+	tb_platform_heap_free(m->compiled_functions.data);
+	tb_platform_heap_free(m);
 }
 
 TB_API void tb_get_constraints(TB_Arch target_arch, const TB_FeatureSet* features, TB_FeatureConstraints* constraints) {
@@ -339,8 +351,7 @@ TB_API TB_FileID tb_register_file(TB_Module* m, const char* path) {
 		m->files.data = realloc(m->files.data, m->files.capacity * sizeof(TB_File));
 	}
     
-	char* str = malloc(strlen(path) + 1);
-	strcpy(str, path);
+	char* str = tb_platform_string_alloc(path);
 	
 	size_t r = m->files.count++;
 	m->files.data[r] = (TB_File){
@@ -387,28 +398,12 @@ TB_API bool tb_module_export(TB_Module* m, FILE* f) {
 void tb_resize_node_stream(TB_Function* f, size_t cap) {
 	f->nodes.capacity = cap;
 	
-#if _WIN32
-	// Windows is different... but nicer imo here
-	f->nodes.type = _aligned_recalloc(f->nodes.type, cap, sizeof(TB_RegType), 64);
-	f->nodes.dt = _aligned_recalloc(f->nodes.dt, cap, sizeof(TB_DataType), 64);
-	f->nodes.payload = _aligned_recalloc(f->nodes.payload, cap, sizeof(TB_RegPayload), 64);
-#else
-	if (f->nodes.type) {
-		f->nodes.type = realloc(f->nodes.type, cap * sizeof(TB_RegType));
-		f->nodes.dt = realloc(f->nodes.dt, cap * sizeof(TB_DataType));
-		f->nodes.payload = realloc(f->nodes.payload, cap * sizeof(TB_RegPayload));
-	} else {
-		f->nodes.type = aligned_alloc(64, cap * sizeof(TB_RegType));
-		f->nodes.dt = aligned_alloc(64, cap * sizeof(TB_DataType));
-		f->nodes.payload = aligned_alloc(64, cap * sizeof(TB_RegPayload));
-	}
+	f->nodes.type = tb_platform_heap_realloc(f->nodes.type, cap * sizeof(TB_RegType));
+	f->nodes.dt = tb_platform_heap_realloc(f->nodes.dt, cap * sizeof(TB_DataType));
+	f->nodes.payload = tb_platform_heap_realloc(f->nodes.payload, cap * sizeof(TB_RegPayload));
 	
 	// zero out the extra space
-	// TODO(NeGate): optimize this... somehow?
 	memset(&f->nodes.type[f->nodes.count], 0, (cap - f->nodes.count) * sizeof(TB_RegType));
-	memset(&f->nodes.dt[f->nodes.count], 0, (cap - f->nodes.count) * sizeof(TB_DataType));
-	memset(&f->nodes.payload[f->nodes.count], 0, (cap - f->nodes.count) * sizeof(TB_RegPayload));
-#endif
 }
 
 TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataType return_dt) {
@@ -420,8 +415,7 @@ TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataTy
 	
 	// TODO(NeGate): We might wanna do something better with these strings
 	// especially since they'll be packed in a string table eventually
-	f->name = malloc(strlen(name) + 1);
-	strcpy(f->name, name);
+	f->name = tb_platform_string_alloc(name);
 	
 	f->return_dt = return_dt;
 	f->module = m;
@@ -453,12 +447,12 @@ TB_API TB_ExternalID tb_module_extern(TB_Module* m, const char* name) {
 	if (m->externals.count + 1 >= m->externals.capacity) {
 		// TODO(NeGate): This might be excessive for this array, idk :P
 		m->externals.capacity = tb_next_pow2(m->externals.count + 1);
-		m->externals.data = realloc(m->externals.data, m->externals.capacity * sizeof(TB_External));
+		m->externals.data = tb_platform_heap_realloc(m->externals.data, m->externals.capacity * sizeof(TB_External));
 	}
 	
 	// TODO(NeGate): We might wanna do something better with these strings
 	// especially since they'll be packed in a string table eventually
-	char* new_name = malloc(strlen(name) + 1);
+	char* new_name = tb_platform_heap_alloc(strlen(name) + 1);
 	strcpy(new_name, name);
 	
 	TB_ExternalID i = m->externals.count++;
@@ -499,7 +493,7 @@ TB_API TB_Label tb_get_current_label(TB_Function* f) {
 //
 TB_TemporaryStorage* tb_tls_allocate() {
 	if (tb_thread_storage == NULL) {
-		tb_thread_storage = malloc(TB_TEMPORARY_STORAGE_SIZE);
+		tb_thread_storage = tb_platform_valloc(TB_TEMPORARY_STORAGE_SIZE);
 	}
     
 	TB_TemporaryStorage* store = (TB_TemporaryStorage*)tb_thread_storage;
@@ -528,28 +522,37 @@ void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance) {
 	return &store->data[store->used - distance];
 }
 
-void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size_t pos) {
+void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size_t pos, size_t local_thread_id) {
 	assert(pos < UINT32_MAX);
-	if (m->call_patches.count + 1 >= m->call_patches.capacity) {
-		m->call_patches.capacity *= 2;
-		m->call_patches.data = realloc(m->call_patches.data,
-									   m->call_patches.capacity * sizeof(TB_FunctionPatch));
+	int id = local_thread_id;
+	
+	if (m->call_patches.count[id] + 1 >= m->call_patches.capacity[id]) {
+		m->call_patches.capacity[id] *= 2;
+		m->call_patches.data[id] = tb_platform_heap_realloc(m->call_patches.data[id],
+															m->call_patches.capacity[id] *
+															sizeof(TB_FunctionPatch));
 	}
-    
-	size_t r = m->call_patches.count++;
-	m->call_patches.data[r] = (TB_FunctionPatch){
+	
+	size_t r = m->call_patches.count[id]++;
+	m->call_patches.data[id][r] = (TB_FunctionPatch){
 		.func_id = func_id,
 		.target_id = target_id,
 		.pos = pos
 	};
 }
 
-void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id, size_t pos) {
+void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id, size_t pos, size_t local_thread_id) {
+#if _WIN32
+	EnterCriticalSection(&m->patch_mutex);
+#else
+	pthread_mutex_lock(&m->patch_mutex);
+#endif
+	
 	assert(pos < UINT32_MAX);
 	if (m->ecall_patches.count + 1 >= m->ecall_patches.capacity) {
 		m->ecall_patches.capacity *= 2;
-		m->ecall_patches.data = realloc(m->ecall_patches.data,
-										m->ecall_patches.capacity * sizeof(TB_FunctionPatch));
+		m->ecall_patches.data = tb_platform_heap_realloc(m->ecall_patches.data,
+														 m->ecall_patches.capacity * sizeof(TB_FunctionPatch));
 	}
     
 	size_t r = m->ecall_patches.count++;
@@ -558,6 +561,12 @@ void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id
 		.target_id = target_id,
 		.pos = pos
 	};
+	
+#if _WIN32
+	LeaveCriticalSection(&m->patch_mutex);
+#else
+	pthread_mutex_unlock(&m->patch_mutex);
+#endif
 }
 
 //
@@ -776,6 +785,12 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 				fprintf(out, "\t\t\tdefault -> L%d)\n", p.switch_.default_label);
 				break;
 			}
+			case TB_FUNC_ADDRESS:
+			fprintf(out, "  r%u\t=\t &%s\n", i, p.func_addr->name);
+			break;
+			case TB_EFUNC_ADDRESS:
+			fprintf(out, "  r%u\t=\t &%s\n", i, m->externals.data[p.efunc_addr].name);
+			break;
             case TB_PARAM:
 			fprintf(out, "  r%u\t=\t", i);
 			tb_print_type(out, dt);
@@ -843,7 +858,7 @@ uint8_t* tb_out_reserve(TB_Emitter* o, size_t count) {
 			o->capacity *= 2;
 		}
         
-		o->data = realloc(o->data, o->capacity);
+		o->data = tb_platform_heap_realloc(o->data, o->capacity);
 		if (o->data == NULL) tb_todo();
 	}
     

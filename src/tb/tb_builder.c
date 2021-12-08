@@ -439,7 +439,7 @@ TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Functio
 	if (f->vla.count + param_count >= f->vla.capacity) {
 		// TODO(NeGate): This might be excessive for this array, idk :P
 		f->vla.capacity = tb_next_pow2(f->vla.count + param_count);
-		f->vla.data = realloc(f->vla.data, f->vla.capacity * sizeof(TB_Register));
+		f->vla.data = tb_platform_heap_realloc(f->vla.data, f->vla.capacity * sizeof(TB_Register));
 	}
 	
 	int param_start = f->vla.count;
@@ -459,7 +459,7 @@ TB_API TB_Register tb_inst_vcall(TB_Function* f, TB_DataType dt, const TB_Regist
 	if (f->vla.count + param_count >= f->vla.capacity) {
 		// TODO(NeGate): This might be excessive for this array, idk :P
 		f->vla.capacity = tb_next_pow2(f->vla.count + param_count);
-		f->vla.data = realloc(f->vla.data, f->vla.capacity * sizeof(TB_Register));
+		f->vla.data = tb_platform_heap_realloc(f->vla.data, f->vla.capacity * sizeof(TB_Register));
 	}
 	
 	int param_start = f->vla.count;
@@ -479,7 +479,7 @@ TB_API TB_Register tb_inst_ecall(TB_Function* f, TB_DataType dt, const TB_Extern
 	if (f->vla.count + param_count >= f->vla.capacity) {
 		// TODO(NeGate): This might be excessive for this array, idk :P
 		f->vla.capacity = tb_next_pow2(f->vla.count + param_count);
-		f->vla.data = realloc(f->vla.data, f->vla.capacity * sizeof(TB_Register));
+		f->vla.data = tb_platform_heap_realloc(f->vla.data, f->vla.capacity * sizeof(TB_Register));
 	}
 	
 	int param_start = f->vla.count;
@@ -792,7 +792,7 @@ TB_API void tb_inst_switch(TB_Function* f, TB_DataType dt, TB_Register key, TB_L
 	if (f->vla.count + param_count >= f->vla.capacity) {
 		// TODO(NeGate): This might be excessive for this array, idk :P
 		f->vla.capacity = tb_next_pow2(f->vla.count + param_count);
-		f->vla.data = realloc(f->vla.data, f->vla.capacity * sizeof(TB_Register));
+		f->vla.data = tb_platform_heap_realloc(f->vla.data, f->vla.capacity * sizeof(TB_Register));
 	}
 	
 	int param_start = f->vla.count;
@@ -825,7 +825,7 @@ void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, siz
 	assert(pos < UINT32_MAX);
 	if (m->label_symbols.count + 1 >= m->label_symbols.capacity) {
 		m->label_symbols.capacity *= 2;
-		m->label_symbols.data = realloc(m->label_symbols.data, m->label_symbols.capacity * sizeof(TB_ConstPool32Patch));
+		m->label_symbols.data = tb_platform_heap_realloc(m->label_symbols.data, m->label_symbols.capacity * sizeof(TB_ConstPool32Patch));
 	}
 	
 	size_t r = m->label_symbols.count++;
@@ -841,7 +841,7 @@ uint32_t tb_emit_const32_patch(TB_Module* m, uint32_t func_id, size_t pos, uint3
 	assert(pos < UINT32_MAX);
 	if (m->const32_patches.count + 1 >= m->const32_patches.capacity) {
 		m->const32_patches.capacity *= 2;
-		m->const32_patches.data = realloc(m->const32_patches.data, m->const32_patches.capacity * sizeof(TB_ConstPool32Patch));
+		m->const32_patches.data = tb_platform_heap_realloc(m->const32_patches.data, m->const32_patches.capacity * sizeof(TB_ConstPool32Patch));
 	}
 	
 	size_t r = m->const32_patches.count++;

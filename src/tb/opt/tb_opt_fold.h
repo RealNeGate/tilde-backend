@@ -52,6 +52,8 @@ bool tb_opt_fold(TB_Function* f) {
 	for (TB_Register i = 1; i < f->nodes.count; i++) {
 		TB_DataType dt = f->nodes.dt[i];
 		
+		// It's technically legal to read this space even tho SIGN_EXTEND and ZERO_EXTEND
+		// don't use it so long as we don't actually depend on it's results.
 		TB_Register a = f->nodes.payload[i].i_arith.a;
 		TB_Register b = f->nodes.payload[i].i_arith.b;
 		TB_ArithmaticBehavior ab = f->nodes.payload[i].i_arith.arith_behavior;
@@ -95,6 +97,11 @@ bool tb_opt_fold(TB_Function* f) {
 			
 			f->nodes.type[i] = TB_INT_CONST;
 			f->nodes.payload[i].i_const = result;
+			changes++;
+		}
+		else if (f->nodes.type[i] == TB_SIGN_EXT || f->nodes.type[i] == TB_ZERO_EXT) {
+			f->nodes.type[i] = TB_INT_CONST;
+			f->nodes.payload[i].i_const = f->nodes.payload[a].i_const;
 			changes++;
 		}
 	}

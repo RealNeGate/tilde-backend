@@ -9,7 +9,8 @@
 _Static_assert(sizeof(float) == sizeof(uint32_t), "Float needs to be a 32-bit single float!");
 
 // can be cleared after the side effect that originally created it
-#define TB_REG_TEMP (((TB_Register)INT32_MAX) - 1)
+//#define TB_REG_TEMP (((TB_Register)INT32_MAX) - 1)
+#define X64_TEMP_REG ((TB_Register)0)
 
 typedef union Cvt_F32U32 {
 	float f;
@@ -151,6 +152,10 @@ typedef struct Ctx {
 	// that they need to handle it in the IR earlier.
 	TB_Register gpr_desc[16];
 	TB_Register xmm_desc[16];
+	
+	// reserved for a side-effect node
+	uint16_t gpr_temp_bits;
+	uint16_t xmm_temp_bits;
 	
 	// GPRs are the bottom 32bit
 	// XMM is the top 32bit
@@ -411,6 +416,9 @@ static bool evict_gpr(Ctx* ctx, TB_Function* f, GPR g, TB_Register r);
 
 // same as evict_gpr(...) but for XMM
 static bool evict_xmm(Ctx* ctx, TB_Function* f, XMM x, TB_Register r);
+
+static void temporary_reserve_gpr(Ctx* ctx, TB_Function* f, GPR g);
+static void temporary_reserve_xmm(Ctx* ctx, TB_Function* f, XMM x);
 
 static void materialize(Ctx* ctx, TB_Function* f, Val* dst, const Val* src, TB_Register src_reg, TB_DataType dt);
 

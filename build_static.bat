@@ -1,6 +1,3 @@
-@echo off
-setlocal EnableDelayedExpansion
-
 call vcvars64
 
 set clang_settings=-march=nehalem -O0 -Werror -Wall -Wno-unused-function -g -gcodeview -D_CRT_SECURE_NO_WARNINGS
@@ -30,4 +27,5 @@ set tb_object_files=tb.o ^
 	tb_win32.o ^
 	tb_internal.o
 	
-llvm-ar rc tinybackend.lib %tb_object_files%
+llvm-ar rc W:/Workspace/Cuik/tinybackend.lib %tb_object_files%
+

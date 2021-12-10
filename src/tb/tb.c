@@ -98,8 +98,13 @@ static void* job_system_thread_func(void* lpParam)
 			sem_wait(q->semaphore);
 #endif
 			
-			// only actually shut off if we run out and are told to stop.
-			if (s->running == false) break;
+			// only actually shut off if we run out of work
+			// and are told to stop.
+			if (m->compiled_functions.completed == m->compiled_functions.count 
+				&& s->running == false) {
+				break;
+			}
+			
 			continue;
 		}
 		
@@ -107,7 +112,6 @@ static void* job_system_thread_func(void* lpParam)
 			// Compile function
 			TB_Function* f = q->functions[read_ptr];
 			size_t index = f - m->functions.data;
-			assert(f->validated);
 			
 			if (m->optimization_level != TB_OPT_O0) {
 				tb_optimize_func(f);
@@ -120,6 +124,8 @@ static void* job_system_thread_func(void* lpParam)
 			// Free the IR, no longer needed,
             // unless we say otherwise
             if (!m->preserve_ir_after_submit) tb_function_free(f);
+			
+			m->compiled_functions.completed++;
 		}
 	}
 	
@@ -157,16 +163,6 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 	m->const32_patches.capacity = 64;
 	m->const32_patches.data = tb_platform_heap_alloc(64 * sizeof(TB_ConstPool32Patch));
     
-	for (int i = 0; i < max_threads; i++) {
-		m->call_patches.count[i] = 0;
-		m->call_patches.capacity[i] = 64;
-		m->call_patches.data[i] = tb_platform_heap_alloc(64 * sizeof(TB_FunctionPatch));
-	}
-	
-	m->ecall_patches.count = 0;
-	m->ecall_patches.capacity = 64;
-	m->ecall_patches.data = tb_platform_heap_alloc(64 * sizeof(TB_ExternFunctionPatch));
-	
 	m->externals.count = 0;
 	m->externals.capacity = 64;
 	m->externals.data = tb_platform_heap_alloc(64 * sizeof(TB_External));
@@ -236,6 +232,8 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
 	q->functions[write_ptr] = f;
 	q->write_pointer = new_write_ptr;
 	
+	m->compiled_functions.count++;
+	
 #if _WIN32
 	ReleaseSemaphore(q->semaphore, 1, 0);
 #else
@@ -264,7 +262,7 @@ TB_API bool tb_module_compile(TB_Module* m) {
 	}
 	
 	DeleteCriticalSection(&m->patch_mutex);
-	m->compiled_functions.count = m->functions.count;
+	assert(m->compiled_functions.count == m->functions.count);
 #else
 	// TODO(NeGate): Delete the mutexes and fix this
 	// sem_close(s->semaphore); 
@@ -300,9 +298,8 @@ TB_API void tb_module_destroy(TB_Module* m) {
 		tb_platform_heap_free(m->files.data[i].path);
 	}
 	
-	loop(i, m->max_threads) {
-		tb_platform_heap_free(m->call_patches.data[i]);
-	}
+	loop(i, m->max_threads) arrfree(m->call_patches[i]);
+	loop(i, m->max_threads) arrfree(m->ecall_patches[i]);
 	
 	tb_platform_string_free();
 	tb_platform_heap_free(m->jobs);
@@ -310,7 +307,6 @@ TB_API void tb_module_destroy(TB_Module* m) {
 	tb_platform_heap_free(m->label_symbols.data);
 #endif
 	tb_platform_heap_free(m->const32_patches.data);
-	tb_platform_heap_free(m->ecall_patches.data);
 	tb_platform_heap_free(m->files.data);
 	tb_platform_heap_free(m->functions.data);
 	tb_platform_heap_free(m->externals.data);
@@ -406,38 +402,93 @@ void tb_resize_node_stream(TB_Function* f, size_t cap) {
 	memset(&f->nodes.type[f->nodes.count], 0, (cap - f->nodes.count) * sizeof(TB_RegType));
 }
 
-TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_DataType return_dt) {
+TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv conv, TB_DataType return_dt, int num_params, bool has_varargs) {
+	size_t len = arrlen(m->prototypes);
+	size_t space_needed = (sizeof(TB_FunctionPrototype) + (sizeof(uint64_t)-1)) / sizeof(uint64_t);
+	space_needed += ((num_params * sizeof(TB_DataType)) + (sizeof(uint64_t)-1)) / sizeof(uint64_t);
+	
+	arrsetlen(m->prototypes, len + space_needed);
+	
+	TB_FunctionPrototype* p = (TB_FunctionPrototype*)&m->prototypes[len];
+	p->call_conv = conv;
+	p->param_capacity = num_params;
+	p->param_count = 0;
+	p->return_dt = return_dt;
+	p->has_varargs = has_varargs;
+	return p;
+}
+
+TB_API void tb_prototype_add_param(TB_FunctionPrototype* p, TB_DataType dt) {
+	assert(p->param_count+1 <= p->param_capacity);
+	p->params[p->param_count++] = dt;
+}
+
+TB_API void tb_prototype_add_params(TB_FunctionPrototype* p, size_t count, const TB_DataType* dt) {
+	assert(p->param_count+count <= p->param_capacity);
+	memcpy(&p->params[p->param_count], dt, count * sizeof(TB_DataType));
+	p->param_count += count;
+}
+
+TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, const char* name) {
 	size_t i = m->functions.count++;
 	assert(i < TB_MAX_FUNCTIONS);
+	assert(p->param_count == p->param_capacity);
 	
 	TB_Function* f = &m->functions.data[i];
-	memset(f, 0, sizeof(TB_Function));
+	*f = (TB_Function){
+		.module = m,
+		.prototype = p,
+		.name = tb_platform_string_alloc(name)
+	};
 	
-	// TODO(NeGate): We might wanna do something better with these strings
-	// especially since they'll be packed in a string table eventually
-	f->name = tb_platform_string_alloc(name);
-	
-	f->return_dt = return_dt;
-	f->module = m;
-    
-	f->nodes.count = 0;
-	tb_resize_node_stream(f, 64);
+	// TODO(NeGate): The node stream can never be under 16 entries
+	// for the SIMD optimizations to work so we bias the initial size.
+	tb_resize_node_stream(f, tb_next_pow2(16 + 2 + p->param_count));
 	
 	f->parameter_count = 0;
 	
-	// Null slot
+	// Null slot, Entry label & Parameters
+	f->nodes.count = 2 + p->param_count;
 	f->nodes.type[0] = TB_NULL;
-	f->nodes.dt[0] = (TB_DataType){ 0 };
-	f->nodes.payload[0] = (TB_RegPayload){ 0 };
-    
-	// Entry label
 	f->nodes.type[1] = TB_LABEL;
+	loop(i, p->param_count) f->nodes.type[2+i] = TB_PARAM;
+	
+	f->nodes.dt[0] = (TB_DataType){ 0 };
 	f->nodes.dt[1] = TB_TYPE_PTR;
-	f->nodes.payload[1].label.id = 0;
-	f->nodes.payload[1].label.terminator = TB_NULL_REG;
-	f->nodes.payload[1].label.is_loop = false;
-	f->nodes.count = 2;
-    
+	loop(i, p->param_count) f->nodes.dt[2+i] = p->params[i];
+	
+	f->nodes.payload[0] = (TB_RegPayload){ 0 };
+	f->nodes.payload[1] = (TB_RegPayload){ 
+		.label.id = 0,
+		.label.terminator = TB_NULL_REG,
+		.label.is_loop = false
+	};
+	loop(i, p->param_count) {
+		TB_DataType dt = p->params[i];
+		
+		// TODO(NeGate): It's currently assuming that all pointers are 8bytes big,
+		// which is untrue for some platforms.
+		int size = 0;
+		switch (dt.type) {
+			case TB_BOOL:size = 1; break;
+			case TB_I8:  size = 1; break;
+			case TB_I16: size = 2; break;
+			case TB_I32: size = 4; break;
+			case TB_I64: size = 8; break;
+			case TB_F32: size = 4; break;
+			case TB_F64: size = 8; break;
+			case TB_PTR: size = 8; break;
+			default: break;
+		}
+		
+		assert(size);
+		assert(dt.count > 0);
+		f->nodes.payload[2+i] = (TB_RegPayload){
+			.param.id = i,
+			.param.size = size * dt.count
+		};
+	}
+	
 	f->label_count = 1;
 	f->current_label = 1;
 	return f;
@@ -524,49 +575,26 @@ void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance) {
 
 void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size_t pos, size_t local_thread_id) {
 	assert(pos < UINT32_MAX);
-	int id = local_thread_id;
+	dyn_array(TB_FunctionPatch) patches = m->call_patches[local_thread_id];
 	
-	if (m->call_patches.count[id] + 1 >= m->call_patches.capacity[id]) {
-		m->call_patches.capacity[id] *= 2;
-		m->call_patches.data[id] = tb_platform_heap_realloc(m->call_patches.data[id],
-															m->call_patches.capacity[id] *
-															sizeof(TB_FunctionPatch));
-	}
-	
-	size_t r = m->call_patches.count[id]++;
-	m->call_patches.data[id][r] = (TB_FunctionPatch){
+	TB_FunctionPatch p = {
 		.func_id = func_id,
 		.target_id = target_id,
 		.pos = pos
 	};
+	
+	arrput(patches, p);
 }
 
 void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id, size_t pos, size_t local_thread_id) {
-#if _WIN32
-	EnterCriticalSection(&m->patch_mutex);
-#else
-	pthread_mutex_lock(&m->patch_mutex);
-#endif
-	
-	assert(pos < UINT32_MAX);
-	if (m->ecall_patches.count + 1 >= m->ecall_patches.capacity) {
-		m->ecall_patches.capacity *= 2;
-		m->ecall_patches.data = tb_platform_heap_realloc(m->ecall_patches.data,
-														 m->ecall_patches.capacity * sizeof(TB_FunctionPatch));
-	}
-    
-	size_t r = m->ecall_patches.count++;
-	m->ecall_patches.data[r] = (TB_ExternFunctionPatch){
+	dyn_array(TB_ExternFunctionPatch) patches = m->ecall_patches[local_thread_id];
+	TB_ExternFunctionPatch p = {
 		.func_id = func_id,
 		.target_id = target_id,
 		.pos = pos
 	};
 	
-#if _WIN32
-	LeaveCriticalSection(&m->patch_mutex);
-#else
-	pthread_mutex_unlock(&m->patch_mutex);
-#endif
+	arrput(patches, p);
 }
 
 //

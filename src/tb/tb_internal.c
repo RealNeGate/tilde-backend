@@ -8,7 +8,6 @@
 #endif
 
 bool tb_validate(TB_Function* restrict f) {
-	if (f->validated) return true;
 	int error_count = 0;
 	
 	size_t node_count = f->nodes.count;
@@ -66,9 +65,13 @@ bool tb_validate(TB_Function* restrict f) {
 		i++;
 	} while (i < node_count);
 	
-	if (error_count) tb_function_print(f, stdout);
-	f->validated = true;
-	return (error_count == 0);
+	if (error_count) {
+		printf("Validation Error!!");
+		tb_function_print(f, stdout);
+		return false;
+	}
+	
+	return true;
 }
 
 #if TB_VALIDATOR_PRINT

@@ -508,7 +508,10 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	debugt_section.raw_data_pos = rdata_section.raw_data_pos + rdata_section.raw_data_size;
 	debugs_section.raw_data_pos = debugt_section.raw_data_pos + debugt_section.raw_data_size;
 	
-	text_section.num_reloc = m->const32_patches.count + m->ecall_patches.count;
+	text_section.num_reloc = m->const32_patches.count;
+	loop(i, m->max_threads) {
+		text_section.num_reloc += arrlen(m->ecall_patches[i]);
+	}
 	
 	// A bunch of relocations are made by the CodeView sections, if there's no
 	// debug info then these are ignored/non-existent.
@@ -600,22 +603,26 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	}
 	
 	size_t extern_func_sym_start = 8 + m->compiled_functions.count;
-	for (size_t i = 0; i < m->ecall_patches.count; i++) {
-		TB_ExternFunctionPatch* p = &m->ecall_patches.data[i];
-		TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
+	loop(i, m->max_threads) {
+		dyn_array(TB_ExternFunctionPatch) patches = m->ecall_patches[i];
 		
-		uint64_t meta = out_f->prologue_epilogue_metadata;
-		uint64_t stack_usage = out_f->stack_usage;
-		
-		size_t actual_pos = func_layout[p->func_id] 
-			+ code_gen->get_prologue_length(meta, stack_usage)
-			+ p->pos;
-		
-		fwrite(&(COFF_ImageReloc) {
-				   .Type = IMAGE_REL_AMD64_REL32,
-				   .SymbolTableIndex = extern_func_sym_start + p->target_id,
-				   .VirtualAddress = actual_pos
-			   }, sizeof(COFF_ImageReloc), 1, f);
+		loop(j, arrlen(patches)) {
+			TB_ExternFunctionPatch* p = &patches[j];
+			TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
+			
+			uint64_t meta = out_f->prologue_epilogue_metadata;
+			uint64_t stack_usage = out_f->stack_usage;
+			
+			size_t actual_pos = func_layout[p->func_id] 
+				+ code_gen->get_prologue_length(meta, stack_usage)
+				+ p->pos;
+			
+			fwrite(&(COFF_ImageReloc) {
+					   .Type = IMAGE_REL_AMD64_REL32,
+					   .SymbolTableIndex = extern_func_sym_start + p->target_id,
+					   .VirtualAddress = actual_pos
+				   }, sizeof(COFF_ImageReloc), 1, f);
+		}
 	}
 	
 	// Field base relocations in .debug$S

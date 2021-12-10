@@ -28,7 +28,17 @@
 #include <semaphore.h>
 #endif
 
-#define MAX_JOBS_PER_JOB_SYSTEM 4096
+#include "tb_platform.h"
+
+#define STBDS_REALLOC(c,p,s) tb_platform_heap_realloc(p,s)
+#define STBDS_FREE(c,p) tb_platform_heap_free(p)
+#include "stb_ds.h"
+
+// cool part about stb_ds is that the dynamic arrays
+// look and act like normal arrays for access and types.
+#define dyn_array(T) T*
+
+#define MAX_JOBS_PER_JOB_SYSTEM 256
 
 typedef struct TB_Emitter {
 	size_t capacity, count;
@@ -281,7 +291,7 @@ typedef struct TB_ExternFunctionPatch {
 	uint32_t pos; // relative to the start of the function
 } TB_ExternFunctionPatch;
 
-struct TB_FunctionOutput {
+typedef struct TB_FunctionOutput {
 	const char* name;
 	
 	// NOTE(NeGate): This data is actually specific to the
@@ -292,7 +302,7 @@ struct TB_FunctionOutput {
 	
 	uint8_t* code;
 	size_t code_size;
-};
+} TB_FunctionOutput;
 
 typedef struct TB_File {
 	char* path;
@@ -311,15 +321,31 @@ typedef struct TB_External {
 	char* name;
 } TB_External;
 
+// function prototypes are stored
+// in streams as inplace arrays:
+//
+// PROTYPE0, arg0, arg1, PROTYPE1, arg0, arg1
+struct TB_FunctionPrototype {
+	// header
+	TB_CallingConv call_conv;
+	
+	short param_capacity;
+	short param_count;
+	
+	TB_DataType return_dt;
+	bool has_varargs;
+	
+	// payload
+	TB_DataType params[];
+};
+
 struct TB_Function {
-	bool is_ir_free;
-	bool validated;
+	// It's kinda a weird circular but still
+	TB_Module* module;
+	const TB_FunctionPrototype* prototype;
 	
 	char* name;
-	TB_DataType return_dt;
-	
-	// It's kinda a weird circular but still
-	struct TB_Module* module;
+	bool is_ir_free;
 	
 	// Used by the IR building
 	TB_Register current_label;
@@ -391,12 +417,10 @@ struct TB_Module {
 	// which means it needs to be re-evaluated.
 	_Atomic size_t line_info_count;
 	
+	dyn_array(uint64_t) prototypes;
+	
 #if !TB_STRIP_LABELS
-	struct {
-		size_t count;
-		size_t capacity;
-		TB_LabelSymbol* data;
-	} label_symbols;
+	dyn_array(TB_LabelSymbol) label_symbols;
 #endif
 	
 #if _WIN32
@@ -411,20 +435,9 @@ struct TB_Module {
 		TB_ConstPool32Patch* data;
 	} const32_patches;
     
-	// NOTE(NeGate): There's going to be one array 
-	// per thread.
-	struct {
-		size_t count[TB_MAX_THREADS];
-		size_t capacity[TB_MAX_THREADS];
-		TB_FunctionPatch* data[TB_MAX_THREADS];
-	} call_patches;
-    
-	struct {
-		size_t count;
-		size_t capacity;
-		TB_ExternFunctionPatch* data;
-	} ecall_patches;
-    
+    dyn_array(TB_FunctionPatch) call_patches[TB_MAX_THREADS];
+    dyn_array(TB_ExternFunctionPatch) ecall_patches[TB_MAX_THREADS];
+	
 	struct {
 		size_t count;
 		size_t capacity;
@@ -443,6 +456,7 @@ struct TB_Module {
 	} externals;
 	
 	struct {
+		size_t completed;
 		size_t count;
 		TB_FunctionOutput* data;
 	} compiled_functions;
@@ -560,23 +574,6 @@ size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_
 void tb_insert_op(TB_Function* f, TB_Register at);
 void tb_resize_node_stream(TB_Function* f, size_t cap);
 TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params, TB_Register at, const TB_Function* src_func, TB_Register src_base, int count);
-
-//
-// PLATFORM LAYER
-//
-void* tb_platform_valloc(size_t size);
-void tb_platform_vfree(void* ptr, size_t size);
-bool tb_platform_vprotect(void* ptr, size_t size, bool execute_read);
-// NOTE(NeGate): It's either execute-read or read-write, no other options... yet
-// returns false, if it failed
-
-void* tb_platform_heap_alloc(size_t size);
-void* tb_platform_heap_realloc(void* ptr, size_t size);
-void tb_platform_heap_free(void* ptr);
-
-char* tb_platform_string_alloc(const char* str);
-void tb_platform_string_free();
-// frees all strings allocated
 
 inline static void tb_kill_op(TB_Function* f, TB_Register at) {
 	f->nodes.type[at] = TB_NULL;

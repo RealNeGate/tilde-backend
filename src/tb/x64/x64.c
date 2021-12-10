@@ -33,7 +33,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* f, const TB_FeatureSet* feat
 	
 	ctx->start_out = ctx->out = out;
 	
-	//tb_function_print(f);
+	//tb_function_print(f, stdout);
 	printf("\n\n\n%s:\n", f->name);
 	
 	////////////////////////////////
@@ -1954,8 +1954,10 @@ static int get_data_type_size(const TB_DataType dt) {
 
 void x64_emit_call_patches(TB_Module* m, uint32_t func_layout[]) {
 	loop(i, m->max_threads) {
-		loop(j, m->call_patches.count[i]) {
-			TB_FunctionPatch* p = &m->call_patches.data[i][j];
+		dyn_array(TB_FunctionPatch) patches = m->call_patches[i];
+		
+		loop(j, arrlen(patches)) {
+			TB_FunctionPatch* p = &patches[j];
 			TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
 			
 			uint64_t meta = out_f->prologue_epilogue_metadata;
@@ -1964,7 +1966,7 @@ void x64_emit_call_patches(TB_Module* m, uint32_t func_layout[]) {
 			
 			size_t actual_pos = func_layout[p->func_id]
 				+ x64_get_prologue_length(meta, stack_usage)
-				+ p->pos
+				+ p->pos 
 				+ 4;
 			
 			*((uint32_t*)&code[p->pos]) = func_layout[p->target_id] - actual_pos;

@@ -1,6 +1,9 @@
 .vs/
 build/
 
+*.o
+*.obj
+
 debug.bat
 run.bat
 run4coder.bat

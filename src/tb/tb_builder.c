@@ -262,27 +262,24 @@ TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt) 
 	return r;
 }
 
-TB_API TB_Register tb_inst_param(TB_Function* f, TB_DataType dt) {
-	TB_Register r = tb_make_reg(f, TB_PARAM, dt);
-	f->nodes.payload[r].param.id = f->parameter_count++;
+TB_API TB_Register tb_inst_param(TB_Function* f, int param_id) {
+	int param_count = f->prototype->param_count;
+	assert(param_id < param_count);
 	
-	// TODO(NeGate): It's currently assuming that all pointers are 8bytes big,
-	// which is untrue for some platforms.
-	int param_size = 0;
-	switch (dt.type) {
-		case TB_I8:  param_size = 1; break;
-		case TB_I16: param_size = 2; break;
-		case TB_I32: param_size = 4; break;
-		case TB_I64: param_size = 8; break;
-		case TB_F32: param_size = 4; break;
-		case TB_F64: param_size = 8; break;
-		case TB_PTR: param_size = 8; break;
-		default: break;
-	}
+	return 2 + param_id;
+}
+
+TB_API TB_Register tb_inst_param_addr(TB_Function* f, int param_id) {
+	int param_count = f->prototype->param_count;
+	assert(param_id < param_count);
 	
-	assert(param_size);
-	assert(dt.count > 0);
-	f->nodes.payload[r].param.size = param_size * dt.count;
+	TB_Register param = 2 + param_id;
+	int param_size = f->nodes.payload[param].param.size;
+	
+	TB_Register r = tb_make_reg(f, TB_PARAM_ADDR, TB_TYPE_PTR);
+	f->nodes.payload[r].param_addr.param = param;
+	f->nodes.payload[r].param_addr.size = param_size;
+	f->nodes.payload[r].param_addr.alignment = param_size;
 	return r;
 }
 
@@ -293,18 +290,6 @@ TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line) {
 	f->nodes.payload[r].line_info.pos = 0;
 	
 	f->module->line_info_count++;
-}
-
-TB_API TB_Register tb_inst_param_addr(TB_Function* f, TB_Register param) {
-	assert(f->nodes.type[param] == TB_PARAM);
-	
-	int param_size = f->nodes.payload[param].param.size;
-	
-	TB_Register r = tb_make_reg(f, TB_PARAM_ADDR, TB_TYPE_PTR);
-	f->nodes.payload[r].param_addr.param = param;
-	f->nodes.payload[r].param_addr.size = param_size;
-	f->nodes.payload[r].param_addr.alignment = param_size;
-	return r;
 }
 
 TB_API TB_Register tb_inst_local(TB_Function* f, uint32_t size, uint32_t alignment) {
@@ -811,8 +796,8 @@ TB_API void tb_inst_switch(TB_Function* f, TB_DataType dt, TB_Register key, TB_L
 	f->current_label = TB_NULL_REG;
 }
 
-TB_API void tb_inst_ret(TB_Function* f, TB_DataType dt, TB_Register value) {
-	TB_Register r = tb_make_reg(f, TB_RET, dt);
+TB_API void tb_inst_ret(TB_Function* f, TB_Register value) {
+	TB_Register r = tb_make_reg(f, TB_RET, f->prototype->return_dt);
 	f->nodes.payload[r].ret.value = value;
 	
 	assert(f->current_label);

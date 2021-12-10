@@ -55,7 +55,7 @@ command_list = {
 		.save_dirty_files = true,
 		.cursor_at_end = true,
 		.cmd = {
-			{ "debug.bat", .os = "win" },
+			{ "devenv.exe /debugexe .\build\example.exe", .os = "win" },
 		},
 	}
 };

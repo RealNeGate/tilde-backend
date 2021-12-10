@@ -596,7 +596,7 @@ inline static void tb_kill_op(TB_Function* f, TB_Register at) {
 #if TB_HOST_ARCH == TB_HOST_X86_64
 #define FOR_EACH_NODE(iterator, func, target, ...) \
 for (size_t i = 0, cnt = (func)->nodes.count; i < cnt; i += 16) { \
-__m128i bytes = _mm_load_si128((__m128i*)&(func)->nodes.type[i]); \
+__m128i bytes = _mm_loadu_si128((__m128i*)&(func)->nodes.type[i]); \
 unsigned int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(target))); \
 if (mask == 0) continue; \
 /* this one is guarentee to not be zero */ \

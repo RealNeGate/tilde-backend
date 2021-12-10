@@ -15,17 +15,17 @@ bool tb_platform_vprotect(void* ptr, size_t size, bool execute) {
 
 void* tb_platform_heap_alloc(size_t size) {
 	//printf("Heap alloc: %zu\n", size);
-	return _aligned_malloc(size, 64);
+	return malloc(size);
 }
 
 void* tb_platform_heap_realloc(void* ptr, size_t size) {
 	//printf("Heap realloc: %zu\n", size);
-	return _aligned_realloc(ptr, size, 64);
+	return realloc(ptr, size);
 }
 
 void tb_platform_heap_free(void* ptr) {
 	//printf("Heap free\n");
-	_aligned_free(ptr);
+	free(ptr);
 }
 
 static char* string_buffer;

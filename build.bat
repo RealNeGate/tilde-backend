@@ -1,6 +1,6 @@
 call vcvars64
 
-set clang_settings=-march=nehalem -O0 -Werror -Wall -Wno-unused-function -g -gcodeview -D_CRT_SECURE_NO_WARNINGS
+set clang_settings=-march=nehalem -O0 -Werror -Wall -Wno-unused-function -g -gcodeview -D_CRT_SECURE_NO_WARNINGS -ferror-limit=40
 
 set tb_source_files=src/tb/tb.c ^
 	src/tb/tb_builder.c ^

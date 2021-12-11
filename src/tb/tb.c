@@ -153,6 +153,8 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 	m->target_system = target_system;
 	m->features = *features;
 	
+	m->prototypes_arena = tb_platform_valloc(PROTOTYPES_ARENA_SIZE);
+	
 #if !TB_STRIP_LABELS
 	m->label_symbols.count = 0;
 	m->label_symbols.capacity = 64;
@@ -298,6 +300,8 @@ TB_API void tb_module_destroy(TB_Module* m) {
 	loop(i, m->max_threads) arrfree(m->ecall_patches[i]);
 	loop(i, m->max_threads) arrfree(m->externals[i]);
 	
+	tb_platform_vfree(m->prototypes_arena, PROTOTYPES_ARENA_SIZE);
+	
 	tb_platform_string_free();
 	tb_platform_heap_free(m->jobs);
 #if !TB_STRIP_LABELS
@@ -401,13 +405,14 @@ void tb_resize_node_stream(TB_Function* f, size_t cap) {
 TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv conv, TB_DataType return_dt, int num_params, bool has_varargs) {
 	// TODO(NeGate): Data races, slap a mutex onto it or something
 	// TODO(NeGate): Swap this out with a dynamic memory arena.
-	size_t len = arrlen(m->prototypes);
 	size_t space_needed = (sizeof(TB_FunctionPrototype) + (sizeof(uint64_t)-1)) / sizeof(uint64_t);
 	space_needed += ((num_params * sizeof(TB_DataType)) + (sizeof(uint64_t)-1)) / sizeof(uint64_t);
 	
-	arrsetlen(m->prototypes, len + space_needed);
+	size_t len = m->prototypes_arena_size;
+	m->prototypes_arena_size += space_needed;
+	if (m->prototypes_arena_size >= PROTOTYPES_ARENA_SIZE) abort();
 	
-	TB_FunctionPrototype* p = (TB_FunctionPrototype*)&m->prototypes[len];
+	TB_FunctionPrototype* p = (TB_FunctionPrototype*)&m->prototypes_arena[len];
 	p->call_conv = conv;
 	p->param_capacity = num_params;
 	p->param_count = 0;
@@ -492,16 +497,16 @@ TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, co
 
 TB_API TB_ExternalID tb_module_extern(TB_Module* m, const char* name) {
 	int tid = get_local_thread_id();
-
+	
 	// each thread gets their own grouping of external ids
 	TB_ExternalID per_thread_stride = INT_MAX / TB_MAX_THREADS;
-
+	
 	TB_ExternalID i = (tid * per_thread_stride) + arrlen(m->externals[tid]);
 	TB_External e = {
 		.name = tb_platform_string_alloc(name)
 	};
 	arrput(m->externals[tid], e);
-
+	
 	return i;
 }
 
@@ -764,11 +769,11 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			case TB_ECALL: {
 				TB_ExternalID per_thread_stride = INT_MAX / TB_MAX_THREADS;
 				TB_External* e = &m->externals[p.ecall.target / per_thread_stride][p.ecall.target % per_thread_stride];
-
+				
 				fprintf(out, "  r%u\t=\tECALL %s(", i, e->name);
 				for (size_t j = p.ecall.param_start; j < p.ecall.param_end; j++) {
 					if (j != p.ecall.param_start) fprintf(out, ", ");
-
+					
 					fprintf(out, "r%u", f->vla.data[j]);
 				}
 				fprintf(out, ")\n");

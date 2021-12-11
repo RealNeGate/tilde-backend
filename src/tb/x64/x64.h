@@ -396,19 +396,17 @@ inline static bool is_value_match(const Val* a, const Val* b) {
 
 static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, GPR gpr, TB_Register bb, TB_Register bb_end);
 
-// Evaluates the virtual register if not already, outputs to `r`
-// if `rval` is true, then we return addresses via an direct registers or LEA.
-static void use(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_Register next);
+static Val use(Ctx* ctx, TB_Function* f, TB_Register r);
 
 static void kill(Ctx* ctx, TB_Function* f, TB_Register r);
 
 static void def(Ctx* ctx, TB_Function* f, const Val v, TB_Register r);
 
 // allocates a new gpr as the `r` virtual reg
-static void def_new_gpr(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, int dt_type);
+static Val def_new_gpr(Ctx* ctx, TB_Function* f, TB_Register r, int dt_type);
 
 // allocates a new xmm as the `r` virtual reg
-static void def_new_xmm(Ctx* ctx, TB_Function* f, Val* v, TB_Register r, TB_DataType dt);
+static Val def_new_xmm(Ctx* ctx, TB_Function* f, TB_Register r, TB_DataType dt);
 
 // if something is bound to this GPR, it's spilled into a stack slot
 // returns true if it spilled
@@ -420,14 +418,14 @@ static bool evict_xmm(Ctx* ctx, TB_Function* f, XMM x, TB_Register r);
 static void temporary_reserve_gpr(Ctx* ctx, TB_Function* f, GPR g);
 static void temporary_reserve_xmm(Ctx* ctx, TB_Function* f, XMM x);
 
-static void materialize(Ctx* ctx, TB_Function* f, Val* dst, const Val* src, TB_Register src_reg, TB_DataType dt);
+static Val materialize(Ctx* ctx, TB_Function* f, const Val* src, TB_Register src_reg, TB_DataType dt);
 
-static void isel(Ctx* ctx, TB_Function* f, Val* v, const IselInfo* info,
+static void isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
 				 TB_Register dst_reg, TB_Register a_reg, TB_Register b_reg, 
 				 const Val* a, const Val* b);
 
 // Same as isel(...) except both parameters are the same so things are slightly simpler
-static void isel_aliased(Ctx* ctx, TB_Function* f, Val* v, const IselInfo* info,
+static void isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
 						 TB_Register dst_reg, TB_Register src_reg, 
 						 const Val* src);
 
@@ -439,5 +437,5 @@ static bool garbage_collect_xmm(Ctx* ctx, TB_Function* f, TB_Register r);
 
 static bool is_phi_that_contains(TB_Function* f, TB_Register phi, TB_Register reg);
 static void store_into(Ctx* ctx, TB_Function* f, TB_DataType dt, const Val* dst, TB_Register r, TB_Register dst_reg, TB_Register val_reg);
-static void load_into(Ctx* ctx, TB_Function* f, TB_DataType dt, Val* v, TB_Register r, TB_Register addr, TB_Register next);
+static Val load_into(Ctx* ctx, TB_Function* f, TB_DataType dt, TB_Register r, TB_Register addr);
 

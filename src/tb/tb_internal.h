@@ -40,6 +40,9 @@
 
 #define MAX_JOBS_PER_JOB_SYSTEM 256
 
+// TODO(NeGate): eventually i'll make it dynamic
+#define PROTOTYPES_ARENA_SIZE (1u << 20u)
+
 typedef struct TB_Emitter {
 	size_t capacity, count;
 	uint8_t* data;
@@ -153,6 +156,8 @@ typedef uint8_t TB_RegType;
 #define TB_IS_NODE_TERMINATOR(type) ((type) >= TB_TERMINATOR_MIN && (type) <= TB_TERMINATOR_MAX)
 #define TB_DATA_TYPE_EQUALS(a, b) (memcmp(&(a), &(b), sizeof(TB_DataType)) == 0)
 #define TB_DATA_TYPE_NOT_EQUALS(a, b) (memcmp(&(a), &(b), sizeof(TB_DataType)) != 0)
+
+#define TB_FIRST_PARAMETER_REG 2
 
 typedef union TB_RegPayload {
 	// NOTE(NeGate): Shouldn't exceed 128bits for any option
@@ -415,7 +420,8 @@ struct TB_Module {
 	// which means it needs to be re-evaluated.
 	_Atomic size_t line_info_count;
 	
-	dyn_array(uint64_t) prototypes;
+	size_t prototypes_arena_size;
+	uint64_t* prototypes_arena;
 	
 #if !TB_STRIP_LABELS
 	dyn_array(TB_LabelSymbol) label_symbols;
@@ -434,7 +440,7 @@ struct TB_Module {
 	} const32_patches;
     
 	dyn_array(TB_External) externals[TB_MAX_THREADS];
-
+	
 	dyn_array(TB_FunctionPatch) call_patches[TB_MAX_THREADS];
     dyn_array(TB_ExternFunctionPatch) ecall_patches[TB_MAX_THREADS];
 	

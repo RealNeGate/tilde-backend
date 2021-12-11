@@ -197,7 +197,7 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 									 m, 0, 0);
 	}
 	
-	InitializeCriticalSection(&m->patch_mutex);
+	InitializeCriticalSection(&m->mutex);
 #else
 	loop(i, max_threads) {
 		pthread_create(&j->threads[i], 0, job_system_thread_func, m);
@@ -207,7 +207,7 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 		j->queue[i].semaphore = sem_open(strdup(temp), 0, 0, max_threads);
 	}
 	
-	pthread_mutex_init(&m->patch_mutex, NULL);
+	pthread_mutex_init(&m->mutex, NULL);
 #endif
 	
 	return m;
@@ -261,7 +261,7 @@ TB_API bool tb_module_compile(TB_Module* m) {
 		s->threads[i] = NULL;
 	}
 	
-	DeleteCriticalSection(&m->patch_mutex);
+	DeleteCriticalSection(&m->mutex);
 	assert(m->compiled_functions.count == m->functions.count);
 #else
 	// TODO(NeGate): Delete the mutexes and fix this
@@ -495,19 +495,28 @@ TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, co
 }
 
 TB_API TB_ExternalID tb_module_extern(TB_Module* m, const char* name) {
+#if _WIN32
+	EnterCriticalSection(&m->mutex);
+#else
+	pthread_mutex_lock(&m->mutex);
+#endif
+
 	if (m->externals.count + 1 >= m->externals.capacity) {
 		// TODO(NeGate): This might be excessive for this array, idk :P
 		m->externals.capacity = tb_next_pow2(m->externals.count + 1);
 		m->externals.data = tb_platform_heap_realloc(m->externals.data, m->externals.capacity * sizeof(TB_External));
 	}
 	
-	// TODO(NeGate): We might wanna do something better with these strings
-	// especially since they'll be packed in a string table eventually
-	char* new_name = tb_platform_heap_alloc(strlen(name) + 1);
-	strcpy(new_name, name);
 	
 	TB_ExternalID i = m->externals.count++;
-	m->externals.data[i].name = new_name;
+
+#if _WIN32
+	LeaveCriticalSection(&m->mutex);
+#else
+	pthread_mutex_unlock(&m->mutex);
+#endif
+
+	m->externals.data[i].name = tb_platform_string_alloc(name);
 	return i;
 }
 

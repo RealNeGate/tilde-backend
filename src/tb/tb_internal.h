@@ -424,9 +424,9 @@ struct TB_Module {
 #endif
 	
 #if _WIN32
-	CRITICAL_SECTION patch_mutex;
+	CRITICAL_SECTION mutex;
 #else
-	pthread_mutex_t patch_mutex;
+	pthread_mutex_t mutex;
 #endif
 	
 	struct {

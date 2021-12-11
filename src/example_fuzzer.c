@@ -2,7 +2,7 @@
 #include <x86intrin.h>
 #include <windows.h>
 
-#define TRIAL_COUNT 349525 // 349525
+#define TRIAL_COUNT 50000 // for max power 349525 
 
 static uint32_t gen_random_any();
 static uint32_t gen_random(uint32_t min, uint32_t max);
@@ -61,13 +61,14 @@ static __stdcall int ir_gen(FuzzerInfo* i) {
 		sprintf_s(temp, 64, "trial_%d_%d", i->thread_id, n);
 		
 		TB_DataType return_dt = gen_random_int_dt();
-		TB_Function* f = tb_function_create(m, temp, return_dt);
-		
 		int param_count = gen_random(1, 8);
+		
+		TB_FunctionPrototype* p = tb_prototype_create(m, TB_STDCALL, return_dt, param_count, false);
 		for (int i = 0; i < param_count; i++) {
 			pool[pool_size++] = tb_inst_param(f, return_dt);
 		}
 		
+		TB_Function* func = tb_prototype_build(m, p, temp);
 		int inst_count = gen_random(1, 400);
 		for (int i = 0; i < inst_count; i++) {
 			TB_DataType dt = gen_random_int_dt();

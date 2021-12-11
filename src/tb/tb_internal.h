@@ -435,7 +435,9 @@ struct TB_Module {
 		TB_ConstPool32Patch* data;
 	} const32_patches;
     
-    dyn_array(TB_FunctionPatch) call_patches[TB_MAX_THREADS];
+	dyn_array(TB_External) externals[TB_MAX_THREADS];
+
+	dyn_array(TB_FunctionPatch) call_patches[TB_MAX_THREADS];
     dyn_array(TB_ExternFunctionPatch) ecall_patches[TB_MAX_THREADS];
 	
 	struct {
@@ -448,12 +450,6 @@ struct TB_Module {
 		_Atomic size_t count;
 		TB_Function* data;
 	} functions;
-    
-	struct {
-		size_t count;
-		size_t capacity;
-		TB_External* data;
-	} externals;
 	
 	struct {
 		size_t completed;

@@ -163,10 +163,6 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 	m->const32_patches.capacity = 64;
 	m->const32_patches.data = tb_platform_heap_alloc(64 * sizeof(TB_ConstPool32Patch));
     
-	m->externals.count = 0;
-	m->externals.capacity = 64;
-	m->externals.data = tb_platform_heap_alloc(64 * sizeof(TB_External));
-	
 	m->files.count = 1;
 	m->files.capacity = 64;
 	m->files.data = tb_platform_heap_alloc(64 * sizeof(TB_File));
@@ -300,6 +296,7 @@ TB_API void tb_module_destroy(TB_Module* m) {
 	
 	loop(i, m->max_threads) arrfree(m->call_patches[i]);
 	loop(i, m->max_threads) arrfree(m->ecall_patches[i]);
+	loop(i, m->max_threads) arrfree(m->externals[i]);
 	
 	tb_platform_string_free();
 	tb_platform_heap_free(m->jobs);
@@ -309,7 +306,6 @@ TB_API void tb_module_destroy(TB_Module* m) {
 	tb_platform_heap_free(m->const32_patches.data);
 	tb_platform_heap_free(m->files.data);
 	tb_platform_heap_free(m->functions.data);
-	tb_platform_heap_free(m->externals.data);
 	tb_platform_heap_free(m->compiled_functions.data);
 	tb_platform_heap_free(m);
 }
@@ -495,28 +491,17 @@ TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, co
 }
 
 TB_API TB_ExternalID tb_module_extern(TB_Module* m, const char* name) {
-#if _WIN32
-	EnterCriticalSection(&m->mutex);
-#else
-	pthread_mutex_lock(&m->mutex);
-#endif
+	int tid = get_local_thread_id();
 
-	if (m->externals.count + 1 >= m->externals.capacity) {
-		// TODO(NeGate): This might be excessive for this array, idk :P
-		m->externals.capacity = tb_next_pow2(m->externals.count + 1);
-		m->externals.data = tb_platform_heap_realloc(m->externals.data, m->externals.capacity * sizeof(TB_External));
-	}
-	
-	
-	TB_ExternalID i = m->externals.count++;
+	// each thread gets their own grouping of external ids
+	TB_ExternalID per_thread_stride = INT_MAX / TB_MAX_THREADS;
 
-#if _WIN32
-	LeaveCriticalSection(&m->mutex);
-#else
-	pthread_mutex_unlock(&m->mutex);
-#endif
+	TB_ExternalID i = (tid * per_thread_stride) + arrlen(m->externals[tid]);
+	TB_External e = {
+		.name = tb_platform_string_alloc(name)
+	};
+	arrput(m->externals[tid], e);
 
-	m->externals.data[i].name = tb_platform_string_alloc(name);
 	return i;
 }
 
@@ -584,26 +569,23 @@ void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance) {
 
 void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size_t pos, size_t local_thread_id) {
 	assert(pos < UINT32_MAX);
-	dyn_array(TB_FunctionPatch) patches = m->call_patches[local_thread_id];
-	
 	TB_FunctionPatch p = {
 		.func_id = func_id,
 		.target_id = target_id,
 		.pos = pos
 	};
 	
-	arrput(patches, p);
+	arrput(m->call_patches[local_thread_id], p);
 }
 
 void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id, size_t pos, size_t local_thread_id) {
-	dyn_array(TB_ExternFunctionPatch) patches = m->ecall_patches[local_thread_id];
 	TB_ExternFunctionPatch p = {
 		.func_id = func_id,
 		.target_id = target_id,
 		.pos = pos
 	};
 	
-	arrput(patches, p);
+	arrput(m->ecall_patches[local_thread_id], p);
 }
 
 //
@@ -779,15 +761,19 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			}
 			fprintf(out, ")\n");
 			break;
-            case TB_ECALL:
-			fprintf(out, "  r%u\t=\tECALL %s(", i, m->externals.data[p.ecall.target].name);
-			for (size_t j = p.ecall.param_start; j < p.ecall.param_end; j++) {
-				if (j != p.ecall.param_start) fprintf(out, ", ");
-				
-				fprintf(out, "r%u", f->vla.data[j]);
+			case TB_ECALL: {
+				TB_ExternalID per_thread_stride = INT_MAX / TB_MAX_THREADS;
+				TB_External* e = &m->externals[p.ecall.target / per_thread_stride][p.ecall.target % per_thread_stride];
+
+				fprintf(out, "  r%u\t=\tECALL %s(", i, e->name);
+				for (size_t j = p.ecall.param_start; j < p.ecall.param_end; j++) {
+					if (j != p.ecall.param_start) fprintf(out, ", ");
+
+					fprintf(out, "r%u", f->vla.data[j]);
+				}
+				fprintf(out, ")\n");
+				break;
 			}
-			fprintf(out, ")\n");
-			break;
             case TB_CALL:
 			fprintf(out, "  r%u\t=\tCALL %s(", i, p.call.target->name);
 			for (size_t j = p.call.param_start; j < p.call.param_end; j++) {
@@ -825,9 +811,13 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			case TB_FUNC_ADDRESS:
 			fprintf(out, "  r%u\t=\t &%s\n", i, p.func_addr->name);
 			break;
-			case TB_EFUNC_ADDRESS:
-			fprintf(out, "  r%u\t=\t &%s\n", i, m->externals.data[p.efunc_addr].name);
-			break;
+			case TB_EFUNC_ADDRESS: {
+				TB_ExternalID per_thread_stride = INT_MAX / TB_MAX_THREADS;
+				TB_External* e = &m->externals[p.efunc_addr / per_thread_stride][p.efunc_addr % per_thread_stride];
+				
+				fprintf(out, "  r%u\t=\t &%s\n", i, e->name);
+				break;
+			}
             case TB_PARAM:
 			fprintf(out, "  r%u\t=\t", i);
 			tb_print_type(out, dt);

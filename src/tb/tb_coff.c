@@ -121,7 +121,17 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	// into the string table
 	uint32_t string_table_length = 0;
 	uint32_t string_table_mark = 4;
-	const char** string_table = malloc((m->externals.count + m->compiled_functions.count) * sizeof(const char*));
+
+	uint32_t string_table_cap = 0;
+	uint32_t* external_symbol_relative_id = tb_tls_push(tls, TB_MAX_THREADS * sizeof(uint32_t));
+
+	loop(i, m->max_threads) {
+		external_symbol_relative_id[i] = string_table_cap;
+		string_table_cap += arrlen(m->externals[i]);
+	}
+	string_table_cap += m->compiled_functions.count;
+	
+	const char** string_table = malloc(string_table_cap * sizeof(const char*));
 	
 	// drops the debug sections if no line info exists
 	const int number_of_sections = 4;
@@ -526,9 +536,12 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	debugs_section.pointer_to_reloc = text_section.pointer_to_reloc 
 		+ (text_section.num_reloc * sizeof(COFF_ImageReloc));
 	
-	header.symbol_count = (number_of_sections * 2) 
-		+ m->compiled_functions.count 
-		+ m->externals.count;
+	header.symbol_count = (number_of_sections * 2)
+		+ m->compiled_functions.count;
+
+	loop(i, m->max_threads) {
+		header.symbol_count += arrlen(m->externals[i]);
+	}
 	
 #if !TB_STRIP_LABELS
 	header.symbol_count += m->label_symbols.count;
@@ -604,10 +617,8 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	
 	size_t extern_func_sym_start = 8 + m->compiled_functions.count;
 	loop(i, m->max_threads) {
-		dyn_array(TB_ExternFunctionPatch) patches = m->ecall_patches[i];
-		
-		loop(j, arrlen(patches)) {
-			TB_ExternFunctionPatch* p = &patches[j];
+		loop(j, arrlen(m->ecall_patches[i])) {
+			TB_ExternFunctionPatch* p = &m->ecall_patches[i][j];
 			TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
 			
 			uint64_t meta = out_f->prologue_epilogue_metadata;
@@ -616,10 +627,14 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 			size_t actual_pos = func_layout[p->func_id] 
 				+ code_gen->get_prologue_length(meta, stack_usage)
 				+ p->pos;
-			
+
+			TB_ExternalID per_thread_stride = INT_MAX / TB_MAX_THREADS;
+			int symbol_id = external_symbol_relative_id[p->target_id / per_thread_stride]
+				+ (p->target_id % per_thread_stride);
+
 			fwrite(&(COFF_ImageReloc) {
 					   .Type = IMAGE_REL_AMD64_REL32,
-					   .SymbolTableIndex = extern_func_sym_start + p->target_id,
+					   .SymbolTableIndex = extern_func_sym_start + symbol_id,
 					   .VirtualAddress = actual_pos
 				   }, sizeof(COFF_ImageReloc), 1, f);
 		}
@@ -731,28 +746,31 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		fwrite(&sym, sizeof(sym), 1, f);
 	}
 	
-	for (size_t i = 0; i < m->externals.count; i++) {
-		COFF_Symbol sym = {
-			.value = 0,
-			.section_number = 0,
-			.storage_class = IMAGE_SYM_CLASS_EXTERNAL
-		};
-		
-		size_t name_len = strlen(m->externals.data[i].name);
-		assert(name_len < UINT16_MAX);
-		
-		if (name_len >= 8) {
-			sym.long_name[0] = 0; // this value is 0 for long names
-			sym.long_name[1] = string_table_mark;
-			
-			string_table[string_table_length++] = m->externals.data[i].name;
-			string_table_mark += name_len + 1;
+	loop(i, m->max_threads) {
+		loop(j, arrlen(m->externals[i])) {
+			const TB_External* restrict e = &m->externals[i][j];
+			COFF_Symbol sym = {
+				.value = 0,
+				.section_number = 0,
+				.storage_class = IMAGE_SYM_CLASS_EXTERNAL
+			};
+
+			size_t name_len = strlen(e->name);
+			assert(name_len < UINT16_MAX);
+
+			if (name_len >= 8) {
+				sym.long_name[0] = 0; // this value is 0 for long names
+				sym.long_name[1] = string_table_mark;
+
+				string_table[string_table_length++] = e->name;
+				string_table_mark += name_len + 1;
+			}
+			else {
+				memcpy(sym.short_name, e->name, name_len + 1);
+			}
+
+			fwrite(&sym, sizeof(sym), 1, f);
 		}
-		else {
-			memcpy(sym.short_name, m->externals.data[i].name, name_len + 1);
-		}
-		
-		fwrite(&sym, sizeof(sym), 1, f);
 	}
 	
 #if !TB_STRIP_LABELS

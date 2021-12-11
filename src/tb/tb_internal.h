@@ -362,8 +362,6 @@ struct TB_Function {
 		TB_Register* data;
 	} vla;
 	
-	uint32_t parameter_count;
-    
 	uint32_t locals_stack_usage;
 	uint32_t parameter_stack_usage;
 	uint32_t stack_usage;

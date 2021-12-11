@@ -399,6 +399,8 @@ void tb_resize_node_stream(TB_Function* f, size_t cap) {
 }
 
 TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv conv, TB_DataType return_dt, int num_params, bool has_varargs) {
+	// TODO(NeGate): Data races, slap a mutex onto it or something
+	// TODO(NeGate): Swap this out with a dynamic memory arena.
 	size_t len = arrlen(m->prototypes);
 	size_t space_needed = (sizeof(TB_FunctionPrototype) + (sizeof(uint64_t)-1)) / sizeof(uint64_t);
 	space_needed += ((num_params * sizeof(TB_DataType)) + (sizeof(uint64_t)-1)) / sizeof(uint64_t);
@@ -440,8 +442,6 @@ TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, co
 	// TODO(NeGate): The node stream can never be under 16 entries
 	// for the SIMD optimizations to work so we bias the initial size.
 	tb_resize_node_stream(f, tb_next_pow2(16 + 2 + p->param_count));
-	
-	f->parameter_count = 0;
 	
 	// Null slot, Entry label & Parameters
 	f->nodes.count = 2 + p->param_count;

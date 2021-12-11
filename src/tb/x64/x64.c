@@ -110,7 +110,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 		ctx->use_count = tb_tls_push(tls, f->nodes.count * sizeof(int));
 		ctx->phis = tb_tls_push(tls, phi_count * sizeof(PhiValue));
 		
-		ctx->params = tb_tls_push(tls, f->parameter_count * sizeof(int32_t));
+		ctx->params = tb_tls_push(tls, f->prototype->param_count * sizeof(int32_t));
 		ctx->labels = tb_tls_push(tls, f->label_count * sizeof(uint32_t));
 		ctx->label_patches = tb_tls_push(tls, label_patch_count * sizeof(LabelPatch));
 		ctx->ret_patches = tb_tls_push(tls, return_count * sizeof(ReturnPatch));
@@ -182,7 +182,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 					  
 					  // short circuit, once we've seen all the parameters (which we
 					  // know) then we can quit.
-					  if (params_consumed == f->parameter_count)
+					  if (params_consumed == f->prototype->param_count)
 						  goto done_with_param_scan;
 				  });
 	

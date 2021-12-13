@@ -57,19 +57,18 @@ static __stdcall int ir_gen(FuzzerInfo* i) {
 		int pool_size = 0;
 		int var_pool_size = 0;
 		
-		char temp[64];
-		sprintf_s(temp, 64, "trial_%d_%d", i->thread_id, n);
-		
 		TB_DataType return_dt = gen_random_int_dt();
 		int param_count = gen_random(1, 8);
 		
 		TB_FunctionPrototype* p = tb_prototype_create(m, TB_STDCALL, return_dt, param_count, false);
-		for (int i = 0; i < param_count; i++) {
-			pool[pool_size++] = tb_inst_param(f, return_dt);
-		}
+		for (int i = 0; i < param_count; i++) tb_prototype_add_param(p, gen_random_int_dt());
 		
-		TB_Function* func = tb_prototype_build(m, p, temp);
-		int inst_count = gen_random(1, 400);
+		char temp[64];
+		sprintf_s(temp, 64, "trial_%d_%d", i->thread_id, n);
+		TB_Function* f = tb_prototype_build(m, p, temp);
+		for (int i = 0; i < param_count; i++) pool[pool_size++] = tb_inst_param(f, i);
+		
+		int inst_count = gen_random(1, 100);
 		for (int i = 0; i < inst_count; i++) {
 			TB_DataType dt = gen_random_int_dt();
 			
@@ -112,7 +111,7 @@ static __stdcall int ir_gen(FuzzerInfo* i) {
 			
 			int rng = gen_random(0, 4);
 			if (rng == 0) {
-				pool[pool_size++] = tb_inst_iconst(f, dt, gen_random_any());
+				pool[pool_size++] = tb_inst_iconst(f, dt, gen_random_any() & 0xFFFFull);
 			} else if (rng == 1 && var_pool_size > 0) {
 				pool[pool_size++] = tb_inst_load(f, dt, var_pool[gen_random(0, var_pool_size)], dt.type == TB_I32 ? 4 : 8);
 			} else if (rng == 2 && var_pool_size > 0) {
@@ -126,13 +125,22 @@ static __stdcall int ir_gen(FuzzerInfo* i) {
 				
 				tb_inst_store(f, dt, addr, pool[gen_random(0, pool_size)], align);
 			} else if (rng == 3) {
-				var_pool[var_pool_size++] = tb_inst_local(f, dt.type == TB_I64 ? 8 : 4, dt.type == TB_I64 ? 8 : 4);
+				TB_Register addr = tb_inst_local(f, dt.type == TB_I64 ? 8 : 4, dt.type == TB_I64 ? 8 : 4);
+				var_pool[var_pool_size++] = addr;
+				
+				int size, align;
+				tb_get_function_get_local_info(f, addr, &size, &align);
+				
+				// just use the type of the allocation
+				dt = align == 8 ? TB_TYPE_I64 : TB_TYPE_I32;
+				
+				tb_inst_store(f, dt, addr, pool[gen_random(0, pool_size)], align);
 			}
 		}
 		
 		// try to use later values for return
-		TB_Register ret = pool[pool_size - 1];
-		tb_inst_ret(f, return_dt, cast_into(f, ret, return_dt));
+		TB_Register ret = pool[gen_random(pool_size / 2, pool_size)];
+		tb_inst_ret(f, cast_into(f, ret, return_dt));
 		
 		//tb_function_print(f, stdout);
 		//printf("\n\n\n");

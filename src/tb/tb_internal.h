@@ -38,10 +38,17 @@
 // look and act like normal arrays for access and types.
 #define dyn_array(T) T*
 
-#define MAX_JOBS_PER_JOB_SYSTEM 256
+#define safe_cast(T, src) ({ \
+typeof(src) val = (src); \
+T casted = (T)val; \
+if (val != casted) __builtin_trap(); \
+casted; \
+})
+
+#define MAX_JOBS_PER_JOB_SYSTEM 4096
 
 // TODO(NeGate): eventually i'll make it dynamic
-#define PROTOTYPES_ARENA_SIZE (1u << 20u)
+#define PROTOTYPES_ARENA_SIZE (16u << 20u)
 
 typedef struct TB_Emitter {
 	size_t capacity, count;
@@ -121,8 +128,8 @@ typedef enum TB_RegTypeEnum {
     TB_CMP_FLE,
     
     // Conversions
-    TB_CVT_INT2PTR,
-    TB_CVT_PTR2INT,
+    TB_INT2PTR,
+    TB_PTR2INT,
     
     // Memory
     TB_LOCAL,
@@ -167,6 +174,7 @@ typedef union TB_RegPayload {
 	double f_const;
 	TB_Register ext;
 	TB_Register trunc;
+	TB_Register ptrcast;
 	const TB_Function* func_addr;
 	TB_ExternalID efunc_addr;
 	struct {
@@ -220,11 +228,13 @@ typedef union TB_RegPayload {
 	struct {
 		TB_Register address;
 		uint32_t alignment;
+		bool is_volatile;
 	} load;
 	struct {
 		TB_Register address;
 		TB_Register value;
 		uint32_t alignment;
+		bool is_volatile;
 	} store;
 	struct {
 		TB_Register value;
@@ -329,7 +339,7 @@ typedef struct TB_External {
 // function prototypes are stored
 // in streams as inplace arrays:
 //
-// PROTYPE0, arg0, arg1, PROTYPE1, arg0, arg1
+// PROTOTYPE0, arg0, arg1, PROTOTYPE1, arg0, arg1
 struct TB_FunctionPrototype {
 	// header
 	TB_CallingConv call_conv;
@@ -343,6 +353,38 @@ struct TB_FunctionPrototype {
 	// payload
 	TB_DataType params[];
 };
+
+typedef struct TB_InitObj {
+	enum {
+		TB_INIT_OBJ_REGION,
+		
+		// relocations
+		TB_INIT_OBJ_RELOC_EXTERN,
+		TB_INIT_OBJ_RELOC_FUNC,
+		TB_INIT_OBJ_RELOC_GLOBAL
+	} type;
+	uint32_t offset;
+	union {
+		struct {
+			uint32_t size;
+			const void* ptr;
+		} region;
+		
+		TB_ExternalID reloc_extern;
+		TB_Function* reloc_function;
+		TB_GlobalID reloc_global;
+	};
+} TB_InitObj;
+
+typedef struct TB_Initializer {
+	// header
+	uint32_t size, align;
+	uint32_t obj_capacity;
+	uint32_t obj_count;
+	
+	// payload
+	TB_InitObj objects[];
+} TB_Initializer;
 
 struct TB_Function {
 	// It's kinda a weird circular but still
@@ -420,7 +462,8 @@ struct TB_Module {
 	// which means it needs to be re-evaluated.
 	_Atomic size_t line_info_count;
 	
-	size_t prototypes_arena_size;
+	// Convert this into a dynamic memory arena... maybe
+	_Atomic size_t prototypes_arena_size;
 	uint64_t* prototypes_arena;
 	
 #if !TB_STRIP_LABELS
@@ -438,9 +481,9 @@ struct TB_Module {
 		size_t capacity;
 		TB_ConstPool32Patch* data;
 	} const32_patches;
-    
-	dyn_array(TB_External) externals[TB_MAX_THREADS];
 	
+	dyn_array(uint64_t) initializers[TB_MAX_THREADS];
+	dyn_array(TB_External) externals[TB_MAX_THREADS];
 	dyn_array(TB_FunctionPatch) call_patches[TB_MAX_THREADS];
     dyn_array(TB_ExternFunctionPatch) ecall_patches[TB_MAX_THREADS];
 	
@@ -456,8 +499,8 @@ struct TB_Module {
 	} functions;
 	
 	struct {
-		size_t completed;
-		size_t count;
+		_Atomic size_t completed;
+		_Atomic size_t count;
 		TB_FunctionOutput* data;
 	} compiled_functions;
 	

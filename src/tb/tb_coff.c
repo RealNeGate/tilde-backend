@@ -121,10 +121,10 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	// into the string table
 	uint32_t string_table_length = 0;
 	uint32_t string_table_mark = 4;
-
+	
 	uint32_t string_table_cap = 0;
 	uint32_t* external_symbol_relative_id = tb_tls_push(tls, TB_MAX_THREADS * sizeof(uint32_t));
-
+	
 	loop(i, m->max_threads) {
 		external_symbol_relative_id[i] = string_table_cap;
 		string_table_cap += arrlen(m->externals[i]);
@@ -538,7 +538,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	
 	header.symbol_count = (number_of_sections * 2)
 		+ m->compiled_functions.count;
-
+	
 	loop(i, m->max_threads) {
 		header.symbol_count += arrlen(m->externals[i]);
 	}
@@ -627,11 +627,11 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 			size_t actual_pos = func_layout[p->func_id] 
 				+ code_gen->get_prologue_length(meta, stack_usage)
 				+ p->pos;
-
-			TB_ExternalID per_thread_stride = INT_MAX / TB_MAX_THREADS;
+			
+			TB_ExternalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 			int symbol_id = external_symbol_relative_id[p->target_id / per_thread_stride]
 				+ (p->target_id % per_thread_stride);
-
+			
 			fwrite(&(COFF_ImageReloc) {
 					   .Type = IMAGE_REL_AMD64_REL32,
 					   .SymbolTableIndex = extern_func_sym_start + symbol_id,
@@ -754,21 +754,21 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 				.section_number = 0,
 				.storage_class = IMAGE_SYM_CLASS_EXTERNAL
 			};
-
+			
 			size_t name_len = strlen(e->name);
 			assert(name_len < UINT16_MAX);
-
+			
 			if (name_len >= 8) {
 				sym.long_name[0] = 0; // this value is 0 for long names
 				sym.long_name[1] = string_table_mark;
-
+				
 				string_table[string_table_length++] = e->name;
 				string_table_mark += name_len + 1;
 			}
 			else {
 				memcpy(sym.short_name, e->name, name_len + 1);
 			}
-
+			
 			fwrite(&sym, sizeof(sym), 1, f);
 		}
 	}

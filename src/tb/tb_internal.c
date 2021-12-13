@@ -136,6 +136,10 @@ case TB_ZERO_EXT: \
 case TB_SIGN_EXT: \
 X(p->ext); \
 break; \
+case TB_INT2PTR: \
+case TB_PTR2INT: \
+X(p->ptrcast); \
+break; \
 case TB_TRUNCATE: \
 X(p->trunc); \
 break; \

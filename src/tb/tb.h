@@ -1,17 +1,16 @@
-﻿//  _______ _             ____             _                  _ 
-// |__   __(_)           |  _ \           | |                | |
-//    | |   _ _ __  _   _| |_) | __ _  ___| | _____ _ __   __| |
-//    | |  | | '_ \| | | |  _ < / _` |/ __| |/ / _ \ '_ \ / _` |
-//    | |  | | | | | |_| | |_) | (_| | (__|   <  __/ | | | (_| |
-//    |_|  |_|_| |_|\__, |____/ \__,_|\___|_|\_\___|_| |_|\__,_|
-//                   __/ |                                      
-//                  |___/
-// 
-//    It's a relatively small compiler backend all behind a
-//    simple C API! To get started: TODO
 //
-#ifndef _TINYBACKEND_H_
-#define _TINYBACKEND_H_
+//  _______ _ _     _      ____  ______ 
+// |__   __(_) |   | |    |  _ \|  ____|
+//    | |   _| | __| | ___| |_) | |__   
+//    | |  | | |/ _` |/ _ \  _ <|  __|  
+//    | |  | | | (_| |  __/ |_) | |____ 
+//    |_|  |_|_|\__,_|\___|____/|______|
+//
+//    It's a relatively small compiler backend all
+//    behind a simple C API!
+//
+#ifndef _TILDEBACKEND_H_
+#define _TILDEBACKEND_H_
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,12 +45,6 @@ extern "C" {
 	
 #define TB_HOST_UNKNOWN 0
 #define TB_HOST_X86_64 1
-	
-	// While generating the IR, it's possible to
-	// perform some optimizations on the spot such
-	// as CSE and constant folding, if this define
-	// is 0, the CSE is disabled.
-#define TB_FRONTEND_OPT 0
 	
 	// If on, the labels aren't marked in the object file
 	// might save on performance at the cost of some assembly
@@ -157,10 +150,6 @@ extern "C" {
 		uint8_t count; // 0 is illegal, except on VOID, it doesn't matter there
 	} TB_DataType;
 	
-	typedef struct TB_FeatureConstraints {
-		int max_vector_width[TB_MAX_TYPES];
-	} TB_FeatureConstraints;
-	
 	typedef struct TB_FeatureSet {
 		struct {
 			bool sse3 : 1;
@@ -194,8 +183,11 @@ extern "C" {
 	typedef int TB_Register;
 	typedef int TB_Reg; // short-hand
 	
-	typedef int TB_FileID;
-	typedef int TB_ExternalID;
+	typedef unsigned int TB_FileID;
+	typedef unsigned int TB_ExternalID;
+	typedef unsigned int TB_GlobalID;
+	typedef unsigned int TB_InitializerID;
+	
 	typedef struct TB_Module TB_Module;
 	typedef struct TB_Function TB_Function;
 	typedef struct TB_FunctionPrototype TB_FunctionPrototype;
@@ -249,20 +241,35 @@ extern "C" {
 	
 #endif
 	
-	TB_API void tb_get_constraints(TB_Arch target_arch, const TB_FeatureSet* features, TB_FeatureConstraints* constraints);
-	
+	////////////////////////////////
+	// Module management
+	////////////////////////////////
+	// Creates a module with the correct target and settings
+	// the max_threads defines how many worker threads the backend will spawn, you're expected
+	// to spawn an equivalent amount of threads and generate IR for optimal performance.
+	//
 	// preserve_ir_after_submit means that after the tb_module_compile_func(...) you can 
 	// still access the IR, this comes at a higher overall memory usage cost since the
 	// IR is kept in memory for the lifetime of the compile but this is not an issue when
 	// debugging.
 	TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, const TB_FeatureSet* features, int optimization_level, int max_threads, bool preserve_ir_after_submit);
 	
+	// Validates & passes a function to the code gen stage to be optimized (if specified) and 
+	// converted into machine code.
 	TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f);
+	
+	// NOTE: Don't use this it's for testing purposes.
 	TB_API size_t tb_DEBUG_module_get_full_node_count(TB_Module* m);
+	
+	// Frees all resources for the TB_Module and it's functions, globals and compiled code.
 	TB_API void tb_module_destroy(TB_Module* m);
 	
+	// Waits for the machine code generation to finish before continuing.
 	TB_API bool tb_module_compile(TB_Module* m);
+	
+	// Exports an object file with all the machine code and symbols generated.
 	TB_API bool tb_module_export(TB_Module* m, FILE* f);
+	
 	TB_API void tb_module_export_jit(TB_Module* m);
 	
 	TB_API void* tb_module_get_jit_func_by_name(TB_Module* m, const char* name);
@@ -280,7 +287,7 @@ extern "C" {
 	//
 	// function prototypes do not get freed individually and last for the entire run
 	// of the backend, they can also be reused for multiple functions which have matching
-	// prototypes.
+	// signatures.
 	TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv conv, TB_DataType return_dt, int num_params, bool has_varargs);
 	
 	// adds a parameter to the function prototype, TB doesn't support struct
@@ -297,6 +304,16 @@ extern "C" {
 	TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, const char* name);
 	
 	////////////////////////////////
+	// Constant Initializers
+	////////////////////////////////
+	// NOTE: the max relocations is a cap and thus it can be bigger than the actually
+	// number needed.
+	TB_API TB_InitializerID tb_initializer_create(TB_Module* m, size_t size, size_t align, size_t max_objects);
+	
+	// returns a buffer which the user can fill to then have represented in the initializer
+	TB_API void* tb_initializer_add_region(TB_Module* m, TB_InitializerID id, size_t offset, size_t size);
+	
+	////////////////////////////////
 	// Function IR Generation
 	////////////////////////////////
 	TB_API TB_Label tb_get_current_label(TB_Function* f);
@@ -308,13 +325,17 @@ extern "C" {
 	TB_API TB_Register tb_inst_sxt(TB_Function* f, TB_Register src, TB_DataType dt);
 	TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt);
 	TB_API TB_Register tb_inst_trunc(TB_Function* f, TB_Register src, TB_DataType dt);
+	TB_API TB_Register tb_inst_int2ptr(TB_Function* f, TB_Register src);
+	TB_API TB_Register tb_inst_ptr2int(TB_Function* f, TB_Register src, TB_DataType dt);
 	
 	TB_API TB_Register tb_inst_local(TB_Function* f, uint32_t size, uint32_t alignment);
 	TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr, uint32_t alignment);
 	TB_API void tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_Register val, uint32_t alignment);
 	
-	TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm);
+	TB_API TB_Register tb_inst_volatile_load(TB_Function* f, TB_DataType dt, TB_Register addr, uint32_t alignment);
+	TB_API void tb_inst_volatile_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_Register val, uint32_t alignment);
 	
+	TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm);
 	TB_API TB_Register tb_inst_fconst(TB_Function* f, TB_DataType dt, double imm);
 	
 	TB_API TB_Register tb_inst_array_access(TB_Function* f, TB_Register base, TB_Register index, uint32_t stride);
@@ -322,6 +343,7 @@ extern "C" {
     
 	TB_API TB_Register tb_inst_get_func_address(TB_Function* f, const TB_Function* target);
 	TB_API TB_Register tb_inst_get_extern_address(TB_Function* f, TB_ExternalID target);
+	TB_API TB_Register tb_inst_get_global_address(TB_Function* f, TB_GlobalID target);
 	
 	TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Register* params);
 	TB_API TB_Register tb_inst_vcall(TB_Function* f, TB_DataType dt, TB_Register target, size_t param_count, const TB_Register* params);
@@ -375,9 +397,9 @@ extern "C" {
 	
 	TB_API void tb_function_print(TB_Function* f, FILE* out);
 	
-	//
+	////////////////////////////////
 	// IR access
-	//
+	////////////////////////////////
 	TB_API TB_Register tb_node_get_last_register(TB_Function* f);
 	TB_API TB_DataType tb_node_get_data_type(TB_Function* f, TB_Register r);
 	

@@ -84,8 +84,8 @@ static void* job_system_thread_func(void* lpParam)
 	size_t code_size = 0;
 	uint8_t* code = tb_platform_valloc(CODE_OUTPUT_BUFFER);
 	
-	TB_FifoQueue* restrict q = &s->queue[i];
-	while (true) {
+	TB_FifoQueue* q = &s->queue[i];
+	while (s->running) {
 		uint32_t read_ptr = q->read_pointer;
 		uint32_t new_read_ptr = (read_ptr + 1) % MAX_JOBS_PER_JOB_SYSTEM;
 		
@@ -97,13 +97,6 @@ static void* job_system_thread_func(void* lpParam)
 #else
 			sem_wait(q->semaphore);
 #endif
-			
-			// only actually shut off if we run out of work
-			// and are told to stop.
-			if (m->compiled_functions.completed == m->compiled_functions.count 
-				&& s->running == false) {
-				break;
-			}
 			
 			continue;
 		}
@@ -243,6 +236,11 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
 
 TB_API bool tb_module_compile(TB_Module* m) {
 	TB_JobSystem* s = m->jobs;
+	while (m->compiled_functions.completed < m->compiled_functions.count) {
+		// TODO(NeGate): Make this wait better!
+		_mm_pause();
+	}
+	
 	s->running = false;
 	
 #if _WIN32
@@ -296,6 +294,7 @@ TB_API void tb_module_destroy(TB_Module* m) {
 		tb_platform_heap_free(m->files.data[i].path);
 	}
 	
+	loop(i, m->max_threads) arrfree(m->initializers[i]);
 	loop(i, m->max_threads) arrfree(m->call_patches[i]);
 	loop(i, m->max_threads) arrfree(m->ecall_patches[i]);
 	loop(i, m->max_threads) arrfree(m->externals[i]);
@@ -314,33 +313,6 @@ TB_API void tb_module_destroy(TB_Module* m) {
 	tb_platform_heap_free(m);
 }
 
-TB_API void tb_get_constraints(TB_Arch target_arch, const TB_FeatureSet* features, TB_FeatureConstraints* constraints) {
-    *constraints = (TB_FeatureConstraints){};
-    
-    if (target_arch == TB_ARCH_X86_64) {
-        // void and pointers dont get vector types
-        constraints->max_vector_width[TB_VOID] = 1;
-        constraints->max_vector_width[TB_PTR] = 1;
-        
-        // Basic stuff that x64 and SSE guarentee
-        constraints->max_vector_width[TB_I8] = 16;
-        constraints->max_vector_width[TB_I16] = 8;
-        constraints->max_vector_width[TB_I32] = 4;
-        constraints->max_vector_width[TB_I64] = 2;
-        
-        constraints->max_vector_width[TB_F32] = 4;
-        constraints->max_vector_width[TB_F64] = 2;
-        
-        // NOTE(NeGate): Booleans aren't a fixed idea
-        // in x64 vectors it's generally represented 
-        // as the same bit size as the operation that
-        // creates it so 16 is picked because of vector
-        // byte comparisons being the most you can get
-        // from vector bools.
-        constraints->max_vector_width[TB_BOOL] = 16;
-    } else tb_todo();
-}
-
 TB_API TB_FileID tb_register_file(TB_Module* m, const char* path) {
 	if (m->files.count + 1 >= m->files.capacity) {
 		m->files.capacity *= 2;
@@ -354,19 +326,6 @@ TB_API TB_FileID tb_register_file(TB_Module* m, const char* path) {
 		.path = str
 	};
 	return r;
-}
-
-// https://create.stephan-brumme.com/fnv-hash/
-// hash a block of memory
-static uint32_t fnv1a(const void* data, size_t num_bytes) {
-	const unsigned char* ptr = (const unsigned char*)data;
-	uint32_t hash = 0x811C9DC5;
-	
-	while (num_bytes--) {
-		hash = ((*ptr++) ^ hash) * 0x01000193;
-	}
-	
-	return hash;
 }
 
 TB_API bool tb_module_export(TB_Module* m, FILE* f) {
@@ -403,18 +362,15 @@ void tb_resize_node_stream(TB_Function* f, size_t cap) {
 }
 
 TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv conv, TB_DataType return_dt, int num_params, bool has_varargs) {
-	// TODO(NeGate): Data races, slap a mutex onto it or something
-	// TODO(NeGate): Swap this out with a dynamic memory arena.
 	size_t space_needed = (sizeof(TB_FunctionPrototype) + (sizeof(uint64_t)-1)) / sizeof(uint64_t);
 	space_needed += ((num_params * sizeof(TB_DataType)) + (sizeof(uint64_t)-1)) / sizeof(uint64_t);
 	
-	size_t len = m->prototypes_arena_size;
-	m->prototypes_arena_size += space_needed;
-	if (m->prototypes_arena_size >= PROTOTYPES_ARENA_SIZE) abort();
+	size_t len = atomic_fetch_add(&m->prototypes_arena_size, space_needed);
+	if (len+space_needed >= PROTOTYPES_ARENA_SIZE) abort();
 	
 	TB_FunctionPrototype* p = (TB_FunctionPrototype*)&m->prototypes_arena[len];
 	p->call_conv = conv;
-	p->param_capacity = num_params;
+	p->param_capacity = safe_cast(short, num_params);
 	p->param_count = 0;
 	p->return_dt = return_dt;
 	p->has_varargs = has_varargs;
@@ -495,11 +451,50 @@ TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, co
 	return f;
 }
 
+TB_API TB_InitializerID tb_initializer_create(TB_Module* m, size_t size, size_t align, size_t max_objects) {
+	int tid = get_local_thread_id();
+	
+	size_t space_needed = (sizeof(TB_Initializer) + (sizeof(uint64_t)-1)) / sizeof(uint64_t);
+	space_needed += ((max_objects * sizeof(TB_InitObj)) + (sizeof(uint64_t)-1)) / sizeof(uint64_t);
+	
+	// each thread gets their own grouping of ids
+	size_t len = arrlen(m->initializers[tid]);
+	
+	TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
+	TB_InitializerID i = (tid * per_thread_stride) + len;
+	arrsetlen(m->initializers[tid], len + space_needed);
+	
+	TB_Initializer* initializer = (TB_Initializer*)&m->initializers[tid][len];
+	initializer->size = safe_cast(uint32_t, size);
+	initializer->align = safe_cast(uint32_t, align);
+	initializer->obj_capacity = safe_cast(uint32_t, max_objects);
+	initializer->obj_count = 0;
+	return i;
+}
+
+TB_API void* tb_initializer_add_region(TB_Module* m, TB_InitializerID id, size_t offset, size_t size) {
+	TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
+	TB_Initializer* i = (TB_Initializer*)&m->initializers[id / per_thread_stride][id % per_thread_stride];
+	
+	assert(i->obj_count+1 <= i->obj_capacity);
+	
+	// TODO(NeGate): Remove the malloc here
+	void* ptr = malloc(size);
+	i->objects[i->obj_count++] = (TB_InitObj) {
+		.type = TB_INIT_OBJ_REGION,
+		.offset = safe_cast(uint32_t, offset),
+		.region.size = safe_cast(uint32_t, size),
+		.region.ptr = ptr
+	};
+	
+	return ptr;
+}
+
 TB_API TB_ExternalID tb_module_extern(TB_Module* m, const char* name) {
 	int tid = get_local_thread_id();
 	
 	// each thread gets their own grouping of external ids
-	TB_ExternalID per_thread_stride = INT_MAX / TB_MAX_THREADS;
+	TB_ExternalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 	
 	TB_ExternalID i = (tid * per_thread_stride) + arrlen(m->externals[tid]);
 	TB_External e = {
@@ -648,6 +643,16 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			tb_print_type(out, dt);
 			fprintf(out, " SXT r%u\n", p.ext);
 			break;
+            case TB_INT2PTR:
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " INT2PTR r%u\n", p.ptrcast);
+			break;
+            case TB_PTR2INT:
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " PTR2INT r%u\n", p.ptrcast);
+			break;
             case TB_TRUNCATE:
 			fprintf(out, "  r%u\t=\t", i);
 			tb_print_type(out, dt);
@@ -767,7 +772,7 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			fprintf(out, ")\n");
 			break;
 			case TB_ECALL: {
-				TB_ExternalID per_thread_stride = INT_MAX / TB_MAX_THREADS;
+				TB_ExternalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 				TB_External* e = &m->externals[p.ecall.target / per_thread_stride][p.ecall.target % per_thread_stride];
 				
 				fprintf(out, "  r%u\t=\tECALL %s(", i, e->name);
@@ -817,7 +822,7 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			fprintf(out, "  r%u\t=\t &%s\n", i, p.func_addr->name);
 			break;
 			case TB_EFUNC_ADDRESS: {
-				TB_ExternalID per_thread_stride = INT_MAX / TB_MAX_THREADS;
+				TB_ExternalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 				TB_External* e = &m->externals[p.efunc_addr / per_thread_stride][p.efunc_addr % per_thread_stride];
 				
 				fprintf(out, "  r%u\t=\t &%s\n", i, e->name);

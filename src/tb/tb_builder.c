@@ -149,57 +149,8 @@ inline static bool tb_match_iarith_payload(const TB_RegPayload* a, const TB_RegP
 	return _mm_movemask_epi8(_mm_cmpeq_epi8(a128, b128)) == 0xFFF;
 }
 
-static TB_Register tb_cse_arith(TB_Function* f, int type, TB_DataType dt, TB_ArithmaticBehavior arith_behavior, TB_Register a, TB_Register b) {
+static TB_Register tb_bin_arith(TB_Function* f, int type, TB_DataType dt, TB_ArithmaticBehavior arith_behavior, TB_Register a, TB_Register b) {
 	assert(f->current_label);
-	
-#if TB_FRONTEND_OPT
-#if TB_HOST_ARCH == TB_HOST_X86_64
-	size_t aligned_start = ((f->current_label + 15) / 16) * 16;
-	__m128i pattern = _mm_set1_epi8(type);
-	
-	for (size_t i = aligned_start; i < f->nodes.count; i += 16) {
-		__m128i bytes = _mm_load_si128((__m128i*)&f->nodes.type[i]);
-		unsigned int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(bytes, pattern));
-		if (mask == 0) continue;
-		
-		// this one is guarentee to not be zero so it's fine
-		// to not check that FFS.
-		size_t offset = __builtin_ffs(mask) - 1;
-		
-		size_t j = i + offset;
-		// skip over the mask bit for the next iteration
-		mask >>= (offset + 1);
-		
-		// We know it loops at least once by this point
-		do {
-			assert(f->nodes.type[j] == type);
-			if (TB_DATA_TYPE_EQUALS(f->nodes.dt[j], dt)
-				&& f->nodes.payload[j].i_arith.arith_behavior == arith_behavior
-				&& f->nodes.payload[j].i_arith.a == a
-				&& f->nodes.payload[j].i_arith.b == b) {
-				return j;
-			}
-			
-			size_t ffs = __builtin_ffs(mask);
-			if (ffs == 0) break;
-			
-			// skip over the mask bit for the next iteration
-			mask >>= ffs;
-			j += ffs;
-		} while (true);
-	}
-#else
-	for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
-		if (f->nodes.type[i] == type
-			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
-			&& f->nodes.payload[i].i_arith.arith_behavior == arith_behavior
-			&& f->nodes.payload[i].i_arith.a == a
-			&& f->nodes.payload[i].i_arith.b == b) {
-			return i;
-		}
-	}
-#endif
-#endif
 	
 	TB_Register r = tb_make_reg(f, type, dt);
 	f->nodes.payload[r].i_arith.arith_behavior = arith_behavior;
@@ -223,6 +174,18 @@ TB_API TB_Register tb_inst_trunc(TB_Function* f, TB_Register src, TB_DataType dt
 	
 	TB_Register r = tb_make_reg(f, TB_TRUNCATE, dt);
 	f->nodes.payload[r].trunc = src;
+	return r;
+}
+
+TB_API TB_Register tb_inst_int2ptr(TB_Function* f, TB_Register src) {
+	TB_Register r = tb_make_reg(f, TB_INT2PTR, TB_TYPE_PTR);
+	f->nodes.payload[r].ptrcast = src;
+	return r;
+}
+
+TB_API TB_Register tb_inst_ptr2int(TB_Function* f, TB_Register src, TB_DataType dt) {
+	TB_Register r = tb_make_reg(f, TB_PTR2INT, dt);
+	f->nodes.payload[r].ptrcast = src;
 	return r;
 }
 
@@ -263,15 +226,13 @@ TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt) 
 }
 
 TB_API TB_Register tb_inst_param(TB_Function* f, int param_id) {
-	int param_count = f->prototype->param_count;
-	assert(param_id < param_count);
+	assert(param_id < f->prototype->param_count);
 	
 	return 2 + param_id;
 }
 
 TB_API TB_Register tb_inst_param_addr(TB_Function* f, int param_id) {
-	int param_count = f->prototype->param_count;
-	assert(param_id < param_count);
+	assert(param_id < f->prototype->param_count);
 	
 	TB_Register param = 2 + param_id;
 	int param_size = f->nodes.payload[param].param.size;
@@ -302,17 +263,6 @@ TB_API TB_Register tb_inst_local(TB_Function* f, uint32_t size, uint32_t alignme
 TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr, uint32_t alignment) {
 	assert(f->current_label);
 	
-#if TB_FRONTEND_OPT
-	for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
-		if (f->nodes.type[i] == TB_LOAD
-			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
-			&& f->nodes.payload[i].load.address == addr
-			&& f->nodes.payload[i].load.alignment == alignment) {
-			return i;
-		}
-	}
-#endif
-	
 	TB_Register r = tb_make_reg(f, TB_LOAD, dt);
 	f->nodes.payload[r].load.address = addr;
 	f->nodes.payload[r].load.alignment = alignment;
@@ -324,6 +274,25 @@ TB_API void tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_R
 	f->nodes.payload[r].store.address = addr;
 	f->nodes.payload[r].store.value = val;
 	f->nodes.payload[r].store.alignment = alignment;
+	return;
+}
+
+TB_API TB_Register tb_inst_volatile_load(TB_Function* f, TB_DataType dt, TB_Register addr, uint32_t alignment) {
+	assert(f->current_label);
+	
+	TB_Register r = tb_make_reg(f, TB_LOAD, dt);
+	f->nodes.payload[r].load.address = addr;
+	f->nodes.payload[r].load.alignment = alignment;
+	f->nodes.payload[r].load.is_volatile = true;
+	return r;
+}
+
+TB_API void tb_inst_volatile_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_Register val, uint32_t alignment) {
+	TB_Register r = tb_make_reg(f, TB_STORE, dt);
+	f->nodes.payload[r].store.address = addr;
+	f->nodes.payload[r].store.value = val;
+	f->nodes.payload[r].store.alignment = alignment;
+	f->nodes.payload[r].store.is_volatile = true;
 	return;
 }
 
@@ -509,17 +478,17 @@ TB_API TB_Register tb_inst_neg(TB_Function* f, TB_DataType dt, TB_Register n) {
 
 TB_API TB_Register tb_inst_and(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	// bitwise operators can't wrap
-	return tb_cse_arith(f, TB_AND, dt, TB_ASSUME_NUW, a, b);
+	return tb_bin_arith(f, TB_AND, dt, TB_ASSUME_NUW, a, b);
 }
 
 TB_API TB_Register tb_inst_or(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	// bitwise operators can't wrap
-	return tb_cse_arith(f, TB_OR, dt, TB_ASSUME_NUW, a, b);
+	return tb_bin_arith(f, TB_OR, dt, TB_ASSUME_NUW, a, b);
 }
 
 TB_API TB_Register tb_inst_xor(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	// bitwise operators can't wrap
-	return tb_cse_arith(f, TB_XOR, dt, TB_ASSUME_NUW, a, b);
+	return tb_bin_arith(f, TB_XOR, dt, TB_ASSUME_NUW, a, b);
 }
 
 TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
@@ -542,7 +511,7 @@ TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB
 		return tb_inst_add(f, dt, aa, tb_inst_add(f, dt, ab, b, arith_behavior), arith_behavior);
 	}
 	
-	return tb_cse_arith(f, TB_ADD, dt, arith_behavior, a, b);
+	return tb_bin_arith(f, TB_ADD, dt, arith_behavior, a, b);
 }
 
 TB_API TB_Register tb_inst_sub(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
@@ -554,7 +523,7 @@ TB_API TB_Register tb_inst_sub(TB_Function* f, TB_DataType dt, TB_Register a, TB
 		return tb_inst_iconst(f, dt, sum);
 	}
 	
-	return tb_cse_arith(f, TB_SUB, dt, arith_behavior, a, b);
+	return tb_bin_arith(f, TB_SUB, dt, arith_behavior, a, b);
 }
 
 TB_API TB_Register tb_inst_mul(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
@@ -567,7 +536,7 @@ TB_API TB_Register tb_inst_mul(TB_Function* f, TB_DataType dt, TB_Register a, TB
 		return tb_inst_iconst(f, dt, sum);
 	}
 	
-	return tb_cse_arith(f, TB_MUL, dt, arith_behavior, a, b);
+	return tb_bin_arith(f, TB_MUL, dt, arith_behavior, a, b);
 }
 
 TB_API TB_Register tb_inst_div(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness) {
@@ -581,23 +550,23 @@ TB_API TB_Register tb_inst_div(TB_Function* f, TB_DataType dt, TB_Register a, TB
 	}
 	
 	// division can't wrap or overflow
-	return tb_cse_arith(f, signedness ? TB_SDIV : TB_UDIV, dt, TB_ASSUME_NUW, a, b);
+	return tb_bin_arith(f, signedness ? TB_SDIV : TB_UDIV, dt, TB_ASSUME_NUW, a, b);
 }
 
 TB_API TB_Register tb_inst_shl(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
-	return tb_cse_arith(f, TB_SHL, dt, arith_behavior, a, b);
+	return tb_bin_arith(f, TB_SHL, dt, arith_behavior, a, b);
 }
 
 // TODO(NeGate): Maybe i should split the bitshift operations into a separate kind of
 // operator that has different arithmatic behaviors, maybe like trap on a large shift amount
 TB_API TB_Register tb_inst_sar(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	// shift right can't wrap or overflow
-	return tb_cse_arith(f, TB_SAR, dt, TB_ASSUME_NUW, a, b);
+	return tb_bin_arith(f, TB_SAR, dt, TB_ASSUME_NUW, a, b);
 }
 
 TB_API TB_Register tb_inst_shr(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
 	// shift right can't wrap or overflow
-	return tb_cse_arith(f, TB_SHR, dt, TB_ASSUME_NUW, a, b);
+	return tb_bin_arith(f, TB_SHR, dt, TB_ASSUME_NUW, a, b);
 }
 
 TB_API TB_Register tb_inst_fadd(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {

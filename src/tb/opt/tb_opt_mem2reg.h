@@ -215,7 +215,7 @@ static TB_Register tb_walk_for_intermediate_phi(TB_Function* f,
 	}
 	else if (a == 0 || b == 0) {
 		TB_Register src = a ? a : b;
-
+		
 		f->nodes.type[new_phi_reg] = TB_PASS;
 		f->nodes.dt[new_phi_reg] = f->nodes.dt[src];
 		f->nodes.payload[new_phi_reg] = (TB_RegPayload){
@@ -302,9 +302,11 @@ static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address) {
 		if (f->nodes.type[i] == TB_LOAD && f->nodes.payload[i].load.address == address) {
 			if (!initialized) dt = f->nodes.dt[i];
 			else if (TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[i])) return false;
+			else if (f->nodes.payload[i].load.is_volatile) return false;
 		} else if (f->nodes.type[i] == TB_STORE && f->nodes.payload[i].store.address == address) {
 			if (!initialized) dt = f->nodes.dt[i];
 			else if (TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[i])) return false;
+			else if (f->nodes.payload[i].store.is_volatile) return false;
 		} else if (f->nodes.type[i] == TB_MEMSET && f->nodes.payload[i].mem_op.dst == address) {
 			return false;
 		} else if (f->nodes.type[i] == TB_ARRAY_ACCESS && f->nodes.payload[i].array_access.base == address) {

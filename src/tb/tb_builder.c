@@ -293,62 +293,17 @@ TB_API void tb_inst_volatile_store(TB_Function* f, TB_DataType dt, TB_Register a
 	f->nodes.payload[r].store.value = val;
 	f->nodes.payload[r].store.alignment = alignment;
 	f->nodes.payload[r].store.is_volatile = true;
-	return;
+}
+
+TB_API void tb_inst_initialize_mem(TB_Function* f, TB_Register addr, TB_InitializerID src) {
+	TB_Register r = tb_make_reg(f, TB_INITIALIZE, TB_TYPE_PTR);
+	f->nodes.payload[r].init.addr = addr;
+	f->nodes.payload[r].init.id = src;
 }
 
 TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) {
 	assert(f->current_label);
-	
-#if TB_FRONTEND_OPT
-#if TB_HOST_ARCH == TB_HOST_X86_64
-	size_t aligned_start = ((f->current_label + 15) / 16) * 16;
-	
-	for (size_t i = aligned_start; i < f->nodes.count; i += 16) {
-		__m128i bytes = _mm_load_si128((__m128i*)&f->nodes.type[i]);
-		unsigned int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(TB_INT_CONST)));
-		if (mask == 0) continue;
-		
-		// this one is guarentee to not be zero so it's fine
-		// to not check that FFS.
-		size_t offset = __builtin_ffs(mask) - 1;
-		
-		size_t j = i + offset;
-		// skip over the mask bit for the next iteration
-		mask >>= (offset + 1);
-		
-		// We know it loops at least once by this point
-		do {
-			assert(f->nodes.type[j] == type);
-			if (TB_DATA_TYPE_EQUALS(f->nodes.dt[j], dt)
-				&& f->nodes.payload[j].i_const.lo == imm
-				&& f->nodes.payload[j].i_const.hi == 0) {
-				return j;
-			}
-			
-			size_t ffs = __builtin_ffs(mask);
-			if (ffs == 0) break;
-			
-			// skip over the mask bit for the next iteration
-			mask >>= ffs;
-			j += ffs;
-		} while (true);
-	}
-#else
-	for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
-		if (f->nodes.type[i] == TB_INT_CONST
-			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
-			&& f->nodes.payload[i].i_const == imm) {
-			return i;
-		}
-	}
-#endif
-#endif
-	
 	assert(dt.type == TB_BOOL || dt.type == TB_PTR || (dt.type >= TB_I8 && dt.type <= TB_I64));
-	
-	uint64_t mask = (~0ull) >> (64 - (8 << (dt.type - TB_I8)));
-	((void)mask);
-	assert((imm & mask) == imm);
 	
 	TB_Register r = tb_make_reg(f, TB_INT_CONST, dt);
 	f->nodes.payload[r].i_const = imm;
@@ -358,6 +313,27 @@ TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) 
 TB_API TB_Register tb_inst_fconst(TB_Function* f, TB_DataType dt, double imm) {
 	TB_Register r = tb_make_reg(f, TB_FLOAT_CONST, dt);
 	f->nodes.payload[r].f_const = imm;
+	return r;
+}
+
+TB_API TB_Register tb_inst_const_cstr(TB_Function* f, const char* str) {
+	size_t len = strlen(str);
+	char* newstr = tb_platform_arena_alloc(len + 1);
+	newstr[len] = '\0';
+	
+	TB_Register r = tb_make_reg(f, TB_STRING_CONST, TB_TYPE_PTR);
+	f->nodes.payload[r].str_const.len = len;
+	f->nodes.payload[r].str_const.data = newstr;
+	return r;
+}
+
+TB_API TB_Register tb_inst_const_string(TB_Function* f, const char* str, size_t len) {
+	char* newstr = tb_platform_arena_alloc(len + 1);
+	newstr[len] = '\0';
+	
+	TB_Register r = tb_make_reg(f, TB_STRING_CONST, TB_TYPE_PTR);
+	f->nodes.payload[r].str_const.len = len;
+	f->nodes.payload[r].str_const.data = newstr;
 	return r;
 }
 
@@ -385,6 +361,12 @@ TB_API TB_Register tb_inst_get_func_address(TB_Function* f, const TB_Function* t
 TB_API TB_Register tb_inst_get_extern_address(TB_Function* f, TB_ExternalID target) {
 	TB_Register r = tb_make_reg(f, TB_EFUNC_ADDRESS, TB_TYPE_PTR);
 	f->nodes.payload[r].efunc_addr = target;
+	return r;
+}
+
+TB_API TB_Register tb_inst_get_global_address(TB_Function* f, TB_GlobalID target) {
+	TB_Register r = tb_make_reg(f, TB_GLOBAL_ADDRESS, TB_TYPE_PTR);
+	f->nodes.payload[r].global_addr = target;
 	return r;
 }
 
@@ -790,20 +772,3 @@ void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, siz
 	};
 }
 #endif
-
-uint32_t tb_emit_const32_patch(TB_Module* m, uint32_t func_id, size_t pos, uint32_t data) {
-	assert(pos < UINT32_MAX);
-	if (m->const32_patches.count + 1 >= m->const32_patches.capacity) {
-		m->const32_patches.capacity *= 2;
-		m->const32_patches.data = tb_platform_heap_realloc(m->const32_patches.data, m->const32_patches.capacity * sizeof(TB_ConstPool32Patch));
-	}
-	
-	size_t r = m->const32_patches.count++;
-	m->const32_patches.data[r] = (TB_ConstPool32Patch){
-		.func_id = func_id,
-		.pos = pos,
-		.raw_data = data
-	};
-	
-	return r * 4;
-}

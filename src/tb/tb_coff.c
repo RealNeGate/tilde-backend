@@ -151,10 +151,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	COFF_SectionHeader rdata_section = {
 		.name = { ".rdata" }, // .rdata
 		.characteristics = COFF_CHARACTERISTICS_RODATA,
-		
-		// TODO(NeGate): Optimize this a bit, we should probably deduplicate
-		// the values
-		.raw_data_size = m->const32_patches.count * sizeof(uint32_t)
+		.raw_data_size = m->rdata_region_size
 	};
 	
 	COFF_SectionHeader debugt_section = {
@@ -518,8 +515,9 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	debugt_section.raw_data_pos = rdata_section.raw_data_pos + rdata_section.raw_data_size;
 	debugs_section.raw_data_pos = debugt_section.raw_data_pos + debugt_section.raw_data_size;
 	
-	text_section.num_reloc = m->const32_patches.count;
+	text_section.num_reloc = 0;
 	loop(i, m->max_threads) {
+		text_section.num_reloc += arrlen(m->const_patches[i]);
 		text_section.num_reloc += arrlen(m->ecall_patches[i]);
 	}
 	
@@ -584,9 +582,18 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	}
 	
 	assert(ftell(f) == rdata_section.raw_data_pos);
-	for (size_t i = 0; i < m->const32_patches.count; i++) {
-		TB_ConstPool32Patch* p = &m->const32_patches.data[i];
-		fwrite(&p->raw_data, sizeof(uint32_t), 1, f);
+	{
+		char* rdata = tb_platform_heap_alloc(m->rdata_region_size);
+		
+		loop(i, m->max_threads) {
+			loop(j, arrlen(m->const_patches[i])) {
+				TB_ConstPoolPatch* p = &m->const_patches[i][j];
+				memcpy(&rdata[p->rdata_pos], p->data, p->length);
+			}
+		}
+		
+		fwrite(rdata, m->rdata_region_size, 1, f);
+		tb_platform_heap_free(rdata);
 	}
 	
 	// Emit debug info
@@ -597,22 +604,24 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	fwrite(debugs_out.data, debugs_out.count, 1, f);
 	
 	assert(ftell(f) == text_section.pointer_to_reloc);
-	for (size_t i = 0; i < m->const32_patches.count; i++) {
-		TB_ConstPool32Patch* p = &m->const32_patches.data[i];
-		TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
-		
-		uint64_t meta = out_f->prologue_epilogue_metadata;
-		uint64_t stack_usage = out_f->stack_usage;
-		
-		size_t actual_pos = func_layout[p->func_id] 
-			+ code_gen->get_prologue_length(meta, stack_usage)
-			+ p->pos;
-		
-		fwrite(&(COFF_ImageReloc) {
-				   .Type = IMAGE_REL_AMD64_REL32,
-				   .SymbolTableIndex = 2, // rdata section
-				   .VirtualAddress = actual_pos
-			   }, sizeof(COFF_ImageReloc), 1, f);
+	loop(i, m->max_threads) {
+		loop(j, arrlen(m->const_patches[i])) {
+			TB_ConstPoolPatch* p = &m->const_patches[i][j];
+			TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
+			
+			uint64_t meta = out_f->prologue_epilogue_metadata;
+			uint64_t stack_usage = out_f->stack_usage;
+			
+			size_t actual_pos = func_layout[p->func_id] 
+				+ code_gen->get_prologue_length(meta, stack_usage)
+				+ p->pos;
+			
+			fwrite(&(COFF_ImageReloc) {
+					   .Type = IMAGE_REL_AMD64_REL32,
+					   .SymbolTableIndex = 2, // rdata section
+					   .VirtualAddress = actual_pos
+				   }, sizeof(COFF_ImageReloc), 1, f);
+		}
 	}
 	
 	size_t extern_func_sym_start = 8 + m->compiled_functions.count;

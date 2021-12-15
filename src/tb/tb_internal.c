@@ -86,6 +86,7 @@ switch (type) { \
 case TB_NULL: \
 case TB_INT_CONST: \
 case TB_FLOAT_CONST: \
+case TB_STRING_CONST: \
 case TB_LOCAL: \
 case TB_PARAM: \
 case TB_GOTO: \

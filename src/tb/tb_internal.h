@@ -80,9 +80,6 @@ typedef enum TB_RegTypeEnum {
     TB_IF,
     TB_RET,
 	
-	TB_FUNC_ADDRESS,
-	TB_EFUNC_ADDRESS,
-	
 	// Immediates
 	TB_INT_CONST,
     TB_FLOAT_CONST,
@@ -136,6 +133,12 @@ typedef enum TB_RegTypeEnum {
     TB_PARAM,
     TB_PARAM_ADDR,
 	
+	TB_FUNC_ADDRESS,
+	TB_EFUNC_ADDRESS,
+	TB_GLOBAL_ADDRESS,
+	
+	TB_INITIALIZE,
+	
 	// Pointer math
 	TB_MEMBER_ACCESS,
 	TB_ARRAY_ACCESS,
@@ -172,11 +175,17 @@ typedef union TB_RegPayload {
 	
 	uint64_t i_const;
 	double f_const;
+	struct {
+		size_t len;
+		const char* data;
+	} str_const;
+	
 	TB_Register ext;
 	TB_Register trunc;
 	TB_Register ptrcast;
 	const TB_Function* func_addr;
 	TB_ExternalID efunc_addr;
+	TB_GlobalID global_addr;
 	struct {
 		TB_FileID file;
 		int line;
@@ -286,13 +295,21 @@ typedef union TB_RegPayload {
 		TB_Register size;
 		int align;
 	} mem_op;
+	struct {
+		TB_Register addr;
+		TB_InitializerID id;
+	} init;
 } TB_RegPayload;
 
-typedef struct TB_ConstPool32Patch {
+typedef struct TB_ConstPoolPatch {
 	uint32_t func_id;
 	uint32_t pos; // relative to the start of the function
-	uint32_t raw_data;
-} TB_ConstPool32Patch;
+	
+	size_t rdata_pos;
+	
+	const void* data;
+	size_t length;
+} TB_ConstPoolPatch;
 
 typedef struct TB_FunctionPatch {
 	uint32_t func_id;
@@ -476,12 +493,7 @@ struct TB_Module {
 	pthread_mutex_t mutex;
 #endif
 	
-	struct {
-		size_t count;
-		size_t capacity;
-		TB_ConstPool32Patch* data;
-	} const32_patches;
-	
+	dyn_array(TB_ConstPoolPatch) const_patches[TB_MAX_THREADS];
 	dyn_array(uint64_t) initializers[TB_MAX_THREADS];
 	dyn_array(TB_External) externals[TB_MAX_THREADS];
 	dyn_array(TB_FunctionPatch) call_patches[TB_MAX_THREADS];
@@ -516,7 +528,10 @@ struct TB_Module {
 	// each can work at the same time without
 	// making any allocations within the code
 	// gen.
+	//
+	// oh btw the rdata sections too
 	_Atomic size_t code_region_count;
+	_Atomic size_t rdata_region_size;
 	struct {
 		size_t size;
 		uint8_t* data;
@@ -667,18 +682,17 @@ __VA_ARGS__; \
 }
 #endif
 
-//
+////////////////////////////////
 // CONSTANT FOLDING UTILS
-//
-// TODO(NeGate): Drop i128
+////////////////////////////////
 uint64_t tb_fold_add(TB_ArithmaticBehavior ab, TB_DataType dt, uint64_t a, uint64_t b);
 uint64_t tb_fold_sub(TB_ArithmaticBehavior ab, TB_DataType dt, uint64_t a, uint64_t b);
 uint64_t tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, uint64_t a, uint64_t b);
 uint64_t tb_fold_div(TB_DataType dt, uint64_t a, uint64_t b);
 
-//
+////////////////////////////////
 // OPTIMIZATION FUNCTIONS
-//
+////////////////////////////////
 bool tb_opt_mem2reg(TB_Function* f);
 bool tb_opt_dce(TB_Function* f);
 bool tb_opt_fold(TB_Function* f);
@@ -693,12 +707,7 @@ bool tb_opt_compact_dead_regs(TB_Function* f);
 void tb_find_live_intervals(const TB_Function* f, TB_Register intervals[]);
 void tb_find_use_count(const TB_Function* f, int use_count[]);
 
-//
-// BACKEND UTILITIES
-//
-// TODO(NeGate): Not thread safe yet
-uint32_t tb_emit_const32_patch(TB_Module* m, uint32_t func_id, size_t pos, uint32_t data);
-
+void tb_emit_const_patch(TB_Module* m, uint32_t func_id, size_t pos, const void* ptr, size_t len, size_t local_thread_id);
 void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size_t pos, size_t local_thread_id);
 void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id, size_t pos, size_t local_thread_id);
 

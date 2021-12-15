@@ -776,17 +776,32 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					emit(0x0F);
 					emit(0x10);
 					emit(((dst_xmm & 7) << 3) | RBP);
+					emit4(0);
 					
 					size_t func_id = f - f->module->functions.data;
-					uint32_t offset = tb_emit_const32_patch(f->module, 
-															func_id,
-															code_pos(),
-															imm);
-					emit4(offset);
+					
+					uint32_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint32_t));
+					*rdata_payload = imm;
+					
+					tb_emit_const_patch(f->module, func_id, code_pos() - 4, rdata_payload, sizeof(uint32_t), s_local_thread_id);
 				}
 				break;
 			}
-			
+			case TB_STRING_CONST: {
+				const char* str = f->nodes.payload[r].str_const.data;
+				size_t len = f->nodes.payload[r].str_const.len;
+				
+				int func_id = f - f->module->functions.data;
+				Val v = def_new_gpr(ctx, f, r, TB_PTR);
+				
+				emit(rex(true, v.gpr, RBP, 0));
+				emit(0x8D);
+				emit(mod_rx_rm(MOD_INDIRECT, v.gpr, RBP));
+				emit4(0x0);
+				
+				tb_emit_const_patch(f->module, func_id, code_pos() - 4, str, len, s_local_thread_id);
+				break;
+			}
 			case TB_ARRAY_ACCESS: {
 				Val base = use_as_address(ctx, f, p->array_access.base);
 				Val index = use_as_rvalue(ctx, f, p->array_access.index);

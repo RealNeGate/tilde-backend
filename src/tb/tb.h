@@ -306,12 +306,19 @@ extern "C" {
 	////////////////////////////////
 	// Constant Initializers
 	////////////////////////////////
-	// NOTE: the max relocations is a cap and thus it can be bigger than the actually
-	// number needed.
+	// NOTE: the max objects is a cap and thus it can be bigger than the actual
+	// number used.
 	TB_API TB_InitializerID tb_initializer_create(TB_Module* m, size_t size, size_t align, size_t max_objects);
 	
 	// returns a buffer which the user can fill to then have represented in the initializer
 	TB_API void* tb_initializer_add_region(TB_Module* m, TB_InitializerID id, size_t offset, size_t size);
+	
+	////////////////////////////////
+	// Constant Initializers
+	////////////////////////////////
+	// NOTE: the max relocations is a cap and thus it can be bigger than the actually
+	// number needed.
+	TB_API TB_GlobalID tb_global_create(TB_Module* m, TB_InitializerID);
 	
 	////////////////////////////////
 	// Function IR Generation
@@ -335,8 +342,16 @@ extern "C" {
 	TB_API TB_Register tb_inst_volatile_load(TB_Function* f, TB_DataType dt, TB_Register addr, uint32_t alignment);
 	TB_API void tb_inst_volatile_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_Register val, uint32_t alignment);
 	
+	TB_API void tb_inst_initialize_mem(TB_Function* f, TB_Register addr, TB_InitializerID src);
+	
 	TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm);
 	TB_API TB_Register tb_inst_fconst(TB_Function* f, TB_DataType dt, double imm);
+	
+	// string is a UTF-8 null terminated string
+	TB_API TB_Register tb_inst_const_cstr(TB_Function* f, const char* str);
+	
+	// string is a slice of bytes
+	TB_API TB_Register tb_inst_const_string(TB_Function* f, const char* str, size_t len);
 	
 	TB_API TB_Register tb_inst_array_access(TB_Function* f, TB_Register base, TB_Register index, uint32_t stride);
 	TB_API TB_Register tb_inst_member_access(TB_Function* f, TB_Register base, int32_t offset);

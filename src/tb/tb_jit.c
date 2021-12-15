@@ -44,8 +44,6 @@ void tb_module_export_jit(TB_Module* m) {
 	code_gen->emit_call_patches(m, func_layout);
 	
 	// TODO(NeGate): Implement rdata
-	assert(m->const32_patches.count == 0);
-	
 	// Output function
 	m->jit_region_size = text_section_size;
 	m->jit_region = tb_platform_valloc(text_section_size);

@@ -154,10 +154,6 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 	m->label_symbols.data = tb_platform_heap_alloc(64 * sizeof(TB_LabelSymbol));
 #endif
 	
-	m->const32_patches.count = 0;
-	m->const32_patches.capacity = 64;
-	m->const32_patches.data = tb_platform_heap_alloc(64 * sizeof(TB_ConstPool32Patch));
-    
 	m->files.count = 1;
 	m->files.capacity = 64;
 	m->files.data = tb_platform_heap_alloc(64 * sizeof(TB_File));
@@ -201,6 +197,7 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 	pthread_mutex_init(&m->mutex, NULL);
 #endif
 	
+	tb_platform_arena_init();
 	return m;
 }
 
@@ -277,6 +274,8 @@ TB_API size_t tb_DEBUG_module_get_full_node_count(TB_Module* m) {
 }
 
 TB_API void tb_module_destroy(TB_Module* m) {
+	tb_platform_arena_free();
+	
 	loop(i, m->functions.count) {
 		tb_function_free(&m->functions.data[i]);
 	}
@@ -297,6 +296,7 @@ TB_API void tb_module_destroy(TB_Module* m) {
 	loop(i, m->max_threads) arrfree(m->initializers[i]);
 	loop(i, m->max_threads) arrfree(m->call_patches[i]);
 	loop(i, m->max_threads) arrfree(m->ecall_patches[i]);
+	loop(i, m->max_threads) arrfree(m->const_patches[i]);
 	loop(i, m->max_threads) arrfree(m->externals[i]);
 	
 	tb_platform_vfree(m->prototypes_arena, PROTOTYPES_ARENA_SIZE);
@@ -306,7 +306,6 @@ TB_API void tb_module_destroy(TB_Module* m) {
 #if !TB_STRIP_LABELS
 	tb_platform_heap_free(m->label_symbols.data);
 #endif
-	tb_platform_heap_free(m->const32_patches.data);
 	tb_platform_heap_free(m->files.data);
 	tb_platform_heap_free(m->functions.data);
 	tb_platform_heap_free(m->compiled_functions.data);
@@ -572,7 +571,7 @@ void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size
 	TB_FunctionPatch p = {
 		.func_id = func_id,
 		.target_id = target_id,
-		.pos = pos
+		.pos = safe_cast(uint32_t, pos)
 	};
 	
 	arrput(m->call_patches[local_thread_id], p);
@@ -582,10 +581,22 @@ void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id
 	TB_ExternFunctionPatch p = {
 		.func_id = func_id,
 		.target_id = target_id,
-		.pos = pos
+		.pos = safe_cast(uint32_t, pos)
 	};
 	
 	arrput(m->ecall_patches[local_thread_id], p);
+}
+
+void tb_emit_const_patch(TB_Module* m, uint32_t func_id, size_t pos, const void* ptr, size_t len, size_t local_thread_id) {
+	size_t rdata_pos = atomic_fetch_add(&m->rdata_region_size, len);
+	TB_ConstPoolPatch p = {
+		.func_id = func_id,
+		.pos = safe_cast(uint32_t, pos),
+		.rdata_pos = rdata_pos,
+		.data = ptr,
+		.length = len
+	};
+	arrput(m->const_patches[local_thread_id], p);
 }
 
 //

@@ -85,6 +85,8 @@ static void* job_system_thread_func(void* lpParam)
 	uint8_t* code = tb_platform_valloc(CODE_OUTPUT_BUFFER);
 	
 	TB_FifoQueue* q = &s->queue[i];
+	assert(q->semaphore);
+	
 	while (s->running) {
 		uint32_t read_ptr = q->read_pointer;
 		uint32_t new_read_ptr = (read_ptr + 1) % MAX_JOBS_PER_JOB_SYSTEM;
@@ -187,11 +189,11 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 	InitializeCriticalSection(&m->mutex);
 #else
 	loop(i, max_threads) {
-		pthread_create(&j->threads[i], 0, job_system_thread_func, m);
+		char* temp = malloc(10);
+		sprintf(temp, "BITCH%d", i);
+		j->queue[i].semaphore = sem_open(temp, O_CREAT, 0, 1);
 		
-		char temp[10];
-		sprintf("BITCH%zu", i);
-		j->queue[i].semaphore = sem_open(strdup(temp), 0, 0, max_threads);
+		pthread_create(&j->threads[i], 0, job_system_thread_func, m);
 	}
 	
 	pthread_mutex_init(&m->mutex, NULL);
@@ -257,9 +259,15 @@ TB_API bool tb_module_compile(TB_Module* m) {
 	DeleteCriticalSection(&m->mutex);
 	assert(m->compiled_functions.count == m->functions.count);
 #else
-	// TODO(NeGate): Delete the mutexes and fix this
-	// sem_close(s->semaphore); 
-#error "Fix this!"
+	// I don't merge these so that they can all post, start closing,
+	// then wait for them all to close, then actually delete them,
+	// idk if there's a wait for multiple, post for multiple etc so this
+	// works :P
+	loop(i, s->thread_count) sem_post(s->queue[i].semaphore);
+	loop(i, s->thread_count) pthread_join(s->threads[i], NULL);
+	loop(i, s->thread_count) sem_close(s->queue[i].semaphore);
+	
+	pthread_mutex_destroy(&m->mutex);
 #endif
 	
 	return true;

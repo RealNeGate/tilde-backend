@@ -16,15 +16,19 @@
 #pragma once
 #include "tb.h"
 #include <time.h>
+#include <limits.h>
 #include <stdatomic.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #else
+// NOTE(NeGate): I love how we assume that if it's not windows
+// its just posix, these are the only options i guess
 #include <unistd.h>
 #include <sys/mman.h>
 #include <pthread.h>
+#include <fcntl.h>
 #include <semaphore.h>
 #endif
 

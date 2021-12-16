@@ -31,10 +31,7 @@ static _Atomic size_t string_head;
 
 char* tb_platform_string_alloc(const char* str) {
 	if (!string_buffer) {
-		string_buffer = VirtualAlloc(NULL,
-									 64 << 20,
-									 MEM_RESERVE | MEM_COMMIT,
-									 PAGE_READWRITE);
+		string_buffer = tb_platform_valloc(64 << 20);
 	}
 	
 	size_t len = strlen(str) + 1;

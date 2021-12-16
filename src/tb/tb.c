@@ -587,7 +587,7 @@ void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id
 	arrput(m->ecall_patches[local_thread_id], p);
 }
 
-void tb_emit_const_patch(TB_Module* m, uint32_t func_id, size_t pos, const void* ptr, size_t len, size_t local_thread_id) {
+uint32_t tb_emit_const_patch(TB_Module* m, uint32_t func_id, size_t pos, const void* ptr, size_t len, size_t local_thread_id) {
 	size_t rdata_pos = atomic_fetch_add(&m->rdata_region_size, len);
 	TB_ConstPoolPatch p = {
 		.func_id = func_id,
@@ -597,6 +597,7 @@ void tb_emit_const_patch(TB_Module* m, uint32_t func_id, size_t pos, const void*
 		.length = len
 	};
 	arrput(m->const_patches[local_thread_id], p);
+	return safe_cast(uint32_t, rdata_pos);
 }
 
 //
@@ -635,6 +636,9 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			fprintf(out, "  r%u\t=\t", i);
 			tb_print_type(out, dt);
 			fprintf(out, " %" PRIu64 "\n", p.i_const);
+			break;
+			case TB_STRING_CONST:
+			fprintf(out, "  r%u\t=\t\"%.*s\"\n", i, (int)f->nodes.payload[i].str_const.len, f->nodes.payload[i].str_const.data);
 			break;
 			case TB_LINE_INFO:
 			//fprintf(out, "  # LOC %s:%d\n", f->module->files.data[p.line_info.file].path, p.line_info.line);

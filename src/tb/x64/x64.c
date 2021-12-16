@@ -776,14 +776,14 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					emit(0x0F);
 					emit(0x10);
 					emit(((dst_xmm & 7) << 3) | RBP);
-					emit4(0);
 					
 					size_t func_id = f - f->module->functions.data;
 					
 					uint32_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint32_t));
 					*rdata_payload = imm;
 					
-					tb_emit_const_patch(f->module, func_id, code_pos() - 4, rdata_payload, sizeof(uint32_t), s_local_thread_id);
+					uint32_t disp = tb_emit_const_patch(f->module, func_id, code_pos(), rdata_payload, sizeof(uint32_t), s_local_thread_id);
+					emit4(disp);
 				}
 				break;
 			}
@@ -797,9 +797,9 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 				emit(rex(true, v.gpr, RBP, 0));
 				emit(0x8D);
 				emit(mod_rx_rm(MOD_INDIRECT, v.gpr, RBP));
-				emit4(0x0);
 				
-				tb_emit_const_patch(f->module, func_id, code_pos() - 4, str, len, s_local_thread_id);
+				uint32_t disp = tb_emit_const_patch(f->module, func_id, code_pos(), str, len, s_local_thread_id);
+				emit4(disp);
 				break;
 			}
 			case TB_ARRAY_ACCESS: {
@@ -989,7 +989,9 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					break;
 				}
 				
-				if (src.dt.type == TB_I32 &&
+				if ((src.dt.type == TB_I32 ||
+					 src.dt.type == TB_I64 ||
+					 src.dt.type == TB_PTR) &&
 					ctx->intervals[p->ext] == r) {
 					assert(src.dt.count == 1);
 					assert(dt.count == 1);

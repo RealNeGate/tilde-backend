@@ -319,20 +319,22 @@ TB_API TB_Register tb_inst_fconst(TB_Function* f, TB_DataType dt, double imm) {
 TB_API TB_Register tb_inst_const_cstr(TB_Function* f, const char* str) {
 	size_t len = strlen(str);
 	char* newstr = tb_platform_arena_alloc(len + 1);
+	memcpy(newstr, str, len);
 	newstr[len] = '\0';
 	
 	TB_Register r = tb_make_reg(f, TB_STRING_CONST, TB_TYPE_PTR);
-	f->nodes.payload[r].str_const.len = len;
+	f->nodes.payload[r].str_const.len = len + 1;
 	f->nodes.payload[r].str_const.data = newstr;
 	return r;
 }
 
 TB_API TB_Register tb_inst_const_string(TB_Function* f, const char* str, size_t len) {
 	char* newstr = tb_platform_arena_alloc(len + 1);
+	memcpy(newstr, str, len);
 	newstr[len] = '\0';
 	
 	TB_Register r = tb_make_reg(f, TB_STRING_CONST, TB_TYPE_PTR);
-	f->nodes.payload[r].str_const.len = len;
+	f->nodes.payload[r].str_const.len = len + 1;
 	f->nodes.payload[r].str_const.data = newstr;
 	return r;
 }

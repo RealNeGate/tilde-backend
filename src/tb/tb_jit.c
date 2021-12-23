@@ -75,6 +75,29 @@ void tb_module_export_jit(TB_Module* m) {
 		text_section += epilogue_len;
 	}
 	
+	// Emit external patches
+	loop(i, m->max_threads) {
+		loop(j, arrlen(m->ecall_patches[i])) {
+			TB_ExternFunctionPatch* p = &m->ecall_patches[i][j];
+			TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
+			
+			uint64_t meta = out_f->prologue_epilogue_metadata;
+			uint64_t stack_usage = out_f->stack_usage;
+			
+			uintptr_t actual_pos = func_layout[p->func_id] 
+				+ code_gen->get_prologue_length(meta, stack_usage)
+				+ p->pos;
+			
+			TB_ExternalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
+			const TB_External* restrict e = &m->externals[p->target_id / per_thread_stride][p->target_id % per_thread_stride];
+			
+			// TODO(NeGate): Implement something smarter... this will break 
+			// if you somehow compile an external that's like 2GB away
+			int32_t displacement = safe_cast(int32_t, ((uintptr_t)e->address) - actual_pos);
+			*((int32_t*) &text_section[actual_pos]) = displacement;
+		}
+	}
+	
 	free(func_layout);
 	
 	// convert to executable

@@ -45,6 +45,7 @@ char* tb_platform_string_alloc(const char* str) {
 
 void tb_platform_string_free() {
 	tb_platform_vfree(string_buffer, 64 << 20);
+	string_buffer = NULL;
 }
 
 ////////////////////////////////
@@ -118,4 +119,6 @@ void tb_platform_arena_free() {
 		VirtualFree(c, 0, MEM_RELEASE);
 		c = next;
 	}
+	
+	arena_base = arena_top = NULL;
 }

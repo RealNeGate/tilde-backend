@@ -497,6 +497,18 @@ TB_API void* tb_initializer_add_region(TB_Module* m, TB_InitializerID id, size_t
 	return ptr;
 }
 
+TB_API bool tb_jit_import(TB_Module* m, const char* name, void* address) {
+	// TODO(NeGate): Maybe speed this up but also maybe don't... idk
+	loop(i, m->max_threads) {
+		loop(j, arrlen(m->externals[i])) if (strcmp(m->externals[i][j].name, name) == 0) {
+			m->externals[i][j].address = address;
+			return true;
+		}
+	}
+	
+	return false;
+}
+
 TB_API TB_ExternalID tb_module_extern(TB_Module* m, const char* name) {
 	int tid = get_local_thread_id();
 	
@@ -514,7 +526,7 @@ TB_API TB_ExternalID tb_module_extern(TB_Module* m, const char* name) {
 
 TB_API void* tb_module_get_jit_func_by_name(TB_Module* m, const char* name) {
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
-		if (strcmp(m->compiled_functions.data[i].name, name)) return m->compiled_function_pos[i];
+		if (strcmp(m->compiled_functions.data[i].name, name) == 0) return m->compiled_function_pos[i];
 	}
 	
 	return NULL;

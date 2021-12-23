@@ -355,6 +355,7 @@ typedef struct TB_NodeStream {
 
 typedef struct TB_External {
 	char* name;
+	void* address;
 } TB_External;
 
 // function prototypes are stored

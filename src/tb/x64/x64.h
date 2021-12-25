@@ -169,7 +169,7 @@ typedef struct Ctx {
 typedef enum Inst2Type {
     // Integer data processing
 	ADD, AND, OR, SUB, XOR, CMP, MOV,
-    TEST, LEA, IMUL, MOVSX, MOVZX,
+    TEST, LEA, IMUL, MOVSX, MOVSXD, MOVZX,
     
     // Scalar Single
     MOVSS, ADDSS, MULSS, SUBSS, DIVSS,
@@ -243,6 +243,7 @@ static const Inst2 inst2_tbl[] = {
 	[XOR] = { 0x30, 0x80, 0x06 },
 	[CMP] = { 0x38, 0x80, 0x07 },
 	[MOV] = { 0x88, 0xC6, 0x00 },
+	[MOVSXD] = { 0x63 },
 	[TEST] = { 0x84, 0xF6, 0x00 },
     
 	[LEA] = { 0x8D },

@@ -1,8 +1,8 @@
 // This entire module is one translation unit so that it doesn't have to worry
 // about C's crappy support for public and private interfaces.
 #include "x64.h"
-#include "inst.c"
-#include "proepi.c"
+#include "inst.h"
+#include "proepi.h"
 
 #if 0
 #define DEBUG_LOG(...) printf(__VA_ARGS__)
@@ -977,10 +977,19 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 			}
 			case TB_SIGN_EXT: {
 				Val src = use_as_rvalue(ctx, f, p->ext);
+				if (src.type == VAL_IMM) {
+					src.dt = dt;
+					def(ctx, f, src, r);
+					break;
+				}
 				
 				// TODO(NeGate): Implement recycle
 				Val v = def_new_gpr(ctx, f, r, dt.type);
-				inst2(ctx, MOVSX, &v, &src, dt.type);
+				if (dt.type == TB_I64) {
+					inst2(ctx, MOVSXD, &v, &src, dt.type);
+				} else {
+					inst2(ctx, MOVSX, &v, &src, dt.type);
+				}
 				break;
 			}
 			case TB_INT2PTR: {

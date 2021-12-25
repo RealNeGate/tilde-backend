@@ -1,4 +1,4 @@
-clang_settings="-march=nehalem -O0 -Werror -Wall -Wno-unused-function -g"
+clang_settings="-march=nehalem -O2 -DNDEBUG -Werror -Wall -Wno-unused-function -g"
 
 tb_source_files="../src/tb/tb.c 
 	../src/tb/tb_builder.c 

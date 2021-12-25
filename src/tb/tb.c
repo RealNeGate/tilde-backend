@@ -178,7 +178,7 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 	j->running = true;
 	j->thread_count = max_threads;
 	
-#ifdef _WIN32
+#if defined(_WIN32)
 	loop(i, max_threads) {
 		j->queue[i].semaphore = CreateSemaphoreExA(0, 1, 1, 0, 0, SEMAPHORE_ALL_ACCESS);
 		j->threads[i] = CreateThread(0, 4 * 1024 * 1024,
@@ -187,16 +187,20 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 	}
 	
 	InitializeCriticalSection(&m->mutex);
-#else
+#elif defined(__unix__)
+	// TODO(NeGate): Fix this leak
+	sem_t* semaphores = malloc(max_threads * sizeof(sem_t));
+
 	loop(i, max_threads) {
-		char* temp = malloc(10);
-		sprintf(temp, "BITCH%d", i);
-		j->queue[i].semaphore = sem_open(temp, O_CREAT, 0, 1);
+		assert(!sem_init(&semaphores[i], 0, 1));
+		j->queue[i].semaphore = &semaphores[i];
 		
 		pthread_create(&j->threads[i], 0, job_system_thread_func, m);
 	}
 	
 	pthread_mutex_init(&m->mutex, NULL);
+#else
+#error "TODO"	
 #endif
 	
 	tb_platform_arena_init();

@@ -931,7 +931,9 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 				}
 				
 				// TODO(NeGate): Implement recycle
+				if (dt.type == TB_BOOL) dt.type = TB_I8;
 				Val v = def_new_gpr(ctx, f, r, dt.type);
+
 				if (dt.type == TB_PTR || dt.type == TB_I64 || dt.type == TB_I32) {
 					// 32bit operations automatically truncate
 					inst2(ctx, MOV, &v, &src, dt.type);

@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
 }
 
 void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
-	TB_Module* m = tb_module_create(arch, system, features, TB_OPT_O0, 1, false);
+	TB_Module* m = tb_module_create(arch, system, features, TB_OPT_O0);
     
 	typedef TB_Function*(*TestFunction)(TB_Module* m);
 	static const TestFunction test_functions[] = {
@@ -90,6 +90,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 		TB_Function* func = test_functions[i](m);
         
         tb_module_compile_func(m, func);
+		tb_function_free(func);
 	}
     
 	if (!tb_module_compile(m)) abort();

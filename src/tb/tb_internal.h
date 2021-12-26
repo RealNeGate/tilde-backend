@@ -54,6 +54,8 @@ casted; \
 // TODO(NeGate): eventually i'll make it dynamic
 #define PROTOTYPES_ARENA_SIZE (16u << 20u)
 
+#define CODE_REGION_BUFFER_SIZE (256 * 1024 * 1024)
+
 typedef struct TB_Emitter {
 	size_t capacity, count;
 	uint8_t* data;
@@ -442,42 +444,18 @@ typedef struct TB_LabelSymbol {
 	uint32_t pos; // relative to the start of the function
 } TB_LabelSymbol;
 
-typedef struct TB_FifoQueue {
-#if _WIN32
-	HANDLE semaphore;
-#else
-	sem_t* semaphore;
-#endif
-	
-	_Atomic uint32_t read_pointer;
-	_Atomic uint32_t write_pointer;
-	TB_Function* functions[MAX_JOBS_PER_JOB_SYSTEM];
-} TB_FifoQueue;
-
-typedef struct TB_JobSystem {
-	// FIFO queue
-	_Atomic bool running;
-	uint32_t thread_count;
-	
-#if _WIN32
-	HANDLE threads[TB_MAX_THREADS];
-#else
-	pthread_t threads[TB_MAX_THREADS];
-#endif
-	
-	// avoid false sharing
-	_Alignas(64) TB_FifoQueue queue[TB_MAX_THREADS];
-} TB_JobSystem;
+typedef struct TB_CodeRegion {
+	size_t size;
+	uint8_t data[CODE_REGION_BUFFER_SIZE - sizeof(size_t)];
+} TB_CodeRegion;
 
 struct TB_Module {
-	bool preserve_ir_after_submit;
 	int optimization_level;
 	int max_threads;
     
 	TB_Arch target_arch;
 	TB_System target_system;
 	TB_FeatureSet features;
-	TB_JobSystem* jobs;
 	
 	// This number is calculated while the builders are running
 	// if the optimizations are run this number is set to SIZE_MAX
@@ -516,7 +494,6 @@ struct TB_Module {
 	} functions;
 	
 	struct {
-		_Atomic size_t completed;
 		_Atomic size_t count;
 		TB_FunctionOutput* data;
 	} compiled_functions;
@@ -528,19 +505,15 @@ struct TB_Module {
 	// non NULL entry which map to the `compiled_functions` 
 	void** compiled_function_pos;
 	
+	// oh btw the rdata sections too
+	_Atomic size_t rdata_region_size;
+	
 	// The code is stored into giant buffers
 	// there's on per code gen thread so that
 	// each can work at the same time without
 	// making any allocations within the code
 	// gen.
-	//
-	// oh btw the rdata sections too
-	_Atomic size_t code_region_count;
-	_Atomic size_t rdata_region_size;
-	struct {
-		size_t size;
-		uint8_t* data;
-	} code_regions[TB_MAX_THREADS];
+	TB_CodeRegion* code_regions[TB_MAX_THREADS];
 };
 
 typedef struct TB_TemporaryStorage {

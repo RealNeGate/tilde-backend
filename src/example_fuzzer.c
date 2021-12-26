@@ -68,7 +68,7 @@ static __stdcall int ir_gen(FuzzerInfo* i) {
 		TB_Function* f = tb_prototype_build(m, p, temp);
 		for (int i = 0; i < param_count; i++) pool[pool_size++] = tb_inst_param(f, i);
 		
-		int inst_count = gen_random(1, 100);
+		int inst_count = gen_random(1, 50);
 		for (int i = 0; i < inst_count; i++) {
 			TB_DataType dt = gen_random_int_dt();
 			
@@ -146,6 +146,7 @@ static __stdcall int ir_gen(FuzzerInfo* i) {
 		//printf("\n\n\n");
 		
 		tb_module_compile_func(m, f);
+		tb_function_free(f);
 		n++;
 	}
 	
@@ -165,11 +166,7 @@ int main(int argc, char** argv) {
 	uint64_t t1 = get_timer_counter();
 	
 	TB_FeatureSet features = { 0 };
-	
-	m = tb_module_create(TB_ARCH_X86_64,
-						 TB_SYSTEM_WINDOWS, &features,
-                         TB_OPT_O0, thread_count,
-                         false);
+	m = tb_module_create(TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features, TB_OPT_O0);
 	
 	rng.inc = __builtin_bswap64(__rdtsc()) >> 7;
 	printf("Initial seed: 0x%llx 0x%llx\n", rng.state, rng.inc);

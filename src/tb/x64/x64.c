@@ -933,7 +933,7 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 				// TODO(NeGate): Implement recycle
 				if (dt.type == TB_BOOL) dt.type = TB_I8;
 				Val v = def_new_gpr(ctx, f, r, dt.type);
-
+				
 				if (dt.type == TB_PTR || dt.type == TB_I64 || dt.type == TB_I32) {
 					// 32bit operations automatically truncate
 					inst2(ctx, MOV, &v, &src, dt.type);
@@ -1663,7 +1663,16 @@ static void isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
 		if (dst_dt.count > 1) mov_type = MOVAPS;
 		else if (dst_dt.type == TB_F32) mov_type = MOVSS;
 		inst2(ctx, mov_type, &v, src, dst_dt.type);
-		inst2(ctx, info->inst, &v, src, dst_dt.type);
+		
+		if (info->inst == IMUL && src->type == VAL_IMM) {
+			// imul reg/mem64, imm32 isn't a thing, it's a bit fancier than
+			// that really, so we'll just materialize a temporary
+			Val new_src = def_new_gpr(ctx, f, 0, TB_I32);
+			inst2(ctx, MOV, &new_src, src, TB_I32);
+			inst2(ctx, info->inst, &v, &new_src, dst_dt.type);
+		} else {
+			inst2(ctx, info->inst, &v, src, dst_dt.type);
+		}
 		
 		if (is_promoted) inst2(ctx, MOVZX, &v, &v, prev_dt.type);
 	}

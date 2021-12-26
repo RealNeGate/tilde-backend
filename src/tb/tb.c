@@ -5,9 +5,7 @@
 #include <x86intrin.h>
 #endif
 
-#define CODE_OUTPUT_BUFFER (256 * 1024 * 1024)
-
-static _Thread_local uint8_t* tb_thread_storage;
+static _Thread_local uint8_t tb_thread_storage[TB_TEMPORARY_STORAGE_SIZE];
 
 static _Atomic int total_tid;
 static _Thread_local int tid;
@@ -23,8 +21,16 @@ static int get_local_thread_id() {
 	return tid - 1;
 }
 
-// TODO(NeGate): Doesn't free the name, it's needed for later
-static void tb_function_free(TB_Function* f) {
+static TB_CodeRegion* get_or_allocate_code_region(TB_Module* m, int tid) {
+	if (!m->code_regions[tid]) {
+		m->code_regions[tid] = tb_platform_valloc(CODE_REGION_BUFFER_SIZE);
+	}
+	
+	return m->code_regions[tid];
+}
+
+// TODO(NeGate): Doesn't free the name, it's kept forever
+TB_API void tb_function_free(TB_Function* f) {
 	if (f->is_ir_free) return;
 	
 	tb_platform_heap_free(f->nodes.type);
@@ -38,6 +44,52 @@ static void tb_function_free(TB_Function* f) {
 	f->vla.data = NULL;
 	
 	f->is_ir_free = true;
+}
+
+TB_API TB_Module* tb_module_create(TB_Arch target_arch,
+                                   TB_System target_system,
+                                   const TB_FeatureSet* features,
+								   TB_OptLevel opt_level) {
+	TB_Module* m = tb_platform_heap_alloc(sizeof(TB_Module));
+    memset(m, 0, sizeof(TB_Module));
+	
+	m->max_threads = TB_MAX_THREADS;
+	m->optimization_level = opt_level;
+	m->target_arch = target_arch;
+	m->target_system = target_system;
+	m->features = *features;
+	
+	m->prototypes_arena = tb_platform_valloc(PROTOTYPES_ARENA_SIZE * sizeof(uint64_t));
+	
+#if !TB_STRIP_LABELS
+	m->label_symbols.count = 0;
+	m->label_symbols.capacity = 64;
+	m->label_symbols.data = tb_platform_heap_alloc(64 * sizeof(TB_LabelSymbol));
+#endif
+	
+	m->files.count = 1;
+	m->files.capacity = 64;
+	m->files.data = tb_platform_heap_alloc(64 * sizeof(TB_File));
+    m->files.data[0] = (TB_File){ 0 };
+	
+	m->functions.count = 0;
+	m->functions.data = tb_platform_heap_alloc(TB_MAX_FUNCTIONS * sizeof(TB_Function));
+    
+	m->compiled_functions.count = 0;
+	m->compiled_functions.data = tb_platform_heap_alloc(TB_MAX_FUNCTIONS * sizeof(TB_FunctionOutput));
+    
+	m->line_info_count = 0;
+	
+#if defined(_WIN32)
+	InitializeCriticalSection(&m->mutex);
+#elif defined(__unix__)
+	pthread_mutex_init(&m->mutex, NULL);
+#else
+#error "TODO"
+#endif
+	
+	tb_platform_arena_init();
+	return m;
 }
 
 #define OPT(x) if (tb_opt_ ## x (f)) { \
@@ -66,211 +118,46 @@ static void tb_optimize_func(TB_Function* f) {
 }
 #undef OPT
 
-#if _WIN32
-static __stdcall unsigned long job_system_thread_func(void* lpParam)
-#else
-static void* job_system_thread_func(void* lpParam)
-#endif
-{
-	TB_Module* m = (TB_Module*) lpParam;
-	TB_JobSystem* s = m->jobs;
+TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
+	// Validate function
+	if (!tb_validate(f)) return false;
+	
+	// Optimize
+	if (m->optimization_level != TB_OPT_O0) {
+		tb_optimize_func(f);
+	}
 	
 	// TODO(NeGate): Properly detect this
 	ICodeGen* gen = &x64_fast_code_gen;
 	
-	size_t i = m->code_region_count++;
-	assert(i < TB_MAX_THREADS);
-	
-	size_t code_size = 0;
-	uint8_t* code = tb_platform_valloc(CODE_OUTPUT_BUFFER);
-	
-	TB_FifoQueue* q = &s->queue[i];
-	assert(q->semaphore);
-	
-	while (s->running) {
-		uint32_t read_ptr = q->read_pointer;
-		uint32_t new_read_ptr = (read_ptr + 1) % MAX_JOBS_PER_JOB_SYSTEM;
+	// Machine code gen
+	{
+		int id = get_local_thread_id();
+		assert(id < TB_MAX_THREADS);
 		
-		if (read_ptr == q->write_pointer) {
-			// Nothing to do, just wait
-			//printf("We waitin'\n");
-#if _WIN32
-			WaitForSingleObjectEx(q->semaphore, -1, false);
-#else
-			sem_wait(q->semaphore);
-#endif
-			
-			continue;
-		}
+		int index = m->compiled_functions.count++;
 		
-		if (atomic_compare_exchange_strong(&q->read_pointer, &read_ptr, new_read_ptr)) {
-			// Compile function
-			TB_Function* f = q->functions[read_ptr];
-			size_t index = f - m->functions.data;
-			
-			if (m->optimization_level != TB_OPT_O0) {
-				tb_optimize_func(f);
-			}
-			
-			TB_FunctionOutput* out = &m->compiled_functions.data[index];
-			*out = gen->compile_function(f, &m->features, &code[code_size], i);
-			code_size += out->code_size;
-			
-			// Free the IR, no longer needed,
-            // unless we say otherwise
-            if (!m->preserve_ir_after_submit) tb_function_free(f);
-			
-			m->compiled_functions.completed++;
+		TB_CodeRegion* restrict region = get_or_allocate_code_region(m, id);
+		TB_FunctionOutput* func_out = m->compiled_functions.data;
+		
+		func_out[index] = gen->compile_function(f, &m->features, &region->data[region->size], id);
+		region->size += func_out[index].code_size;
+		
+		if (region->size > CODE_REGION_BUFFER_SIZE) {
+			printf("Code region buffer: out of memory!\n");
+			abort();
 		}
 	}
-	
-	m->code_regions[i].data = code;
-	m->code_regions[i].size = code_size;
-	
-	tb_platform_vfree(tb_thread_storage, TB_TEMPORARY_STORAGE_SIZE);
-	return 0;
-}
-
-TB_API TB_Module* tb_module_create(TB_Arch target_arch,
-                                   TB_System target_system,
-                                   const TB_FeatureSet* features,
-                                   int optimization_level,
-                                   int max_threads,
-                                   bool preserve_ir_after_submit) {
-	assert(max_threads >= 1 && max_threads <= TB_MAX_THREADS);
-	TB_Module* m = tb_platform_heap_alloc(sizeof(TB_Module));
-    memset(m, 0, sizeof(TB_Module));
-	
-	m->max_threads = max_threads;
-    m->preserve_ir_after_submit = preserve_ir_after_submit;
-	m->optimization_level = optimization_level;
-	m->target_arch = target_arch;
-	m->target_system = target_system;
-	m->features = *features;
-	
-	m->prototypes_arena = tb_platform_valloc(PROTOTYPES_ARENA_SIZE);
-	
-#if !TB_STRIP_LABELS
-	m->label_symbols.count = 0;
-	m->label_symbols.capacity = 64;
-	m->label_symbols.data = tb_platform_heap_alloc(64 * sizeof(TB_LabelSymbol));
-#endif
-	
-	m->files.count = 1;
-	m->files.capacity = 64;
-	m->files.data = tb_platform_heap_alloc(64 * sizeof(TB_File));
-    m->files.data[0] = (TB_File){ 0 };
-	
-	m->functions.count = 0;
-	m->functions.data = tb_platform_heap_alloc(TB_MAX_FUNCTIONS * sizeof(TB_Function));
-    
-	m->compiled_functions.count = 0;
-	m->compiled_functions.data = tb_platform_heap_alloc(TB_MAX_FUNCTIONS * sizeof(TB_FunctionOutput));
-    
-	m->line_info_count = 0;
-	
-	TB_JobSystem* j = tb_platform_heap_alloc(sizeof(TB_JobSystem));
-	// TODO(NeGate): Kinda expensive but pretend it isn't lol
-	memset(j, 0, sizeof(TB_JobSystem));
-	
-	m->jobs = j;
-	
-	j->running = true;
-	j->thread_count = max_threads;
-	
-#if defined(_WIN32)
-	loop(i, max_threads) {
-		j->queue[i].semaphore = CreateSemaphoreExA(0, 1, 1, 0, 0, SEMAPHORE_ALL_ACCESS);
-		j->threads[i] = CreateThread(0, 4 * 1024 * 1024,
-									 job_system_thread_func,
-									 m, 0, 0);
-	}
-	
-	InitializeCriticalSection(&m->mutex);
-#elif defined(__unix__)
-	// TODO(NeGate): Fix this leak
-	sem_t* semaphores = malloc(max_threads * sizeof(sem_t));
-
-	loop(i, max_threads) {
-		assert(!sem_init(&semaphores[i], 0, 1));
-		j->queue[i].semaphore = &semaphores[i];
-		
-		pthread_create(&j->threads[i], 0, job_system_thread_func, m);
-	}
-	
-	pthread_mutex_init(&m->mutex, NULL);
-#else
-#error "TODO"	
-#endif
-	
-	tb_platform_arena_init();
-	return m;
-}
-
-TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
-	if (!tb_validate(f)) abort();
-	
-	int id = get_local_thread_id();
-	TB_FifoQueue* restrict q = &m->jobs->queue[id];
-	
-	uint32_t write_ptr = q->write_pointer;
-	uint32_t new_write_ptr = (write_ptr + 1) % MAX_JOBS_PER_JOB_SYSTEM;
-	while (new_write_ptr == q->read_pointer) {
-#if _WIN32
-		SwitchToThread();
-#else
-		sleep(0);
-#endif
-	}
-	
-	q->functions[write_ptr] = f;
-	q->write_pointer = new_write_ptr;
-	
-	m->compiled_functions.count++;
-	
-#if _WIN32
-	ReleaseSemaphore(q->semaphore, 1, 0);
-#else
-	sem_post(q->semaphore);
-#endif
 	
 	return true;
 }
 
 TB_API bool tb_module_compile(TB_Module* m) {
-	TB_JobSystem* s = m->jobs;
-	while (m->compiled_functions.completed < m->compiled_functions.count) {
-		// TODO(NeGate): Make this wait better!
-		_mm_pause();
-	}
-	
-	s->running = false;
+	m->max_threads = total_tid;
 	
 #if _WIN32
-	loop(i, s->thread_count) {
-		ReleaseSemaphore(s->queue[i].semaphore, 1, 0);
-	}
-	
-	WaitForMultipleObjects(s->thread_count, s->threads, TRUE, -1);
-	
-	loop(i, s->thread_count) {
-		CloseHandle(s->threads[i]);
-		CloseHandle(s->queue[i].semaphore);
-		
-		s->threads[i] = NULL;
-	}
-	
 	DeleteCriticalSection(&m->mutex);
-	assert(m->compiled_functions.count == m->functions.count);
 #else
-	// I don't merge these so that they can all post, start closing,
-	// then wait for them all to close, then actually delete them,
-	// idk if there's a wait for multiple, post for multiple etc so this
-	// works :P
-	loop(i, s->thread_count) sem_post(s->queue[i].semaphore);
-	loop(i, s->thread_count) pthread_join(s->threads[i], NULL);
-	loop(i, s->thread_count) sem_close(s->queue[i].semaphore);
-	
 	pthread_mutex_destroy(&m->mutex);
 #endif
 	
@@ -287,13 +174,15 @@ TB_API size_t tb_DEBUG_module_get_full_node_count(TB_Module* m) {
 
 TB_API void tb_module_destroy(TB_Module* m) {
 	tb_platform_arena_free();
+	tb_platform_string_free();
 	
 	loop(i, m->functions.count) {
 		tb_function_free(&m->functions.data[i]);
 	}
     
-	loop(i, m->code_region_count) {
-		tb_platform_vfree(m->code_regions[i].data, CODE_OUTPUT_BUFFER);
+	loop(i, m->max_threads) if (m->code_regions[i]) {
+		tb_platform_vfree(m->code_regions[i], CODE_REGION_BUFFER_SIZE);
+		m->code_regions[i] = NULL;
 	}
 	
 	if (m->jit_region) {
@@ -311,10 +200,8 @@ TB_API void tb_module_destroy(TB_Module* m) {
 	loop(i, m->max_threads) arrfree(m->const_patches[i]);
 	loop(i, m->max_threads) arrfree(m->externals[i]);
 	
-	tb_platform_vfree(m->prototypes_arena, PROTOTYPES_ARENA_SIZE);
+	tb_platform_vfree(m->prototypes_arena, PROTOTYPES_ARENA_SIZE * sizeof(uint64_t));
 	
-	tb_platform_string_free();
-	tb_platform_heap_free(m->jobs);
 #if !TB_STRIP_LABELS
 	tb_platform_heap_free(m->label_symbols.data);
 #endif
@@ -377,7 +264,10 @@ TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv co
 	space_needed += ((num_params * sizeof(TB_DataType)) + (sizeof(uint64_t)-1)) / sizeof(uint64_t);
 	
 	size_t len = atomic_fetch_add(&m->prototypes_arena_size, space_needed);
-	if (len+space_needed >= PROTOTYPES_ARENA_SIZE) abort();
+	if (len+space_needed >= PROTOTYPES_ARENA_SIZE) {
+		printf("Prototype arena: out of memory!\n");
+		abort();
+	}
 	
 	TB_FunctionPrototype* p = (TB_FunctionPrototype*)&m->prototypes_arena[len];
 	p->call_conv = conv;
@@ -560,10 +450,6 @@ TB_API TB_Label tb_get_current_label(TB_Function* f) {
 // block per thread that can run TB.
 //
 TB_TemporaryStorage* tb_tls_allocate() {
-	if (tb_thread_storage == NULL) {
-		tb_thread_storage = tb_platform_valloc(TB_TEMPORARY_STORAGE_SIZE);
-	}
-    
 	TB_TemporaryStorage* store = (TB_TemporaryStorage*)tb_thread_storage;
 	store->used = 0;
 	return store;

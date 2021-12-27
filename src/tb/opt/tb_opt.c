@@ -10,4 +10,5 @@
 #include "tb_opt_inline.h"
 #include "tb_opt_fold.h"
 #include "tb_opt_mem2reg.h"
+#include "tb_opt_hoist_locals.h"
 #include "tb_opt_sr.h"

@@ -1246,6 +1246,8 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 				def(ctx, f, val_flags(cc), r);
 				break;
 			}
+			case TB_PHI1: break;
+			case TB_PHI2: break;
 			default:
 			tb_todo();
 		}

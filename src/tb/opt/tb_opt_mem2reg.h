@@ -1,53 +1,181 @@
+// Based on "Simple and Efficient SSA Construction":
+// https://pp.info.uni-karlsruhe.de/uploads/publikationen/braun13cc.pdf
 
-static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address);
+static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_DataType* dt);
 static TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count);
-static TB_Register tb_walk_for_intermediate_phi(TB_Function* f,
-												TB_Label label_count,
-												TB_Label l,
-												TB_Register first_revision[restrict label_count],
-												TB_Register last_revision[restrict label_count],
-												TB_Label* preds[restrict label_count],
-												int pred_count[restrict label_count]);
 
-bool tb_opt_hoist_locals(TB_Function* f) {
-	int changes = 0;
+typedef struct Mem2Reg_Ctx {
+	TB_Function* f;
+	size_t label_count;
 	
-	TB_Register entry_terminator = f->nodes.payload[1].label.terminator;
+	// Stack slots we're going to convert into
+	// SSA form
+	size_t to_promote_count;
+	TB_Register* to_promote;
 	
-	for (TB_Register i = entry_terminator; i < f->nodes.count; i++) {
-		if (f->nodes.type[i] == TB_LOCAL) {
-			// move to the entry block
-			// try replacing a NOP
-			TB_Register new_reg = TB_NULL_REG;
-			
-			for (TB_Register j = 1; i < entry_terminator; j++) {
-				if (f->nodes.type[j] == TB_NULL) {
-					new_reg = j;
-					break;
-				}
-			}
-			
-			if (!new_reg) {
-				// Insert new node
-				new_reg = entry_terminator;
-				tb_insert_op(f, entry_terminator);
-				
-				// account for the insertion
-				entry_terminator++;
-				i++;
-			}
-			
-			f->nodes.dt[new_reg] = f->nodes.dt[i];
-			f->nodes.type[new_reg] = f->nodes.type[i];
-			f->nodes.payload[new_reg] = f->nodes.payload[i];
-			
-			tb_kill_op(f, i);
-			tb_function_find_replace_reg(f, i, new_reg);
-			changes++;
-		}
+	// [to_promote_count][label_count]
+	TB_Register* current_def;
+	
+	// [to_promote_count][label_count]
+	TB_Register* incomplete_phis;
+	
+	// [label_count]
+	bool* sealed_blocks;
+	
+	// [label_count]
+	int* pred_count;
+	// [label_count][pred_count[i]]
+	TB_Label** preds;
+} Mem2Reg_Ctx;
+
+static int get_variable_id(Mem2Reg_Ctx* restrict c, TB_Register r) {
+	// TODO(NeGate): Maybe we speed this up... maybe it doesn't matter :P
+	loop(i, c->to_promote_count) {
+		if (c->to_promote[i] == r) return (int)i;
 	}
 	
-	return changes;
+	return -1;
+}
+
+// NOTE(NeGate): Be careful when using this function because it will shift over registers
+// it does correct the ones in the context but not any you loaded because... i cant?
+// I just recommend not caching indices across this function.
+//
+// This doesn't really generate a PHI node, it just produces a NULL node which will
+// be mutated into a PHI node by the rest of the code.
+static TB_Register new_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Label block, TB_DataType dt) {
+	TB_Register label_reg = tb_find_reg_from_label(f, block);
+	
+	TB_Register new_phi_reg = label_reg + 1;
+	tb_insert_op(f, new_phi_reg);
+	f->nodes.dt[new_phi_reg] = dt;
+	
+	// Update the register references
+	//
+	// TODO(NeGate): We don't update the to_promote list because it's hoisted to the entry label
+	// so they should always be infront of it.
+	loop(i, c->label_count * c->to_promote_count) {
+		if (c->current_def[i] + 1 >= new_phi_reg) c->current_def[i]++;
+	}
+	
+	loop(i, c->label_count * c->to_promote_count) {
+		if (c->incomplete_phis[i] + 1 >= new_phi_reg) c->incomplete_phis[i]++;
+	}
+	
+	return new_phi_reg;
+}
+
+static TB_Register read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_Label block);
+static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register phi_reg, TB_Label label, TB_Register reg);
+static TB_Register try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register phi_reg);
+static TB_Register add_phi_operands(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register phi_reg, TB_Label label, int var);
+
+////////////////////////////////
+// Algorithm 1: Implementation of local value numbering
+////////////////////////////////
+static void write_variable(Mem2Reg_Ctx* c, int var, TB_Label block, TB_Register value) {
+	c->current_def[(var * c->label_count) + block] = value;
+}
+
+static TB_Register read_variable(Mem2Reg_Ctx* restrict c, int var, TB_Label block) {
+	if (c->current_def[(var * c->label_count) + block] != 0) {
+		return c->current_def[(var * c->label_count) + block];
+	}
+	
+	return read_variable_recursive(c, var, block);
+}
+
+////////////////////////////////
+// Algorithm 2: Implementation of global value numbering
+////////////////////////////////
+static TB_Register read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_Label block) {
+	TB_Register val = 0;
+	
+	if (!c->sealed_blocks[block]) {
+		// incomplete CFG
+		val = new_phi(c, c->f, block, c->f->nodes.dt[c->to_promote[var]]);
+		c->incomplete_phis[(block * c->to_promote_count) + var] = val;
+	} else if (c->pred_count[block] == 0) {
+		// TODO(NeGate): Idk how to handle this ngl, i
+		// don't think it's possible tho
+		abort();
+	} else if (c->pred_count[block] == 1) {
+		// Optimize the common case of one predecessor: No phi needed
+		val = read_variable(c, var, c->preds[block][0]);
+	} else {
+		// Break potential cycles with operandless phi
+		val = new_phi(c, c->f, block, c->f->nodes.dt[c->to_promote[var]]);
+		write_variable(c, var, block, val);
+		val = add_phi_operands(c, c->f, val, block, var);
+	}
+	
+	write_variable(c, var, block, val);
+	return val;
+}
+
+static TB_Register add_phi_operands(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register phi_reg, TB_Label block, int var) {
+	// Determine operands from predecessors
+	loop(i, c->pred_count[block]) {
+		// NOTE(NeGate): We need to worry about if read_variable adds more phi nodes
+		// this is probably going to break eventually and we fix it then
+		size_t old_sz = f->nodes.count;
+		TB_Register val = read_variable(c, var, c->preds[block][i]);
+		if (f->nodes.count > old_sz) {
+			assert(f->nodes.count == old_sz+1);
+			phi_reg++;
+		}
+		
+		add_phi_operand(c, c->f, phi_reg, c->preds[block][i], val);
+	}
+	
+	return try_remove_trivial_phi(c, c->f, phi_reg);
+}
+
+// Algorithm 3: Detect and recursively remove a trivial phi function
+static TB_Register try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register phi_reg) {
+	//TB_Register same = TB_NULL_REG;
+	return phi_reg;
+}
+
+static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register phi_reg, TB_Label label, TB_Register reg) {
+	// we're using NULL nodes as the baseline PHI0
+	if (f->nodes.type[phi_reg] == TB_NULL) {
+		f->nodes.type[phi_reg] = TB_PHI1;
+		f->nodes.dt[phi_reg] = f->nodes.dt[reg];
+		f->nodes.payload[phi_reg] = (TB_RegPayload){
+			.phi1 = {
+				.a_label = tb_find_reg_from_label(f, label),
+				.a = reg
+			}
+		};
+	} else if (f->nodes.type[phi_reg] == TB_PHI1) {
+		TB_Register a_label = f->nodes.payload[phi_reg].phi1.a_label;
+		TB_Register a = f->nodes.payload[phi_reg].phi1.a;
+		
+		f->nodes.type[phi_reg] = TB_PHI2;
+		f->nodes.dt[phi_reg] = f->nodes.dt[a];
+		f->nodes.payload[phi_reg] = (TB_RegPayload){
+			.phi2 = {
+				.a_label = a_label,
+				.a = a,
+				.b_label = tb_find_reg_from_label(f, label),
+				.b = reg
+			}
+		};
+	} else {
+		// TODO(NeGate): 
+		abort();
+	}
+}
+
+// Algorithm 4: Handling incomplete CFGs
+static void seal_block(Mem2Reg_Ctx* restrict c, TB_Label block) {
+	loop(i, c->to_promote_count) {
+		TB_Register phi_reg = c->incomplete_phis[(block * c->to_promote_count) + i];
+		if (phi_reg) add_phi_operands(c, c->f, phi_reg, block, i);
+	}
+	
+	c->sealed_blocks[block] = true;
 }
 
 // NOTE(NeGate): All locals were moved into the first basic block by
@@ -55,15 +183,24 @@ bool tb_opt_hoist_locals(TB_Function* f) {
 bool tb_opt_mem2reg(TB_Function* f) {
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	
+	tb_function_print(f, stdout);
+	
+	////////////////////////////////
+	// Decide which stack slots to promote
+	////////////////////////////////
 	size_t to_promote_count = 0;
 	TB_Register* to_promote = tb_tls_push(tls, 0);
 	
 	TB_Register entry_terminator = f->nodes.payload[1].label.terminator;
 	loop_range(i, 1, entry_terminator) {
 		if (f->nodes.type[i] == TB_LOCAL || f->nodes.type[i] == TB_PARAM_ADDR) {
-			if (tb_is_stack_slot_coherent(f, i)) {
+			TB_DataType dt;
+			if (tb_is_stack_slot_coherent(f, i, &dt)) {
 				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = i;
 				to_promote_count++;
+				
+				tb_kill_op(f, i);
+				f->nodes.dt[i] = dt;
 			}
 		}
 	}
@@ -73,181 +210,95 @@ bool tb_opt_mem2reg(TB_Function* f) {
 		return false;
 	}
 	
-	int label_count = f->label_count;
-	TB_Register* first_revision = tb_tls_push(tls, label_count * sizeof(TB_Register));
-	TB_Register* last_revision = tb_tls_push(tls, label_count * sizeof(TB_Register));
+	Mem2Reg_Ctx c = { 0 };
+	c.f = f;
 	
-	int* pred_count = tb_tls_push(tls, label_count * sizeof(int));
-	TB_Label** preds = tb_tls_push(tls, label_count * sizeof(TB_Label*));
+	c.to_promote_count = to_promote_count;
+	c.to_promote = to_promote;
 	
-	loop(i, to_promote_count) {
-		size_t saved = tls->used;
-		TB_Register address = to_promote[i];
+	c.label_count = f->label_count;
+	c.current_def = tb_tls_push(tls, to_promote_count * c.label_count * sizeof(TB_Register));
+	memset(c.current_def, 0, to_promote_count * c.label_count * sizeof(TB_Register));
+	
+	c.incomplete_phis = tb_tls_push(tls, to_promote_count * c.label_count * sizeof(TB_Register));
+	memset(c.incomplete_phis, 0, to_promote_count * c.label_count * sizeof(TB_Register));
+	
+	// TODO(NeGate): Maybe we should bitpack this?
+	c.sealed_blocks = tb_tls_push(tls, c.label_count * sizeof(bool));
+	memset(c.sealed_blocks, 0, c.label_count * sizeof(bool));
+	
+	// Calculate all the immediate predecessors
+	// First BB has no predecessors
+	{
+		c.pred_count = tb_tls_push(tls, c.label_count * sizeof(int));
+		c.preds = tb_tls_push(tls, c.label_count * sizeof(TB_Label*));
 		
-		memset(first_revision, 0, label_count * sizeof(TB_Register));
-		memset(last_revision, 0, label_count * sizeof(TB_Register));
+		// entry label has no predecessors
+		c.pred_count[0] = 0;
+		c.preds[0] = NULL;
 		
-		TB_Register initial_value = TB_NULL_REG;
-		if (f->nodes.type[address] == TB_PARAM_ADDR) {
-			initial_value = f->nodes.payload[address].param_addr.param;
+		loop_range(j, 1, c.label_count) {
+			c.preds[j] = (TB_Label*)tb_tls_push(tls, 0);
+			tb_calculate_immediate_predeccessors(f, tls, j, &c.pred_count[j]);
 		}
+	}
+	
+	TB_Label block = 0;
+	TB_Register j = 1;
+	while (j < f->nodes.count) {
+		TB_RegType reg_type = f->nodes.type[j];
+		TB_RegPayload p = f->nodes.payload[j];
 		
-		//
-		// Perform local value numbering on all basic blocks
-		//
-		TB_Register latest = initial_value;
-		TB_Label current_label = 0;
-		loop(j, f->nodes.count) {
-			TB_RegType reg_type = f->nodes.type[j];
-			TB_RegPayload p = f->nodes.payload[j];
-			
-			if (reg_type == TB_LABEL) {
-				current_label = p.label.id;
-				
-				first_revision[current_label] = initial_value;
-				last_revision[current_label] = initial_value;
-				initial_value = 0;
-			} else if (reg_type == TB_LOAD && p.load.address == address) {
-				if (first_revision[current_label] == 0) {
-					first_revision[current_label] = j;
-				}
-				
-				// convert to internal pass
+		if (reg_type == TB_LABEL) {
+			block = p.label.id;
+		} else if (reg_type == TB_LOAD) {
+			int var = get_variable_id(&c, p.load.address);
+			if (var >= 0) {
+				// TODO(NeGate): Kinda a weird workaround but essentially we make it into a PASS
+				// beforehand then patch it afterwards so that it's easy to spot
 				f->nodes.type[j] = TB_PASS;
-				f->nodes.payload[j] = (TB_RegPayload) { .pass = latest };
-			} else if (reg_type == TB_STORE && p.store.address == address) {
-				last_revision[current_label] = latest = p.store.value;
+				f->nodes.payload[j].pass = 0;
 				
-				// kill store
+				TB_Register value = read_variable(&c, var, block);
+				assert(value);
+				
+				TB_Register k = j;
+				while (k < f->nodes.count) {
+					if (f->nodes.type[k] == TB_PASS && f->nodes.payload[k].pass == 0) {
+						f->nodes.payload[k].pass = value;
+						goto success;
+					}
+					k++;
+				}
+				abort();
+				success:;
+			}
+		} else if (reg_type == TB_STORE) {
+			int var = get_variable_id(&c, p.store.address);
+			if (var >= 0) {
 				tb_kill_op(f, j);
+				write_variable(&c, var, block, p.store.value);
 			}
 		}
 		
-		// Early out: if the local is not changed then we don't need PHI nodes
-		bool immutable = true;
-		loop(j, label_count) if (first_revision[j] != last_revision[j]) {
-			immutable = false;
-			break;
+		j++;
+	}
+	
+	loop_range(j, 1, c.label_count) {
+		seal_block(&c, j);
+	}
+	
+	// remove phi1s because they're useless
+	loop(i, f->nodes.count) {
+		if (f->nodes.type[i] == TB_PHI1) {
+			TB_Register reg = f->nodes.payload[i].phi1.a;
+			
+			f->nodes.type[i] = TB_PASS;
+			f->nodes.payload[i].pass = reg;
 		}
-		
-		if (immutable) continue;
-		
-		//
-		// Calculate all the immediate predecessors
-		// First BB has no predecessors
-		//
-		pred_count[0] = 0;
-		preds[0] = NULL;
-		
-		loop_range(j, 1, label_count) {
-			preds[j] = (TB_Label*)tb_tls_push(tls, 0);
-			tb_calculate_immediate_predeccessors(f, tls, j, &pred_count[j]);
-		}
-		
-		//
-		// Insert PHI nodes
-		//
-		// this is done by finding all BBs which disagree
-		// on the last_revision
-		//
-		loop_range(j, 1, label_count) if (first_revision[j]) {
-			tb_walk_for_intermediate_phi(f, label_count, j, first_revision, last_revision, preds, pred_count);
-		}
-		
-		tls->used = saved;
 	}
 	
 	return true;
-}
-
-static TB_Register tb_walk_for_intermediate_phi(TB_Function* f,
-												TB_Label label_count,
-												TB_Label l,
-												TB_Register first_revision[restrict label_count],
-												TB_Register last_revision[restrict label_count],
-												TB_Label* preds[restrict label_count],
-												int pred_count[restrict label_count]) {
-	if (pred_count[l] == 0) return last_revision[l];
-	
-	int first = preds[l][0];
-	bool agree = true;
-	loop_range(k, 1, pred_count[l]) if (first != preds[l][k]) {
-		agree = false;
-		break;
-	}
-	
-	if (agree && last_revision[l]) return last_revision[l];
-	
-	if (pred_count[l] == 1) {
-		TB_Register a = tb_walk_for_intermediate_phi(f, label_count, preds[l][0], first_revision, last_revision, preds, pred_count);
-		
-		last_revision[l] = a;
-		return a;
-	}
-	
-	// TODO(NeGate): Implement phi with n-parameters
-	assert(pred_count[l] == 2);
-	
-	// Insert intermediate node
-	TB_Register label_reg = tb_find_reg_from_label(f, l);
-	
-	TB_Register new_phi_reg = label_reg + 1;
-	tb_insert_op(f, new_phi_reg);
-	
-	// Update the first and last revisions
-	loop(k, label_count) {
-		if (first_revision[k] + 1 >= new_phi_reg) first_revision[k]++;
-		if ( last_revision[k] + 1 >= new_phi_reg)  last_revision[k]++;
-	}
-	
-	first_revision[l] = new_phi_reg;
-	
-	// TODO(NeGate): This is to force any loops to early out
-	int saved_pred_count = pred_count[l];
-	pred_count[l] = 0;
-	
-	// add phi node
-	TB_Register a = tb_walk_for_intermediate_phi(f, label_count, preds[l][0], first_revision, last_revision, preds, pred_count);
-	TB_Register b = tb_walk_for_intermediate_phi(f, label_count, preds[l][1], first_revision, last_revision, preds, pred_count);
-	
-	if (a == 0 && b == 0) {
-		abort();
-	}
-	else if (a == 0 || b == 0) {
-		TB_Register src = a ? a : b;
-		
-		f->nodes.type[new_phi_reg] = TB_PASS;
-		f->nodes.dt[new_phi_reg] = f->nodes.dt[src];
-		f->nodes.payload[new_phi_reg] = (TB_RegPayload){
-			.pass = src
-		};
-	}
-	else {
-		f->nodes.type[new_phi_reg] = TB_PHI2;
-		f->nodes.dt[new_phi_reg] = f->nodes.dt[a];
-		f->nodes.payload[new_phi_reg] = (TB_RegPayload){
-			.phi2 = {
-				.a_label = tb_find_reg_from_label(f, preds[l][0]),
-				.a = a,
-				.b_label = tb_find_reg_from_label(f, preds[l][1]),
-				.b = b
-			}
-		};
-	}
-	
-	last_revision[l] = new_phi_reg;
-	pred_count[l] = saved_pred_count;
-	
-	// Any PASSes which used the PHI node's inputs should be converted
-	// to PASSes to said PHI node
-	//TB_Register terminator = f->nodes.payload[label_reg].label.terminator;
-	loop_range(i, 1, f->nodes.count) {
-		if (f->nodes.type[i] == TB_PASS && (f->nodes.payload[i].pass == a || f->nodes.payload[i].pass == b)) {
-			if (i != new_phi_reg) f->nodes.payload[i].pass = new_phi_reg;
-		}
-	}
-	
-	return new_phi_reg;
 }
 
 static TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count) {
@@ -293,7 +344,7 @@ static TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_Tempora
 
 // NOTE(NeGate): a stack slot is coherent when all loads and stores share
 // the same type and properties.
-static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address) {
+static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_DataType* out_dt) {
 	bool initialized = false;
 	TB_DataType dt;
 	
@@ -316,5 +367,6 @@ static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address) {
 		}
 	}
 	
+	*out_dt = dt;
 	return true;
 }

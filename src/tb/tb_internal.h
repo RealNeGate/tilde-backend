@@ -628,28 +628,15 @@ inline static void tb_kill_op(TB_Function* f, TB_Register at) {
 
 #if TB_HOST_ARCH == TB_HOST_X86_64
 #define FOR_EACH_NODE(iterator, func, target, ...) \
-for (size_t i = 0, cnt = (func)->nodes.count; i < cnt; i += 16) { \
-__m128i bytes = _mm_loadu_si128((__m128i*)&(func)->nodes.type[i]); \
+for (size_t __i = 0, cnt = (func)->nodes.count; __i < cnt; __i += 16) { \
+__m128i bytes = _mm_loadu_si128((__m128i*)&(func)->nodes.type[__i]); \
 unsigned int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(target))); \
 if (mask == 0) continue; \
-/* this one is guarentee to not be zero */ \
-size_t offset = __builtin_ffs(mask) - 1; \
-size_t j = i + offset; \
-/* skip over the mask bit for the next iteration */ \
-mask >>= (offset + 1); \
 /* We know it loops at least once by this point */ \
-do { \
-{ \
-size_t iterator = j; \
+for (size_t __j = __i; __j < 16; __j++) if (mask & (1u << __j)) { \
+size_t iterator = __i + __j; \
 __VA_ARGS__; \
 } \
-/* scan for next, if one exists */ \
-size_t ffs = __builtin_ffs(mask); \
-if (ffs == 0) break; \
-/* skip over the mask bit for the next iteration */ \
-mask >>= ffs; \
-j += ffs; \
-} while (true); \
 }
 #else
 #define FOR_EACH_NODE(iterator, func, target, ...) \

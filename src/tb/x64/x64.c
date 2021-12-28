@@ -25,11 +25,6 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 // into `to`
 static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_Register from_terminator, TB_Register to, TB_Register to_terminator);
 
-static Val use_as_rvalue(Ctx* ctx, TB_Function* f, TB_Register r);
-static Val use_as_address(Ctx* ctx, TB_Function* f, TB_Register r);
-
-#define expect_lval(val) assert((val)->type == VAL_MEM && !(val)->mem.is_rvalue);
-
 static _Thread_local size_t s_local_thread_id;
 
 TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
@@ -283,7 +278,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 					// Float results use XMM0
 					Val dst = val_xmm(value.dt, XMM0);
 					
-					if (is_value_xmm(&value, XMM0)) {
+					if (!is_value_xmm(&value, XMM0)) {
 						inst2(ctx, value.dt.count > 1 ? MOVAPS : MOVSS, &dst, &value, value.dt.type);
 					}
 				} else if (value.dt.type == TB_I8 ||
@@ -304,7 +299,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 							emit(0xB8);
 							emit4(value.imm);
 						}
-					} else if (value.type != VAL_GPR || (value.type == VAL_GPR && value.gpr != RAX)) {
+					} else if (!is_value_gpr(&value, RAX)) {
 						inst2(ctx, MOV, &dst, &value, value.dt.type);
 					}
 				} else tb_todo();
@@ -398,6 +393,10 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 		
 		// Next Basic block
 		bb = bb_end + ((reg_type == TB_LABEL) ? 0 : 1);
+		
+		// Garbage collect for the basic block
+		garbage_collect_gpr(ctx, f, bb);
+		garbage_collect_xmm(ctx, f, bb);
 	} while (bb < f->nodes.count);
 	
 	// Align stack usage to 16bytes and add 8 bytes for the return address
@@ -484,25 +483,28 @@ static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_
 }
 
 static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Register bb_end) {
-	// Evaluate all side effect instructions
 	ctx->current_bb = bb;
 	ctx->current_bb_end = bb_end;
 	
+	// Evaluate all side effect instructions
+	size_t last_fence = bb + 1;
 	for (size_t r = bb + 1; r < bb_end; r++) {
 		TB_RegTypeEnum reg_type = f->nodes.type[r];
+		if (!TB_IS_NODE_SIDE_EFFECT(reg_type)) continue;
+		
+		// If there's any non-side effect instructions which happen before a 
+		// fence/side-effect instruction but are used afterwards, they're evaluated
+		// before the fence.
+		for (size_t j = last_fence; j < r; j++) {
+			if (ctx->intervals[j] > r && f->nodes.type[j] != TB_LOAD) {
+				def(ctx, f, use(ctx, f, j), j);
+			}
+		}
+		last_fence = r;
+		
 		TB_DataType dt = f->nodes.dt[r];
 		TB_RegPayload* restrict p = &f->nodes.payload[r];
-		
-		if (!TB_IS_NODE_SIDE_EFFECT(reg_type) && ctx->intervals[r] == TB_NULL_REG) {
-			// useless
-			continue;
-		}
-		
-		DEBUG_LOG("r%zu:\n", r);
 		switch (reg_type) {
-			case TB_PARAM: break;
-			case TB_LOCAL: break;
-			case TB_PARAM_ADDR: break;
 			case TB_LINE_INFO: {
 				// Ignore the first one since it's got special rules
 				if (r > 2) p->line_info.pos = code_pos();
@@ -732,542 +734,554 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 				emit(0xAA);
 				break;
 			}
-			case TB_INT_CONST: {
-				int32_t imm32 = (int32_t)p->i_const;
-				if (p->i_const == imm32) {
-					// 32bit immediate case
-					def(ctx, f, val_imm(dt, imm32), r);
-					break;
-				}
-				
-				if (dt.type != TB_I64 && dt.type != TB_PTR) {
-					// just truncate unceremoniously
-					def(ctx, f, val_imm(dt, imm32), r);
-					break;
-				}
-				
-				// explicit mov
-				Val v = def_new_gpr(ctx, f, r, dt.type);
-				
-				// mov reg64, imm64
-				emit(rex(true, 0x0, v.gpr, 0));
-				emit(0xB8 + (v.gpr & 0b111));
-				emit8(p->i_const);
-				break;
-			}
-			case TB_FLOAT_CONST: {
-				// Unlike integers, there's no float immediates
-				Val v = def_new_xmm(ctx, f, r, dt);
-				
-				XMM dst_xmm = v.xmm;
-				
-				assert(dt.type == TB_F32 && dt.count == 1);
-				uint32_t imm = (Cvt_F32U32){ .f = p->f_const }.i;
-				
-				if (imm == 0) {
-					if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
-					emit(0x0F);
-					emit(0x57);
-					emit(mod_rx_rm(MOD_DIRECT, dst_xmm, dst_xmm));
-				} else {
-					// Convert it to raw bits
-					if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
-					emit(0xF3);
-					emit(0x0F);
-					emit(0x10);
-					emit(((dst_xmm & 7) << 3) | RBP);
-					
-					size_t func_id = f - f->module->functions.data;
-					
-					uint32_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint32_t));
-					*rdata_payload = imm;
-					
-					uint32_t disp = tb_emit_const_patch(f->module, func_id, code_pos(), rdata_payload, sizeof(uint32_t), s_local_thread_id);
-					emit4(disp);
-				}
-				break;
-			}
-			case TB_STRING_CONST: {
-				const char* str = f->nodes.payload[r].str_const.data;
-				size_t len = f->nodes.payload[r].str_const.len;
-				
-				int func_id = f - f->module->functions.data;
-				Val v = def_new_gpr(ctx, f, r, TB_PTR);
-				
-				emit(rex(true, v.gpr, RBP, 0));
-				emit(0x8D);
-				emit(mod_rx_rm(MOD_INDIRECT, v.gpr, RBP));
-				
-				uint32_t disp = tb_emit_const_patch(f->module, func_id, code_pos(), str, len, s_local_thread_id);
-				emit4(disp);
-				break;
-			}
-			case TB_ARRAY_ACCESS: {
-				Val base = use_as_address(ctx, f, p->array_access.base);
-				Val index = use_as_rvalue(ctx, f, p->array_access.index);
-				
-				uint32_t stride = p->array_access.stride;
-				int32_t disp = base.mem.disp;
-				
-				if (index.type == VAL_MEM) {
-					Val new_v = def_new_gpr(ctx, f, p->array_access.index, TB_I64);
-					inst2(ctx, MOV, &new_v, &index, TB_I64);
-					
-					index = new_v;
-				}
-				
-				if (index.type == VAL_IMM) {
-					base.mem.disp += index.imm * stride;
-					
-					def(ctx, f, base, r);
-				} else if (index.type == VAL_GPR) {
-					GPR base_reg = base.mem.base;
-					
-					if (stride == 1 ||
-						stride == 2 ||
-						stride == 4 ||
-						stride == 8) {
-						Scale scale = __builtin_ffs(stride) - 1;
-						
-						if (base.mem.index != GPR_NONE) {
-							// nested indices a[x][y]
-							// lea dst, [base + index0 * scale0 + offset]
-							// lea dst, [dst + index1 * scale1] or add dst, index1
-							Val v = def_new_gpr(ctx, f, r, dt.type);
-							inst2(ctx, LEA, &v, &base, TB_PTR);
-							
-							if (scale) {
-								Val addr = val_base_index(dt, v.gpr, index.gpr, scale);
-								inst2(ctx, LEA, &v, &addr, TB_PTR);
-							}
-							else {
-								Val idx = val_gpr(TB_PTR, index.gpr);
-								inst2(ctx, ADD, &v, &idx, TB_PTR);
-							}
-							
-							v = val_base_disp(dt, v.gpr, 0);
-							def(ctx, f, v, r);
-						}
-						else {
-							Val v = val_base_index_disp(dt, base_reg, index.gpr, scale, disp);
-							def(ctx, f, v, r);
-						}
-					} else {
-						// Resolve the index then add the base
-						// TODO(NeGate): Improve this scaling method by
-						// adding ways to break down multiplies into bitshifts.
-						// int shifts_needed = __builtin_popcount(stride);
-						Val v = def_new_gpr(ctx, f, r, dt.type);
-						
-						emit(rex(true, v.gpr, index.gpr, 0));
-						emit(0x69);
-						emit(mod_rx_rm(MOD_DIRECT, v.gpr, index.gpr));
-						emit4(stride);
-						
-						emit(rex(true, base.gpr, v.gpr, 0));
-						emit(0x01);
-						emit(mod_rx_rm(MOD_DIRECT, base_reg, v.gpr));
-						
-						if (base.mem.index != GPR_NONE) {
-							// accumulate the index to the result
-							base.mem.base = v.gpr;
-							
-							inst2(ctx, LEA, &v, &base, TB_PTR);
-						}
-						
-						def(ctx, f, v, r);
-					}
-				} else tb_todo();
-				break;
-			}
-			case TB_MEMBER_ACCESS: {
-				Val v = use_as_address(ctx, f, p->member_access.base);
-				
-				v.mem.disp += p->member_access.offset;
-				def(ctx, f, v, r);
-				break;
-			}
-			case TB_FUNC_ADDRESS: {
-				int source_func = f - f->module->functions.data;
-				
-				Val v = def_new_gpr(ctx, f, r, TB_PTR);
-				
-				emit(rex(true, v.gpr, RBP, 0));
-				emit(0x8D);
-				emit(mod_rx_rm(MOD_INDIRECT, v.gpr, RBP));
-				emit4(0x0);
-				
-				int target_func = p->func_addr - f->module->functions.data;
-				tb_emit_call_patch(f->module,
-								   source_func,
-								   target_func,
-								   code_pos() - 4,
-								   s_local_thread_id);
-				break;
-			}
-			case TB_EFUNC_ADDRESS: {
-				int source_func = f - f->module->functions.data;
-				
-				Val v = def_new_gpr(ctx, f, r, TB_PTR);
-				
-				emit(rex(true, v.gpr, RBP, 0));
-				emit(0x8D);
-				emit(mod_rx_rm(MOD_INDIRECT, v.gpr, RBP));
-				emit4(0x0);
-				
-				tb_emit_ecall_patch(f->module,
-									source_func,
-									p->efunc_addr,
-									code_pos() - 4,
-									s_local_thread_id);
-				break;
-			}
-			case TB_TRUNCATE: {
-				Val src = use_as_rvalue(ctx, f, p->ext);
-				if (src.type == VAL_IMM) {
-					src.dt = dt;
-					def(ctx, f, src, r);
-					break;
-				}
-				
-				// TODO(NeGate): Implement recycle
-				if (dt.type == TB_BOOL) dt.type = TB_I8;
-				Val v = def_new_gpr(ctx, f, r, dt.type);
-				
-				if (dt.type == TB_PTR || dt.type == TB_I64 || dt.type == TB_I32) {
-					// 32bit operations automatically truncate
-					inst2(ctx, MOV, &v, &src, dt.type);
-				} else {
-					//uint64_t shift = 64 - (8 << (dt.type - TB_I8));
-					//uint64_t mask = (~0ull) >> shift;
-					//Val imm = val_imm(dt, mask);
-					
-					inst2(ctx, MOVZX, &v, &src, dt.type);
-				}
-				break;
-			}
-			case TB_ZERO_EXT: {
-				Val src = use_as_rvalue(ctx, f, p->ext);
-				
-				if (src.dt.type == TB_I32 &&
-					dt.type == TB_I64 &&
-					ctx->intervals[p->ext] == r) {
-					assert(src.dt.count == 1);
-					assert(dt.count == 1);
-					
-					if (src.type != VAL_MEM) {
-						src.dt.type = TB_I64;
-						
-						kill(ctx, f, p->ext);
-						def(ctx, f, src, r);
-					}
-					else {
-						// for 32->64 memory, it needs to actually
-						// just do a 32bit load since it can't promote
-						// the load itself up without "over-reading"
-						Val v = def_new_gpr(ctx, f, r, TB_I64);
-						inst2(ctx, MOV, &v, &src, TB_I32);
-					}
-				}
-				else {
-					Val v = def_new_gpr(ctx, f, r, dt.type);
-					inst2(ctx, MOVZX, &v, &src, dt.type);
-				}
-				break;
-			}
-			case TB_SIGN_EXT: {
-				Val src = use_as_rvalue(ctx, f, p->ext);
-				if (src.type == VAL_IMM) {
-					src.dt = dt;
-					def(ctx, f, src, r);
-					break;
-				}
-				
-				// TODO(NeGate): Implement recycle
-				Val v = def_new_gpr(ctx, f, r, dt.type);
-				if (dt.type == TB_I64) {
-					inst2(ctx, MOVSXD, &v, &src, dt.type);
-				} else {
-					inst2(ctx, MOVSX, &v, &src, dt.type);
-				}
-				break;
-			}
-			case TB_INT2PTR: {
-				Val src = use_as_rvalue(ctx, f, p->ext);
-				if (src.type == VAL_IMM) {
-					src.dt = TB_TYPE_PTR;
-					def(ctx, f, src, r);
-					break;
-				}
-				
-				if ((src.dt.type == TB_I32 ||
-					 src.dt.type == TB_I64 ||
-					 src.dt.type == TB_PTR) &&
-					ctx->intervals[p->ext] == r) {
-					assert(src.dt.count == 1);
-					assert(dt.count == 1);
-					
-					if (src.type != VAL_MEM) {
-						src.dt.type = TB_PTR;
-						
-						kill(ctx, f, p->ext);
-						def(ctx, f, src, r);
-					}
-					else {
-						// for 32->64 memory, it needs to actually
-						// just do a 32bit load since it can't promote
-						// the load itself up without "over-reading"
-						Val v = def_new_gpr(ctx, f, r, TB_I64);
-						inst2(ctx, MOV, &v, &src, TB_I32);
-					}
-				}
-				else {
-					Val v = def_new_gpr(ctx, f, r, dt.type);
-					inst2(ctx, MOVZX, &v, &src, dt.type);
-				}
-				break;
-			}
-			case TB_NEG: {
-				Val src = use_as_rvalue(ctx, f, p->unary);
-				
-				// TODO(NeGate): Implement recycle
-				Val v = def_new_gpr(ctx, f, r, dt.type);
-				inst2(ctx, MOV, &v, &src, TB_I64);
-				inst1(ctx, NEG, &v);
-				break;
-			}
-			case TB_NOT: {
-				Val src = use_as_rvalue(ctx, f, p->unary);
-				
-				// TODO(NeGate): Implement recycle
-				Val v = def_new_gpr(ctx, f, r, dt.type);
-				inst2(ctx, MOV, &v, &src, TB_I64);
-				inst1(ctx, NOT, &v);
-				break;
-			}
-			case TB_FADD:
-			case TB_FSUB:
-			case TB_FMUL:
-			case TB_FDIV: {
-				const static IselInfo tbl[] = {
-					// inst   commut has_imm mem_dst mem_src   
-					{ ADDSS,  true,  true,   false,  true },
-					{ SUBSS,  true,  true,   false,  true },
-					{ MULSS,  true,  true,   false,  true },
-					{ DIVSS,  true,  true,   false,  true },
-					
-					// 4-wide versions
-					{ ADDPS,  true,  true,   false,  true },
-					{ SUBPS,  true,  true,   false,  true },
-					{ MULPS,  true,  true,   false,  true },
-					{ DIVPS,  true,  true,   false,  true }
-				};
-				assert((dt.count == 1 || dt.count == 4) && dt.type == TB_F32);
-				const IselInfo* info = &tbl[(dt.count == 4 ? 4 : 0) + (reg_type - TB_FADD)];
-				
-				TB_Register a_reg = p->f_arith.a;
-				TB_Register b_reg = p->f_arith.b;
-				
-				if (a_reg == b_reg) {
-					Val src = use_as_rvalue(ctx, f, a_reg);
-					
-					isel_aliased(ctx, f, info, r, a_reg, &src);
-				} else {
-					Val a = use_as_rvalue(ctx, f, a_reg);
-					Val b = use_as_rvalue(ctx, f, b_reg);
-					
-					isel(ctx, f, info, r, a_reg, b_reg, &a, &b);
-				}
-				break;
-			}
-			case TB_AND:
-			case TB_OR:
-			case TB_XOR:
-			case TB_ADD:
-			case TB_SUB:
-			case TB_MUL: {
-				const static IselInfo tbl[] = {
-					// type               inst  commut  has_imm  mem_dst  mem_src   
-					[TB_AND - TB_AND] = { AND,  true,   true,    false,   true },
-					[TB_OR  - TB_AND] = { OR,   true,   true,    false,   true },
-					[TB_XOR - TB_AND] = { XOR,  true,   true,    false,   true },
-					[TB_ADD - TB_AND] = { ADD,  true,   true,    false,   true },
-					[TB_SUB - TB_AND] = { SUB,  false,  true,    false,   true },
-					[TB_MUL - TB_AND] = { IMUL, true,   false,   false,   true }
-				};
-				const IselInfo* info = &tbl[reg_type - TB_AND];
-				
-				TB_Register a_reg = p->i_arith.a;
-				TB_Register b_reg = p->i_arith.b;
-				
-				if (a_reg == b_reg) {
-					Val src = use_as_rvalue(ctx, f, a_reg);
-					
-					isel_aliased(ctx, f, info, r, a_reg, &src);
-				} else {
-					Val a = use_as_rvalue(ctx, f, a_reg);
-					Val b = use_as_rvalue(ctx, f, b_reg);
-					
-					if (dt.count == 1 &&
-						reg_type == TB_ADD &&
-						a.type == VAL_GPR &&
-						b.type == VAL_GPR) {
-						Val v = def_new_gpr(ctx, f, r, dt.type);
-						
-						// lea _0, [_1 + _2]
-						// TODO(NeGate): Maybe allow for the 32bit version sometimes
-						emit(rex(true, v.gpr, b.gpr, a.gpr));
-						emit(0x8D);
-						emit(mod_rx_rm(MOD_INDIRECT, v.gpr, RSP));
-						emit(mod_rx_rm(SCALE_X1, (b.gpr & 7) == RSP ? RSP : b.gpr, a.gpr));
-					} else if (dt.count == 1 &&
-							   reg_type == TB_ADD &&
-							   a.type == VAL_GPR &&
-							   b.type == VAL_IMM) {
-						// lea _0, [_1 + _2]
-						Val v = def_new_gpr(ctx, f, r, dt.type);
-						Val arith = val_base_disp(dt, a.gpr, b.imm);
-						
-						inst2(ctx, LEA, &v, &arith, dt.type);
-					} else if (dt.count == 1 &&
-							   reg_type == TB_SUB &&
-							   a.type == VAL_GPR &&
-							   b.type == VAL_IMM) {
-						// lea _0, [_1 + _2]
-						Val v = def_new_gpr(ctx, f, r, dt.type);
-						Val arith = val_base_disp(dt, a.gpr, -b.imm);
-						
-						inst2(ctx, LEA, &v, &arith, dt.type);
-					} else {
-						isel(ctx, f, info, r, a_reg, b_reg, &a, &b);
-					}
-				}
-				break;
-			}
-			case TB_SHL: {
-				TB_Register a_reg = p->i_arith.a;
-				TB_Register b_reg = p->i_arith.b;
-				
-				Val a = use_as_rvalue(ctx, f, a_reg);
-				if (f->nodes.type[b_reg] == TB_INT_CONST) {
-					assert(f->nodes.payload[b_reg].i_const < 64);
-					
-					Val v = def_new_gpr(ctx, f, r, dt.type);
-					inst2(ctx, MOV, &v, &a, dt.type);
-					
-					GPR dst_gpr = v.gpr;
-					bool is_64bit = dt.type == TB_I64 || dt.type == TB_PTR;
-					
-					if (dt.type == TB_I16) emit(0x66);
-					emit(rex(is_64bit, 0x00, dst_gpr, 0x00));
-					emit(dt.type == TB_I8 ? 0xC0 : 0xC1);
-					emit(mod_rx_rm(MOD_DIRECT, 0x04, dst_gpr));
-					emit(f->nodes.payload[b_reg].i_const);
-					break;
-				}
-				
-				tb_todo();
-			}
-			case TB_UDIV:
-			case TB_SDIV: {
-				evict_gpr(ctx, f, RAX, r);
-				evict_gpr(ctx, f, RDX, r);
-				
-				TB_Register a_reg = f->nodes.payload[r].i_arith.a;
-				TB_Register b_reg = f->nodes.payload[r].i_arith.b;
-				
-				Val a = use_as_rvalue(ctx, f, a_reg);
-				Val b = use_as_rvalue(ctx, f, b_reg);
-				
-				// needs to mov the a value into rdx:rax
-				Val rax = val_gpr(dt.type, RAX);
-				if (!is_value_gpr(&a, RAX)) {
-					inst2(ctx, MOV, &rax, &a, dt.type);
-				}
-				
-				// we'll just be using CDQ if it's signed
-				// and zeroing RDX it if it's unsigned. 
-				if (reg_type == TB_SDIV) {
-					emit(0x99);
-				} else {
-					emit(0x31);
-					emit(mod_rx_rm(MOD_DIRECT, RDX, RDX));
-				}
-				
-				if (b.type == VAL_IMM) {
-					Val new_b = def_new_gpr(ctx, f, b_reg, dt.type);
-					inst2(ctx, MOV, &new_b, &b, dt.type);
-					b = new_b;
-				}
-				
-				inst1(ctx, IDIV, &b);
-				
-				// the return value is in RAX
-				def(ctx, f, rax, r);
-				break;
-			}
-			case TB_CMP_EQ:
-			case TB_CMP_NE:
-			case TB_CMP_SLT:
-			case TB_CMP_SLE:
-			case TB_CMP_ULT:
-			case TB_CMP_ULE: {
-				TB_DataType cmp_dt = p->cmp.dt;
-				
-				Val a = use_as_rvalue(ctx, f, p->cmp.a);
-				Val b = use_as_rvalue(ctx, f, p->cmp.b);
-				
-				bool invert = false;
-				if (a.type == VAL_MEM && b.type == VAL_MEM) {
-					Val dst = def_new_gpr(ctx, f, r, cmp_dt.type);
-					inst2(ctx, MOV, &dst, &a, cmp_dt.type);
-					inst2(ctx, CMP, &dst, &b, cmp_dt.type);
-					kill(ctx, f, r);
-				}
-				else {
-					invert = (a.type == VAL_IMM);
-					
-					if (invert) inst2(ctx, CMP, &b, &a, cmp_dt.type);
-					else inst2(ctx, CMP, &a, &b, cmp_dt.type);
-				}
-				
-				Cond cc;
-				switch (reg_type) {
-					case TB_CMP_EQ: cc = E; break;
-					case TB_CMP_NE: cc = NE; break;
-					case TB_CMP_SLT: cc = L; break;
-					case TB_CMP_SLE: cc = LE; break;
-					case TB_CMP_ULT: cc = B; break;
-					case TB_CMP_ULE: cc = BE; break;
-					default: tb_todo();
-				}
-				
-				cc ^= invert;
-				def(ctx, f, val_flags(cc), r);
-				break;
-			}
-			case TB_PHI1: break;
-			case TB_PHI2: break;
 			default:
-			tb_todo();
+			break;
 		}
 		
 		// clear all temporaries
 		ctx->gpr_temp_bits = 0;
 		ctx->xmm_temp_bits = 0;
 	}
-	
-	garbage_collect_gpr(ctx, f, bb_end - 1);
-	garbage_collect_xmm(ctx, f, bb_end - 1);
 }
 
 static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
-	if (ctx->addr_desc[r].type == VAL_NONE) {
-		tb_function_print(f, stdout);
-		abort();
+	if (ctx->addr_desc[r].type) {
+		return ctx->addr_desc[r];
 	}
 	
-	return ctx->addr_desc[r];
+	TB_RegTypeEnum reg_type = f->nodes.type[r];
+	TB_DataType dt = f->nodes.dt[r];
+	TB_RegPayload* restrict p = &f->nodes.payload[r];
+	
+	switch (reg_type) {
+		case TB_INT_CONST: {
+			int32_t imm32 = (int32_t)p->i_const;
+			if (p->i_const == imm32) {
+				Val v = val_imm(dt, imm32); 
+				def(ctx, f, v, r);
+				return v;
+			}
+			
+			// explicit mov
+			Val v = def_new_gpr(ctx, f, r, dt.type);
+			
+			// mov reg64, imm64
+			emit(rex(true, 0x0, v.gpr, 0));
+			emit(0xB8 + (v.gpr & 0b111));
+			emit8(p->i_const);
+			return v;
+		}
+		case TB_FLOAT_CONST: {
+			// Unlike integers, there's no float immediates
+			Val v = def_new_xmm(ctx, f, r, dt);
+			
+			XMM dst_xmm = v.xmm;
+			
+			assert(dt.type == TB_F32 && dt.count == 1);
+			uint32_t imm = (Cvt_F32U32){ .f = p->f_const }.i;
+			
+			if (imm == 0) {
+				if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
+				emit(0x0F);
+				emit(0x57);
+				emit(mod_rx_rm(MOD_DIRECT, dst_xmm, dst_xmm));
+			} else {
+				// Convert it to raw bits
+				if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
+				emit(0xF3);
+				emit(0x0F);
+				emit(0x10);
+				emit(((dst_xmm & 7) << 3) | RBP);
+				
+				size_t func_id = f - f->module->functions.data;
+				
+				uint32_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint32_t));
+				*rdata_payload = imm;
+				
+				uint32_t disp = tb_emit_const_patch(f->module, func_id, code_pos(), rdata_payload, sizeof(uint32_t), s_local_thread_id);
+				emit4(disp);
+			}
+			
+			return v;
+		}
+		case TB_STRING_CONST: {
+			const char* str = f->nodes.payload[r].str_const.data;
+			size_t len = f->nodes.payload[r].str_const.len;
+			
+			int func_id = f - f->module->functions.data;
+			Val v = def_new_gpr(ctx, f, r, TB_PTR);
+			
+			emit(rex(true, v.gpr, RBP, 0));
+			emit(0x8D);
+			emit(mod_rx_rm(MOD_INDIRECT, v.gpr, RBP));
+			
+			uint32_t disp = tb_emit_const_patch(f->module, func_id, code_pos(), str, len, s_local_thread_id);
+			emit4(disp);
+			return v;
+		}
+		case TB_ARRAY_ACCESS: {
+			Val base = use_as_address(ctx, f, p->array_access.base);
+			Val index = use_as_rvalue(ctx, f, p->array_access.index);
+			
+			uint32_t stride = p->array_access.stride;
+			int32_t disp = base.mem.disp;
+			
+			if (index.type == VAL_MEM) {
+				Val new_v = def_new_gpr(ctx, f, p->array_access.index, TB_I64);
+				inst2(ctx, MOV, &new_v, &index, TB_I64);
+				
+				index = new_v;
+			}
+			
+			if (index.type == VAL_IMM) {
+				base.mem.disp += index.imm * stride;
+				
+				def(ctx, f, base, r);
+				return base;
+			} else if (index.type == VAL_GPR) {
+				GPR base_reg = base.mem.base;
+				
+				if (stride == 1 ||
+					stride == 2 ||
+					stride == 4 ||
+					stride == 8) {
+					Scale scale = __builtin_ffs(stride) - 1;
+					
+					if (base.mem.index != GPR_NONE) {
+						// nested indices a[x][y]
+						// lea dst, [base + index0 * scale0 + offset]
+						// lea dst, [dst + index1 * scale1] or add dst, index1
+						Val v = def_new_gpr(ctx, f, r, dt.type);
+						inst2(ctx, LEA, &v, &base, TB_PTR);
+						
+						if (scale) {
+							Val addr = val_base_index(dt, v.gpr, index.gpr, scale);
+							inst2(ctx, LEA, &v, &addr, TB_PTR);
+						}
+						else {
+							Val idx = val_gpr(TB_PTR, index.gpr);
+							inst2(ctx, ADD, &v, &idx, TB_PTR);
+						}
+						
+						v = val_base_disp(dt, v.gpr, 0);
+						def(ctx, f, v, r);
+						return v;
+					}
+					else {
+						Val v = val_base_index_disp(dt, base_reg, index.gpr, scale, disp);
+						def(ctx, f, v, r);
+						return v;
+					}
+				} else {
+					// Resolve the index then add the base
+					// TODO(NeGate): Improve this scaling method by
+					// adding ways to break down multiplies into bitshifts.
+					// int shifts_needed = __builtin_popcount(stride);
+					Val v = def_new_gpr(ctx, f, r, dt.type);
+					
+					emit(rex(true, v.gpr, index.gpr, 0));
+					emit(0x69);
+					emit(mod_rx_rm(MOD_DIRECT, v.gpr, index.gpr));
+					emit4(stride);
+					
+					emit(rex(true, base.gpr, v.gpr, 0));
+					emit(0x01);
+					emit(mod_rx_rm(MOD_DIRECT, base_reg, v.gpr));
+					
+					if (base.mem.index != GPR_NONE) {
+						// accumulate the index to the result
+						base.mem.base = v.gpr;
+						
+						inst2(ctx, LEA, &v, &base, TB_PTR);
+					}
+					
+					def(ctx, f, v, r);
+					return v;
+				}
+			} else tb_todo();
+		}
+		case TB_MEMBER_ACCESS: {
+			Val v = use_as_address(ctx, f, p->member_access.base);
+			
+			v.mem.disp += p->member_access.offset;
+			def(ctx, f, v, r);
+			return v;
+		}
+		case TB_FUNC_ADDRESS: {
+			int source_func = f - f->module->functions.data;
+			
+			Val v = def_new_gpr(ctx, f, r, TB_PTR);
+			
+			emit(rex(true, v.gpr, RBP, 0));
+			emit(0x8D);
+			emit(mod_rx_rm(MOD_INDIRECT, v.gpr, RBP));
+			emit4(0x0);
+			
+			int target_func = p->func_addr - f->module->functions.data;
+			tb_emit_call_patch(f->module,
+							   source_func,
+							   target_func,
+							   code_pos() - 4,
+							   s_local_thread_id);
+			
+			return v;
+		}
+		case TB_EFUNC_ADDRESS: {
+			int source_func = f - f->module->functions.data;
+			
+			Val v = def_new_gpr(ctx, f, r, TB_PTR);
+			
+			emit(rex(true, v.gpr, RBP, 0));
+			emit(0x8D);
+			emit(mod_rx_rm(MOD_INDIRECT, v.gpr, RBP));
+			emit4(0x0);
+			
+			tb_emit_ecall_patch(f->module,
+								source_func,
+								p->efunc_addr,
+								code_pos() - 4,
+								s_local_thread_id);
+			
+			return v;
+		}
+		case TB_TRUNCATE: {
+			Val src = use_as_rvalue(ctx, f, p->ext);
+			if (src.type == VAL_IMM) {
+				src.dt = dt;
+				def(ctx, f, src, r);
+				return src;
+			}
+			
+			// TODO(NeGate): Implement recycle
+			if (dt.type == TB_BOOL) dt.type = TB_I8;
+			Val v = def_new_gpr(ctx, f, r, dt.type);
+			
+			if (dt.type == TB_PTR || dt.type == TB_I64 || dt.type == TB_I32) {
+				// 32bit operations automatically truncate
+				inst2(ctx, MOV, &v, &src, dt.type);
+			} else {
+				//uint64_t shift = 64 - (8 << (dt.type - TB_I8));
+				//uint64_t mask = (~0ull) >> shift;
+				//Val imm = val_imm(dt, mask);
+				
+				inst2(ctx, MOVZX, &v, &src, dt.type);
+			}
+			return v;
+		}
+		case TB_ZERO_EXT: {
+			Val src = use_as_rvalue(ctx, f, p->ext);
+			
+			if (src.dt.type == TB_I32 &&
+				dt.type == TB_I64 &&
+				ctx->intervals[p->ext] == r) {
+				assert(src.dt.count == 1);
+				assert(dt.count == 1);
+				
+				if (src.type != VAL_MEM) {
+					src.dt.type = TB_I64;
+					
+					kill(ctx, f, p->ext);
+					def(ctx, f, src, r);
+					return src;
+				}
+				else {
+					// for 32->64 memory, it needs to actually
+					// just do a 32bit load since it can't promote
+					// the load itself up without "over-reading"
+					Val v = def_new_gpr(ctx, f, r, TB_I64);
+					inst2(ctx, MOV, &v, &src, TB_I32);
+					return v;
+				}
+			}
+			else {
+				Val v = def_new_gpr(ctx, f, r, dt.type);
+				inst2(ctx, MOVZX, &v, &src, dt.type);
+				return v;
+			}
+		}
+		case TB_SIGN_EXT: {
+			Val src = use_as_rvalue(ctx, f, p->ext);
+			if (src.type == VAL_IMM) {
+				src.dt = dt;
+				def(ctx, f, src, r);
+				return src;
+			}
+			
+			// TODO(NeGate): Implement recycle
+			Val v = def_new_gpr(ctx, f, r, dt.type);
+			if (dt.type == TB_I64) {
+				inst2(ctx, MOVSXD, &v, &src, dt.type);
+			} else {
+				inst2(ctx, MOVSX, &v, &src, dt.type);
+			}
+			return v;
+		}
+		case TB_INT2PTR: {
+			Val src = use_as_rvalue(ctx, f, p->ext);
+			if (src.type == VAL_IMM) {
+				src.dt = TB_TYPE_PTR;
+				def(ctx, f, src, r);
+				return src;
+			}
+			
+			if ((src.dt.type == TB_I32 ||
+				 src.dt.type == TB_I64 ||
+				 src.dt.type == TB_PTR) &&
+				ctx->intervals[p->ext] == r) {
+				assert(src.dt.count == 1);
+				assert(dt.count == 1);
+				
+				if (src.type != VAL_MEM) {
+					src.dt.type = TB_PTR;
+					
+					kill(ctx, f, p->ext);
+					def(ctx, f, src, r);
+					return src;
+				}
+				else {
+					// for 32->64 memory, it needs to actually
+					// just do a 32bit load since it can't promote
+					// the load itself up without "over-reading"
+					Val v = def_new_gpr(ctx, f, r, TB_I64);
+					inst2(ctx, MOV, &v, &src, TB_I32);
+					return v;
+				}
+			}
+			else {
+				Val v = def_new_gpr(ctx, f, r, dt.type);
+				inst2(ctx, MOVZX, &v, &src, dt.type);
+				return v;
+			}
+		}
+		case TB_NEG: {
+			Val src = use_as_rvalue(ctx, f, p->unary);
+			
+			// TODO(NeGate): Implement recycle
+			Val v = def_new_gpr(ctx, f, r, dt.type);
+			inst2(ctx, MOV, &v, &src, TB_I64);
+			inst1(ctx, NEG, &v);
+			return v;
+		}
+		case TB_NOT: {
+			Val src = use_as_rvalue(ctx, f, p->unary);
+			
+			// TODO(NeGate): Implement recycle
+			Val v = def_new_gpr(ctx, f, r, dt.type);
+			inst2(ctx, MOV, &v, &src, TB_I64);
+			inst1(ctx, NOT, &v);
+			return v;
+		}
+		case TB_FADD:
+		case TB_FSUB:
+		case TB_FMUL:
+		case TB_FDIV: {
+			const static IselInfo tbl[] = {
+				// inst   commut has_imm mem_dst mem_src   
+				{ ADDSS,  true,  true,   false,  true },
+				{ SUBSS,  true,  true,   false,  true },
+				{ MULSS,  true,  true,   false,  true },
+				{ DIVSS,  true,  true,   false,  true },
+				
+				// 4-wide versions
+				{ ADDPS,  true,  true,   false,  true },
+				{ SUBPS,  true,  true,   false,  true },
+				{ MULPS,  true,  true,   false,  true },
+				{ DIVPS,  true,  true,   false,  true }
+			};
+			assert((dt.count == 1 || dt.count == 4) && dt.type == TB_F32);
+			const IselInfo* info = &tbl[(dt.count == 4 ? 4 : 0) + (reg_type - TB_FADD)];
+			
+			TB_Register a_reg = p->f_arith.a;
+			TB_Register b_reg = p->f_arith.b;
+			
+			if (a_reg == b_reg) {
+				Val src = use_as_rvalue(ctx, f, a_reg);
+				
+				return isel_aliased(ctx, f, info, r, a_reg, &src);
+			} else {
+				Val a = use_as_rvalue(ctx, f, a_reg);
+				Val b = use_as_rvalue(ctx, f, b_reg);
+				
+				return isel(ctx, f, info, r, a_reg, b_reg, &a, &b);
+			}
+		}
+		case TB_AND:
+		case TB_OR:
+		case TB_XOR:
+		case TB_ADD:
+		case TB_SUB:
+		case TB_MUL: {
+			const static IselInfo tbl[] = {
+				// type               inst  commut  has_imm  mem_dst  mem_src   
+				[TB_AND - TB_AND] = { AND,  true,   true,    false,   true },
+				[TB_OR  - TB_AND] = { OR,   true,   true,    false,   true },
+				[TB_XOR - TB_AND] = { XOR,  true,   true,    false,   true },
+				[TB_ADD - TB_AND] = { ADD,  true,   true,    false,   true },
+				[TB_SUB - TB_AND] = { SUB,  false,  true,    false,   true },
+				[TB_MUL - TB_AND] = { IMUL, true,   false,   false,   true }
+			};
+			const IselInfo* info = &tbl[reg_type - TB_AND];
+			
+			TB_Register a_reg = p->i_arith.a;
+			TB_Register b_reg = p->i_arith.b;
+			
+			if (a_reg == b_reg) {
+				Val src = use_as_rvalue(ctx, f, a_reg);
+				
+				return isel_aliased(ctx, f, info, r, a_reg, &src);
+			} else {
+				Val a = use_as_rvalue(ctx, f, a_reg);
+				Val b = use_as_rvalue(ctx, f, b_reg);
+				
+				if (dt.count == 1 &&
+					reg_type == TB_ADD &&
+					a.type == VAL_GPR &&
+					b.type == VAL_GPR) {
+					Val v = def_new_gpr(ctx, f, r, dt.type);
+					
+					// lea _0, [_1 + _2]
+					// TODO(NeGate): Maybe allow for the 32bit version sometimes
+					emit(rex(true, v.gpr, b.gpr, a.gpr));
+					emit(0x8D);
+					emit(mod_rx_rm(MOD_INDIRECT, v.gpr, RSP));
+					emit(mod_rx_rm(SCALE_X1, (b.gpr & 7) == RSP ? RSP : b.gpr, a.gpr));
+					return v;
+				} else if (dt.count == 1 &&
+						   reg_type == TB_ADD &&
+						   a.type == VAL_GPR &&
+						   b.type == VAL_IMM) {
+					// lea _0, [_1 + _2]
+					Val v = def_new_gpr(ctx, f, r, dt.type);
+					Val arith = val_base_disp(dt, a.gpr, b.imm);
+					
+					inst2(ctx, LEA, &v, &arith, dt.type);
+					return v;
+				} else if (dt.count == 1 &&
+						   reg_type == TB_SUB &&
+						   a.type == VAL_GPR &&
+						   b.type == VAL_IMM) {
+					// lea _0, [_1 + _2]
+					Val v = def_new_gpr(ctx, f, r, dt.type);
+					Val arith = val_base_disp(dt, a.gpr, -b.imm);
+					
+					inst2(ctx, LEA, &v, &arith, dt.type);
+					return v;
+				} else {
+					return isel(ctx, f, info, r, a_reg, b_reg, &a, &b);
+				}
+			}
+			break;
+		}
+		case TB_SHL: {
+			TB_Register a_reg = p->i_arith.a;
+			TB_Register b_reg = p->i_arith.b;
+			
+			Val a = use_as_rvalue(ctx, f, a_reg);
+			if (f->nodes.type[b_reg] == TB_INT_CONST) {
+				assert(f->nodes.payload[b_reg].i_const < 64);
+				
+				Val v = def_new_gpr(ctx, f, r, dt.type);
+				inst2(ctx, MOV, &v, &a, dt.type);
+				
+				GPR dst_gpr = v.gpr;
+				bool is_64bit = dt.type == TB_I64 || dt.type == TB_PTR;
+				
+				if (dt.type == TB_I16) emit(0x66);
+				emit(rex(is_64bit, 0x00, dst_gpr, 0x00));
+				emit(dt.type == TB_I8 ? 0xC0 : 0xC1);
+				emit(mod_rx_rm(MOD_DIRECT, 0x04, dst_gpr));
+				emit(f->nodes.payload[b_reg].i_const);
+				return v;
+			}
+			
+			tb_todo();
+		}
+		case TB_UDIV:
+		case TB_SDIV: {
+			evict_gpr(ctx, f, RAX, r);
+			evict_gpr(ctx, f, RDX, r);
+			
+			TB_Register a_reg = f->nodes.payload[r].i_arith.a;
+			TB_Register b_reg = f->nodes.payload[r].i_arith.b;
+			
+			Val a = use_as_rvalue(ctx, f, a_reg);
+			Val b = use_as_rvalue(ctx, f, b_reg);
+			
+			// needs to mov the a value into rdx:rax
+			Val rax = val_gpr(dt.type, RAX);
+			if (!is_value_gpr(&a, RAX)) {
+				inst2(ctx, MOV, &rax, &a, dt.type);
+			}
+			
+			// we'll just be using CDQ if it's signed
+			// and zeroing RDX it if it's unsigned. 
+			if (reg_type == TB_SDIV) {
+				emit(0x99);
+			} else {
+				emit(0x31);
+				emit(mod_rx_rm(MOD_DIRECT, RDX, RDX));
+			}
+			
+			if (b.type == VAL_IMM) {
+				Val new_b = def_new_gpr(ctx, f, b_reg, dt.type);
+				inst2(ctx, MOV, &new_b, &b, dt.type);
+				b = new_b;
+			}
+			
+			inst1(ctx, IDIV, &b);
+			
+			// the return value is in RAX
+			def(ctx, f, rax, r);
+			return rax;
+		}
+		case TB_CMP_EQ:
+		case TB_CMP_NE:
+		case TB_CMP_SLT:
+		case TB_CMP_SLE:
+		case TB_CMP_ULT:
+		case TB_CMP_ULE: {
+			TB_DataType cmp_dt = p->cmp.dt;
+			
+			Val a = use_as_rvalue(ctx, f, p->cmp.a);
+			Val b = use_as_rvalue(ctx, f, p->cmp.b);
+			
+			bool invert = false;
+			if (a.type == VAL_MEM && b.type == VAL_MEM) {
+				Val dst = def_new_gpr(ctx, f, r, cmp_dt.type);
+				inst2(ctx, MOV, &dst, &a, cmp_dt.type);
+				inst2(ctx, CMP, &dst, &b, cmp_dt.type);
+				kill(ctx, f, r);
+			}
+			else {
+				invert = (a.type == VAL_IMM);
+				
+				if (invert) inst2(ctx, CMP, &b, &a, cmp_dt.type);
+				else inst2(ctx, CMP, &a, &b, cmp_dt.type);
+			}
+			
+			Cond cc;
+			switch (reg_type) {
+				case TB_CMP_EQ: cc = E; break;
+				case TB_CMP_NE: cc = NE; break;
+				case TB_CMP_SLT: cc = L; break;
+				case TB_CMP_SLE: cc = LE; break;
+				case TB_CMP_ULT: cc = B; break;
+				case TB_CMP_ULE: cc = BE; break;
+				default: tb_todo();
+			}
+			
+			cc ^= invert;
+			Val v = val_flags(cc);
+			
+			def(ctx, f, v, r);
+			return v;
+		}
+		default: break;
+	}
+	
+	tb_function_print(f, stdout);
+	printf("\n\n\n");
+	abort();
 }
 
 static Val load_into(Ctx* ctx, TB_Function* f, TB_DataType dt, TB_Register r, TB_Register addr) {
@@ -1558,9 +1572,9 @@ static Val materialize(Ctx* ctx, TB_Function* f, const Val* src, TB_Register src
 	}
 }
 
-static void isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
-				 TB_Register dst_reg, TB_Register a_reg, TB_Register b_reg, 
-				 const Val* a, const Val* b) {
+static Val isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
+				TB_Register dst_reg, TB_Register a_reg, TB_Register b_reg, 
+				const Val* a, const Val* b) {
 	// use isel_aliased instead
 	assert(a != b);
 	
@@ -1615,6 +1629,7 @@ static void isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
 		def(ctx, f, av, dst_reg);
 		
 		if (is_promoted) inst2(ctx, MOVZX, &av, &av, prev_dt.type);
+		return av;
 	} else {
 		// dst = a, dst += b;
 		Val v;
@@ -1629,12 +1644,13 @@ static void isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
 		inst2(ctx, info->inst, &v, &bv, dst_dt.type);
 		
 		if (is_promoted) inst2(ctx, MOVZX, &v, &v, prev_dt.type);
+		return v;
 	}
 }
 
-static void isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
-						 TB_Register dst_reg, TB_Register src_reg, 
-						 const Val* src) {
+static Val isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
+						TB_Register dst_reg, TB_Register src_reg, 
+						const Val* src) {
 	TB_DataType dst_dt = f->nodes.dt[dst_reg];
 	
 	// (i8 | i16) => i32
@@ -1657,6 +1673,7 @@ static void isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
 		def(ctx, f, *src, dst_reg);
 		
 		if (is_promoted) inst2(ctx, MOVZX, src, src, prev_dt.type);
+		return *src;
 	} else {
 		// dst = src, dst += src;
 		Val v = def_new_gpr(ctx, f, dst_reg, dst_dt.type);
@@ -1677,6 +1694,7 @@ static void isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
 		}
 		
 		if (is_promoted) inst2(ctx, MOVZX, &v, &v, prev_dt.type);
+		return v;
 	}
 }
 

@@ -393,6 +393,8 @@ inline static bool is_value_match(const Val* a, const Val* b) {
 static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, GPR gpr, TB_Register bb, TB_Register bb_end);
 
 static Val use(Ctx* ctx, TB_Function* f, TB_Register r);
+static Val use_as_rvalue(Ctx* ctx, TB_Function* f, TB_Register r);
+static Val use_as_address(Ctx* ctx, TB_Function* f, TB_Register r);
 
 static void kill(Ctx* ctx, TB_Function* f, TB_Register r);
 
@@ -416,14 +418,14 @@ static void temporary_reserve_xmm(Ctx* ctx, TB_Function* f, XMM x);
 
 static Val materialize(Ctx* ctx, TB_Function* f, const Val* src, TB_Register src_reg, TB_DataType dt);
 
-static void isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
-				 TB_Register dst_reg, TB_Register a_reg, TB_Register b_reg, 
-				 const Val* a, const Val* b);
+static Val isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
+				TB_Register dst_reg, TB_Register a_reg, TB_Register b_reg, 
+				const Val* a, const Val* b);
 
 // Same as isel(...) except both parameters are the same so things are slightly simpler
-static void isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
-						 TB_Register dst_reg, TB_Register src_reg, 
-						 const Val* src);
+static Val isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
+						TB_Register dst_reg, TB_Register src_reg, 
+						const Val* src);
 
 // Garbage collects up to the `r` register (doesn't handle registers 
 // between basic blocks only locals).

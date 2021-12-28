@@ -226,7 +226,7 @@ TB_API TB_FileID tb_register_file(TB_Module* m, const char* path) {
 	return r;
 }
 
-TB_API bool tb_module_export(TB_Module* m, FILE* f) {
+TB_API bool tb_module_export(TB_Module* m, const char* path) {
 	const ICodeGen* restrict code_gen = NULL;
 	switch (m->target_arch) {
 		case TB_ARCH_X86_64: code_gen = &x64_fast_code_gen; break;
@@ -235,10 +235,10 @@ TB_API bool tb_module_export(TB_Module* m, FILE* f) {
 	
 	switch (m->target_system) {
         case TB_SYSTEM_WINDOWS:
-		tb_export_coff(m, code_gen, f);
+		tb_export_coff(m, code_gen, path);
 		break;
         case TB_SYSTEM_LINUX:
-		tb_export_elf64(m, code_gen, f);
+		tb_export_elf64(m, code_gen, path);
 		break;
         default:
 		printf("TinyBackend error: Unknown system!\n");

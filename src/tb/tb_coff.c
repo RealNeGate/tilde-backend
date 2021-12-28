@@ -107,11 +107,11 @@ enum {
 	COFF_MACHINE_ARM64 = 0xAA64,  // ARM64 Little-Endian
 };
 
-void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
+void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path) {
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	
 	// The prologue and epilogue generators need some storage
-	uint8_t* proepi_buffer = tb_tls_push(tls, PROEPI_BUFFER);
+	uint8_t* proepi_buffer = malloc(m->compiled_functions.count * PROEPI_BUFFER);
 	
 	// Buffer stores all the positions of each 
 	// function relative to the .text section start.
@@ -555,6 +555,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	// sure it doesn't get mark as unused in release.
 	((void)string_table_pos);
 	
+	FILE* f = fopen(path, "wb");
 	fwrite(&header, sizeof(header), 1, f);
 	fwrite(&text_section, sizeof(text_section), 1, f);
 	fwrite(&rdata_section, sizeof(rdata_section), 1, f);
@@ -816,6 +817,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 		
 		fwrite(s, 1, strlen(s) + 1, f);
 	}
+	fclose(f);
 	
 	free(debugs_out.data);
 	free(debugt_out.data);

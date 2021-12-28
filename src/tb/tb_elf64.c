@@ -107,7 +107,7 @@ typedef struct {
 	Elf64_Xword     st_size;
 } Elf64_Sym;
 
-void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
+void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char* path) {
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	
 	// The prologue and epilogue generators need some storage
@@ -309,6 +309,7 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	header.e_shoff = stab_section.sh_offset + stab_section.sh_size;
 	
 	// Output file
+	FILE* f = fopen(path, "wb");
 	fwrite(&header, sizeof(header), 1, f);
 	
 	assert(ftell(f) == strtab_section.sh_offset);
@@ -357,4 +358,5 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f) {
 	free(stab.data);
 	free(strtbl.data);
 	free(func_layout);
+	fclose(f);
 }

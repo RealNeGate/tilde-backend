@@ -1,6 +1,6 @@
 #include "tb/tb.h"
 
-void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* features);
+void do_tests(const char* obj_path, TB_Arch arch, TB_System system, const TB_FeatureSet* features);
 
 TB_Function* test_add_i8(TB_Module* m);
 TB_Function* test_add_i16(TB_Module* m);
@@ -38,19 +38,15 @@ int main(int argc, char** argv) {
 	TB_FeatureSet features = { 0 };
 	
 #if 0
-	FILE* f = fopen("./test_x64.o", "wb");
-	do_tests(f, TB_ARCH_X86_64, TB_SYSTEM_LINUX, &features);
-	fclose(f);
+	do_tests("./test_x64.o", TB_ARCH_X86_64, TB_SYSTEM_LINUX, &features);
 #else
-	FILE* f = fopen("./test_x64.obj", "wb");
-	do_tests(f, TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features);
-	fclose(f);
+	do_tests("./test_x64.obj", TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features);
 #endif
 	
 	return 0;
 }
 
-void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
+void do_tests(const char* obj_path, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
 	TB_Module* m = tb_module_create(arch, system, features, TB_OPT_O0);
     
 	typedef TB_Function*(*TestFunction)(TB_Module* m);
@@ -94,7 +90,7 @@ void do_tests(FILE* f, TB_Arch arch, TB_System system, const TB_FeatureSet* feat
 	}
     
 	if (!tb_module_compile(m)) abort();
-	if (!tb_module_export(m, f)) abort();
+	if (!tb_module_export(m, obj_path)) abort();
 	
 	tb_module_destroy(m);
 }

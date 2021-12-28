@@ -575,8 +575,8 @@ void* tb_tls_push(TB_TemporaryStorage* store, size_t size);
 void* tb_tls_pop(TB_TemporaryStorage* store, size_t size);
 void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance);
 
-void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f);
-void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, FILE* f);
+void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path);
+void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char* path);
 
 uint8_t* tb_out_reserve(TB_Emitter* o, size_t count);
 // The return value is the start of the empty region after

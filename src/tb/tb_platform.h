@@ -39,4 +39,3 @@ void* tb_platform_arena_alloc(size_t size);
 
 // NOTE(NeGate): Free is supposed to free all allocations.
 void tb_platform_arena_free();
-

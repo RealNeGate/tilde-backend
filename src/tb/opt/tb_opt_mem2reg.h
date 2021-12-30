@@ -4,6 +4,8 @@
 static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_DataType* dt);
 static TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count);
 
+#define MAX_IR_REGISTER_NAMES
+
 typedef struct Mem2Reg_Ctx {
 	TB_Function* f;
 	size_t label_count;
@@ -26,7 +28,36 @@ typedef struct Mem2Reg_Ctx {
 	int* pred_count;
 	// [label_count][pred_count[i]]
 	TB_Label** preds;
+	
+	// NOTE(NeGate): This is a system used to bind registers
+	// to another value so that if new registers are inserted
+	// you have a consistent lookup
+	int name_capacity, name_count;
+	TB_Register* names;
 } Mem2Reg_Ctx;
+
+static int bind_name(Mem2Reg_Ctx* restrict c, TB_Register r) {
+	assert(c->name_count+1 < c->name_capacity && "Ran out of names");
+	
+	int name = c->name_count++;
+	c->names[name] = r;
+	return name;
+}
+
+static TB_Register read_name(Mem2Reg_Ctx* restrict c, int name) {
+	assert(name < c->name_count);
+	return c->names[name];
+}
+
+static void unbind_name(Mem2Reg_Ctx* restrict c, int name) {
+	assert(name < c->name_count);
+	
+	// remove swap
+	c->name_count--;
+	if (c->name_count > 0) {
+		c->names[name] = c->names[c->name_count - 1];
+	}
+}
 
 static int get_variable_id(Mem2Reg_Ctx* restrict c, TB_Register r) {
 	// TODO(NeGate): Maybe we speed this up... maybe it doesn't matter :P
@@ -60,6 +91,10 @@ static TB_Register new_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Label blo
 	
 	loop(i, c->label_count * c->to_promote_count) {
 		if (c->incomplete_phis[i] + 1 >= new_phi_reg) c->incomplete_phis[i]++;
+	}
+	
+	loop(i, c->name_count) {
+		if (c->names[i] + 1 >= new_phi_reg) c->names[i]++;
 	}
 	
 	return new_phi_reg;
@@ -115,19 +150,15 @@ static TB_Register read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_
 
 static TB_Register add_phi_operands(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register phi_reg, TB_Label block, int var) {
 	// Determine operands from predecessors
+	int name = bind_name(c, phi_reg);
+	
 	loop(i, c->pred_count[block]) {
-		// NOTE(NeGate): We need to worry about if read_variable adds more phi nodes
-		// this is probably going to break eventually and we fix it then
-		size_t old_sz = f->nodes.count;
 		TB_Register val = read_variable(c, var, c->preds[block][i]);
-		if (f->nodes.count > old_sz) {
-			assert(f->nodes.count == old_sz+1);
-			phi_reg++;
-		}
 		
-		add_phi_operand(c, c->f, phi_reg, c->preds[block][i], val);
+		add_phi_operand(c, c->f, read_name(c, name), c->preds[block][i], val);
 	}
 	
+	unbind_name(c, name);
 	return try_remove_trivial_phi(c, c->f, phi_reg);
 }
 
@@ -227,6 +258,10 @@ bool tb_opt_mem2reg(TB_Function* f) {
 	c.sealed_blocks = tb_tls_push(tls, c.label_count * sizeof(bool));
 	memset(c.sealed_blocks, 0, c.label_count * sizeof(bool));
 	
+	c.name_count = 0;
+	c.name_capacity = 1024;
+	c.names = tb_tls_push(tls, 1024 * sizeof(TB_Register));
+	
 	// Calculate all the immediate predecessors
 	// First BB has no predecessors
 	{
@@ -254,24 +289,15 @@ bool tb_opt_mem2reg(TB_Function* f) {
 		} else if (reg_type == TB_LOAD) {
 			int var = get_variable_id(&c, p.load.address);
 			if (var >= 0) {
-				// TODO(NeGate): Kinda a weird workaround but essentially we make it into a PASS
-				// beforehand then patch it afterwards so that it's easy to spot
-				f->nodes.type[j] = TB_PASS;
-				f->nodes.payload[j].pass = 0;
+				int name = bind_name(&c, j);
 				
 				TB_Register value = read_variable(&c, var, block);
 				assert(value);
 				
-				TB_Register k = j;
-				while (k < f->nodes.count) {
-					if (f->nodes.type[k] == TB_PASS && f->nodes.payload[k].pass == 0) {
-						f->nodes.payload[k].pass = value;
-						goto success;
-					}
-					k++;
-				}
-				abort();
-				success:;
+				TB_Register k = read_name(&c, name);
+				f->nodes.type[k] = TB_PASS;
+				f->nodes.payload[k].pass = value;
+				unbind_name(&c, name);
 			}
 		} else if (reg_type == TB_STORE) {
 			int var = get_variable_id(&c, p.store.address);

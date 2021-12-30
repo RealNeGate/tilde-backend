@@ -48,11 +48,12 @@ int main(int argc, char** argv) {
 }
 
 void do_tests(const char* obj_path, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
-	TB_Module* m = tb_module_create(arch, system, features, TB_OPT_O0);
+	TB_Module* m = tb_module_create(arch, system, features, TB_OPT_O1);
     
 	typedef TB_Function*(*TestFunction)(TB_Module* m);
 	static const TestFunction test_functions[] = {
 		test_fact,
+#if 0
 		test_add_i8,
 		test_add_i16,
 		test_add_i32,
@@ -78,6 +79,7 @@ void do_tests(const char* obj_path, TB_Arch arch, TB_System system, const TB_Fea
 		test_array_access,
 		test_foo,
 		test_entry
+#endif
 	};
 	size_t count = sizeof(test_functions) / sizeof(test_functions[0]);
 	test_external1 = tb_extern_create(m, "GetModuleHandleA");

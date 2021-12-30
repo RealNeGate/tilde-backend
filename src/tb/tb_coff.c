@@ -125,6 +125,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	
 	// NOTE(NeGate): The symbol ids per thread of these symbol groups are all sequencial
 	// symbol id = symbol type base + thread's baseline + local id
+	// both the global and external symbols share a baseline
 	uint32_t* external_symbol_relative_id = tb_tls_push(tls, TB_MAX_THREADS * sizeof(uint32_t));
 	uint32_t* global_symbol_relative_id = tb_tls_push(tls, TB_MAX_THREADS * sizeof(uint32_t));
 	
@@ -132,13 +133,11 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 		external_symbol_relative_id[i] = string_table_cap;
 		string_table_cap += arrlen(m->externals[i]);
 	}
-	uint32_t external_count = string_table_cap;
 	
 	loop(i, m->max_threads) {
 		global_symbol_relative_id[i] = string_table_cap;
 		string_table_cap += arrlen(m->globals[i]);
 	}
-	//uint32_t global_count = string_table_cap - external_count;
 	string_table_cap += m->compiled_functions.count;
 	
 	const char** string_table = malloc(string_table_cap * sizeof(const char*));
@@ -623,7 +622,9 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	assert(ftell(f) == data_section.raw_data_pos);
 	{
 		// TODO(NeGate): Optimize this for size and speed, sometimes
-		// there's huge sections which
+		// there's huge sections will be filled with just empty regions
+		// so it's probably best not to represent everything in a big
+		// buffer.
 		char* data = tb_platform_heap_alloc(m->data_region_size);
 		
 		loop(i, m->max_threads) {
@@ -670,7 +671,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 		}
 	}
 	
-	size_t extern_func_sym_start = 8 + m->compiled_functions.count;
+	size_t extern_func_sym_start = 10 + m->compiled_functions.count;
 	loop(i, m->max_threads) {
 		loop(j, arrlen(m->ecall_patches[i])) {
 			TB_ExternFunctionPatch* p = &m->ecall_patches[i][j];
@@ -695,7 +696,6 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 		}
 	}
 	
-	size_t global_func_sym_start = 8 + m->compiled_functions.count + external_count;
 	loop(i, m->max_threads) {
 		loop(j, arrlen(m->global_patches[i])) {
 			TB_GlobalPatch* p = &m->global_patches[i][j];
@@ -714,7 +714,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 			
 			fwrite(&(COFF_ImageReloc) {
 					   .Type = IMAGE_REL_AMD64_REL32,
-					   .SymbolTableIndex = global_func_sym_start + symbol_id,
+					   .SymbolTableIndex = extern_func_sym_start + symbol_id,
 					   .VirtualAddress = actual_pos
 				   }, sizeof(COFF_ImageReloc), 1, f);
 		}

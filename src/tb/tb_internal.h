@@ -317,6 +317,12 @@ typedef struct TB_ConstPoolPatch {
 	size_t length;
 } TB_ConstPoolPatch;
 
+typedef struct TB_GlobalPatch {
+	uint32_t func_id;
+	uint32_t pos; // relative to the start of the function
+	TB_GlobalID global;
+} TB_GlobalPatch;
+
 typedef struct TB_FunctionPatch {
 	uint32_t func_id;
 	uint32_t target_id;
@@ -410,6 +416,12 @@ typedef struct TB_Initializer {
 	TB_InitObj objects[];
 } TB_Initializer;
 
+typedef struct TB_Global {
+	char* name;
+	TB_InitializerID init;
+	size_t pos;
+} TB_Global;
+
 struct TB_Function {
 	// It's kinda a weird circular but still
 	TB_Module* module;
@@ -476,9 +488,13 @@ struct TB_Module {
 	pthread_mutex_t mutex;
 #endif
 	
+	// TODO(NeGate): I should probably re-organize these to avoid
+	// false sharing
+	dyn_array(TB_GlobalPatch) global_patches[TB_MAX_THREADS];
 	dyn_array(TB_ConstPoolPatch) const_patches[TB_MAX_THREADS];
 	dyn_array(uint64_t) initializers[TB_MAX_THREADS];
 	dyn_array(TB_External) externals[TB_MAX_THREADS];
+	dyn_array(TB_Global) globals[TB_MAX_THREADS];
 	dyn_array(TB_FunctionPatch) call_patches[TB_MAX_THREADS];
     dyn_array(TB_ExternFunctionPatch) ecall_patches[TB_MAX_THREADS];
 	
@@ -505,7 +521,8 @@ struct TB_Module {
 	// non NULL entry which map to the `compiled_functions` 
 	void** compiled_function_pos;
 	
-	// oh btw the rdata sections too
+	// we need to keep track of these for layout reasons
+	_Atomic size_t data_region_size;
 	_Atomic size_t rdata_region_size;
 	
 	// The code is stored into giant buffers
@@ -633,7 +650,7 @@ __m128i bytes = _mm_loadu_si128((__m128i*)&(func)->nodes.type[__i]); \
 unsigned int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(target))); \
 if (mask == 0) continue; \
 /* We know it loops at least once by this point */ \
-for (size_t __j = __i; __j < 16; __j++) if (mask & (1u << __j)) { \
+for (size_t __j = 0; __j < 16; __j++) if (mask & (1u << __j)) { \
 size_t iterator = __i + __j; \
 __VA_ARGS__; \
 } \
@@ -673,6 +690,7 @@ void tb_find_live_intervals(const TB_Function* f, TB_Register intervals[]);
 void tb_find_use_count(const TB_Function* f, int use_count[]);
 
 uint32_t tb_emit_const_patch(TB_Module* m, uint32_t func_id, size_t pos, const void* ptr, size_t len, size_t local_thread_id);
+void tb_emit_global_patch(TB_Module* m, uint32_t func_id, size_t pos, TB_GlobalID global, size_t local_thread_id);
 void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size_t pos, size_t local_thread_id);
 void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id, size_t pos, size_t local_thread_id);
 

@@ -93,6 +93,7 @@ case TB_GOTO: \
 case TB_LINE_INFO: \
 case TB_FUNC_ADDRESS: \
 case TB_EFUNC_ADDRESS: \
+case TB_GLOBAL_ADDRESS: \
 break; \
 case TB_LABEL: \
 X(p->label.terminator); \

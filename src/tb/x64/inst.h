@@ -44,7 +44,7 @@ inline static void inst2(Ctx* ctx, int op, const Val* a, const Val* b, int dt_ty
 	assert(op < (sizeof(inst2_tbl) / sizeof(inst2_tbl[0])));
 	const Inst2* inst = &inst2_tbl[op];
 	
-	bool dir = b->type == VAL_MEM;
+	bool dir = b->type == VAL_MEM || b->type == VAL_GLOBAL;
 	if (dir || inst->op == 0xAF) tb_swap(a, b);
 	
 	// operand size
@@ -87,16 +87,17 @@ inline static void inst2(Ctx* ctx, int op, const Val* a, const Val* b, int dt_ty
 			if (base >= 8 || rx >= 8 || is_64bit) {
 				emit(rex(is_64bit, rx, base, 0));
 			}
-		}
-		else if (a->type == VAL_MEM) {
+		} else if (a->type == VAL_MEM) {
 			base = a->mem.base;
 			
 			uint8_t rex_index = (a->mem.index != GPR_NONE ? a->mem.index : 0);
 			if (base >= 8 || rx >= 8 || rex_index >= 8 || is_64bit) {
 				emit(rex(is_64bit, rx, base, rex_index));
 			}
-		}
-		else __builtin_unreachable();
+		} else if (a->type == VAL_GLOBAL) {
+			base = RBP;
+			if (rx >= 8 || is_64bit) emit(rex(is_64bit, rx, base, 0));
+		} else __builtin_unreachable();
 		
 		// Opcode
 		if (inst->ext == EXT_DEF || inst->ext == EXT_DEF2) {
@@ -174,6 +175,13 @@ inline static void inst2(Ctx* ctx, int op, const Val* a, const Val* b, int dt_ty
 		
 		if (mod == MOD_INDIRECT_DISP8) emit((int8_t)disp);
 		else if (mod == MOD_INDIRECT_DISP32) emit4(disp);
+	} else if (a->type == VAL_GLOBAL) {
+		emit(((rx & 7) << 3) | RBP);
+		emit4(0x0);
+		
+		tb_emit_global_patch(ctx->f->module, ctx->function_id,
+							 code_pos() - 4, a->global.id,
+							 s_local_thread_id);
 	} else tb_unreachable();
 	
 	if (b->type == VAL_IMM) {

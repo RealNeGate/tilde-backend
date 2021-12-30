@@ -111,7 +111,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	
 	// The prologue and epilogue generators need some storage
-	uint8_t* proepi_buffer = malloc(m->compiled_functions.count * PROEPI_BUFFER);
+	uint8_t* proepi_buffer = tb_tls_push(tls, PROEPI_BUFFER);
 	
 	// Buffer stores all the positions of each 
 	// function relative to the .text section start.
@@ -121,20 +121,30 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	// into the string table
 	uint32_t string_table_length = 0;
 	uint32_t string_table_mark = 4;
-	
 	uint32_t string_table_cap = 0;
+	
+	// NOTE(NeGate): The symbol ids per thread of these symbol groups are all sequencial
+	// symbol id = symbol type base + thread's baseline + local id
 	uint32_t* external_symbol_relative_id = tb_tls_push(tls, TB_MAX_THREADS * sizeof(uint32_t));
+	uint32_t* global_symbol_relative_id = tb_tls_push(tls, TB_MAX_THREADS * sizeof(uint32_t));
 	
 	loop(i, m->max_threads) {
 		external_symbol_relative_id[i] = string_table_cap;
 		string_table_cap += arrlen(m->externals[i]);
 	}
+	uint32_t external_count = string_table_cap;
+	
+	loop(i, m->max_threads) {
+		global_symbol_relative_id[i] = string_table_cap;
+		string_table_cap += arrlen(m->globals[i]);
+	}
+	//uint32_t global_count = string_table_cap - external_count;
 	string_table_cap += m->compiled_functions.count;
 	
 	const char** string_table = malloc(string_table_cap * sizeof(const char*));
 	
 	// drops the debug sections if no line info exists
-	const int number_of_sections = 4;
+	const int number_of_sections = 5;
 	COFF_FileHeader header = {
 		.num_sections = number_of_sections,
 		.timestamp = time(NULL),
@@ -152,6 +162,12 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 		.name = { ".rdata" }, // .rdata
 		.characteristics = COFF_CHARACTERISTICS_RODATA,
 		.raw_data_size = m->rdata_region_size
+	};
+	
+	COFF_SectionHeader data_section = {
+		.name = { ".data" }, // .data
+		.characteristics = COFF_CHARACTERISTICS_DATA,
+		.raw_data_size = m->data_region_size
 	};
 	
 	COFF_SectionHeader debugt_section = {
@@ -512,13 +528,15 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	
 	text_section.raw_data_pos = sizeof(COFF_FileHeader) + (number_of_sections * sizeof(COFF_SectionHeader));
 	rdata_section.raw_data_pos = text_section.raw_data_pos + text_section.raw_data_size;
-	debugt_section.raw_data_pos = rdata_section.raw_data_pos + rdata_section.raw_data_size;
+	data_section.raw_data_pos = rdata_section.raw_data_pos + rdata_section.raw_data_size;
+	debugt_section.raw_data_pos = data_section.raw_data_pos + data_section.raw_data_size;
 	debugs_section.raw_data_pos = debugt_section.raw_data_pos + debugt_section.raw_data_size;
 	
 	text_section.num_reloc = 0;
 	loop(i, m->max_threads) {
 		text_section.num_reloc += arrlen(m->const_patches[i]);
 		text_section.num_reloc += arrlen(m->ecall_patches[i]);
+		text_section.num_reloc += arrlen(m->global_patches[i]);
 	}
 	
 	// A bunch of relocations are made by the CodeView sections, if there's no
@@ -541,6 +559,10 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 		header.symbol_count += arrlen(m->externals[i]);
 	}
 	
+	loop(i, m->max_threads) {
+		header.symbol_count += arrlen(m->globals[i]);
+	}
+	
 #if !TB_STRIP_LABELS
 	header.symbol_count += m->label_symbols.count;
 #endif
@@ -559,6 +581,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	fwrite(&header, sizeof(header), 1, f);
 	fwrite(&text_section, sizeof(text_section), 1, f);
 	fwrite(&rdata_section, sizeof(rdata_section), 1, f);
+	fwrite(&data_section, sizeof(data_section), 1, f);
 	fwrite(&debugt_section, sizeof(debugt_section), 1, f);
 	fwrite(&debugs_section, sizeof(debugs_section), 1, f);
 	
@@ -595,6 +618,28 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 		
 		fwrite(rdata, m->rdata_region_size, 1, f);
 		tb_platform_heap_free(rdata);
+	}
+	
+	assert(ftell(f) == data_section.raw_data_pos);
+	{
+		// TODO(NeGate): Optimize this for size and speed, sometimes
+		// there's huge sections which
+		char* data = tb_platform_heap_alloc(m->data_region_size);
+		
+		loop(i, m->max_threads) {
+			loop(j, arrlen(m->globals[i])) {
+				TB_Global* g = &m->globals[i][j];
+				
+				TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
+				TB_Initializer* i = (TB_Initializer*)&m->initializers[g->init / per_thread_stride][g->init % per_thread_stride];
+				
+				// clear out space
+				memset(&data[g->pos], 0, i->size);
+			}
+		}
+		
+		fwrite(data, m->data_region_size, 1, f);
+		tb_platform_heap_free(data);
 	}
 	
 	// Emit debug info
@@ -645,6 +690,31 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 			fwrite(&(COFF_ImageReloc) {
 					   .Type = IMAGE_REL_AMD64_REL32,
 					   .SymbolTableIndex = extern_func_sym_start + symbol_id,
+					   .VirtualAddress = actual_pos
+				   }, sizeof(COFF_ImageReloc), 1, f);
+		}
+	}
+	
+	size_t global_func_sym_start = 8 + m->compiled_functions.count + external_count;
+	loop(i, m->max_threads) {
+		loop(j, arrlen(m->global_patches[i])) {
+			TB_GlobalPatch* p = &m->global_patches[i][j];
+			TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
+			
+			uint64_t meta = out_f->prologue_epilogue_metadata;
+			uint64_t stack_usage = out_f->stack_usage;
+			
+			size_t actual_pos = func_layout[p->func_id] 
+				+ code_gen->get_prologue_length(meta, stack_usage)
+				+ p->pos;
+			
+			TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
+			int symbol_id = global_symbol_relative_id[p->global / per_thread_stride]
+				+ (p->global % per_thread_stride);
+			
+			fwrite(&(COFF_ImageReloc) {
+					   .Type = IMAGE_REL_AMD64_REL32,
+					   .SymbolTableIndex = global_func_sym_start + symbol_id,
 					   .VirtualAddress = actual_pos
 				   }, sizeof(COFF_ImageReloc), 1, f);
 		}
@@ -709,27 +779,39 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 		   }, sizeof(COFF_AuxSectionSymbol), 1, f);
 	
 	fwrite(&(COFF_Symbol) {
-			   .short_name = { ".debug$T" },
+			   .short_name = { ".data" },
 			   .section_number = 3,
 			   .storage_class = IMAGE_SYM_CLASS_STATIC,
 			   .aux_symbols_count = 1
 		   }, sizeof(COFF_Symbol), 1, f);
 	
 	fwrite(&(COFF_AuxSectionSymbol) {
-			   .length = debugt_section.raw_data_size,
+			   .length = data_section.raw_data_size,
 			   .number = 3
 		   }, sizeof(COFF_AuxSectionSymbol), 1, f);
 	
 	fwrite(&(COFF_Symbol) {
-			   .short_name = { ".debug$S" },
+			   .short_name = { ".debug$T" },
 			   .section_number = 4,
 			   .storage_class = IMAGE_SYM_CLASS_STATIC,
 			   .aux_symbols_count = 1
 		   }, sizeof(COFF_Symbol), 1, f);
 	
 	fwrite(&(COFF_AuxSectionSymbol) {
-			   .length = debugs_section.raw_data_size,
+			   .length = debugt_section.raw_data_size,
 			   .number = 4
+		   }, sizeof(COFF_AuxSectionSymbol), 1, f);
+	
+	fwrite(&(COFF_Symbol) {
+			   .short_name = { ".debug$S" },
+			   .section_number = 5,
+			   .storage_class = IMAGE_SYM_CLASS_STATIC,
+			   .aux_symbols_count = 1
+		   }, sizeof(COFF_Symbol), 1, f);
+	
+	fwrite(&(COFF_AuxSectionSymbol) {
+			   .length = debugs_section.raw_data_size,
+			   .number = 5
 		   }, sizeof(COFF_AuxSectionSymbol), 1, f);
 	
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
@@ -777,6 +859,33 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 			}
 			else {
 				memcpy(sym.short_name, e->name, name_len + 1);
+			}
+			
+			fwrite(&sym, sizeof(sym), 1, f);
+		}
+	}
+	
+	loop(i, m->max_threads) {
+		loop(j, arrlen(m->globals[i])) {
+			const TB_Global* restrict g = &m->globals[i][j];
+			COFF_Symbol sym = {
+				.value = g->pos,
+				.section_number = 3, // data section
+				.storage_class = IMAGE_SYM_CLASS_STATIC
+			};
+			
+			size_t name_len = strlen(g->name);
+			assert(name_len < UINT16_MAX);
+			
+			if (name_len >= 8) {
+				sym.long_name[0] = 0; // this value is 0 for long names
+				sym.long_name[1] = string_table_mark;
+				
+				string_table[string_table_length++] = g->name;
+				string_table_mark += name_len + 1;
+			}
+			else {
+				memcpy(sym.short_name, g->name, name_len + 1);
 			}
 			
 			fwrite(&sym, sizeof(sym), 1, f);

@@ -25,8 +25,6 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 // into `to`
 static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_Register from_terminator, TB_Register to, TB_Register to_terminator);
 
-static _Thread_local size_t s_local_thread_id;
-
 TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
 	s_local_thread_id = local_thread_id;
 	TB_TemporaryStorage* tls = tb_tls_allocate();
@@ -36,6 +34,9 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 	memset(ctx, 0, ctx_size);
 	
 	ctx->start_out = ctx->out = out;
+	
+	ctx->f = f;
+	ctx->function_id = f - f->module->functions.data;
 	
 	//tb_function_print(f, stdout);
 	DEBUG_LOG("\n\n\n%s:\n", f->name);
@@ -338,7 +339,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 				if (cond.type == VAL_GPR) {
 					inst2(ctx, TEST, &cond, &cond, cond.dt.type);
 					cond = val_flags(NE);
-				} else if (cond.type == VAL_MEM) {
+				} else if (cond.type == VAL_MEM || cond.type == VAL_GLOBAL) {
 					Val imm = val_imm(cond.dt, 0);
 					inst2(ctx, CMP, &cond, &imm, cond.dt.type);
 					cond = val_flags(NE);
@@ -793,12 +794,10 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 				emit(0x10);
 				emit(((dst_xmm & 7) << 3) | RBP);
 				
-				size_t func_id = f - f->module->functions.data;
-				
 				uint32_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint32_t));
 				*rdata_payload = imm;
 				
-				uint32_t disp = tb_emit_const_patch(f->module, func_id, code_pos(), rdata_payload, sizeof(uint32_t), s_local_thread_id);
+				uint32_t disp = tb_emit_const_patch(f->module, ctx->function_id, code_pos(), rdata_payload, sizeof(uint32_t), s_local_thread_id);
 				emit4(disp);
 			}
 			
@@ -808,14 +807,13 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			const char* str = f->nodes.payload[r].str_const.data;
 			size_t len = f->nodes.payload[r].str_const.len;
 			
-			int func_id = f - f->module->functions.data;
 			Val v = def_new_gpr(ctx, f, r, TB_PTR);
 			
 			emit(rex(true, v.gpr, RBP, 0));
 			emit(0x8D);
 			emit(mod_rx_rm(MOD_INDIRECT, v.gpr, RBP));
 			
-			uint32_t disp = tb_emit_const_patch(f->module, func_id, code_pos(), str, len, s_local_thread_id);
+			uint32_t disp = tb_emit_const_patch(f->module, ctx->function_id, code_pos(), str, len, s_local_thread_id);
 			emit4(disp);
 			return v;
 		}
@@ -826,7 +824,7 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			uint32_t stride = p->array_access.stride;
 			int32_t disp = base.mem.disp;
 			
-			if (index.type == VAL_MEM) {
+			if (is_value_mem(&index)) {
 				Val new_v = def_new_gpr(ctx, f, p->array_access.index, TB_I64);
 				inst2(ctx, MOV, &new_v, &index, TB_I64);
 				
@@ -907,6 +905,9 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			def(ctx, f, v, r);
 			return v;
 		}
+		case TB_GLOBAL_ADDRESS: {
+			return val_global(p->global_addr);
+		}
 		case TB_FUNC_ADDRESS: {
 			int source_func = f - f->module->functions.data;
 			
@@ -977,7 +978,7 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 				assert(src.dt.count == 1);
 				assert(dt.count == 1);
 				
-				if (src.type != VAL_MEM) {
+				if (!is_value_mem(&src)) {
 					src.dt.type = TB_I64;
 					
 					kill(ctx, f, p->ext);
@@ -1031,7 +1032,7 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 				assert(src.dt.count == 1);
 				assert(dt.count == 1);
 				
-				if (src.type != VAL_MEM) {
+				if (!is_value_mem(&src)) {
 					src.dt.type = TB_PTR;
 					
 					kill(ctx, f, p->ext);
@@ -1246,7 +1247,7 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			Val b = use_as_rvalue(ctx, f, p->cmp.b);
 			
 			bool invert = false;
-			if (a.type == VAL_MEM && b.type == VAL_MEM) {
+			if (is_value_mem(&a) && is_value_mem(&b)) {
 				Val dst = def_new_gpr(ctx, f, r, cmp_dt.type);
 				inst2(ctx, MOV, &dst, &a, cmp_dt.type);
 				inst2(ctx, CMP, &dst, &b, cmp_dt.type);
@@ -1352,7 +1353,7 @@ static void store_into(Ctx* ctx, TB_Function* f, TB_DataType dt, const Val* dst,
 	// if they match and it's just a MOV, don't do it
 	if (op == MOV && is_value_match(dst, &value)) return;
 	
-	if (value.type != VAL_MEM) {
+	if (!is_value_mem(&value)) {
 		inst2(ctx, op, dst, &value, dt.type);
 	} else {
 		Val temp = def_new_gpr(ctx, f, r, dt.type);
@@ -1594,7 +1595,7 @@ static Val isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
 	
 	// If both source operands are memory addresses, promote one into a register
 	Val av;
-	if (a->type == VAL_MEM && b->type == VAL_MEM) {
+	if (is_value_mem(a) && is_value_mem(b)) {
 		av = materialize(ctx, f, a, a_reg, dst_dt);
 	} else {
 		av = *a;
@@ -1618,10 +1619,10 @@ static Val isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
 		ctx->use_count[a_reg] == 1;
 	
 	// Can't recycle memory if the operation can't store directly into it
-	if (!info->has_memory_dst && a->type == VAL_MEM) recycle = false;
+	if (!info->has_memory_dst && is_value_mem(a)) recycle = false;
 	
 	if (recycle) {
-		assert(av.type != VAL_MEM);
+		assert(!is_value_mem(&av));
 		
 		// (a => dst) += b
 		kill(ctx, f, a_reg);
@@ -1664,7 +1665,7 @@ static Val isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
 	bool recycle = src->type != VAL_IMM && ctx->intervals[src_reg] == dst_reg;
 	
 	// Can't recycle memory if the operation can't store directly into it
-	if (!info->has_memory_dst && src->type == VAL_MEM) recycle = false;
+	if (!info->has_memory_dst && is_value_mem(src)) recycle = false;
 	
 	if (recycle) {
 		// src += src
@@ -1759,7 +1760,7 @@ static Val use_as_rvalue(Ctx* ctx, TB_Function* f, TB_Register r) {
 	Val v = use(ctx, f, r);
 	if (v.dt.type == TB_BOOL) v.dt.type = TB_I8;
 	
-	if (v.type == VAL_MEM) {
+	if (is_value_mem(&v)) {
 		if (is_address_node(f->nodes.type[r])) {
 			assert(!v.mem.is_rvalue);
 			
@@ -1794,7 +1795,7 @@ static Val use_as_rvalue(Ctx* ctx, TB_Function* f, TB_Register r) {
 static Val use_as_address(Ctx* ctx, TB_Function* f, TB_Register r) {
 	Val v = use(ctx, f, r);
 	
-	if (v.type == VAL_MEM) {
+	if (is_value_mem(&v)) {
 		if (v.mem.is_rvalue) {
 			Val new_val = def_new_gpr(ctx, f, r, TB_PTR);
 			inst2(ctx, MOV, &new_val, &v, TB_PTR);

@@ -33,6 +33,7 @@ TB_Function* test_entry(TB_Module* m);
 
 static TB_ExternalID test_external1;
 static TB_ExternalID test_external2;
+static TB_GlobalID test_global;
 
 int main(int argc, char** argv) {
 	TB_FeatureSet features = { 0 };
@@ -79,8 +80,11 @@ void do_tests(const char* obj_path, TB_Arch arch, TB_System system, const TB_Fea
 		test_entry
 	};
 	size_t count = sizeof(test_functions) / sizeof(test_functions[0]);
-	test_external1 = tb_module_extern(m, "GetModuleHandleA");
-	test_external2 = tb_module_extern(m, "OutputDebugStringA");
+	test_external1 = tb_extern_create(m, "GetModuleHandleA");
+	test_external2 = tb_extern_create(m, "OutputDebugStringA");
+	
+	TB_InitializerID test_init = tb_initializer_create(m, 4, 4, 0);
+	test_global = tb_global_create(m, "some_global", test_init);
 	
 	for (size_t i = 0; i < count; i++) {
 		TB_Function* func = test_functions[i](m);
@@ -590,6 +594,9 @@ TB_Function* test_entry(TB_Module* m) {
 				  });
 	
 	tb_inst_call(func, TB_TYPE_I32, test_foo_func_ref, 2, (TB_Register[]) { al, b });
+	
+	tb_inst_store(func, TB_TYPE_I32, tb_inst_get_global_address(func, test_global),
+				  tb_inst_iconst(func, TB_TYPE_I32, 69), 4);
 	
 	TB_Register ptr = tb_inst_get_func_address(func, test_fib_func_ref);
 	tb_inst_ret(func, ptr);

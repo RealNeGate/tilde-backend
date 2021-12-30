@@ -54,6 +54,7 @@ typedef enum ValType {
     VAL_GPR,
     VAL_XMM,
 	
+	VAL_GLOBAL,
     VAL_FLAGS
 } ValType;
 
@@ -73,15 +74,23 @@ typedef struct Val {
         XMM xmm : 8;
         Cond cond : 8;
 		struct {
+			bool is_rvalue;
 			GPR base : 8;
 			GPR index : 8;
 			Scale scale : 8;
-			bool is_rvalue;
 			int32_t disp;
 		} mem;
+		struct {
+			// this should alias with mem.is_rvalue
+			bool is_rvalue;
+			TB_GlobalID id;
+		} global;
         int32_t imm;
 	};
 } Val;
+
+_Static_assert(offsetof(Val, global.is_rvalue) == offsetof(Val, mem.is_rvalue),
+			   "Val::mem.is_rvalue and Val::global.is_rvalue must alias!");
 
 // We really only need the position where to patch
 // it since it's all internal and the target is implicit.
@@ -118,6 +127,9 @@ typedef struct MemCacheDesc {
 typedef struct Ctx {
 	uint8_t* out;
 	uint8_t* start_out;
+	
+	size_t function_id;
+	TB_Function* f;
 	
 	TB_Register current_bb;
 	TB_Register current_bb_end;
@@ -300,6 +312,15 @@ inline static Val val_flags(Cond c) {
 	};
 }
 
+inline static Val val_global(TB_GlobalID g) {
+	return (Val) {
+		.type = VAL_GLOBAL,
+		.dt = TB_TYPE_PTR,
+		.global.is_rvalue = false,
+		.global.id = g
+	};
+}
+
 inline static Val val_imm(TB_DataType dt, int32_t imm) {
 	return (Val) {
 		.type = VAL_IMM,
@@ -358,6 +379,10 @@ inline static Val val_base_index_disp(TB_DataType dt, GPR b, GPR i, Scale s, int
 			.disp = d
 		}
 	};
+}
+
+inline static bool is_value_mem(const Val* v) {
+	return v->type == VAL_MEM || v->type == VAL_GLOBAL;
 }
 
 inline static bool is_value_gpr(const Val* v, GPR g) {
@@ -437,3 +462,5 @@ static bool is_phi_that_contains(TB_Function* f, TB_Register phi, TB_Register re
 static void store_into(Ctx* ctx, TB_Function* f, TB_DataType dt, const Val* dst, TB_Register r, TB_Register dst_reg, TB_Register val_reg);
 static Val load_into(Ctx* ctx, TB_Function* f, TB_DataType dt, TB_Register r, TB_Register addr);
 
+// used to add patches since there's separate arrays per thread
+static _Thread_local size_t s_local_thread_id;

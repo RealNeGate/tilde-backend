@@ -211,7 +211,7 @@ TB_API void tb_module_destroy(TB_Module* m) {
 	tb_platform_heap_free(m);
 }
 
-TB_API TB_FileID tb_register_file(TB_Module* m, const char* path) {
+TB_API TB_FileID tb_file_create(TB_Module* m, const char* path) {
 	if (m->files.count + 1 >= m->files.capacity) {
 		m->files.capacity *= 2;
 		m->files.data = realloc(m->files.data, m->files.capacity * sizeof(TB_File));
@@ -391,6 +391,39 @@ TB_API void* tb_initializer_add_region(TB_Module* m, TB_InitializerID id, size_t
 	return ptr;
 }
 
+TB_API TB_GlobalID tb_global_create(TB_Module* m, const char* name, TB_InitializerID initializer) {
+	int tid = get_local_thread_id();
+	
+	// each thread gets their own grouping of global ids
+	TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
+	
+	// layout
+	size_t pos;
+	{
+		TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
+		TB_Initializer* i = (TB_Initializer*)&m->initializers[initializer / per_thread_stride][initializer % per_thread_stride];
+		
+		pos = atomic_fetch_add(&m->data_region_size, i->size + i->align);
+		
+		// TODO(NeGate): Assert on non power of two alignment
+		size_t align_mask = i->align - 1;
+		pos = (pos + align_mask) & ~align_mask;
+		
+		assert(pos < UINT32_MAX && "Cannot fit global into space");
+		assert((pos + i->size) < UINT32_MAX && "Cannot fit global into space");
+	}
+	
+	TB_GlobalID i = (tid * per_thread_stride) + arrlen(m->globals[tid]);
+	TB_Global g = {
+		.name = tb_platform_string_alloc(name),
+		.init = initializer,
+		.pos = pos
+	};
+	arrput(m->globals[tid], g);
+	
+	return i;
+}
+
 TB_API bool tb_jit_import(TB_Module* m, const char* name, void* address) {
 	// TODO(NeGate): Maybe speed this up but also maybe don't... idk
 	loop(i, m->max_threads) {
@@ -403,7 +436,7 @@ TB_API bool tb_jit_import(TB_Module* m, const char* name, void* address) {
 	return false;
 }
 
-TB_API TB_ExternalID tb_module_extern(TB_Module* m, const char* name) {
+TB_API TB_ExternalID tb_extern_create(TB_Module* m, const char* name) {
 	int tid = get_local_thread_id();
 	
 	// each thread gets their own grouping of external ids
@@ -508,6 +541,15 @@ uint32_t tb_emit_const_patch(TB_Module* m, uint32_t func_id, size_t pos, const v
 	};
 	arrput(m->const_patches[local_thread_id], p);
 	return safe_cast(uint32_t, rdata_pos);
+}
+
+void tb_emit_global_patch(TB_Module* m, uint32_t func_id, size_t pos, TB_GlobalID global, size_t local_thread_id) {
+	TB_GlobalPatch p = {
+		.func_id = func_id,
+		.pos = safe_cast(uint32_t, pos),
+		.global = global
+	};
+	arrput(m->global_patches[local_thread_id], p);
 }
 
 //
@@ -751,6 +793,13 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 				TB_External* e = &m->externals[p.efunc_addr / per_thread_stride][p.efunc_addr % per_thread_stride];
 				
 				fprintf(out, "  r%u\t=\t &%s\n", i, e->name);
+				break;
+			}
+			case TB_GLOBAL_ADDRESS: {
+				TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
+				TB_Global* g = &m->globals[p.global_addr / per_thread_stride][p.global_addr % per_thread_stride];
+				
+				fprintf(out, "  r%u\t=\t &%s\n", i, g->name);
 				break;
 			}
             case TB_PARAM:

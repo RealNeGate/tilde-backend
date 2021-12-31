@@ -1005,6 +1005,7 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 				// TODO(NeGate): Verify that this is ok
 				// we might not be able to alias these two IR registers
 				// with the same machine code registers.
+				//assert(ctx->intervals[p->ext] <= r);
 				return src;
 			}
 		}
@@ -1017,6 +1018,12 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			}
 			
 			Val v = ctx->intervals[p->ext] == r ? src : def_new_gpr(ctx, f, r, dt.type);
+			if (is_value_mem(&v) && is_value_mem(&src)) {
+				Val new_gpr = def_new_gpr(ctx, f, r, dt.type);
+				inst2(ctx, MOV, &new_gpr, &v, dt.type);
+				v = new_gpr;
+			}
+			
 			if (src.dt.type == TB_I64) {
 				if (ctx->intervals[p->ext] != r) {
 					inst2(ctx, MOV, &v, &src, dt.type);

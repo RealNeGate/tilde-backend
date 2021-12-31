@@ -85,6 +85,10 @@ static TB_Register new_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Label blo
 	//
 	// TODO(NeGate): We don't update the to_promote list because it's hoisted to the entry label
 	// so they should always be infront of it.
+	loop(i, c->to_promote_count) {
+		if (c->to_promote[i] + 1 >= new_phi_reg) c->to_promote[i]++;
+	}
+	
 	loop(i, c->label_count * c->to_promote_count) {
 		if (c->current_def[i] + 1 >= new_phi_reg) c->current_def[i]++;
 	}
@@ -158,8 +162,10 @@ static TB_Register add_phi_operands(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_
 		add_phi_operand(c, c->f, read_name(c, name), c->preds[block][i], val);
 	}
 	
+	TB_Register reg = try_remove_trivial_phi(c, c->f, read_name(c, name));
 	unbind_name(c, name);
-	return try_remove_trivial_phi(c, c->f, phi_reg);
+	
+	return reg;
 }
 
 // Algorithm 3: Detect and recursively remove a trivial phi function
@@ -213,8 +219,6 @@ static void seal_block(Mem2Reg_Ctx* restrict c, TB_Label block) {
 // opt_hoist_locals earlier
 bool tb_opt_mem2reg(TB_Function* f) {
 	TB_TemporaryStorage* tls = tb_tls_allocate();
-	
-	tb_function_print(f, stdout);
 	
 	////////////////////////////////
 	// Decide which stack slots to promote
@@ -319,6 +323,7 @@ bool tb_opt_mem2reg(TB_Function* f) {
 		if (f->nodes.type[i] == TB_PHI1) {
 			TB_Register reg = f->nodes.payload[i].phi1.a;
 			
+			assert(f->nodes.type[reg] == TB_PHI2);
 			f->nodes.type[i] = TB_PASS;
 			f->nodes.payload[i].pass = reg;
 		}

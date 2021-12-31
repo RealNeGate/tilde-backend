@@ -38,11 +38,6 @@ bool tb_opt_load_elim(TB_Function* f) {
 		} while (j--);
 	}
 	
-	if (changes) {
-		tb_function_print(f, stdout);
-		printf("\n\n\n");
-	}
-	
 	return changes;
 }
 
@@ -100,9 +95,13 @@ bool tb_opt_fold(TB_Function* f) {
 			changes++;
 		}
 		else if (f->nodes.type[i] == TB_SIGN_EXT || f->nodes.type[i] == TB_ZERO_EXT) {
-			f->nodes.type[i] = TB_INT_CONST;
-			f->nodes.payload[i].i_const = f->nodes.payload[a].i_const;
-			changes++;
+			TB_Register src = f->nodes.payload[i].ext;
+			
+			if (f->nodes.type[src] == TB_INT_CONST) {
+				f->nodes.type[i] = TB_INT_CONST;
+				f->nodes.payload[i].i_const = f->nodes.payload[src].i_const;
+				changes++;
+			}
 		}
 	}
 	

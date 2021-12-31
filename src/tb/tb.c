@@ -100,6 +100,10 @@ goto repeat_opt; \
 }
 
 static void tb_optimize_func(TB_Function* f) {
+	printf("INITIAL   ");
+	tb_function_print(f, stdout);
+	printf("\n\n\n");
+	
 	repeat_opt: {
 		OPT(remove_pass_node);
 		OPT(canonicalize);

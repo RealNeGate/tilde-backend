@@ -960,12 +960,12 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			if (dt.type == TB_PTR || dt.type == TB_I64 || dt.type == TB_I32) {
 				// 32bit operations automatically truncate
 				inst2(ctx, MOV, &v, &src, dt.type);
+			} else if (dt.type == TB_I16) {
+				inst2(ctx, MOVZXW, &v, &src, dt.type);
+			} else if (dt.type == TB_I8 || dt.type == TB_BOOL) {
+				inst2(ctx, MOVZXB, &v, &src, dt.type);
 			} else {
-				//uint64_t shift = 64 - (8 << (dt.type - TB_I8));
-				//uint64_t mask = (~0ull) >> shift;
-				//Val imm = val_imm(dt, mask);
-				
-				inst2(ctx, MOVZX, &v, &src, dt.type);
+				tb_unreachable();
 			}
 			return v;
 		}
@@ -993,11 +993,19 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 					inst2(ctx, MOV, &v, &src, TB_I32);
 					return v;
 				}
-			}
-			else {
+			} else if (src.dt.type == TB_I16) {
 				Val v = def_new_gpr(ctx, f, r, dt.type);
-				inst2(ctx, MOVZX, &v, &src, dt.type);
+				inst2(ctx, MOVZXW, &v, &src, dt.type);
 				return v;
+			} else if (src.dt.type == TB_I8 || src.dt.type == TB_BOOL) {
+				Val v = def_new_gpr(ctx, f, r, dt.type);
+				inst2(ctx, MOVZXB, &v, &src, dt.type);
+				return v;
+			} else {
+				// TODO(NeGate): Verify that this is ok
+				// we might not be able to alias these two IR registers
+				// with the same machine code registers.
+				return src;
 			}
 		}
 		case TB_SIGN_EXT: {
@@ -1008,12 +1016,19 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 				return src;
 			}
 			
-			// TODO(NeGate): Implement recycle
-			Val v = def_new_gpr(ctx, f, r, dt.type);
-			if (dt.type == TB_I64) {
+			Val v = ctx->intervals[p->ext] == r ? src : def_new_gpr(ctx, f, r, dt.type);
+			if (src.dt.type == TB_I64) {
+				if (ctx->intervals[p->ext] != r) {
+					inst2(ctx, MOV, &v, &src, dt.type);
+				}
+			} else if (src.dt.type == TB_I32 && (dt.type == TB_I64 || dt.type == TB_PTR)) {
 				inst2(ctx, MOVSXD, &v, &src, dt.type);
+			} else if (src.dt.type == TB_I16) {
+				inst2(ctx, MOVSXW, &v, &src, dt.type);
+			} else if (src.dt.type == TB_I8 || src.dt.type == TB_BOOL) {
+				inst2(ctx, MOVSXB, &v, &src, dt.type);
 			} else {
-				inst2(ctx, MOVSX, &v, &src, dt.type);
+				tb_unreachable();
 			}
 			return v;
 		}
@@ -1049,8 +1064,17 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 				}
 			}
 			else {
-				Val v = def_new_gpr(ctx, f, r, dt.type);
-				inst2(ctx, MOVZX, &v, &src, dt.type);
+				Val v = ctx->intervals[p->ext] == r ? src : def_new_gpr(ctx, f, r, dt.type);
+				
+				if (src.dt.type == TB_I16) {
+					inst2(ctx, MOVZXW, &v, &src, dt.type);
+				} else if (src.dt.type == TB_I8 || src.dt.type == TB_BOOL) {
+					inst2(ctx, MOVZXB, &v, &src, dt.type);
+				} else {
+					if (ctx->intervals[p->ext] != r) {
+						inst2(ctx, MOV, &v, &src, dt.type);
+					}
+				}
 				return v;
 			}
 		}
@@ -1114,11 +1138,11 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 		case TB_MUL: {
 			const static IselInfo tbl[] = {
 				// type               inst  commut  has_imm  mem_dst  mem_src   
-				[TB_AND - TB_AND] = { AND,  true,   true,    false,   true },
-				[TB_OR  - TB_AND] = { OR,   true,   true,    false,   true },
-				[TB_XOR - TB_AND] = { XOR,  true,   true,    false,   true },
-				[TB_ADD - TB_AND] = { ADD,  true,   true,    false,   true },
-				[TB_SUB - TB_AND] = { SUB,  false,  true,    false,   true },
+				[TB_AND - TB_AND] = { AND,  true,   true,    true,    true },
+				[TB_OR  - TB_AND] = { OR,   true,   true,    true,    true },
+				[TB_XOR - TB_AND] = { XOR,  true,   true,    true,    true },
+				[TB_ADD - TB_AND] = { ADD,  true,   true,    true,    true },
+				[TB_SUB - TB_AND] = { SUB,  false,  true,    true,    true },
 				[TB_MUL - TB_AND] = { IMUL, true,   false,   false,   true }
 			};
 			const IselInfo* info = &tbl[reg_type - TB_AND];
@@ -1316,7 +1340,15 @@ static void store_into(Ctx* ctx, TB_Function* f, TB_DataType dt, const Val* dst,
 		TB_Register a = f->nodes.payload[val_reg].i_arith.a;
 		TB_Register b = f->nodes.payload[val_reg].i_arith.b;
 		
-		if (ctx->addr_desc[a].type != VAL_NONE && ctx->addr_desc[b].type != VAL_NONE) {
+		if (ctx->addr_desc[a].type != VAL_NONE) {
+			def(ctx, f, use(ctx, f, a), a);
+		}
+		
+		if (ctx->addr_desc[b].type != VAL_NONE) {
+			def(ctx, f, use(ctx, f, b), b);
+		}
+		
+		{
 			bool is_phi = f->nodes.type[r] == TB_PHI2;
 			bool folded = false;
 			if (is_phi) {
@@ -1584,10 +1616,13 @@ static Val isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
 	
 	// (i8 | i16) => i32
 	TB_DataType prev_dt;
+	int mov_extend = MOVZXW;
 	bool is_promoted = dst_dt.count == 1 && (dst_dt.type == TB_I8 || dst_dt.type == TB_I16);
 	if (is_promoted) {
 		prev_dt = dst_dt;
 		dst_dt = TB_TYPE_I32;
+		
+		if (dst_dt.type == TB_BOOL || dst_dt.type == TB_I8) mov_extend = MOVZXB;
 	}
 	
 	// NOTE(NeGate): The operands are ordered for this "magic"
@@ -1629,7 +1664,7 @@ static Val isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
 		inst2(ctx, info->inst, &av, &bv, dst_dt.type);
 		def(ctx, f, av, dst_reg);
 		
-		if (is_promoted) inst2(ctx, MOVZX, &av, &av, prev_dt.type);
+		if (is_promoted) inst2(ctx, mov_extend, &av, &av, prev_dt.type);
 		return av;
 	} else {
 		// dst = a, dst += b;
@@ -1644,7 +1679,7 @@ static Val isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
 		inst2(ctx, mov_type, &v, &av, dst_dt.type);
 		inst2(ctx, info->inst, &v, &bv, dst_dt.type);
 		
-		if (is_promoted) inst2(ctx, MOVZX, &v, &v, prev_dt.type);
+		if (is_promoted) inst2(ctx, mov_extend, &v, &v, prev_dt.type);
 		return v;
 	}
 }
@@ -1656,10 +1691,13 @@ static Val isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
 	
 	// (i8 | i16) => i32
 	TB_DataType prev_dt;
-	bool is_promoted = dst_dt.count == 1 && (dst_dt.type == TB_I8 || dst_dt.type == TB_I16);
+	int mov_extend = MOVZXW;
+	bool is_promoted = dst_dt.count == 1 && (dst_dt.type == TB_BOOL || dst_dt.type == TB_I8 || dst_dt.type == TB_I16);
 	if (is_promoted) {
 		prev_dt = dst_dt;
 		dst_dt = TB_TYPE_I32;
+		
+		if (dst_dt.type == TB_BOOL || dst_dt.type == TB_I8) mov_extend = MOVZXB;
 	}
 	
 	bool recycle = src->type != VAL_IMM && ctx->intervals[src_reg] == dst_reg;
@@ -1673,7 +1711,7 @@ static Val isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
 		inst2(ctx, info->inst, src, src, dst_dt.type);
 		def(ctx, f, *src, dst_reg);
 		
-		if (is_promoted) inst2(ctx, MOVZX, src, src, prev_dt.type);
+		if (is_promoted) inst2(ctx, mov_extend, src, src, prev_dt.type);
 		return *src;
 	} else {
 		// dst = src, dst += src;
@@ -1694,7 +1732,7 @@ static Val isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
 			inst2(ctx, info->inst, &v, src, dst_dt.type);
 		}
 		
-		if (is_promoted) inst2(ctx, MOVZX, &v, &v, prev_dt.type);
+		if (is_promoted) inst2(ctx, mov_extend, &v, &v, prev_dt.type);
 		return v;
 	}
 }
@@ -1757,6 +1795,19 @@ static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, GPR gpr, TB_Register bb
 }
 
 static Val use_as_rvalue(Ctx* ctx, TB_Function* f, TB_Register r) {
+	Val temp;
+	if (f->nodes.type[r] >= TB_CMP_EQ && f->nodes.type[r] <= TB_CMP_FLE) {
+		// when lowering boolean FLAGS into rvalues we need to keep a little GPR
+		// temporary that's going to be used to store this new integer variant of
+		// the boolean.
+		temp = def_new_gpr(ctx, f, 0, TB_I64);
+		
+		// xor temp, temp
+		if (temp.gpr >= 8) emit(rex(true, temp.gpr, temp.gpr, 0));
+		emit(0x31);
+		emit(mod_rx_rm(MOD_DIRECT, temp.gpr, temp.gpr));
+	}
+	
 	Val v = use(ctx, f, r);
 	if (v.dt.type == TB_BOOL) v.dt.type = TB_I8;
 	
@@ -1776,17 +1827,17 @@ static Val use_as_rvalue(Ctx* ctx, TB_Function* f, TB_Register r) {
 			return new_v;
 		}
 	} else if (v.type == VAL_FLAGS) {
+		assert(f->nodes.type[r] >= TB_CMP_EQ && f->nodes.type[r] <= TB_CMP_FLE);
 		Cond cc = v.cond;
-		v = def_new_gpr(ctx, f, r, v.dt.type);
 		
-		if (v.gpr >= 8) emit(rex(true, v.gpr, v.gpr, 0));
-		emit(0x31);
-		emit(mod_rx_rm(MOD_DIRECT, v.gpr, v.gpr));
-		
-		if (v.gpr >= 8) emit(rex(true, v.gpr, v.gpr, 0));
+		// setcc v
+		if (temp.gpr >= 8) emit(rex(true, temp.gpr, temp.gpr, 0));
 		emit(0x0F);
 		emit(0x90 + cc);
-		emit(mod_rx_rm(MOD_DIRECT, v.gpr, v.gpr));
+		emit(mod_rx_rm(MOD_DIRECT, temp.gpr, temp.gpr));
+		
+		def(ctx, f, temp, r);
+		return temp;
 	}
 	
 	return v;

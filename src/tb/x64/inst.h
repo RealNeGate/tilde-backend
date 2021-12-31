@@ -45,7 +45,7 @@ inline static void inst2(Ctx* ctx, int op, const Val* a, const Val* b, int dt_ty
 	const Inst2* inst = &inst2_tbl[op];
 	
 	bool dir = b->type == VAL_MEM || b->type == VAL_GLOBAL;
-	if (dir || inst->op == 0xAF) tb_swap(a, b);
+	if (dir || inst->op == 0xAF || inst->ext == EXT_DEF2) tb_swap(a, b);
 	
 	// operand size
 	uint8_t sz = (dt_type != TB_I8);
@@ -102,13 +102,13 @@ inline static void inst2(Ctx* ctx, int op, const Val* a, const Val* b, int dt_ty
 		// Opcode
 		if (inst->ext == EXT_DEF || inst->ext == EXT_DEF2) {
 			// DEF instructions can only be 32bit and 64bit... maybe?
-			//assert(dt_type == TB_I32 || dt_type == TB_I64 || dt_type == TB_PTR);
+			sz = 0;
 			emit(0x0F);
 		}
 		
 		if (b->type == VAL_IMM && inst->op_i == 0 && inst->rx_i == 0) {
 			// No immediate version
-			__builtin_unreachable();
+			tb_unreachable();
 		}
 		
 		// Immediates have a custom opcode

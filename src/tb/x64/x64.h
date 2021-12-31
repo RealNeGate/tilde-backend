@@ -181,7 +181,10 @@ typedef struct Ctx {
 typedef enum Inst2Type {
     // Integer data processing
 	ADD, AND, OR, SUB, XOR, CMP, MOV,
-    TEST, LEA, IMUL, MOVSX, MOVSXD, MOVZX,
+    TEST, LEA, IMUL, 
+	
+	MOVSXB, MOVSXW, MOVSXD, 
+	MOVZXB, MOVZXW,
     
     // Scalar Single
     MOVSS, ADDSS, MULSS, SUBSS, DIVSS,
@@ -199,6 +202,7 @@ typedef enum ExtMode {
 	EXT_DEF,
 	
 	// same as DEF but for MOVZX and MOVSX
+	// these are forced as always load.
 	EXT_DEF2,
     
     // SSE instructions have a F3 0F prefix
@@ -255,14 +259,18 @@ static const Inst2 inst2_tbl[] = {
 	[XOR] = { 0x30, 0x80, 0x06 },
 	[CMP] = { 0x38, 0x80, 0x07 },
 	[MOV] = { 0x88, 0xC6, 0x00 },
-	[MOVSXD] = { 0x63 },
 	[TEST] = { 0x84, 0xF6, 0x00 },
     
 	[LEA] = { 0x8D },
     
 	[IMUL] = { 0xAF, .ext = EXT_DEF },
-	[MOVSX] = { 0xBE, .ext = EXT_DEF },
-	[MOVZX] = { 0xB6, .ext = EXT_DEF },
+	
+	[MOVSXB] = { 0xBE, .ext = EXT_DEF2 },
+	[MOVSXW] = { 0xBF, .ext = EXT_DEF2 },
+	[MOVSXD] = { 0x63, .ext = EXT_DEF2 },
+	
+	[MOVZXB] = { 0xB6, .ext = EXT_DEF2 },
+	[MOVZXW] = { 0xB7, .ext = EXT_DEF2 },
     
 	[MOVSS] = { 0x10, .ext = EXT_SSE_SS },
 	[ADDSS] = { 0x58, .ext = EXT_SSE_SS },
@@ -396,7 +404,6 @@ inline static bool is_value_xmm(const Val* v, XMM x) {
 	
 	return (v->xmm == x);
 }
-
 
 inline static bool is_value_match(const Val* a, const Val* b) {
 	if (a->type != b->type) return false;

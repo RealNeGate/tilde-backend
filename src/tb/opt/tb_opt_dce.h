@@ -32,6 +32,8 @@ bool tb_opt_dce(TB_Function* f) {
                 case TB_LOCAL:
                 case TB_NOT:
                 case TB_NEG:
+                case TB_SIGN_EXT:
+                case TB_ZERO_EXT:
                 case TB_AND:
                 case TB_OR:
                 case TB_ADD:

@@ -53,7 +53,23 @@ bool tb_opt_canonicalize(TB_Function* f) {
 	for (TB_Register i = 1; i < f->nodes.count; i++) {
 		TB_RegType type = f->nodes.type[i];
 		
-		if (type == TB_ADD || type == TB_MUL) {
+		// TODO(NeGate): Maybe we should have a proper function/macro
+		// for detecting integer compares like this
+		if (type >= TB_CMP_EQ && type <= TB_CMP_ULE) {
+			// Sometimes we promote some types up when we don't need to
+			TB_Register a = f->nodes.payload[i].cmp.a;
+			TB_Register b = f->nodes.payload[i].cmp.b;
+			
+			// (cmp (sxt/zxt A) (int B))
+			// VVV
+			// (cmp A (int B))
+			if ((f->nodes.type[a] == TB_SIGN_EXT || f->nodes.type[a] == TB_ZERO_EXT) &&
+				f->nodes.type[b] == TB_INT_CONST) {
+				TB_Register src = f->nodes.payload[a].ext;
+				
+				f->nodes.payload[i].cmp.a = src;
+			}
+		} else if (type == TB_ADD || type == TB_MUL) {
 			TB_Register a = f->nodes.payload[i].i_arith.a;
 			TB_Register b = f->nodes.payload[i].i_arith.b;
 			

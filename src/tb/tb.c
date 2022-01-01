@@ -635,6 +635,10 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			case TB_MEMCPY:
 			fprintf(out, "  MEMCPY\t(r%d, r%d, r%d)\n", p.mem_op.dst, p.mem_op.src, p.mem_op.size);
 			break;
+			case TB_INITIALIZE:
+			// TODO(NeGate): Make this more presentable
+			fprintf(out, "  r%u = INITIALIZER ...\n", i);
+			break;
 			case TB_MEMBER_ACCESS:
 			fprintf(out, "  r%u\t=\t", i);
 			tb_print_type(out, dt);

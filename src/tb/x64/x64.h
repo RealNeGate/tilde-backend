@@ -134,6 +134,11 @@ typedef struct Ctx {
 	TB_Register current_bb;
 	TB_Register current_bb_end;
 	
+	// used to schedule phi nodes in cases where some phi nodes
+	// depend on each other
+	size_t phi_queue_count;
+	TB_Register* phi_queue;
+	
 	//
 	// Patch info
 	//
@@ -181,7 +186,7 @@ typedef struct Ctx {
 typedef enum Inst2Type {
     // Integer data processing
 	ADD, AND, OR, SUB, XOR, CMP, MOV,
-    TEST, LEA, IMUL, 
+    TEST, LEA, IMUL, XCHG,
 	
 	MOVSXB, MOVSXW, MOVSXD, 
 	MOVZXB, MOVZXW,
@@ -261,6 +266,7 @@ static const Inst2 inst2_tbl[] = {
 	[MOV] = { 0x88, 0xC6, 0x00 },
 	[TEST] = { 0x84, 0xF6, 0x00 },
     
+	[XCHG] = { 0x86 },
 	[LEA] = { 0x8D },
     
 	[IMUL] = { 0xAF, .ext = EXT_DEF },

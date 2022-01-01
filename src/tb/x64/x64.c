@@ -24,6 +24,7 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 // Just handles the PHI nodes that we'll encounter when leaving `from`
 // into `to`
 static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_Register from_terminator, TB_Register to, TB_Register to_terminator);
+static bool is_local_of_bb(Ctx* ctx, TB_Function* f, TB_Register bound, TB_Register bb, TB_Register bb_end);
 
 TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
 	s_local_thread_id = local_thread_id;
@@ -114,6 +115,8 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 		ctx->intervals = tb_tls_push(tls, f->nodes.count * sizeof(TB_Register));
 		ctx->use_count = tb_tls_push(tls, f->nodes.count * sizeof(int));
 		ctx->phis = tb_tls_push(tls, phi_count * sizeof(PhiValue));
+		
+		ctx->phi_queue = tb_tls_push(tls, phi_count * sizeof(TB_Register));
 		
 		ctx->params = tb_tls_push(tls, f->prototype->param_count * sizeof(int32_t));
 		ctx->labels = tb_tls_push(tls, f->label_count * sizeof(uint32_t));
@@ -436,19 +439,79 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 }
 
 static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_Register from_terminator, TB_Register to, TB_Register to_terminator) {
-	for (size_t i = to; i < to_terminator; i++) if (f->nodes.type[i] == TB_PHI2) {
+	ctx->phi_queue_count = 0;
+	
+	loop_range(i, to, to_terminator) if (f->nodes.type[i] == TB_PHI2) {
 		TB_RegPayload p = f->nodes.payload[i];
-		TB_DataType dt = f->nodes.dt[i];
 		assert(p.phi2.a_label != p.phi2.b_label);
-		
-		if (dt.type == TB_BOOL) dt.type = TB_I8;
 		
 		TB_Register src;
 		if (p.phi2.a_label == from) src = p.phi2.a;
 		else if (p.phi2.b_label == from) src = p.phi2.b;
 		else tb_unreachable();
 		
-		PhiValue* phi = find_phi(ctx, i);
+		if (src >= to && src <= to_terminator) {
+			// reschedule it's dependency to happen first
+			//
+			// if it's already been placed then it's fine, but if not
+			// placed it first then place this node.
+			bool found = false;
+			loop(j, ctx->phi_queue_count) if (ctx->phi_queue[j] == src) {
+				ctx->phi_queue[ctx->phi_queue_count++] = i;
+				found = true;
+				break;
+			}
+			
+			if (!found) {
+				assert(f->nodes.type[src] == TB_PHI2);
+				ctx->phi_queue[ctx->phi_queue_count++] = src;
+				ctx->phi_queue[ctx->phi_queue_count++] = i;
+			}
+		} else {
+			// If it's already been scheduled don't worry about it
+			bool found = false;
+			loop(j, ctx->phi_queue_count) if (ctx->phi_queue[j] == i) {
+				found = true;
+				break;
+			}
+			
+			if (!found) {
+				ctx->phi_queue[ctx->phi_queue_count++] = i;
+			}
+		}
+	}
+	
+	loop(i, ctx->phi_queue_count) {
+		TB_Register r = ctx->phi_queue[i];
+		TB_DataType dt = f->nodes.dt[r];
+		
+		if (dt.type == TB_BOOL) dt.type = TB_I8;
+		
+		PhiValue* phi = find_phi(ctx, r);
+		if (phi->value.type != VAL_NONE && !is_value_match(&phi->value, &ctx->addr_desc[r])) {
+			// resync if they somehow changed (usually caused by spilling)
+			inst2(ctx, MOV, &phi->value, &ctx->addr_desc[r], dt.type);
+			
+			def(ctx, f, phi->value, r);
+		}
+	}
+	
+	//printf("PHI QUEUE: ");
+	loop(i, ctx->phi_queue_count) {
+		TB_Register r = ctx->phi_queue[i];
+		//printf("r%d ", r);
+		
+		TB_RegPayload* restrict p = &f->nodes.payload[r];
+		TB_DataType dt = f->nodes.dt[r];
+		
+		if (dt.type == TB_BOOL) dt.type = TB_I8;
+		
+		TB_Register src;
+		if (p->phi2.a_label == from) src = p->phi2.a;
+		else if (p->phi2.b_label == from) src = p->phi2.b;
+		else tb_unreachable();
+		
+		PhiValue* phi = find_phi(ctx, r);
 		if (phi->value.type == VAL_NONE) {
 			// Initialize it
 			Val src_value = use_as_rvalue(ctx, f, src);
@@ -457,10 +520,10 @@ static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_
 				is_temporary_of_bb(ctx, f, src_value.gpr, from, from_terminator)) {
 				// Recycle old value
 				phi->value = src_value;
-				def(ctx, f, src_value, i);
+				def(ctx, f, src_value, r);
 			} else {
 				// Create a new GPR and map it
-				phi->value = def_new_gpr(ctx, f, i, dt.type);
+				phi->value = def_new_gpr(ctx, f, r, dt.type);
 				
 				// TODO(NeGate): Handle vector and float types
 				if (!is_value_gpr(&src_value, phi->value.gpr)) {
@@ -476,11 +539,20 @@ static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_
 					}
 				}
 			}
+		} else if (src >= to && src <= to_terminator) {
+			// this means we gotta do a swap
+			assert(f->nodes.type[src] == TB_PHI2);
+			PhiValue* other_phi = find_phi(ctx, src);
+			
+			inst2(ctx, XCHG, &phi->value, &other_phi->value, dt.type);
 		} else {
 			// Load value into existing phi node
-			store_into(ctx, f, dt, &phi->value, i, i, src);
+			store_into(ctx, f, dt, &phi->value, r, r, src);
 		}
 	}
+	
+	//printf("\n");
+	ctx->phi_queue_count = 0;
 }
 
 static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Register bb_end) {
@@ -578,8 +650,7 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 				for (size_t j = 0; j < param_count; j++) {
 					TB_DataType param_dt = f->nodes.dt[param_start + j];
 					
-					if (j < 4 && (param_dt.count > 1 ||
-								  TB_IS_FLOAT_TYPE(param_dt.type))) {
+					if (j < 4 && (param_dt.count > 1 || TB_IS_FLOAT_TYPE(param_dt.type))) {
 						evict_xmm(ctx, f, j, r);
 					}
 				}
@@ -1002,10 +1073,9 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 				inst2(ctx, MOVZXB, &v, &src, dt.type);
 				return v;
 			} else {
-				// TODO(NeGate): Verify that this is ok
-				// we might not be able to alias these two IR registers
-				// with the same machine code registers.
-				//assert(ctx->intervals[p->ext] <= r);
+				// TODO(NeGate): Implement recycle
+				Val v = def_new_gpr(ctx, f, r, dt.type);
+				inst2(ctx, MOV, &v, &src, dt.type);
 				return src;
 			}
 		}
@@ -1017,11 +1087,11 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 				return src;
 			}
 			
-			Val v = ctx->intervals[p->ext] == r ? src : def_new_gpr(ctx, f, r, dt.type);
-			if (is_value_mem(&v) && is_value_mem(&src)) {
-				Val new_gpr = def_new_gpr(ctx, f, r, dt.type);
-				inst2(ctx, MOV, &new_gpr, &v, dt.type);
-				v = new_gpr;
+			Val v;
+			if (ctx->intervals[p->ext] == r && !is_value_mem(&src)) {
+				v = src;
+			} else {
+				v = def_new_gpr(ctx, f, r, dt.type);
 			}
 			
 			if (src.dt.type == TB_I64) {
@@ -1347,11 +1417,11 @@ static void store_into(Ctx* ctx, TB_Function* f, TB_DataType dt, const Val* dst,
 		TB_Register a = f->nodes.payload[val_reg].i_arith.a;
 		TB_Register b = f->nodes.payload[val_reg].i_arith.b;
 		
-		if (ctx->addr_desc[a].type != VAL_NONE) {
+		if (ctx->addr_desc[a].type == VAL_NONE) {
 			def(ctx, f, use(ctx, f, a), a);
 		}
 		
-		if (ctx->addr_desc[b].type != VAL_NONE) {
+		if (ctx->addr_desc[b].type == VAL_NONE) {
 			def(ctx, f, use(ctx, f, b), b);
 		}
 		
@@ -1664,14 +1734,15 @@ static Val isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
 	if (!info->has_memory_dst && is_value_mem(a)) recycle = false;
 	
 	if (recycle) {
-		assert(!is_value_mem(&av));
-		
 		// (a => dst) += b
 		kill(ctx, f, a_reg);
 		inst2(ctx, info->inst, &av, &bv, dst_dt.type);
 		def(ctx, f, av, dst_reg);
 		
-		if (is_promoted) inst2(ctx, mov_extend, &av, &av, prev_dt.type);
+		if (is_promoted) {
+			assert(!is_value_mem(&av));
+			inst2(ctx, mov_extend, &av, &av, prev_dt.type);
+		}
 		return av;
 	} else {
 		// dst = a, dst += b;
@@ -1791,14 +1862,14 @@ static bool garbage_collect_xmm(Ctx* ctx, TB_Function* f, TB_Register end) {
 static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, GPR gpr, TB_Register bb, TB_Register bb_end) {
 	TB_Register bound = ctx->gpr_desc[gpr];
 	
-	if (bound >= bb &&
-		bound <= bb_end &&
-		f->nodes.type[bound] != TB_PHI1 &&
-		f->nodes.type[bound] != TB_PHI2) {
-		return true;
-	}
-	
-	return false;
+	return (bound >= bb &&
+			bound <= bb_end &&
+			f->nodes.type[bound] != TB_PHI1 &&
+			f->nodes.type[bound] != TB_PHI2);
+}
+
+static bool is_local_of_bb(Ctx* ctx, TB_Function* f, TB_Register bound, TB_Register bb, TB_Register bb_end) {
+	return bound >= bb && bound <= bb_end;
 }
 
 static Val use_as_rvalue(Ctx* ctx, TB_Function* f, TB_Register r) {

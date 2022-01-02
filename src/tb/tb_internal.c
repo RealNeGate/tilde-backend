@@ -7,7 +7,7 @@
 #define printf(...)
 #endif
 
-bool tb_validate(TB_Function* restrict f) {
+TB_API bool tb_function_validate(TB_Function* restrict f) {
 	int error_count = 0;
 	
 	size_t node_count = f->nodes.count;
@@ -98,6 +98,12 @@ break; \
 case TB_LABEL: \
 X(p->label.terminator); \
 break; \
+case TB_INITIALIZE: \
+X(p->init.addr); \
+break; \
+case TB_KEEPALIVE: \
+X(p->keepalive); \
+break; \
 case TB_MEMCPY: \
 case TB_MEMSET: \
 X(p->mem_op.dst); \
@@ -136,6 +142,7 @@ X(p->store.value); \
 break; \
 case TB_ZERO_EXT: \
 case TB_SIGN_EXT: \
+case TB_FLOAT_EXT: \
 X(p->ext); \
 break; \
 case TB_INT2PTR: \
@@ -423,4 +430,45 @@ TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params, TB_Reg
 	}
 	
 	return ret;
+}
+
+TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count) {
+	size_t count = 0;
+	TB_Label* preds = tb_tls_push(tls, 0);
+	
+	TB_Register label = 1;
+	do {
+		TB_Register terminator = f->nodes.payload[label].label.terminator;
+		TB_Label id = f->nodes.payload[label].label.id;
+		
+		if (f->nodes.type[terminator] == TB_LABEL) {
+			if (l == f->nodes.payload[terminator].label.id) {
+				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
+				count++;
+			}
+			label = terminator;
+		} else if (f->nodes.type[terminator] == TB_IF) {
+			if (l == f->nodes.payload[terminator].if_.if_true) {
+				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
+				count++;
+			}
+			
+			if (l == f->nodes.payload[terminator].if_.if_false) {
+				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
+				count++;
+			}
+			label = terminator + 1;
+		} else if (f->nodes.type[terminator] == TB_GOTO) {
+			if (l == f->nodes.payload[terminator].goto_.label) {
+				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
+				count++;
+			}
+			label = terminator + 1;
+		} else if (f->nodes.type[terminator] == TB_RET) {
+			label = terminator + 1;
+		} else tb_todo();
+	} while (label < f->nodes.count);
+	
+	*dst_count = count;
+	return preds;
 }

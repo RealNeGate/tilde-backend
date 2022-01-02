@@ -30,21 +30,12 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 	s_local_thread_id = local_thread_id;
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	
-	const size_t ctx_size = sizeof(Ctx) + (f->nodes.count * sizeof(Val));
-	Ctx* ctx = tb_tls_push(tls, ctx_size);
-	memset(ctx, 0, ctx_size);
-	
-	ctx->start_out = ctx->out = out;
-	
-	ctx->f = f;
-	ctx->function_id = f - f->module->functions.data;
-	
-	//tb_function_print(f, stdout);
-	DEBUG_LOG("\n\n\n%s:\n", f->name);
-	
 	////////////////////////////////
-	// Allocate all the local storage we'll need
+	// Allocate all the memory we'll need
 	////////////////////////////////
+	bool is_ctx_heap_allocated = false;
+	Ctx* ctx;
+	
 	size_t caller_usage = 0;
 	{
 		size_t phi_count = 0;
@@ -63,7 +54,6 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 		for (size_t i = 0; i < f->nodes.count; i += 16) {
 			__m128i bytes = _mm_load_si128((__m128i*)&f->nodes.type[i]);
 			
-			phi_count += COUNT_OF_TYPE_IN_M128(TB_PHI1);
 			phi_count += COUNT_OF_TYPE_IN_M128(TB_PHI2);
 			
 			locals_count += COUNT_OF_TYPE_IN_M128(TB_LOCAL);
@@ -79,8 +69,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 		for (size_t i = 1; i < f->nodes.count; i++) {
 			TB_RegType t = f->nodes[i].type;
 			
-			if (t == TB_PHI1) phi_count++;
-			else if (t == TB_PHI2) phi_count++;
+			if (t == TB_PHI2) phi_count++;
 			else if (t == TB_LOCAL) locals_count++;
 			else if (t == TB_PARAM) locals_count++;
 			else if (t == TB_RET) return_count++;
@@ -112,16 +101,47 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 						  }
 					  });
 		
-		ctx->intervals = tb_tls_push(tls, f->nodes.count * sizeof(TB_Register));
-		ctx->use_count = tb_tls_push(tls, f->nodes.count * sizeof(int));
-		ctx->phis = tb_tls_push(tls, phi_count * sizeof(PhiValue));
+		const size_t ctx_size = sizeof(Ctx) + (f->nodes.count * sizeof(Val));
 		
-		ctx->phi_queue = tb_tls_push(tls, phi_count * sizeof(TB_Register));
+		ctx = tb_tls_try_push(tls, ctx_size);
+		if (!ctx) {
+			// try the heap (not ideal)
+			// also we do an all-or-nothing style where if you can't do the context
+			// in the temporary storage, then none of the other uses of it are available.
+			is_ctx_heap_allocated = true;
+			ctx = malloc(ctx_size);
+			
+			printf("Could not allocate x64 code gen context: using heap fallback.\n");
+		}
 		
-		ctx->params = tb_tls_push(tls, f->prototype->param_count * sizeof(int32_t));
-		ctx->labels = tb_tls_push(tls, f->label_count * sizeof(uint32_t));
-		ctx->label_patches = tb_tls_push(tls, label_patch_count * sizeof(LabelPatch));
-		ctx->ret_patches = tb_tls_push(tls, return_count * sizeof(ReturnPatch));
+		memset(ctx, 0, ctx_size);
+		ctx->start_out = ctx->out = out;
+		ctx->f = f;
+		ctx->function_id = f - f->module->functions.data;
+		
+		if (is_ctx_heap_allocated) {
+			ctx->intervals = malloc(f->nodes.count * sizeof(TB_Register));
+			ctx->use_count = malloc(f->nodes.count * sizeof(int));
+			ctx->phis = malloc(phi_count * sizeof(PhiValue));
+			
+			ctx->phi_queue = malloc(phi_count * sizeof(TB_Register));
+			
+			ctx->params = malloc(f->prototype->param_count * sizeof(int32_t));
+			ctx->labels = malloc(f->label_count * sizeof(uint32_t));
+			ctx->label_patches = malloc(label_patch_count * sizeof(LabelPatch));
+			ctx->ret_patches = malloc(return_count * sizeof(ReturnPatch));
+		} else {
+			ctx->intervals = tb_tls_push(tls, f->nodes.count * sizeof(TB_Register));
+			ctx->use_count = tb_tls_push(tls, f->nodes.count * sizeof(int));
+			ctx->phis = tb_tls_push(tls, phi_count * sizeof(PhiValue));
+			
+			ctx->phi_queue = tb_tls_push(tls, phi_count * sizeof(TB_Register));
+			
+			ctx->params = tb_tls_push(tls, f->prototype->param_count * sizeof(int32_t));
+			ctx->labels = tb_tls_push(tls, f->label_count * sizeof(uint32_t));
+			ctx->label_patches = tb_tls_push(tls, label_patch_count * sizeof(LabelPatch));
+			ctx->ret_patches = tb_tls_push(tls, return_count * sizeof(ReturnPatch));
+		}
 	}
 	
 	////////////////////////////////
@@ -142,12 +162,6 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 						  .reg = i, 
 						  .storage_a = f->nodes.payload[i].phi2.a,
 						  .storage_b = f->nodes.payload[i].phi2.b
-					  };
-				  });
-	
-	FOR_EACH_NODE(i, f, TB_PHI1, {
-					  ctx->phis[ctx->phi_count++] = (PhiValue){
-						  .reg = i, .storage_a = f->nodes.payload[i].phi1.a
 					  };
 				  });
 	
@@ -212,10 +226,15 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 							  ctx->xmm_desc[id] = 0;
 							  
 							  // save the shadow space into the stack
-							  if (dt.type == TB_F32) {
-								  inst2(ctx, MOVSS, &dst, &src, dt.type);
+							  if (dt.count > 1) {
+								  inst2(ctx, MOVAPS, &dst, &src, dt.type);
+							  } else {
+								  if (dt.type == TB_F32) {
+									  inst2(ctx, MOVSS, &dst, &src, dt.type);
+								  } else if (dt.type == TB_F64) {
+									  inst2(ctx, MOVSD, &dst, &src, dt.type);
+								  } else tb_unreachable();
 							  }
-							  else tb_todo(); // TODO(NeGate): Implement movsd
 						  } else if (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR) {
 							  Val src = val_gpr(TB_I64, GPR_PARAMETERS[id]); 
 							  
@@ -270,20 +289,24 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 		
 		// Evaluate the terminator
 		const TB_RegType reg_type = f->nodes.type[bb_end];
-		const TB_DataType dt = f->nodes.dt[bb_end];
+		//const TB_DataType dt = f->nodes.dt[bb_end];
 		const TB_RegPayload p = f->nodes.payload[bb_end];
 		
 		if (reg_type == TB_RET) {
 			// Evaluate return value
-			if (dt.type != TB_VOID) {
+			if (p.ret.value) {
 				Val value = use_as_rvalue(ctx, f, p.ret.value);
 				
-				if (value.dt.type == TB_F32 || value.dt.count > 1) {
+				if (TB_IS_FLOAT_TYPE(value.dt.type) || value.dt.count > 1) {
 					// Float results use XMM0
 					Val dst = val_xmm(value.dt, XMM0);
 					
 					if (!is_value_xmm(&value, XMM0)) {
-						inst2(ctx, value.dt.count > 1 ? MOVAPS : MOVSS, &dst, &value, value.dt.type);
+						int mov_type = MOVSS;
+						if (value.dt.type == TB_F64) mov_type = MOVSD;
+						if (value.dt.count > 1) mov_type = MOVAPS;
+						
+						inst2(ctx, mov_type, &dst, &value, value.dt.type);
 					}
 				} else if (value.dt.type == TB_I8 ||
 						   value.dt.type == TB_I16 ||
@@ -391,6 +414,12 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 			TB_Register next_terminator = f->nodes.payload[bb_end].label.terminator;
 			
 			eval_terminator_phis(ctx, f, bb, bb_end, bb_end, next_terminator);
+		} else if (reg_type == TB_TRAP) {
+			// ud2
+			emit(0x0F); 
+			emit(0x0B);
+		} else if (reg_type == TB_UNREACHABLE) {
+			// doesn't need to do anything because it's all UB from here
 		} else {
 			tb_todo();
 		}
@@ -428,7 +457,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 		patch4(pos, ctx->labels[target_lbl] - (pos + 4));
 	}
 	
-	return (TB_FunctionOutput) {
+	TB_FunctionOutput func_out = {
 		.name = f->name,
 		.code = ctx->start_out,
 		.code_size = ctx->out - ctx->start_out,
@@ -436,6 +465,21 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 		
 		.prologue_epilogue_metadata = ctx->regs_to_save
 	};
+	
+	if (is_ctx_heap_allocated) {
+		free(ctx->intervals);
+		free(ctx->use_count);
+		free(ctx->phis);
+		
+		free(ctx->phi_queue);
+		
+		free(ctx->params);
+		free(ctx->labels);
+		free(ctx->label_patches);
+		free(ctx->ret_patches);
+		free(ctx);
+	}
+	return func_out;
 }
 
 static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_Register from_terminator, TB_Register to, TB_Register to_terminator) {
@@ -590,19 +634,33 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 				if (!explicit_load &&
 					(f->nodes.type[addr_reg] == TB_LOCAL ||
 					 f->nodes.type[addr_reg] == TB_PARAM_ADDR)) {
-					explicit_load = false;
-					
 					// If this load out-lives the next side-effect
 					// that might change it
 					// TODO(NeGate): Implement noalias
-					for (size_t j = r + 1; j < bb_end; j++) {
+					// TODO(NeGate): This is a fastpath code gen so
+					// we don't necessarily need to be perfectly accurate.
+					// we can limit look ahead for perf.
+					size_t peek_start = r+1;
+					size_t peek_end = bb_end;
+					
+					if (peek_end - peek_start > 50) {
+						peek_end = peek_start + 50;
+					}
+					
+					bool exhausted = true;
+					loop_range(j, peek_start, peek_end) {
 						if (f->nodes.type[j] == TB_STORE ||
 							f->nodes.type[j] == TB_CALL ||
 							f->nodes.type[j] == TB_VCALL ||
 							f->nodes.type[j] == TB_ECALL) {
 							explicit_load = (ctx->intervals[r] > j);
+							exhausted = false;
 							break;
 						}
+					}
+					
+					if (exhausted) {
+						explicit_load = true;
 					}
 				}
 				
@@ -757,6 +815,45 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 				}
 				break;
 			}
+			case TB_INITIALIZE: {
+				TB_Register addr = p->mem_op.dst;
+				
+				TB_Module* m = f->module;
+				TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
+				TB_Initializer* i = (TB_Initializer*)&m->initializers[p->init.id / per_thread_stride][p->init.id % per_thread_stride];
+				
+				// rep stosb, ol' reliable
+				evict_gpr(ctx, f, RAX, r);
+				evict_gpr(ctx, f, RCX, r);
+				evict_gpr(ctx, f, RDI, r);
+				
+				{
+					Val param = use_as_rvalue(ctx, f, addr);
+					
+					if (!is_value_gpr(&param, RDI)) {
+						Val dst = val_gpr(TB_PTR, RDI);
+						inst2(ctx, MOV, &dst, &param, TB_PTR);
+					}
+					
+					temporary_reserve_gpr(ctx, f, RDI);
+				}
+				
+				{
+					Val dst = val_gpr(TB_PTR, RAX);
+					inst2(ctx, XOR, &dst, &dst, TB_I32);
+				}
+				
+				{
+					Val dst = val_gpr(TB_PTR, RCX);
+					Val src = val_imm(TB_TYPE_PTR, i->size);
+					inst2(ctx, MOV, &dst, &src, TB_PTR);
+				}
+				
+				// rep stosb
+				emit(0xF3);
+				emit(0xAA);
+				break;
+			}
 			case TB_MEMSET: {
 				TB_Register dst_reg = p->mem_op.dst;
 				TB_Register val_reg = p->mem_op.src;
@@ -806,6 +903,53 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 				emit(0xAA);
 				break;
 			}
+			case TB_MEMCPY: {
+				TB_Register dst_reg = p->mem_op.dst;
+				TB_Register src_reg = p->mem_op.src;
+				TB_Register size_reg = p->mem_op.size;
+				
+				// TODO(NeGate): Implement vector memcpy
+				// rep movsb, ol' reliable
+				evict_gpr(ctx, f, RCX, r);
+				evict_gpr(ctx, f, RSI, r);
+				evict_gpr(ctx, f, RDI, r);
+				
+				{
+					Val param = use_as_rvalue(ctx, f, dst_reg);
+					
+					if (!is_value_gpr(&param, RDI)) {
+						Val dst = val_gpr(TB_PTR, RDI);
+						inst2(ctx, MOV, &dst, &param, TB_PTR);
+					}
+					
+					temporary_reserve_gpr(ctx, f, RDI);
+				}
+				
+				{
+					Val param = use_as_rvalue(ctx, f, src_reg);
+					
+					if (!is_value_gpr(&param, RSI)) {
+						Val dst = val_gpr(TB_PTR, RSI);
+						inst2(ctx, MOV, &dst, &param, TB_PTR);
+					}
+					temporary_reserve_gpr(ctx, f, RSI);
+				}
+				
+				{
+					Val param = use_as_rvalue(ctx, f, size_reg);
+					
+					if (!is_value_gpr(&param, RCX)) {
+						Val dst = val_gpr(TB_PTR, RCX);
+						inst2(ctx, MOV, &dst, &param, TB_PTR);
+					}
+					temporary_reserve_gpr(ctx, f, RCX);
+				}
+				
+				// rep movsb
+				emit(0xF3);
+				emit(0xA4);
+				break;
+			}
 			default:
 			break;
 		}
@@ -849,8 +993,8 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			
 			XMM dst_xmm = v.xmm;
 			
-			assert(dt.type == TB_F32 && dt.count == 1);
-			uint32_t imm = (Cvt_F32U32){ .f = p->f_const }.i;
+			assert((dt.type == TB_F32 || dt.type == TB_F64) && dt.count == 1);
+			uint64_t imm = (Cvt_F64U64){ .f = p->f_const }.i;
 			
 			if (imm == 0) {
 				if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
@@ -860,15 +1004,25 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			} else {
 				// Convert it to raw bits
 				if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
-				emit(0xF3);
+				emit(dt.type == TB_F64 ? 0xF2 : 0xF3);
 				emit(0x0F);
 				emit(0x10);
 				emit(((dst_xmm & 7) << 3) | RBP);
 				
-				uint32_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint32_t));
-				*rdata_payload = imm;
-				
-				uint32_t disp = tb_emit_const_patch(f->module, ctx->function_id, code_pos(), rdata_payload, sizeof(uint32_t), s_local_thread_id);
+				uint32_t disp;
+				if (dt.type == TB_F64) {
+					uint64_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint64_t));
+					*rdata_payload = imm;
+					
+					disp = tb_emit_const_patch(f->module, ctx->function_id, code_pos(), rdata_payload, sizeof(uint64_t), s_local_thread_id);
+				} else {
+					uint32_t imm32 = (Cvt_F32U32){ .f = p->f_const }.i;
+					
+					uint32_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint32_t));
+					*rdata_payload = imm32;
+					
+					disp = tb_emit_const_patch(f->module, ctx->function_id, code_pos(), rdata_payload, sizeof(uint32_t), s_local_thread_id);
+				}
 				emit4(disp);
 			}
 			
@@ -1017,28 +1171,38 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			return v;
 		}
 		case TB_TRUNCATE: {
-			Val src = use_as_rvalue(ctx, f, p->ext);
-			if (src.type == VAL_IMM) {
-				src.dt = dt;
-				def(ctx, f, src, r);
-				return src;
-			}
-			
-			// TODO(NeGate): Implement recycle
-			if (dt.type == TB_BOOL) dt.type = TB_I8;
-			Val v = def_new_gpr(ctx, f, r, dt.type);
-			
-			if (dt.type == TB_PTR || dt.type == TB_I64 || dt.type == TB_I32) {
-				// 32bit operations automatically truncate
-				inst2(ctx, MOV, &v, &src, dt.type);
-			} else if (dt.type == TB_I16) {
-				inst2(ctx, MOVZXW, &v, &src, dt.type);
-			} else if (dt.type == TB_I8 || dt.type == TB_BOOL) {
-				inst2(ctx, MOVZXB, &v, &src, dt.type);
+			if (dt.type == TB_F32) {
+				Val src = use_as_rvalue(ctx, f, p->ext);
+				assert(src.dt.type == TB_F64);
+				
+				Val v = def_new_xmm(ctx, f, r, dt);
+				inst2(ctx, CVTSD2SS, &v, &src, dt.type);
+				return v;
 			} else {
-				tb_unreachable();
+				Val src = use_as_rvalue(ctx, f, p->ext);
+				if (src.type == VAL_IMM) {
+					src.dt = dt;
+					def(ctx, f, src, r);
+					return src;
+				}
+				
+				// TODO(NeGate): Implement recycle
+				if (dt.type == TB_BOOL) dt.type = TB_I8;
+				Val v = def_new_gpr(ctx, f, r, dt.type);
+				
+				if (dt.type == TB_PTR || dt.type == TB_I64 || dt.type == TB_I32) {
+					// 32bit operations automatically truncate
+					inst2(ctx, MOV, &v, &src, dt.type);
+				} else if (dt.type == TB_I16) {
+					inst2(ctx, MOVZXW, &v, &src, dt.type);
+				} else if (dt.type == TB_I8 || dt.type == TB_BOOL) {
+					inst2(ctx, MOVZXB, &v, &src, dt.type);
+				} else {
+					tb_unreachable();
+				}
+				
+				return v;
 			}
-			return v;
 		}
 		case TB_ZERO_EXT: {
 			Val src = use_as_rvalue(ctx, f, p->ext);
@@ -1078,6 +1242,13 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 				inst2(ctx, MOV, &v, &src, dt.type);
 				return src;
 			}
+		}
+		case TB_FLOAT_EXT: {
+			Val src = use_as_rvalue(ctx, f, p->ext);
+			Val v = def_new_xmm(ctx, f, r, dt);
+			
+			inst2(ctx, CVTSS2SD, &v, &src, dt.type);
+			return v;
 		}
 		case TB_SIGN_EXT: {
 			Val src = use_as_rvalue(ctx, f, p->ext);
@@ -1158,11 +1329,62 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 		case TB_NEG: {
 			Val src = use_as_rvalue(ctx, f, p->unary);
 			
-			// TODO(NeGate): Implement recycle
-			Val v = def_new_gpr(ctx, f, r, dt.type);
-			inst2(ctx, MOV, &v, &src, TB_I64);
-			inst1(ctx, NEG, &v);
-			return v;
+			if (dt.type == TB_F64) {
+				// .LCPI0_0:
+				//   .quad   0x8000000000000000
+				//   .quad   0x8000000000000000
+				// ...
+				// xorps   xmm0, xmmword ptr [rip + .LCPI0_0]
+				Val v = def_new_xmm(ctx, f, r, dt);
+				XMM dst_xmm = v.xmm;
+				
+				if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
+				emit(dt.type == TB_F64 ? 0xF2 : 0xF3);
+				emit(0x0F);
+				emit(0x57);
+				emit(((dst_xmm & 7) << 3) | RBP);
+				
+				uint64_t* rdata_payload = tb_platform_arena_alloc(2 * sizeof(uint64_t));
+				rdata_payload[0] = (1ull << 63ull);
+				rdata_payload[1] = (1ull << 63ull);
+				
+				uint32_t disp = tb_emit_const_patch(f->module, ctx->function_id, code_pos(), rdata_payload, 2 * sizeof(uint64_t), s_local_thread_id);
+				emit4(disp);
+				
+				return v;
+			} else if (dt.type == TB_F32) {
+				// .LCPI0_0:
+				//   .long   0x80000000
+				//   .long   0x80000000
+				//   .long   0x80000000
+				//   .long   0x80000000
+				// ...
+				// xorps   xmm0, xmmword ptr [rip + .LCPI0_0]
+				Val v = def_new_xmm(ctx, f, r, dt);
+				XMM dst_xmm = v.xmm;
+				
+				if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
+				emit(0x0F);
+				emit(0x57);
+				emit(((dst_xmm & 7) << 3) | RBP);
+				
+				uint64_t* rdata_payload = tb_platform_arena_alloc(4 * sizeof(uint32_t));
+				rdata_payload[0] = (1ull << 31ull);
+				rdata_payload[1] = (1ull << 31ull);
+				rdata_payload[2] = (1ull << 31ull);
+				rdata_payload[3] = (1ull << 31ull);
+				
+				uint32_t disp = tb_emit_const_patch(f->module, ctx->function_id, code_pos(), rdata_payload, 4 * sizeof(uint32_t), s_local_thread_id);
+				emit4(disp);
+				
+				return v;
+			} else {
+				// TODO(NeGate): Implement recycle
+				Val v = def_new_gpr(ctx, f, r, dt.type);
+				inst2(ctx, MOV, &v, &src, TB_I64);
+				inst1(ctx, NEG, &v);
+				return v;
+			}
 		}
 		case TB_NOT: {
 			Val src = use_as_rvalue(ctx, f, p->unary);
@@ -1184,14 +1406,34 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 				{ MULSS,  true,  true,   false,  true },
 				{ DIVSS,  true,  true,   false,  true },
 				
+				{ ADDSD,  true,  true,   false,  true },
+				{ SUBSD,  true,  true,   false,  true },
+				{ MULSD,  true,  true,   false,  true },
+				{ DIVSD,  true,  true,   false,  true },
+				
 				// 4-wide versions
 				{ ADDPS,  true,  true,   false,  true },
 				{ SUBPS,  true,  true,   false,  true },
 				{ MULPS,  true,  true,   false,  true },
-				{ DIVPS,  true,  true,   false,  true }
+				{ DIVPS,  true,  true,   false,  true },
+				
+				// TODO(NeGate): This is incorrect but i
+				// don't wanna implement
+				{ ADDPS,  true,  true,   false,  true },
+				{ SUBPS,  true,  true,   false,  true },
+				{ MULPS,  true,  true,   false,  true },
+				{ DIVPS,  true,  true,   false,  true },
 			};
-			assert((dt.count == 1 || dt.count == 4) && dt.type == TB_F32);
-			const IselInfo* info = &tbl[(dt.count == 4 ? 4 : 0) + (reg_type - TB_FADD)];
+			
+			// supported modes
+			assert((dt.type == TB_F32 && dt.count == 1) ||
+				   (dt.type == TB_F64 && dt.count == 1) ||
+				   (dt.type == TB_F32 && dt.count == 4) ||
+				   (dt.type == TB_F64 && dt.count == 2));
+			
+			// TODO(NeGate): Implement [f64 x 2]
+			assert(dt.count != 2);
+			const IselInfo* info = &tbl[(dt.count == 4 ? 8 : 0) + (reg_type - TB_FADD) + (dt.type == TB_F64 ? 4 : 0)];
 			
 			TB_Register a_reg = p->f_arith.a;
 			TB_Register b_reg = p->f_arith.b;
@@ -1452,6 +1694,11 @@ static void store_into(Ctx* ctx, TB_Function* f, TB_DataType dt, const Val* dst,
 		}
 	}
 	
+	int real_mov = MOV;
+	if (dt.count > 1) real_mov = MOVAPS;
+	else if (dt.type == TB_F32) real_mov = MOVSS;
+	else if (dt.type == TB_F64) real_mov = MOVSD;
+	
 	// Default case:
 	// mov dst, src
 	// or
@@ -1460,14 +1707,18 @@ static void store_into(Ctx* ctx, TB_Function* f, TB_DataType dt, const Val* dst,
 	Val value = use_as_rvalue(ctx, f, val_reg);
 	
 	// if they match and it's just a MOV, don't do it
-	if (op == MOV && is_value_match(dst, &value)) return;
+	if (op == MOV) {
+		op = real_mov;
+		
+		if (is_value_match(dst, &value)) return;
+	}
 	
 	if (!is_value_mem(&value)) {
 		inst2(ctx, op, dst, &value, dt.type);
 	} else {
 		Val temp = def_new_gpr(ctx, f, r, dt.type);
 		
-		inst2(ctx, MOV, &temp, &value, dt.type);
+		inst2(ctx, real_mov, &temp, &value, dt.type);
 		inst2(ctx, op, dst, &temp, dt.type);
 		
 		kill(ctx, f, r);
@@ -1646,11 +1897,17 @@ static bool evict_xmm(Ctx* ctx, TB_Function* f, XMM x, TB_Register r) {
 			Val src = val_xmm(dt, x);
 			inst2(ctx, MOVAPS, &dst, &src, TB_F32);
 		} else if (dt.type == TB_F32) {
-			ctx->stack_usage = align_up(ctx->stack_usage + 8, 8);
+			ctx->stack_usage = align_up(ctx->stack_usage + 4, 4);
 			dst = val_stack(f->nodes.dt[bound], -ctx->stack_usage);
 			
 			Val src = val_xmm(dt, x);
 			inst2(ctx, MOVSS, &dst, &src, TB_F32);
+		} else if (dt.type == TB_F64) {
+			ctx->stack_usage = align_up(ctx->stack_usage + 8, 8);
+			dst = val_stack(f->nodes.dt[bound], -ctx->stack_usage);
+			
+			Val src = val_xmm(dt, x);
+			inst2(ctx, MOVSD, &dst, &src, TB_F64);
 		} else tb_todo();
 		
 		ctx->addr_desc[bound] = dst;
@@ -1669,9 +1926,17 @@ static void temporary_reserve_xmm(Ctx* ctx, TB_Function* f, XMM x) {
 }
 
 static Val materialize(Ctx* ctx, TB_Function* f, const Val* src, TB_Register src_reg, TB_DataType dt) {
-	if (dt.type == TB_F32 || dt.count > 1) {
+	if (dt.count > 1) {
 		Val v = def_new_xmm(ctx, f, src_reg, dt);
-		inst2(ctx, dt.count == 1 ? MOVSS : MOVAPS, &v, src, dt.type);
+		inst2(ctx, MOVAPS, &v, src, dt.type);
+		return v;
+	} else if (dt.type == TB_F32) {
+		Val v = def_new_xmm(ctx, f, src_reg, dt);
+		inst2(ctx, MOVSS, &v, src, dt.type);
+		return v;
+	} else if (dt.type == TB_F64) {
+		Val v = def_new_xmm(ctx, f, src_reg, dt);
+		inst2(ctx, MOVSD, &v, src, dt.type);
 		return v;
 	} else if (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR) {
 		Val v = def_new_gpr(ctx, f, src_reg, dt.type);
@@ -1753,6 +2018,7 @@ static Val isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
 		int mov_type = MOV;
 		if (dst_dt.count > 1) mov_type = MOVAPS;
 		else if (dst_dt.type == TB_F32) mov_type = MOVSS;
+		else if (dst_dt.type == TB_F64) mov_type = MOVSD;
 		
 		inst2(ctx, mov_type, &v, &av, dst_dt.type);
 		inst2(ctx, info->inst, &v, &bv, dst_dt.type);
@@ -1798,6 +2064,8 @@ static Val isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
 		int mov_type = MOV;
 		if (dst_dt.count > 1) mov_type = MOVAPS;
 		else if (dst_dt.type == TB_F32) mov_type = MOVSS;
+		else if (dst_dt.type == TB_F64) mov_type = MOVSD;
+		
 		inst2(ctx, mov_type, &v, src, dst_dt.type);
 		
 		if (info->inst == IMUL && src->type == VAL_IMM) {
@@ -1823,7 +2091,6 @@ static bool garbage_collect_gpr(Ctx* ctx, TB_Function* f, TB_Register end) {
 	for (size_t i = 0; i < 16; i++) {
 		TB_Register r = ctx->gpr_desc[i];
 		if (r <= bb || r > bb_end) continue;
-		if (f->nodes.type[r] == TB_PHI1) continue;
 		if (f->nodes.type[r] == TB_PHI2) continue;
 		
 		if (ctx->intervals[r] < end) {
@@ -1845,7 +2112,6 @@ static bool garbage_collect_xmm(Ctx* ctx, TB_Function* f, TB_Register end) {
 	for (size_t i = 0; i < 16; i++) {
 		TB_Register r = ctx->xmm_desc[i];
 		if (r <= bb || r > bb_end) continue;
-		if (f->nodes.type[r] == TB_PHI1) continue;
 		if (f->nodes.type[r] == TB_PHI2) continue;
 		
 		if (ctx->intervals[r] < end) {
@@ -1864,7 +2130,6 @@ static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, GPR gpr, TB_Register bb
 	
 	return (bound >= bb &&
 			bound <= bb_end &&
-			f->nodes.type[bound] != TB_PHI1 &&
 			f->nodes.type[bound] != TB_PHI2);
 }
 
@@ -1898,11 +2163,23 @@ static Val use_as_rvalue(Ctx* ctx, TB_Function* f, TB_Register r) {
 			
 			return new_v;
 		} else if (!v.mem.is_rvalue) {
-			// TODO(NeGate): Implement vector/float rvalue-conversion
-			Val new_v = def_new_gpr(ctx, f, r, v.dt.type);
-			inst2(ctx, MOV, &new_v, &v, v.dt.type);
-			
-			return new_v;
+			if (v.dt.count > 1) {
+				Val new_v = def_new_xmm(ctx, f, r, v.dt);
+				inst2(ctx, MOVAPS, &new_v, &v, TB_F32);
+				return new_v;
+			} else if (v.dt.type == TB_F32) {
+				Val new_v = def_new_xmm(ctx, f, r, v.dt);
+				inst2(ctx, MOVSS, &new_v, &v, TB_F32);
+				return new_v;
+			} else if (v.dt.type == TB_F64) {
+				Val new_v = def_new_xmm(ctx, f, r, v.dt);
+				inst2(ctx, MOVSD, &new_v, &v, TB_F64);
+				return new_v;
+			} else {
+				Val new_v = def_new_gpr(ctx, f, r, v.dt.type);
+				inst2(ctx, MOV, &new_v, &v, v.dt.type);
+				return new_v;
+			}
 		}
 	} else if (v.type == VAL_FLAGS) {
 		assert(f->nodes.type[r] >= TB_CMP_EQ && f->nodes.type[r] <= TB_CMP_FLE);
@@ -1953,9 +2230,7 @@ static Val use_as_address(Ctx* ctx, TB_Function* f, TB_Register r) {
 
 // Is this a phi node? does it can the register `reg`?
 static bool is_phi_that_contains(TB_Function* f, TB_Register phi, TB_Register reg) {
-	if (f->nodes.type[phi] == TB_PHI1) {
-		return f->nodes.payload[phi].phi1.a == reg;
-	} else if (f->nodes.type[phi] == TB_PHI2) {
+	if (f->nodes.type[phi] == TB_PHI2) {
 		return f->nodes.payload[phi].phi2.a == reg || f->nodes.payload[phi].phi2.b == reg;
 	} else {
 		return false;

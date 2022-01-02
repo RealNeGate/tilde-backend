@@ -31,7 +31,7 @@ static TB_CodeRegion* get_or_allocate_code_region(TB_Module* m, int tid) {
 
 // TODO(NeGate): Doesn't free the name, it's kept forever
 TB_API void tb_function_free(TB_Function* f) {
-	if (f->is_ir_free) return;
+	if (f->nodes.type == NULL) return;
 	
 	tb_platform_heap_free(f->nodes.type);
 	tb_platform_heap_free(f->nodes.dt);
@@ -42,19 +42,15 @@ TB_API void tb_function_free(TB_Function* f) {
 	f->nodes.dt = NULL;
 	f->nodes.payload = NULL;
 	f->vla.data = NULL;
-	
-	f->is_ir_free = true;
 }
 
 TB_API TB_Module* tb_module_create(TB_Arch target_arch,
                                    TB_System target_system,
-                                   const TB_FeatureSet* features,
-								   TB_OptLevel opt_level) {
+                                   const TB_FeatureSet* features) {
 	TB_Module* m = tb_platform_heap_alloc(sizeof(TB_Module));
     memset(m, 0, sizeof(TB_Module));
 	
 	m->max_threads = TB_MAX_THREADS;
-	m->optimization_level = opt_level;
 	m->target_arch = target_arch;
 	m->target_system = target_system;
 	m->features = *features;
@@ -99,20 +95,23 @@ printf("\n\n\n"); \
 goto repeat_opt; \
 }
 
-static void tb_optimize_func(TB_Function* f) {
+TB_API void tb_function_optimize(TB_Function* f, TB_OptLevel opt) {
 	printf("INITIAL   ");
 	tb_function_print(f, stdout);
 	printf("\n\n\n");
 	
 	repeat_opt: {
+		OPT(dead_expr_elim);
 		OPT(remove_pass_node);
 		OPT(canonicalize);
 		OPT(fold);
 		OPT(load_elim);
 		OPT(strength_reduction);
-		OPT(dce);
 		OPT(hoist_locals);
 		OPT(mem2reg);
+		OPT(dead_block_elim);
+		OPT(deshort_circuit);
+		OPT(copy_elision);
 		OPT(compact_dead_regs);
 	}
 	
@@ -123,34 +122,24 @@ static void tb_optimize_func(TB_Function* f) {
 #undef OPT
 
 TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
-	// Validate function
-	if (!tb_validate(f)) return false;
-	
-	// Optimize
-	if (m->optimization_level != TB_OPT_O0) {
-		tb_optimize_func(f);
-	}
-	
 	// TODO(NeGate): Properly detect this
 	ICodeGen* gen = &x64_fast_code_gen;
 	
 	// Machine code gen
-	{
-		int id = get_local_thread_id();
-		assert(id < TB_MAX_THREADS);
-		
-		int index = m->compiled_functions.count++;
-		
-		TB_CodeRegion* restrict region = get_or_allocate_code_region(m, id);
-		TB_FunctionOutput* func_out = m->compiled_functions.data;
-		
-		func_out[index] = gen->compile_function(f, &m->features, &region->data[region->size], id);
-		region->size += func_out[index].code_size;
-		
-		if (region->size > CODE_REGION_BUFFER_SIZE) {
-			printf("Code region buffer: out of memory!\n");
-			abort();
-		}
+	int id = get_local_thread_id();
+	assert(id < TB_MAX_THREADS);
+	
+	int index = m->compiled_functions.count++;
+	
+	TB_CodeRegion* restrict region = get_or_allocate_code_region(m, id);
+	TB_FunctionOutput* func_out = m->compiled_functions.data;
+	
+	func_out[index] = gen->compile_function(f, &m->features, &region->data[region->size], id);
+	region->size += func_out[index].code_size;
+	
+	if (region->size > CODE_REGION_BUFFER_SIZE) {
+		printf("Code region buffer: out of memory!\n");
+		abort();
 	}
 	
 	return true;
@@ -473,7 +462,7 @@ TB_API void* tb_module_get_jit_func(TB_Module* m, TB_Function* f) {
 	return m->compiled_function_pos[f - m->functions.data];
 }
 
-TB_API TB_Label tb_get_current_label(TB_Function* f) {
+TB_API TB_Label tb_inst_get_current_label(TB_Function* f) {
 	if (!f->current_label) return 0;
 	
 	return f->nodes.payload[f->current_label].label.id;
@@ -490,6 +479,16 @@ TB_TemporaryStorage* tb_tls_allocate() {
 	TB_TemporaryStorage* store = (TB_TemporaryStorage*)tb_thread_storage;
 	store->used = 0;
 	return store;
+}
+
+void* tb_tls_try_push(TB_TemporaryStorage* store, size_t size) {
+	if (sizeof(TB_TemporaryStorage) + store->used + size >= TB_TEMPORARY_STORAGE_SIZE) {
+		return NULL;
+	}
+    
+	void* ptr = &store->data[store->used];
+	store->used += size;
+	return ptr;
 }
 
 void* tb_tls_push(TB_TemporaryStorage* store, size_t size) {

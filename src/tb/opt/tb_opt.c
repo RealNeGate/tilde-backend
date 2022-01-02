@@ -12,3 +12,5 @@
 #include "tb_opt_mem2reg.h"
 #include "tb_opt_hoist_locals.h"
 #include "tb_opt_sr.h"
+#include "tb_opt_deshort_circuit.h"
+#include "tb_opt_copy_elision.h"

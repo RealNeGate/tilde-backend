@@ -1,6 +1,6 @@
 call vcvars64
 
-set clang_settings=-march=nehalem -O0 -Werror -Wall -Wno-unused-function -g -gcodeview -D_CRT_SECURE_NO_WARNINGS
+set clang_settings=-march=nehalem -O2 -DNDEBUG -Werror -Wall -Wno-unused-function -g -gcodeview -D_CRT_SECURE_NO_WARNINGS
 
 set tb_source_files=../src/tb/tb.c ^
 	../src/tb/tb_builder.c ^
@@ -31,3 +31,5 @@ set tb_object_files=tb.o ^
 	
 llvm-ar rc W:/Workspace/Cuik/tinybackend.lib %tb_object_files%
 
+cd W:/Workspace/Cuik/
+build.bat

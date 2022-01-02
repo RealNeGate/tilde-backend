@@ -2,7 +2,6 @@
 // https://pp.info.uni-karlsruhe.de/uploads/publikationen/braun13cc.pdf
 
 static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_DataType* dt);
-static TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count);
 
 #define MAX_IR_REGISTER_NAMES
 
@@ -189,16 +188,24 @@ static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register
 		TB_Register a_label = f->nodes.payload[phi_reg].phi1.a_label;
 		TB_Register a = f->nodes.payload[phi_reg].phi1.a;
 		
-		f->nodes.type[phi_reg] = TB_PHI2;
-		f->nodes.dt[phi_reg] = f->nodes.dt[a];
-		f->nodes.payload[phi_reg] = (TB_RegPayload){
-			.phi2 = {
-				.a_label = a_label,
-				.a = a,
-				.b_label = tb_find_reg_from_label(f, label),
-				.b = reg
-			}
-		};
+		if (a == reg) {
+			f->nodes.type[phi_reg] = TB_PASS;
+			f->nodes.dt[phi_reg] = f->nodes.dt[a];
+			f->nodes.payload[phi_reg] = (TB_RegPayload){
+				.pass = a
+			};
+		} else {
+			f->nodes.type[phi_reg] = TB_PHI2;
+			f->nodes.dt[phi_reg] = f->nodes.dt[a];
+			f->nodes.payload[phi_reg] = (TB_RegPayload){
+				.phi2 = {
+					.a_label = a_label,
+					.a = a,
+					.b_label = tb_find_reg_from_label(f, label),
+					.b = reg
+				}
+			};
+		}
 	} else {
 		// TODO(NeGate): 
 		abort();
@@ -234,7 +241,6 @@ bool tb_opt_mem2reg(TB_Function* f) {
 				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = i;
 				to_promote_count++;
 				
-				tb_kill_op(f, i);
 				f->nodes.dt[i] = dt;
 			}
 		}
@@ -290,6 +296,17 @@ bool tb_opt_mem2reg(TB_Function* f) {
 		
 		if (reg_type == TB_LABEL) {
 			block = p.label.id;
+		} else if (reg_type == TB_LOCAL) {
+			int var = get_variable_id(&c, j);
+			if (var >= 0) tb_kill_op(f, j);
+		} else if (reg_type == TB_PARAM_ADDR) {
+			// Parameter stack slots map to parameter registers
+			// so we need to tell mem2reg about that.
+			int var = get_variable_id(&c, j);
+			if (var >= 0) {
+				write_variable(&c, var, block, f->nodes.payload[j].param_addr.param);
+				tb_kill_op(f, j);
+			}
 		} else if (reg_type == TB_LOAD) {
 			int var = get_variable_id(&c, p.load.address);
 			if (var >= 0) {
@@ -318,59 +335,7 @@ bool tb_opt_mem2reg(TB_Function* f) {
 		seal_block(&c, j);
 	}
 	
-	// remove phi1s because they're useless
-	loop(i, f->nodes.count) {
-		if (f->nodes.type[i] == TB_PHI1) {
-			TB_Register reg = f->nodes.payload[i].phi1.a;
-			
-			assert(f->nodes.type[reg] == TB_PHI2);
-			f->nodes.type[i] = TB_PASS;
-			f->nodes.payload[i].pass = reg;
-		}
-	}
-	
 	return true;
-}
-
-static TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count) {
-	size_t count = 0;
-	TB_Label* preds = tb_tls_push(tls, 0);
-	
-	TB_Register label = 1;
-	do {
-		TB_Register terminator = f->nodes.payload[label].label.terminator;
-		TB_Label id = f->nodes.payload[label].label.id;
-		
-		if (f->nodes.type[terminator] == TB_LABEL) {
-			if (l == f->nodes.payload[terminator].label.id) {
-				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
-				count++;
-			}
-			label = terminator;
-		} else if (f->nodes.type[terminator] == TB_IF) {
-			if (l == f->nodes.payload[terminator].if_.if_true) {
-				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
-				count++;
-			}
-			
-			if (l == f->nodes.payload[terminator].if_.if_false) {
-				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
-				count++;
-			}
-			label = terminator + 1;
-		} else if (f->nodes.type[terminator] == TB_GOTO) {
-			if (l == f->nodes.payload[terminator].goto_.label) {
-				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
-				count++;
-			}
-			label = terminator + 1;
-		} else if (f->nodes.type[terminator] == TB_RET) {
-			label = terminator + 1;
-		} else tb_todo();
-	} while (label < f->nodes.count);
-	
-	*dst_count = count;
-	return preds;
 }
 
 // NOTE(NeGate): a stack slot is coherent when all loads and stores share

@@ -19,7 +19,7 @@ TB_API TB_Function* tb_get_function_by_id(TB_Module* m, TB_FunctionID id) {
 	assert(id < m->functions.count);
 	return &m->functions.data[id];
 }
-	
+
 TB_API TB_DataType tb_node_get_data_type(TB_Function* f, TB_Register r) {
 	assert(r < f->nodes.count);
 	return f->nodes.dt[r];
@@ -61,6 +61,9 @@ TB_API TB_Register tb_node_arith_get_left(TB_Function* f, TB_Register r) {
 	assert(f->nodes.type[r] >= TB_AND && f->nodes.type[r] <= TB_CMP_FLE);
 	
 	// TODO(NeGate): They share position in the union
+	_Static_assert(offsetof(TB_RegPayload, cmp.a) == offsetof(TB_RegPayload, i_arith.a), "TB_RegPayload::cmp.a should alias TB_RegPayload::i_arith.a");
+	_Static_assert(offsetof(TB_RegPayload, f_arith.a) == offsetof(TB_RegPayload, i_arith.a), "TB_RegPayload::f_arith.a should alias TB_RegPayload::i_arith.a");
+	
 	return f->nodes.payload[r].i_arith.a;
 }
 
@@ -68,13 +71,17 @@ TB_API TB_Register tb_node_arith_get_right(TB_Function* f, TB_Register r) {
 	assert(f->nodes.type[r] >= TB_AND && f->nodes.type[r] <= TB_CMP_FLE);
 	
 	// TODO(NeGate): They share position in the union
+	_Static_assert(offsetof(TB_RegPayload, cmp.b) == offsetof(TB_RegPayload, i_arith.b), "TB_RegPayload::cmp.b should alias TB_RegPayload::i_arith.b");
+	_Static_assert(offsetof(TB_RegPayload, f_arith.b) == offsetof(TB_RegPayload, i_arith.b), "TB_RegPayload::f_arith.b should alias TB_RegPayload::i_arith.b");
+	
 	return f->nodes.payload[r].i_arith.b;
 }
 
 static TB_Register tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
 	// Cannot add registers to terminated basic blocks, except labels
 	// which start new basic blocks
-	assert(type == TB_LABEL || f->current_label);
+	assert(f);
+	assert((type == TB_LABEL || f->current_label) && "Cannot create node without parent basic block");
     
 	if (f->nodes.count + 1 >= f->nodes.capacity) {
 		tb_resize_node_stream(f, tb_next_pow2(f->nodes.count + 1));
@@ -149,18 +156,7 @@ uint64_t tb_fold_div(TB_DataType dt, uint64_t a, uint64_t b) {
 	return (q >> shift) & mask; 
 }
 
-// literally only used in `tb_cse_arith` i just don't wanna
-// inline it, readability wise at least.
-inline static bool tb_match_iarith_payload(const TB_RegPayload* a, const TB_RegPayload* b) {
-	__m128i a128 = _mm_load_si128((__m128i*)a);
-	__m128i b128 = _mm_load_si128((__m128i*)b);
-	
-	return _mm_movemask_epi8(_mm_cmpeq_epi8(a128, b128)) == 0xFFF;
-}
-
 static TB_Register tb_bin_arith(TB_Function* f, int type, TB_DataType dt, TB_ArithmaticBehavior arith_behavior, TB_Register a, TB_Register b) {
-	assert(f->current_label);
-	
 	TB_Register r = tb_make_reg(f, type, dt);
 	f->nodes.payload[r].i_arith.arith_behavior = arith_behavior;
 	f->nodes.payload[r].i_arith.a = a;
@@ -169,24 +165,14 @@ static TB_Register tb_bin_arith(TB_Function* f, int type, TB_DataType dt, TB_Ari
 }
 
 TB_API TB_Register tb_inst_trunc(TB_Function* f, TB_Register src, TB_DataType dt) {
-	assert(f->current_label);
-	
-#if TB_FRONTEND_OPT
-	for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
-		if (f->nodes.type[i] == TB_TRUNCATE
-			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
-			&& f->nodes.payload[i].trunc == src) {
-			return i;
-		}
-	}
-#endif
-	
 	TB_Register r = tb_make_reg(f, TB_TRUNCATE, dt);
 	f->nodes.payload[r].trunc = src;
 	return r;
 }
 
 TB_API TB_Register tb_inst_int2ptr(TB_Function* f, TB_Register src) {
+	assert(f);
+	
 	TB_Register r = tb_make_reg(f, TB_INT2PTR, TB_TYPE_PTR);
 	f->nodes.payload[r].ptrcast = src;
 	return r;
@@ -198,37 +184,19 @@ TB_API TB_Register tb_inst_ptr2int(TB_Function* f, TB_Register src, TB_DataType 
 	return r;
 }
 
+TB_API TB_Register tb_inst_fpxt(TB_Function* f, TB_Register src, TB_DataType dt) {
+	TB_Register r = tb_make_reg(f, TB_FLOAT_EXT, dt);
+	f->nodes.payload[r].ext = src;
+	return r;
+}
+
 TB_API TB_Register tb_inst_sxt(TB_Function* f, TB_Register src, TB_DataType dt) {
-	assert(f->current_label);
-	
-#if TB_FRONTEND_OPT
-	for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
-		if (f->nodes.type[i] == TB_SIGN_EXT
-			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
-			&& f->nodes.payload[i].ext == src) {
-			return i;
-		}
-	}
-#endif
-	
 	TB_Register r = tb_make_reg(f, TB_SIGN_EXT, dt);
 	f->nodes.payload[r].ext = src;
 	return r;
 }
 
 TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt) {
-	assert(f->current_label);
-	
-#if TB_FRONTEND_OPT
-	for (size_t i = f->current_label + 1; i < f->nodes.count; i++) {
-		if (f->nodes.type[i] == TB_ZERO_EXT
-			&& TB_DATA_TYPE_EQUALS(f->nodes.dt[i], dt)
-			&& f->nodes.payload[i].ext == src) {
-			return i;
-		}
-	}
-#endif
-	
 	TB_Register r = tb_make_reg(f, TB_ZERO_EXT, dt);
 	f->nodes.payload[r].ext = src;
 	return r;
@@ -236,7 +204,6 @@ TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt) 
 
 TB_API TB_Register tb_inst_param(TB_Function* f, int param_id) {
 	assert(param_id < f->prototype->param_count);
-	
 	return 2 + param_id;
 }
 
@@ -254,6 +221,8 @@ TB_API TB_Register tb_inst_param_addr(TB_Function* f, int param_id) {
 }
 
 TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line) {
+	assert(line >= 0);
+	
 	TB_Register r = tb_make_reg(f, TB_LINE_INFO, TB_TYPE_VOID);
 	f->nodes.payload[r].line_info.file = file;
 	f->nodes.payload[r].line_info.line = line;
@@ -263,6 +232,9 @@ TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line) {
 }
 
 TB_API TB_Register tb_inst_local(TB_Function* f, uint32_t size, uint32_t alignment) {
+	assert(size > 0);
+	assert(alignment > 0 && tb_is_power_of_two(alignment));
+	
 	TB_Register r = tb_make_reg(f, TB_LOCAL, TB_TYPE_PTR);
 	f->nodes.payload[r].local.alignment = alignment;
 	f->nodes.payload[r].local.size = size;
@@ -311,7 +283,6 @@ TB_API void tb_inst_initialize_mem(TB_Function* f, TB_Register addr, TB_Initiali
 }
 
 TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) {
-	assert(f->current_label);
 	assert(dt.type == TB_BOOL || dt.type == TB_PTR || (dt.type >= TB_I8 && dt.type <= TB_I64));
 	
 	TB_Register r = tb_make_reg(f, TB_INT_CONST, dt);
@@ -381,17 +352,23 @@ TB_API TB_Register tb_inst_get_global_address(TB_Function* f, TB_GlobalID target
 	return r;
 }
 
-TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Register* params) {
+TB_Register* tb_vla_reserve(TB_Function* f, size_t count) {
 	// Reserve space for the arguments
-	if (f->vla.count + param_count >= f->vla.capacity) {
-		// TODO(NeGate): This might be excessive for this array, idk :P
-		f->vla.capacity = tb_next_pow2(f->vla.count + param_count);
+	if (f->vla.count + count >= f->vla.capacity) {
+		f->vla.capacity = f->vla.capacity ? tb_next_pow2(f->vla.count + count) : 16;
 		f->vla.data = tb_platform_heap_realloc(f->vla.data, f->vla.capacity * sizeof(TB_Register));
 	}
 	
+	return &f->vla.data[f->vla.count];
+}
+
+TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Register* params) {
 	int param_start = f->vla.count;
-	memcpy(f->vla.data + f->vla.count, params, param_count * sizeof(TB_Register));
+	
+	TB_Register* vla = tb_vla_reserve(f, param_count);
+	memcpy(vla, params, param_count * sizeof(TB_Register));
 	f->vla.count += param_count;
+	
 	int param_end = f->vla.count;
 	
 	TB_Register r = tb_make_reg(f, TB_CALL, dt);
@@ -402,16 +379,12 @@ TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Functio
 }
 
 TB_API TB_Register tb_inst_vcall(TB_Function* f, TB_DataType dt, const TB_Register target, size_t param_count, const TB_Register* params) {
-	// Reserve space for the arguments
-	if (f->vla.count + param_count >= f->vla.capacity) {
-		// TODO(NeGate): This might be excessive for this array, idk :P
-		f->vla.capacity = tb_next_pow2(f->vla.count + param_count);
-		f->vla.data = tb_platform_heap_realloc(f->vla.data, f->vla.capacity * sizeof(TB_Register));
-	}
-	
 	int param_start = f->vla.count;
-	memcpy(f->vla.data + f->vla.count, params, param_count * sizeof(TB_Register));
+	
+	TB_Register* vla = tb_vla_reserve(f, param_count);
+	memcpy(vla, params, param_count * sizeof(TB_Register));
 	f->vla.count += param_count;
+	
 	int param_end = f->vla.count;
 	
 	TB_Register r = tb_make_reg(f, TB_VCALL, dt);
@@ -422,16 +395,12 @@ TB_API TB_Register tb_inst_vcall(TB_Function* f, TB_DataType dt, const TB_Regist
 }
 
 TB_API TB_Register tb_inst_ecall(TB_Function* f, TB_DataType dt, const TB_ExternalID target, size_t param_count, const TB_Register* params) {
-	// Reserve space for the arguments
-	if (f->vla.count + param_count >= f->vla.capacity) {
-		// TODO(NeGate): This might be excessive for this array, idk :P
-		f->vla.capacity = tb_next_pow2(f->vla.count + param_count);
-		f->vla.data = tb_platform_heap_realloc(f->vla.data, f->vla.capacity * sizeof(TB_Register));
-	}
-	
 	int param_start = f->vla.count;
-	memcpy(f->vla.data + f->vla.count, params, param_count * sizeof(TB_Register));
+	
+	TB_Register* vla = tb_vla_reserve(f, param_count);
+	memcpy(vla, params, param_count * sizeof(TB_Register));
 	f->vla.count += param_count;
+	
 	int param_end = f->vla.count;
 	
 	TB_Register r = tb_make_reg(f, TB_ECALL, dt);
@@ -464,6 +433,12 @@ TB_API TB_Register tb_inst_not(TB_Function* f, TB_DataType dt, TB_Register n) {
 }
 
 TB_API TB_Register tb_inst_neg(TB_Function* f, TB_DataType dt, TB_Register n) {
+	if (f->nodes.type[n] == TB_INT_CONST) {
+		return tb_inst_iconst(f, dt, -f->nodes.payload[n].i_const);
+	} else if (f->nodes.type[n] == TB_FLOAT_CONST) {
+		return tb_inst_fconst(f, dt, -f->nodes.payload[n].f_const);
+	}
+	
 	TB_Register r = tb_make_reg(f, TB_NEG, dt);
 	f->nodes.payload[r].unary = n;
 	return r;
@@ -703,8 +678,8 @@ TB_API TB_Register tb_inst_label(TB_Function* f, TB_Label id) {
 TB_API void tb_inst_goto(TB_Function* f, TB_Label id) {
 	if (f->current_label == TB_NULL_REG) {
 		// Was placed after a terminator instruction,
-		// just omit this to avoid any issues it's not
-		// a big deal for example:
+		// just omit this to avoid any issues since it's
+		// not a big deal for example:
 		// RET x
 		// ~~GOTO .L5~~
 		// .L4:
@@ -734,17 +709,12 @@ TB_API TB_Register tb_inst_if(TB_Function* f, TB_Register cond, TB_Label if_true
 TB_API void tb_inst_switch(TB_Function* f, TB_DataType dt, TB_Register key, TB_Label default_label, size_t entry_count, const TB_SwitchEntry* entries) {
 	// the switch entries are 2 slots each
 	size_t param_count = entry_count * 2;
-	
-	// Reserve space for the arguments
-	if (f->vla.count + param_count >= f->vla.capacity) {
-		// TODO(NeGate): This might be excessive for this array, idk :P
-		f->vla.capacity = tb_next_pow2(f->vla.count + param_count);
-		f->vla.data = tb_platform_heap_realloc(f->vla.data, f->vla.capacity * sizeof(TB_Register));
-	}
-	
 	int param_start = f->vla.count;
-	memcpy(f->vla.data + f->vla.count, entries, param_count * sizeof(TB_Register));
+	
+	TB_Register* vla = tb_vla_reserve(f, param_count);
+	memcpy(vla, entries, param_count * sizeof(TB_Register));
 	f->vla.count += param_count;
+	
 	int param_end = f->vla.count;
 	
 	TB_Register r = tb_make_reg(f, TB_SWITCH, dt);

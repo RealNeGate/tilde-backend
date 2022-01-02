@@ -13,6 +13,8 @@ TB_Function* test_sat_uadd_i32(TB_Module* m);
 TB_Function* test_sat_sadd_i32(TB_Module* m);
 TB_Function* test_safe_add_i32(TB_Module* m);
 TB_Function* test_add_f32(TB_Module* m);
+TB_Function* test_add_f64(TB_Module* m);
+TB_Function* test_cvt_f32f64(TB_Module* m);
 TB_Function* test_vadd_f32x4(TB_Module* m);
 TB_Function* test_vmuladd_f32x4(TB_Module* m);
 TB_Function* test_muladd_f32(TB_Module* m);
@@ -48,11 +50,13 @@ int main(int argc, char** argv) {
 }
 
 void do_tests(const char* obj_path, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
-	TB_Module* m = tb_module_create(arch, system, features, TB_OPT_O1);
+	TB_Module* m = tb_module_create(arch, system, features);
     
 	typedef TB_Function*(*TestFunction)(TB_Module* m);
 	static const TestFunction test_functions[] = {
 		test_fact,
+		test_add_f64,
+		test_cvt_f32f64,
 #if 0
 		test_add_i8,
 		test_add_i16,
@@ -71,6 +75,8 @@ void do_tests(const char* obj_path, TB_Arch arch, TB_System system, const TB_Fea
 		test_add_sub_i32,
 		test_locals_params_1,
 		test_add_f32,
+		test_add_f64,
+		test_cvt_f32f64,
 		test_andor_i32,
 		test_muladd_f32,
 		test_fib,
@@ -188,6 +194,28 @@ TB_Function* test_add_f32(TB_Module* m) {
 	TB_Register sum = tb_inst_fadd(func, TB_TYPE_F32, a, b);
     
 	tb_inst_ret(func, sum);
+	return func;
+}
+
+TB_Function* test_add_f64(TB_Module* m) {
+	TB_FunctionPrototype* p = tb_prototype_create(m, TB_STDCALL, TB_TYPE_F64, 0, false);
+	TB_Function* func = tb_prototype_build(m, p, __FUNCTION__);
+	
+	TB_Register a = tb_inst_fconst(func, TB_TYPE_F64, 0.0);
+	TB_Register b = tb_inst_fconst(func, TB_TYPE_F64, 2.0);
+	TB_Register sum = tb_inst_fadd(func, TB_TYPE_F64, a, b);
+    
+	tb_inst_ret(func, sum);
+	return func;
+}
+
+TB_Function* test_cvt_f32f64(TB_Module* m) {
+	TB_FunctionPrototype* p = tb_prototype_create(m, TB_STDCALL, TB_TYPE_F64, 1, false);
+	tb_prototype_add_params(p, 1, (TB_DataType[]) { TB_TYPE_F32 });
+	TB_Function* func = tb_prototype_build(m, p, __FUNCTION__);
+	
+	TB_Register a = tb_inst_param(func, 0);
+	tb_inst_ret(func, tb_inst_fpxt(func, a, TB_TYPE_F64));
 	return func;
 }
 

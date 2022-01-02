@@ -63,14 +63,14 @@ typedef struct Segment {
 static Segment* arena_base;
 static Segment* arena_top;
 
-// weird bootleg mutex because i dont get threads.h on windows :(
-static atomic_int arena_lock = 0;
+static CRITICAL_SECTION arena_lock;
 
 void tb_platform_arena_init() {
-	Segment* s = (Segment*)VirtualAlloc(NULL, ARENA_SEGMENT_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	Segment* s = (Segment*)malloc(ARENA_SEGMENT_SIZE);
 	if (!s) abort();
 	
 	arena_base = arena_top = s;
+	InitializeCriticalSection(&arena_lock);
 }
 
 void* tb_platform_arena_alloc(size_t size) {
@@ -82,19 +82,19 @@ void* tb_platform_arena_alloc(size_t size) {
 	assert(size < ARENA_SEGMENT_SIZE);
 	
 	// lock
-	int expected = 0;
-	while (!atomic_compare_exchange_strong(&arena_lock, &expected, 1)) {}
+	EnterCriticalSection(&arena_lock);
 	
 	void* ptr;
-	if (arena_top->used + size - sizeof(Segment) < ARENA_SEGMENT_SIZE) {
+	if (arena_top->used + size < ARENA_SEGMENT_SIZE - sizeof(Segment)) {
 		ptr = &arena_top->data[arena_top->used];
 		arena_top->used += size;
-	}
-	else {
+	} else {
 		// Add new page
-		Segment* s = (Segment*)VirtualAlloc(NULL, ARENA_SEGMENT_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+		Segment* s = (Segment*)malloc(ARENA_SEGMENT_SIZE);
 		if (!s) {
 			printf("Out of memory!\n");
+			LeaveCriticalSection(&arena_lock);
+			
 			abort();
 		}
 		
@@ -108,7 +108,7 @@ void* tb_platform_arena_alloc(size_t size) {
 	}
 	
 	// unlock
-	arena_lock = 0;
+	LeaveCriticalSection(&arena_lock);
 	return ptr;
 }
 
@@ -116,7 +116,7 @@ void tb_platform_arena_free() {
 	Segment* c = arena_base;
 	while (c) {
 		Segment* next = c->next;
-		VirtualFree(c, 0, MEM_RELEASE);
+		free(c);
 		c = next;
 	}
 	

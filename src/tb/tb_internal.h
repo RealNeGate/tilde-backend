@@ -67,6 +67,9 @@ typedef enum TB_RegTypeEnum {
 	
 	// instructions with side-effects
 	TB_LINE_INFO,
+	TB_KEEPALIVE,
+	TB_INITIALIZE,
+	
 	TB_ICALL, /* internal use only, inline call */
 	TB_CALL,
     TB_VCALL, /* virtual call */
@@ -85,6 +88,8 @@ typedef enum TB_RegTypeEnum {
     TB_SWITCH,
     TB_IF,
     TB_RET,
+	TB_TRAP,
+	TB_UNREACHABLE, /* it's undefined behavior to reach this */
 	
 	// Immediates
 	TB_INT_CONST,
@@ -93,6 +98,7 @@ typedef enum TB_RegTypeEnum {
     
     // Casts
     TB_TRUNCATE,
+    TB_FLOAT_EXT,
     TB_SIGN_EXT,
     TB_ZERO_EXT,
     
@@ -143,15 +149,17 @@ typedef enum TB_RegTypeEnum {
 	TB_EFUNC_ADDRESS,
 	TB_GLOBAL_ADDRESS,
 	
-	TB_INITIALIZE,
-	
 	// Pointer math
 	TB_MEMBER_ACCESS,
 	TB_ARRAY_ACCESS,
     
     // PHI
-    TB_PHI1,
+    // NOTE(NeGate): I provide multiple shorthands
+	// because we ideally don't want to use the VLA
+	// space.
+	TB_PHI1,
     TB_PHI2,
+	TB_PHIN,
 	
     // NOTE(NeGate): only used internally, if you
     // see one in normal IR things went wrong in
@@ -176,7 +184,6 @@ typedef uint8_t TB_RegType;
 #define TB_FIRST_PARAMETER_REG 2
 
 typedef union TB_RegPayload {
-	// NOTE(NeGate): Shouldn't exceed 128bits for any option
 	uint32_t raw[4];
 	
 	uint64_t i_const;
@@ -185,7 +192,7 @@ typedef union TB_RegPayload {
 		size_t len;
 		const char* data;
 	} str_const;
-	
+	TB_Register keepalive;
 	TB_Register ext;
 	TB_Register trunc;
 	TB_Register ptrcast;
@@ -266,6 +273,9 @@ typedef union TB_RegPayload {
 		TB_Register b;
 	} phi2;
 	struct {
+		int param_start, param_end;
+	} phin;
+	struct {
 		TB_Label id;
 		TB_Register terminator;
 		bool is_loop;
@@ -306,6 +316,7 @@ typedef union TB_RegPayload {
 		TB_InitializerID id;
 	} init;
 } TB_RegPayload;
+_Static_assert(sizeof(TB_RegPayload) == 16, "TB_RegPayload shouldn't exceed 128bits for any option");
 
 typedef struct TB_ConstPoolPatch {
 	uint32_t func_id;
@@ -351,15 +362,6 @@ typedef struct TB_FunctionOutput {
 typedef struct TB_File {
 	char* path;
 } TB_File;
-
-typedef struct TB_NodeStream {
-	TB_Register    capacity;
-	TB_Register    count;
-	
-	TB_RegType*    type;
-	TB_DataType*   dt;
-	TB_RegPayload* payload;
-} TB_NodeStream;
 
 typedef struct TB_External {
 	char* name;
@@ -423,31 +425,34 @@ typedef struct TB_Global {
 } TB_Global;
 
 struct TB_Function {
-	// It's kinda a weird circular but still
+	// It's kinda a weird circular reference but yea
 	TB_Module* module;
-	const TB_FunctionPrototype* prototype;
 	
 	char* name;
-	bool is_ir_free;
+	const TB_FunctionPrototype* prototype;
+	
+	struct TB_NodeStream {
+		TB_Register    capacity;
+		TB_Register    count;
+		
+		TB_RegType*    type;
+		TB_DataType*   dt;
+		TB_RegPayload* payload;
+	} nodes;
 	
 	// Used by the IR building
 	TB_Register current_label;
 	TB_Label label_count;
-	TB_NodeStream nodes;
 	
 	// Used by nodes which have variable
-	// length arguements like PHI and CALL.
+	// length arguments like PHI and CALL.
 	// SWITCH has arguments here too but they
 	// are two slots each
 	struct {
-		TB_Register capacity;
-		TB_Register count;
+		size_t capacity;
+		size_t count;
 		TB_Register* data;
 	} vla;
-	
-	uint32_t locals_stack_usage;
-	uint32_t parameter_stack_usage;
-	uint32_t stack_usage;
 };
 
 typedef struct TB_LabelSymbol {
@@ -462,7 +467,6 @@ typedef struct TB_CodeRegion {
 } TB_CodeRegion;
 
 struct TB_Module {
-	int optimization_level;
 	int max_threads;
     
 	TB_Arch target_arch;
@@ -570,13 +574,10 @@ b = temp; \
 #define tb_arrlen(a) (sizeof(a) / sizeof(a[0]))
 
 #define loop(iterator, count) \
-for (typeof(count) iterator = 0, end__ = (count); iterator != end__; ++iterator)
+for (typeof(count) iterator = 0, end__ = (count); iterator < end__; ++iterator)
 
 #define loop_range(iterator, start, count) \
-for (typeof(count) iterator = (start), end__ = (count); iterator != end__; ++iterator)
-
-#define loop_range_step(iterator, start, count, step) \
-for (typeof(count) iterator = (start), end__ = (count); iterator != end__; iterator += step)
+for (typeof(count) iterator = (start), end__ = (count); iterator < end__; ++iterator)
 
 #define loop_reverse(iterator, count) \
 for (typeof(count) iterator = (count); iterator--;)
@@ -589,6 +590,7 @@ bool tb_validate(TB_Function* f);
 
 TB_TemporaryStorage* tb_tls_allocate();
 void* tb_tls_push(TB_TemporaryStorage* store, size_t size);
+void* tb_tls_try_push(TB_TemporaryStorage* store, size_t size);
 void* tb_tls_pop(TB_TemporaryStorage* store, size_t size);
 void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance);
 
@@ -664,6 +666,11 @@ __VA_ARGS__; \
 }
 #endif
 
+// NOTE(NeGate): Considers 0 as a power of two
+inline static bool tb_is_power_of_two(size_t x) {
+    return (x & (x - 1)) == 0;
+}
+
 ////////////////////////////////
 // CONSTANT FOLDING UTILS
 ////////////////////////////////
@@ -673,21 +680,11 @@ uint64_t tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, uint64_t a, uint6
 uint64_t tb_fold_div(TB_DataType dt, uint64_t a, uint64_t b);
 
 ////////////////////////////////
-// OPTIMIZATION FUNCTIONS
+// ANALYSIS
 ////////////////////////////////
-bool tb_opt_mem2reg(TB_Function* f);
-bool tb_opt_dce(TB_Function* f);
-bool tb_opt_fold(TB_Function* f);
-bool tb_opt_load_elim(TB_Function* f);
-bool tb_opt_inline(TB_Function* f);
-bool tb_opt_hoist_locals(TB_Function* f);
-bool tb_opt_canonicalize(TB_Function* f);
-bool tb_opt_remove_pass_node(TB_Function* f);
-bool tb_opt_strength_reduction(TB_Function* f);
-bool tb_opt_compact_dead_regs(TB_Function* f);
-
 void tb_find_live_intervals(const TB_Function* f, TB_Register intervals[]);
 void tb_find_use_count(const TB_Function* f, int use_count[]);
+TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count);
 
 uint32_t tb_emit_const_patch(TB_Module* m, uint32_t func_id, size_t pos, const void* ptr, size_t len, size_t local_thread_id);
 void tb_emit_global_patch(TB_Module* m, uint32_t func_id, size_t pos, TB_GlobalID global, size_t local_thread_id);
@@ -697,6 +694,8 @@ void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id
 #if !TB_STRIP_LABELS
 void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, size_t pos);
 #endif
+
+TB_Register* tb_vla_reserve(TB_Function* f, size_t count);
 
 // NOTE(NeGate): Place all the codegen interfaces down here
 extern ICodeGen x64_fast_code_gen;

@@ -117,7 +117,7 @@ inline static void inst2(Ctx* ctx, int op, const Val* a, const Val* b, int dt_ty
 		
 		emit(opcode | sz | (dir_flag ? 2 : 0));
 	}
-	else if (inst->ext == EXT_SSE_SS || inst->ext == EXT_SSE_PS) {
+	else if (inst->ext == EXT_SSE_SS || inst->ext == EXT_SSE_SD || inst->ext == EXT_SSE_PS) {
 		assert(b->type != VAL_IMM);
 		
 		// SSE also extends to integer vectors so this is wrong
@@ -140,9 +140,8 @@ inline static void inst2(Ctx* ctx, int op, const Val* a, const Val* b, int dt_ty
 			emit(rex(true, rx, base, 0));
 		}
 		
-		if (inst->ext == EXT_SSE_SS) {
-			emit(0xF3);
-		}
+		if (inst->ext == EXT_SSE_SS) emit(0xF3);
+		else if (inst->ext == EXT_SSE_SD) emit(0xF2);
 		
 		emit(0x0F);
 		emit(is_vec_mov ? inst->op + !dir : inst->op);

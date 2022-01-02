@@ -1,5 +1,5 @@
 
-bool tb_opt_dce(TB_Function* f) {
+bool tb_opt_dead_expr_elim(TB_Function* f) {
 	int changes = 0;
 	TB_TemporaryStorage* tls = tb_tls_allocate();
     
@@ -10,8 +10,9 @@ bool tb_opt_dce(TB_Function* f) {
 		if (intervals[i] == 0) {
 			switch (f->nodes.type[i]) {
 				// keep
-                case TB_NULL:
+				case TB_NULL:
                 case TB_LABEL:
+				case TB_INITIALIZE:
                 case TB_PHI1:
                 case TB_PHI2:
                 case TB_GOTO:
@@ -26,10 +27,14 @@ bool tb_opt_dce(TB_Function* f) {
                 case TB_PARAM:
 				case TB_MEMSET:
 				case TB_MEMCPY:
+                case TB_KEEPALIVE:
+                case TB_TRAP:
+				case TB_UNREACHABLE:
 				break;
 				// delete:
                 case TB_INT_CONST:
                 case TB_LOCAL:
+                case TB_PASS:
                 case TB_NOT:
                 case TB_NEG:
                 case TB_SIGN_EXT:
@@ -68,3 +73,50 @@ bool tb_opt_dce(TB_Function* f) {
     
 	return (changes > 0);
 }
+
+bool tb_opt_dead_block_elim(TB_Function* f) {
+#if 0
+	int changes = 0;
+	TB_TemporaryStorage* tls = tb_tls_allocate();
+    
+	// Calculate all the immediate predecessors
+	// First BB has no predecessors
+	int* pred_count; // [label_count]
+	TB_Label** preds; // [label_count][pred_count[i]]
+	{
+		pred_count = tb_tls_push(tls, f->label_count * sizeof(int));
+		preds = tb_tls_push(tls, f->label_count * sizeof(TB_Label*));
+		
+		// entry label has no predecessors
+		pred_count[0] = 0;
+		preds[0] = NULL;
+		
+		loop_range(j, 1, f->label_count) {
+			preds[j] = (TB_Label*)tb_tls_push(tls, 0);
+			tb_calculate_immediate_predeccessors(f, tls, j, &pred_count[j]);
+		}
+	}
+	
+	// NOTE(NeGate): Try to see if the conditions to a basic block
+	// can ever be true.
+	loop_range(i, 1, f->label_count) if (pred_count[i] == 1) {
+		TB_Register parent = tb_find_reg_from_label(f, preds[i][0]);
+		TB_Register parent_terminator = f->nodes.payload[parent].label.terminator;
+		
+		// we want simple IFs
+		if (f->nodes.type[parent_terminator] != TB_IF) continue;
+		
+		bool is_hit_on_true = (i == f->nodes.payload[parent_terminator].if_.if_true);
+		TB_Register condition = f->nodes.payload[parent_terminator].if_.cond;
+		
+		((void)is_hit_on_true);
+		((void)condition);
+		__debugbreak();
+	}
+	
+	return (changes > 0);
+#endif
+	
+	return false;
+}
+

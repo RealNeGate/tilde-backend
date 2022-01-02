@@ -38,9 +38,6 @@ bool tb_opt_remove_pass_node(TB_Function* f) {
 	for (TB_Register i = 1; i < f->nodes.count; i++) {
 		if (f->nodes.type[i] == TB_PASS) {
 			tb_function_find_replace_reg(f, i, f->nodes.payload[i].pass);
-			
-			// Kill PASS
-			tb_kill_op(f, i);
 			changes++;
 		}
 	}
@@ -50,7 +47,7 @@ bool tb_opt_remove_pass_node(TB_Function* f) {
 
 bool tb_opt_canonicalize(TB_Function* f) {
 	int changes = 0;
-	for (TB_Register i = 1; i < f->nodes.count; i++) {
+	loop_range(i, 1, f->nodes.count) {
 		TB_RegType type = f->nodes.type[i];
 		
 		// TODO(NeGate): Maybe we should have a proper function/macro
@@ -105,6 +102,74 @@ bool tb_opt_canonicalize(TB_Function* f) {
 					f->nodes.payload[i].pass = base;
 					changes++;
 				}
+			}
+		} else if (type == TB_PHI2) {
+			// remove useless phi
+			TB_Register a = f->nodes.payload[i].phi2.a;
+			TB_Register b = f->nodes.payload[i].phi2.b;
+			
+			// trivial phi
+			if (a == b) {
+				f->nodes.type[i] = TB_PASS;
+				f->nodes.payload[i].pass = a;
+				changes++;
+			} else if (i == b) {
+				f->nodes.type[i] = TB_PASS;
+				f->nodes.payload[i].pass = a;
+				changes++;
+			} else if (i == a) {
+				f->nodes.type[i] = TB_PASS;
+				f->nodes.payload[i].pass = b;
+				changes++;
+			}
+		} else if (f->nodes.type[i] == TB_PHI1) {
+			// remove useless phi
+			TB_Register reg = f->nodes.payload[i].phi1.a;
+			
+			f->nodes.type[i] = TB_PASS;
+			f->nodes.payload[i].pass = reg;
+			changes++;
+		} else if (f->nodes.type[i] == TB_LABEL) {
+			// By eliding labels that share the same body
+			// we can improve the analysis.
+			
+			// NOTE(NeGate): We can read ahead because of the zeroed
+			// out padding space in the TB_NodeStream::type stream
+			if (f->nodes.type[i + 1] == TB_LABEL) {
+				TB_Label after = f->nodes.payload[i].label.id;
+				TB_Label before = f->nodes.payload[i+1].label.id;
+				
+				// inherit the terminator
+				f->nodes.payload[i].label.terminator = f->nodes.payload[i+1].label.terminator;
+				
+				tb_kill_op(f, i + 1);
+				
+				// replace all references to the label
+				loop_range(j, 1, f->nodes.count) switch (f->nodes.type[j]) {
+					case TB_GOTO: {
+						if (f->nodes.payload[j].goto_.label == before) {
+							f->nodes.payload[j].goto_.label = after;
+						}
+						break;
+					}
+					case TB_IF: {
+						if (f->nodes.payload[j].if_.if_true == before) {
+							f->nodes.payload[j].if_.if_true = after;
+						}
+						
+						if (f->nodes.payload[j].if_.if_false == before) {
+							f->nodes.payload[j].if_.if_false = after;
+						}
+						break;
+					}
+					
+					// TODO(NeGate): implement switch statement
+					case TB_SWITCH: tb_todo();
+					
+					default: break;
+				}
+				
+				changes++;
 			}
 		}
 	}

@@ -6,7 +6,8 @@
 #include <x86intrin.h>
 #endif
 
-_Static_assert(sizeof(float) == sizeof(uint32_t), "Float needs to be a 32-bit single float!");
+_Static_assert(sizeof(float) == sizeof(uint32_t), "Float needs to be a 32-bit float!");
+_Static_assert(sizeof(double) == sizeof(uint64_t), "Double needs to be a 64-bit float!");
 
 // can be cleared after the side effect that originally created it
 //#define TB_REG_TEMP (((TB_Register)INT32_MAX) - 1)
@@ -16,6 +17,11 @@ typedef union Cvt_F32U32 {
 	float f;
 	uint32_t i;
 } Cvt_F32U32;
+
+typedef union Cvt_F64U64 {
+	double f;
+	uint64_t i;
+} Cvt_F64U64;
 
 typedef enum Cond {
 	O, NO, B, X64, E, NE, BE, A,
@@ -193,7 +199,11 @@ typedef enum Inst2Type {
     
     // Scalar Single
     MOVSS, ADDSS, MULSS, SUBSS, DIVSS,
-    CMPSS,
+    CMPSS, CVTSS2SD,
+	
+    // Scalar Double
+    MOVSD, ADDSD, MULSD, SUBSD, DIVSD,
+    CMPSD, CVTSD2SS,
 	
 	// Packed Single
 	MOVAPS, MOVUPS, ADDPS, SUBPS, MULPS, DIVPS 
@@ -210,8 +220,12 @@ typedef enum ExtMode {
 	// these are forced as always load.
 	EXT_DEF2,
     
-    // SSE instructions have a F3 0F prefix
+    // SSE scalar-single instructions have a F3 0F prefix
     EXT_SSE_SS,
+	
+    // SSE scalar-single instructions have a F2 0F prefix
+    EXT_SSE_SD,
+	
     EXT_SSE_PS
 } ExtMode;
 
@@ -284,6 +298,15 @@ static const Inst2 inst2_tbl[] = {
 	[SUBSS] = { 0x5C, .ext = EXT_SSE_SS },
 	[DIVSS] = { 0x5E, .ext = EXT_SSE_SS },
 	[CMPSS] = { 0xC2, .ext = EXT_SSE_SS },
+	[CVTSS2SD] = { 0x5A, .ext = EXT_SSE_SS },
+	
+	[MOVSD] = { 0x10, .ext = EXT_SSE_SD },
+	[ADDSD] = { 0x58, .ext = EXT_SSE_SD },
+	[MULSD] = { 0x59, .ext = EXT_SSE_SD },
+	[SUBSD] = { 0x5C, .ext = EXT_SSE_SD },
+	[DIVSD] = { 0x5E, .ext = EXT_SSE_SD },
+	[CMPSD] = { 0xC2, .ext = EXT_SSE_SD },
+	[CVTSD2SS] = { 0x5A, .ext = EXT_SSE_SD },
 	
 	[MOVAPS] = { 0x28, .ext = EXT_SSE_PS },
 	[MOVUPS] = { 0x10, .ext = EXT_SSE_PS },

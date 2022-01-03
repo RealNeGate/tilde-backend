@@ -29,6 +29,30 @@ static TB_CodeRegion* get_or_allocate_code_region(TB_Module* m, int tid) {
 	return m->code_regions[tid];
 }
 
+TB_API TB_Function* tb_function_clone(TB_Module* m, TB_Function* source_func, const char* name) {
+	size_t i = m->functions.count++;
+	assert(i < TB_MAX_FUNCTIONS);
+	
+	TB_Function* f = &m->functions.data[i];
+	*f = (TB_Function){
+		.module = m,
+		.prototype = f->prototype,
+		.name = tb_platform_string_alloc(name),
+		.nodes.count = source_func->nodes.count,
+		.label_count = source_func->label_count,
+		.current_label = source_func->current_label
+	};
+	
+	// TODO(NeGate): The node stream can never be under 16 entries
+	// for the SIMD optimizations to work so we bias the initial size.
+	tb_resize_node_stream(f, f->nodes.count < 16 ? 16 : tb_next_pow2(f->nodes.count));
+	
+	memcpy(f->nodes.type, source_func->nodes.type, f->nodes.count * sizeof(uint8_t));
+	memcpy(f->nodes.dt, source_func->nodes.dt, f->nodes.count * sizeof(TB_DataType));
+	memcpy(f->nodes.payload, source_func->nodes.payload, f->nodes.count * sizeof(TB_RegPayload));
+	return f;
+}
+
 // TODO(NeGate): Doesn't free the name, it's kept forever
 TB_API void tb_function_free(TB_Function* f) {
 	if (f->nodes.type == NULL) return;

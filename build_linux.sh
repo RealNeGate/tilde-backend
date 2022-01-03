@@ -11,6 +11,7 @@ tb_source_files="../src/tb/tb.c
 	../src/tb/tb_posix.c 
 	../src/tb/tb_internal.c"
 
+mkdir build
 cd build
 gcc $clang_settings $tb_source_files -lpthread -fPIC -c
 ar -rcs tinybackend.a *.o

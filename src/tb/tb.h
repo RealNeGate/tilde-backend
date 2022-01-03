@@ -323,6 +323,7 @@ extern "C" {
 	////////////////////////////////
 	// Function IR Generation
 	////////////////////////////////
+	TB_API TB_Function* tb_function_clone(TB_Module* m, TB_Function* f, const char* name);
 	TB_API void tb_function_print(TB_Function* f, FILE* out);
 	TB_API void tb_function_free(TB_Function* f);
 	

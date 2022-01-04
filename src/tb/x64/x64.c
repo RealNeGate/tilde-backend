@@ -27,6 +27,10 @@ static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_
 static bool is_local_of_bb(Ctx* ctx, TB_Function* f, TB_Register bound, TB_Register bb, TB_Register bb_end);
 static bool can_recycle_into(Ctx* ctx, TB_Function* f, TB_Register to, TB_Register from);
 
+static void desugar_dt(TB_DataType* dt) {
+	if (dt->type == TB_BOOL) dt->type = TB_I8;
+}
+
 TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
 	s_local_thread_id = local_thread_id;
 	TB_TemporaryStorage* tls = tb_tls_allocate();
@@ -1639,9 +1643,7 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 
 static Val load_into(Ctx* ctx, TB_Function* f, TB_DataType dt, TB_Register r, TB_Register addr) {
 	Val v = use(ctx, f, addr);
-	
-	// Desugar booleans into bytes
-	if (v.dt.type == TB_BOOL) v.dt.type = TB_I8;
+	desugar_dt(&v.dt);
 	
 	if (v.mem.is_rvalue) {
 		// deref
@@ -1657,8 +1659,7 @@ static Val load_into(Ctx* ctx, TB_Function* f, TB_DataType dt, TB_Register r, TB
 }
 
 static void store_into(Ctx* ctx, TB_Function* f, TB_DataType dt, const Val* dst, TB_Register r, TB_Register dst_reg, TB_Register val_reg) {
-	// Desugar booleans into bytes
-	if (dt.type == TB_BOOL) dt.type = TB_I8;
+	desugar_dt(&dt);
 	
 	int op = MOV;
 	
@@ -2179,7 +2180,7 @@ static Val use_as_rvalue(Ctx* ctx, TB_Function* f, TB_Register r) {
 	}
 	
 	Val v = use(ctx, f, r);
-	if (v.dt.type == TB_BOOL) v.dt.type = TB_I8;
+	desugar_dt(&v.dt);
 	
 	if (is_value_mem(&v)) {
 		if (is_address_node(f->nodes.type[r])) {
@@ -2286,10 +2287,9 @@ static bool is_address_node(TB_RegType t) {
 
 static int get_data_type_size(const TB_DataType dt) {
 	switch (dt.type) {
-		// TODO(NeGate): Cannot pass void or boolean via parameter
 		case TB_VOID:
 		case TB_BOOL:
-		return 0;
+		return 1;
 		case TB_I8: 
 		return 1 * dt.count;
 		case TB_I16: 

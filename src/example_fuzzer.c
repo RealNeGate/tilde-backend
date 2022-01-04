@@ -68,7 +68,7 @@ static __stdcall int ir_gen(FuzzerInfo* i) {
 		TB_Function* f = tb_prototype_build(m, p, temp);
 		for (int i = 0; i < param_count; i++) pool[pool_size++] = tb_inst_param(f, i);
 		
-		int inst_count = gen_random(1, 50);
+		int inst_count = gen_random(1, 200);
 		for (int i = 0; i < inst_count; i++) {
 			TB_DataType dt = gen_random_int_dt();
 			

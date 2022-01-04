@@ -54,7 +54,7 @@ casted; \
 // TODO(NeGate): eventually i'll make it dynamic
 #define PROTOTYPES_ARENA_SIZE (16u << 20u)
 
-#define CODE_REGION_BUFFER_SIZE (256 * 1024 * 1024)
+#define CODE_REGION_BUFFER_SIZE (512 * 1024 * 1024)
 
 typedef struct TB_Emitter {
 	size_t capacity, count;

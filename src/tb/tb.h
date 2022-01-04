@@ -131,7 +131,7 @@ extern "C" {
 		TB_OPT_SPEED,
 	} TB_OptLevel;
 	
-	enum {
+	typedef enum TB_DataTypeEnum {
 		TB_VOID,
 		// Boolean
 		TB_BOOL,
@@ -140,18 +140,17 @@ extern "C" {
 		// IEEE 754 Floating point
 		TB_F32, TB_F64,
 		// Pointers
-		// NOTE(NeGate): consider support for multiple address spaces
 		TB_PTR,
 		
 		TB_MAX_TYPES
-	};
+	} TB_DataTypeEnum;
 	
 #define TB_IS_INTEGER_TYPE(x) ((x) >= TB_I8 && (x) <= TB_I64)
 #define TB_IS_FLOAT_TYPE(x) ((x) >= TB_F32 && (x) <= TB_F64)
 #define TB_IS_POINTER_TYPE(x) ((x) == TB_PTR)
 	
 	typedef struct TB_DataType {
-		uint8_t type;
+		TB_DataTypeEnum type : 8;
 		uint8_t count; // 0 is illegal, except on VOID, it doesn't matter there
 	} TB_DataType;
 	

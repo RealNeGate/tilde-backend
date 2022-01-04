@@ -14,5 +14,5 @@ set tb_source_files=src/tb/tb.c ^
 	src/tb/stb_ds.c
 
 IF NOT exist build (mkdir build)
-clang %clang_settings% src/example_fuzzer.c %tb_source_files% -o build/example.exe
+clang %clang_settings% src/example_jit.c %tb_source_files% -o build/example.exe
 

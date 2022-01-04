@@ -1,0 +1,25 @@
+# Void
+
+void type is a null-type which cannot hold data.
+
+# Boolean
+
+booleans represent either true or false and the conversion is defined as:
+
+		((x != 0) ? true : false) where x is a data-holding type
+
+this is important to note because in float types NaN comparisons always return
+false which means that NaN is considered false in a (NaN -> bool) conversion.
+
+# Integers
+
+integer types come in a few basic sizes (i8, i16, i32, i64) and represent numerical
+data and raw data. Integer operations can come in two forms: signed and unsigned.
+
+# Floats
+
+floating point types are IEEE-754 compliant 
+
+# Pointers
+
+

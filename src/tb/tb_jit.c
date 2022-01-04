@@ -1,7 +1,4 @@
-#ifdef _WIN32
 #include "tb_internal.h"
-
-#include <windows.h>
 
 // NOTE(NeGate): This only currently supports the text and rdata sections,
 // it puts the rdata on the next 4KB page after the text section all within
@@ -106,5 +103,3 @@ void tb_module_export_jit(TB_Module* m) {
 		abort();
 	}
 }
-
-#endif

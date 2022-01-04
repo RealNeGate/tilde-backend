@@ -25,6 +25,7 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 // into `to`
 static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_Register from_terminator, TB_Register to, TB_Register to_terminator);
 static bool is_local_of_bb(Ctx* ctx, TB_Function* f, TB_Register bound, TB_Register bb, TB_Register bb_end);
+static bool can_recycle_into(Ctx* ctx, TB_Function* f, TB_Register to, TB_Register from);
 
 TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
 	s_local_thread_id = local_thread_id;
@@ -171,6 +172,8 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 	
 	// Allocate local and parameter stack slots
 	int stack_usage = 0;
+	
+	DEBUG_LOG("\n\n\nFUNCTION %s:\n", f->name);
 	
 	const TB_FunctionPrototype* restrict proto = f->prototype;
 	loop(i, (size_t) proto->param_count) {
@@ -611,7 +614,7 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 		
 		// If there's any non-side effect instructions which happen before a 
 		// fence/side-effect instruction but are used afterwards, they're evaluated
-		// before the fence.
+		// before the fence. Also post-pone their death... eheh
 		for (size_t j = last_fence; j < r; j++) {
 			if (ctx->intervals[j] > r && f->nodes.type[j] != TB_LOAD) {
 				def(ctx, f, use(ctx, f, j), j);
@@ -1209,7 +1212,7 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			
 			if (src.dt.type == TB_I32 &&
 				dt.type == TB_I64 &&
-				ctx->intervals[p->ext] == r) {
+				can_recycle_into(ctx, f, p->ext, r)) {
 				assert(src.dt.count == 1);
 				assert(dt.count == 1);
 				
@@ -1259,16 +1262,16 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			}
 			
 			Val v;
-			if (ctx->intervals[p->ext] == r && !is_value_mem(&src)) {
+			bool recycle = false;
+			if (can_recycle_into(ctx, f, p->ext, r) && !is_value_mem(&src)) {
 				v = src;
+				recycle = true;
 			} else {
 				v = def_new_gpr(ctx, f, r, dt.type);
 			}
 			
 			if (src.dt.type == TB_I64) {
-				if (ctx->intervals[p->ext] != r) {
-					inst2(ctx, MOV, &v, &src, dt.type);
-				}
+				if (!recycle) inst2(ctx, MOV, &v, &src, dt.type);
 			} else if (src.dt.type == TB_I32 && (dt.type == TB_I64 || dt.type == TB_PTR)) {
 				inst2(ctx, MOVSXD, &v, &src, dt.type);
 			} else if (src.dt.type == TB_I16) {
@@ -1291,7 +1294,7 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			if ((src.dt.type == TB_I32 ||
 				 src.dt.type == TB_I64 ||
 				 src.dt.type == TB_PTR) &&
-				ctx->intervals[p->ext] == r) {
+				can_recycle_into(ctx, f, p->ext, r)) {
 				assert(src.dt.count == 1);
 				assert(dt.count == 1);
 				
@@ -1312,16 +1315,22 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 				}
 			}
 			else {
-				Val v = ctx->intervals[p->ext] == r ? src : def_new_gpr(ctx, f, r, dt.type);
+				bool recycle = false;
+				
+				Val v;
+				if (can_recycle_into(ctx, f, p->ext, r)) {
+					v = src;
+					recycle = true;
+				} else {
+					v = def_new_gpr(ctx, f, r, dt.type);
+				}
 				
 				if (src.dt.type == TB_I16) {
 					inst2(ctx, MOVZXW, &v, &src, dt.type);
 				} else if (src.dt.type == TB_I8 || src.dt.type == TB_BOOL) {
 					inst2(ctx, MOVZXB, &v, &src, dt.type);
 				} else {
-					if (ctx->intervals[p->ext] != r) {
-						inst2(ctx, MOV, &v, &src, dt.type);
-					}
+					if (!recycle) inst2(ctx, MOV, &v, &src, dt.type);
 				}
 				return v;
 			}
@@ -1745,7 +1754,7 @@ static void def(Ctx* ctx, TB_Function* f, const Val v, TB_Register r) {
 	else if (v.type == VAL_XMM) ctx->xmm_desc[v.xmm] = r;
 	
 	ctx->addr_desc[r] = v;
-	DEBUG_LOG("   def r%u\n", r);
+	DEBUG_LOG("   def r%u (should die at r%u)\n", r, ctx->intervals[r]);
 }
 
 static Val def_new_gpr(Ctx* ctx, TB_Function* f, TB_Register r, int dt_type) {
@@ -1838,7 +1847,9 @@ static bool evict_gpr(Ctx* ctx, TB_Function* f, GPR g, TB_Register r) {
 	TB_Register bb = ctx->current_bb;
 	if (bound != TB_REG_MAX &&
 		bound > bb &&
-		ctx->intervals[bound] < r) {
+		ctx->intervals[bound] < r &&
+		f->nodes.type[bound] != TB_PARAM &&
+		f->nodes.type[bound] != TB_LOAD) {
 		DEBUG_LOG("   collected r%u\n", bound);
 		ctx->gpr_desc[g] = 0;
 		ctx->addr_desc[bound] = (Val){ 0 };
@@ -1873,7 +1884,9 @@ static bool evict_xmm(Ctx* ctx, TB_Function* f, XMM x, TB_Register r) {
 	TB_Register bb = ctx->current_bb;
 	if (bound != TB_REG_MAX &&
 		bound > bb &&
-		ctx->intervals[bound] < r) {
+		ctx->intervals[bound] < r &&
+		f->nodes.type[bound] != TB_PARAM &&
+		f->nodes.type[bound] != TB_LOAD) {
 		DEBUG_LOG("   collected r%u\n", bound);
 		ctx->xmm_desc[x] = 0;
 		ctx->addr_desc[bound] = (Val){ 0 };
@@ -1992,8 +2005,7 @@ static Val isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
 	}
 	
 	bool recycle = a->type != VAL_IMM &&
-		ctx->intervals[a_reg] == dst_reg &&
-		ctx->use_count[a_reg] == 1;
+		can_recycle_into(ctx, f, a_reg, dst_reg);
 	
 	// Can't recycle memory if the operation can't store directly into it
 	if (!info->has_memory_dst && is_value_mem(a)) recycle = false;
@@ -2044,7 +2056,7 @@ static Val isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
 		if (dst_dt.type == TB_BOOL || dst_dt.type == TB_I8) mov_extend = MOVZXB;
 	}
 	
-	bool recycle = src->type != VAL_IMM && ctx->intervals[src_reg] == dst_reg;
+	bool recycle = src->type != VAL_IMM && can_recycle_into(ctx, f, src_reg, dst_reg);
 	
 	// Can't recycle memory if the operation can't store directly into it
 	if (!info->has_memory_dst && is_value_mem(src)) recycle = false;
@@ -2092,6 +2104,9 @@ static bool garbage_collect_gpr(Ctx* ctx, TB_Function* f, TB_Register end) {
 		TB_Register r = ctx->gpr_desc[i];
 		if (r <= bb || r > bb_end) continue;
 		if (f->nodes.type[r] == TB_PHI2) continue;
+		if (f->nodes.type[r] == TB_LOAD) continue;
+		if (f->nodes.type[r] == TB_PARAM) continue;
+		if (f->nodes.type[r] == TB_PARAM_ADDR) continue;
 		
 		if (ctx->intervals[r] < end) {
 			DEBUG_LOG("   gc kill r%u\n", r);
@@ -2113,6 +2128,9 @@ static bool garbage_collect_xmm(Ctx* ctx, TB_Function* f, TB_Register end) {
 		TB_Register r = ctx->xmm_desc[i];
 		if (r <= bb || r > bb_end) continue;
 		if (f->nodes.type[r] == TB_PHI2) continue;
+		if (f->nodes.type[r] == TB_LOAD) continue;
+		if (f->nodes.type[r] == TB_PARAM) continue;
+		if (f->nodes.type[r] == TB_PARAM_ADDR) continue;
 		
 		if (ctx->intervals[r] < end) {
 			DEBUG_LOG("   gc kill r%u\n", r);
@@ -2131,6 +2149,15 @@ static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, GPR gpr, TB_Register bb
 	return (bound >= bb &&
 			bound <= bb_end &&
 			f->nodes.type[bound] != TB_PHI2);
+}
+
+static bool can_recycle_into(Ctx* ctx, TB_Function* f, TB_Register from, TB_Register to) {
+	if (f->nodes.type[from] == TB_LOAD || f->nodes.type[from] == TB_PARAM) {
+		return false;
+	}
+	
+	return ctx->use_count[from] == 1 && 
+		ctx->intervals[from] == to;
 }
 
 static bool is_local_of_bb(Ctx* ctx, TB_Function* f, TB_Register bound, TB_Register bb, TB_Register bb_end) {

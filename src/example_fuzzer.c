@@ -2,7 +2,7 @@
 #include <x86intrin.h>
 #include <windows.h>
 
-#define TRIAL_COUNT 50000 // for max power 349525 
+#define TRIAL_COUNT 349525 // for max power 349525 
 
 static uint32_t gen_random_any();
 static uint32_t gen_random(uint32_t min, uint32_t max);
@@ -166,7 +166,7 @@ int main(int argc, char** argv) {
 	uint64_t t1 = get_timer_counter();
 	
 	TB_FeatureSet features = { 0 };
-	m = tb_module_create(TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features, TB_OPT_O0);
+	m = tb_module_create(TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features);
 	
 	rng.inc = __builtin_bswap64(__rdtsc()) >> 7;
 	printf("Initial seed: 0x%llx 0x%llx\n", rng.state, rng.inc);
@@ -192,21 +192,14 @@ int main(int argc, char** argv) {
 	}
 	
 	uint64_t t2 = get_timer_counter();
-	printf("IR gen took %f ms\n", ((t2 - t1) * freq) * 1000.0);
+	printf("IR generation took %f ms\n", ((t2 - t1) * freq) * 1000.0);
 	
-	if (!tb_module_compile(m)) abort();
+	if (!tb_module_export(m, "./test_x64.obj")) abort();
 	
 	uint64_t t3 = get_timer_counter();
-	printf("Machine code gen took %f ms\n", ((t3 - t2) * freq) * 1000.0);
+	printf("Object file output took %f ms\n", ((t3 - t2) * freq) * 1000.0);
 	
-	FILE* file = fopen("./test_x64.obj", "wb");
-	if (!tb_module_export(m, file)) abort();
-	fclose(file);
-	
-	uint64_t t4 = get_timer_counter();
-	printf("Object file output took %f ms\n", ((t4 - t3) * freq) * 1000.0);
-	
-	double compile_time = ((t4 - t1) * freq);
+	double compile_time = ((t3 - t1) * freq);
 	printf("=========================================\n"
 		   "Compilation took %f ms\n", compile_time * 1000.0);
 	

@@ -214,58 +214,58 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 	int param_space = stack_usage;
 	bool saves_parameters = false;
 	
-	FOR_EACH_NODE(i, f, TB_PARAM_ADDR, {
-					  TB_Register param = f->nodes.payload[i].param_addr.param;
-					  
-					  TB_DataType dt = f->nodes.dt[param];
-					  int id = f->nodes.payload[param].param.id;
-					  
-					  if (id < 4) {
-						  saves_parameters = true;
-						  Val dst = val_stack(dt, ctx->params[id]);
-						  
-						  if (TB_IS_FLOAT_TYPE(dt.type) || dt.count > 1) {
-							  // the parameters map to XMM0-XMM3
-							  Val src = val_xmm(dt, id);
-							  
-							  // don't keep reference to XMM, we'll be using the memory
-							  // version only
-							  ctx->xmm_desc[id] = 0;
-							  
-							  // save the shadow space into the stack
-							  if (dt.count > 1) {
-								  inst2(ctx, MOVAPS, &dst, &src, dt.type);
-							  } else {
-								  if (dt.type == TB_F32) {
-									  inst2(ctx, MOVSS, &dst, &src, dt.type);
-								  } else if (dt.type == TB_F64) {
-									  inst2(ctx, MOVSD, &dst, &src, dt.type);
-								  } else tb_unreachable();
-							  }
-						  } else if (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR) {
-							  Val src = val_gpr(TB_I64, GPR_PARAMETERS[id]); 
-							  
-							  // don't keep reference to GPR, we'll be using the
-							  // memory version only
-							  ctx->gpr_desc[GPR_PARAMETERS[id]] = 0;
-							  DEBUG_LOG("   move to stack slot %s\n", GPR_NAMES[GPR_PARAMETERS[id]]);
-							  
-							  // save the shadow space into the stack
-							  inst2(ctx, MOV, &dst, &src, dt.type);
-						  } else tb_todo();
-						  
-						  def(ctx, f, dst, i);
-					  }
-				  });
-	
-	FOR_EACH_NODE(i, f, TB_LOCAL, {
-					  uint32_t size = f->nodes.payload[i].local.size;
-					  uint32_t align = f->nodes.payload[i].local.alignment;
-					  
-					  stack_usage = align_up(stack_usage + size, align);
-					  
-					  def(ctx, f, val_stack(f->nodes.dt[i], -stack_usage), i);
-				  });
+	loop(i, f->nodes.count) {
+		if (f->nodes.type[i] == TB_PARAM_ADDR) {
+			TB_Register param = f->nodes.payload[i].param_addr.param;
+			
+			TB_DataType dt = f->nodes.dt[param];
+			int id = f->nodes.payload[param].param.id;
+			
+			Val dst = val_stack(dt, ctx->params[id]);
+			if (id < 4) {
+				saves_parameters = true;
+				
+				if (TB_IS_FLOAT_TYPE(dt.type) || dt.count > 1) {
+					// the parameters map to XMM0-XMM3
+					Val src = val_xmm(dt, id);
+					
+					// don't keep reference to XMM, we'll be using the memory
+					// version only
+					ctx->xmm_desc[id] = 0;
+					
+					// save the shadow space into the stack
+					if (dt.count > 1) {
+						inst2(ctx, MOVAPS, &dst, &src, dt.type);
+					} else {
+						if (dt.type == TB_F32) {
+							inst2(ctx, MOVSS, &dst, &src, dt.type);
+						} else if (dt.type == TB_F64) {
+							inst2(ctx, MOVSD, &dst, &src, dt.type);
+						} else tb_unreachable();
+					}
+				} else if (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR) {
+					Val src = val_gpr(TB_I64, GPR_PARAMETERS[id]); 
+					
+					// don't keep reference to GPR, we'll be using the
+					// memory version only
+					ctx->gpr_desc[GPR_PARAMETERS[id]] = 0;
+					DEBUG_LOG("   move to stack slot %s\n", GPR_NAMES[GPR_PARAMETERS[id]]);
+					
+					// save the shadow space into the stack
+					inst2(ctx, MOV, &dst, &src, dt.type);
+				} else tb_todo();
+			}
+			
+			def(ctx, f, dst, i);
+		} else if (f->nodes.type[i] == TB_LOCAL) {
+			uint32_t size = f->nodes.payload[i].local.size;
+			uint32_t align = f->nodes.payload[i].local.alignment;
+			
+			stack_usage = align_up(stack_usage + size, align);
+			
+			def(ctx, f, val_stack(f->nodes.dt[i], -stack_usage), i);
+		}
+	}
 	
 	// Didn't originally write into this value because C
 	// aliasing rules :P, we'll need it later for the spilling
@@ -675,9 +675,14 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 				Val v = load_into(ctx, f, dt, r, addr_reg);
 				
 				if (explicit_load) {
-					// Load into GPR
+					int real_mov = MOV;
+					if (dt.count > 1) real_mov = MOVAPS;
+					else if (dt.type == TB_F32) real_mov = MOVSS;
+					else if (dt.type == TB_F64) real_mov = MOVSD;
+					
+					// Load into register
 					Val storage = def_new_gpr(ctx, f, r, dt.type);
-					inst2(ctx, MOV, &storage, &v, dt.type);
+					inst2(ctx, real_mov, &storage, &v, dt.type);
 					
 					def(ctx, f, storage, r);
 				} else {
@@ -977,9 +982,10 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 	TB_RegPayload* restrict p = &f->nodes.payload[r];
 	
 	switch (reg_type) {
-		case TB_INT_CONST: {
-			int32_t imm32 = (int32_t)p->i_const;
-			if (p->i_const == imm32) {
+		case TB_SIGNED_CONST:
+		case TB_UNSIGNED_CONST: {
+			int32_t imm32 = (int32_t)p->s_const;
+			if (p->s_const == imm32) {
 				Val v = val_imm(dt, imm32); 
 				def(ctx, f, v, r);
 				return v;
@@ -991,7 +997,7 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			// mov reg64, imm64
 			emit(rex(true, 0x0, v.gpr, 0));
 			emit(0xB8 + (v.gpr & 0b111));
-			emit8(p->i_const);
+			emit8(p->u_const);
 			return v;
 		}
 		case TB_FLOAT_CONST: {
@@ -1534,8 +1540,9 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			TB_Register b_reg = p->i_arith.b;
 			
 			Val a = use_as_rvalue(ctx, f, a_reg);
-			if (f->nodes.type[b_reg] == TB_INT_CONST) {
-				assert(f->nodes.payload[b_reg].i_const < 64);
+			if (f->nodes.type[b_reg] == TB_SIGNED_CONST || 
+				f->nodes.type[b_reg] == TB_UNSIGNED_CONST) {
+				assert(f->nodes.payload[b_reg].u_const < 64);
 				
 				Val v = def_new_gpr(ctx, f, r, dt.type);
 				inst2(ctx, MOV, &v, &a, dt.type);
@@ -1547,7 +1554,7 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 				emit(rex(is_64bit, 0x00, dst_gpr, 0x00));
 				emit(dt.type == TB_I8 ? 0xC0 : 0xC1);
 				emit(mod_rx_rm(MOD_DIRECT, 0x04, dst_gpr));
-				emit(f->nodes.payload[b_reg].i_const);
+				emit(f->nodes.payload[b_reg].u_const);
 				return v;
 			}
 			
@@ -1793,6 +1800,7 @@ static Val def_new_gpr(Ctx* ctx, TB_Function* f, TB_Register r, int dt_type) {
 			Val val = val_gpr(dt_type, gpr);
 			
 			if (r && r != TB_REG_MAX) {
+				DEBUG_LOG("   def gpr r%u\n", r);
 				ctx->addr_desc[r] = val;
 			}
 			
@@ -1831,6 +1839,7 @@ static Val def_new_xmm(Ctx* ctx, TB_Function* f, TB_Register r, TB_DataType dt) 
 			Val val = val_xmm(dt, i);
 			
 			if (r && r != TB_REG_MAX) {
+				DEBUG_LOG("   def gpr r%u\n", r);
 				ctx->addr_desc[r] = val;
 			}
 			
@@ -2097,6 +2106,8 @@ static Val isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
 }
 
 static bool garbage_collect_gpr(Ctx* ctx, TB_Function* f, TB_Register end) {
+	DEBUG_LOG("   GC GPR\n");
+	
 	TB_Register bb = ctx->current_bb;
 	TB_Register bb_end = ctx->current_bb_end;
 	
@@ -2121,6 +2132,8 @@ static bool garbage_collect_gpr(Ctx* ctx, TB_Function* f, TB_Register end) {
 }
 
 static bool garbage_collect_xmm(Ctx* ctx, TB_Function* f, TB_Register end) {
+	DEBUG_LOG("   GC XMM\n");
+	
 	TB_Register bb = ctx->current_bb;
 	TB_Register bb_end = ctx->current_bb_end;
 	
@@ -2153,7 +2166,7 @@ static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, GPR gpr, TB_Register bb
 }
 
 static bool can_recycle_into(Ctx* ctx, TB_Function* f, TB_Register from, TB_Register to) {
-	if (f->nodes.type[from] == TB_LOAD || f->nodes.type[from] == TB_PARAM) {
+	if (f->nodes.type[from] == TB_LOAD || f->nodes.type[from] == TB_PARAM || f->nodes.type[from] == TB_PARAM_ADDR) {
 		return false;
 	}
 	

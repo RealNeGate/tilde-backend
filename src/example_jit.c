@@ -13,7 +13,7 @@ TB_Function* test_fib(TB_Module* m) {
 	
 	// if (n < 2) return n
 	{
-		tb_inst_if(func, tb_inst_cmp_ilt(func, TB_TYPE_I32, n, tb_inst_iconst(func, TB_TYPE_I32, 2), true), if_true, if_false);
+		tb_inst_if(func, tb_inst_cmp_ilt(func, n, tb_inst_sconst(func, TB_TYPE_I32, 2), true), if_true, if_false);
 		
 		tb_inst_label(func, if_true); // .L1:
 		tb_inst_ret(func, n);
@@ -23,15 +23,15 @@ TB_Function* test_fib(TB_Module* m) {
 	{
 		tb_inst_label(func, if_false); // .L2:
 		
-		TB_Register n_minus_one = tb_inst_sub(func, TB_TYPE_I32, n, tb_inst_iconst(func, TB_TYPE_I32, 1), TB_ASSUME_NUW);
+		TB_Register n_minus_one = tb_inst_sub(func, n, tb_inst_sconst(func, TB_TYPE_I32, 1), TB_ASSUME_NUW);
 		
 		TB_Register call1 = tb_inst_call(func, TB_TYPE_I32, func, 1, (TB_Register[]) { n_minus_one });
 		
-		TB_Register n_minus_two = tb_inst_sub(func, TB_TYPE_I32, n, tb_inst_iconst(func, TB_TYPE_I32, 2), TB_ASSUME_NUW);
+		TB_Register n_minus_two = tb_inst_sub(func, n, tb_inst_sconst(func, TB_TYPE_I32, 2), TB_ASSUME_NUW);
 		
 		TB_Register call2 = tb_inst_call(func, TB_TYPE_I32, func, 1, (TB_Register[]) { n_minus_two });
 		
-		TB_Register sum = tb_inst_add(func, TB_TYPE_I32, call1, call2, TB_ASSUME_NUW);
+		TB_Register sum = tb_inst_add(func, call1, call2, TB_ASSUME_NUW);
 		tb_inst_ret(func, sum);
 	}
 	

@@ -5,7 +5,8 @@ static int tb_estimate_expr_pressure(const TB_Function* f, TB_Register i) {
 		case TB_PARAM:
 		case TB_LOCAL:
 		case TB_LOAD:
-		case TB_INT_CONST: 
+		case TB_SIGNED_CONST: 
+		case TB_UNSIGNED_CONST: 
 		case TB_MEMBER_ACCESS:
 		case TB_ARRAY_ACCESS:
 		return 1;

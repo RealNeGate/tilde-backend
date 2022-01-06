@@ -60,8 +60,11 @@ bool tb_opt_canonicalize(TB_Function* f) {
 			// (cmp (sxt/zxt A) (int B))
 			// VVV
 			// (cmp A (int B))
-			if ((f->nodes.type[a] == TB_SIGN_EXT || f->nodes.type[a] == TB_ZERO_EXT) &&
-				f->nodes.type[b] == TB_INT_CONST) {
+			if (f->nodes.type[a] == TB_SIGN_EXT && f->nodes.type[b] == TB_SIGNED_CONST) {
+				TB_Register src = f->nodes.payload[a].ext;
+				
+				f->nodes.payload[i].cmp.a = src;
+			} else if (f->nodes.type[a] == TB_ZERO_EXT && f->nodes.type[b] == TB_UNSIGNED_CONST) {
 				TB_Register src = f->nodes.payload[a].ext;
 				
 				f->nodes.payload[i].cmp.a = src;
@@ -71,7 +74,13 @@ bool tb_opt_canonicalize(TB_Function* f) {
 			TB_Register b = f->nodes.payload[i].i_arith.b;
 			
 			// Move all integer constants to the right side
-			if (f->nodes.type[a] == TB_INT_CONST && f->nodes.type[b] != TB_INT_CONST) {
+			bool is_aconst = (f->nodes.type[a] == TB_SIGNED_CONST ||
+							  f->nodes.type[a] == TB_UNSIGNED_CONST);
+			
+			bool is_bconst = (f->nodes.type[b] == TB_SIGNED_CONST ||
+							  f->nodes.type[b] == TB_UNSIGNED_CONST);
+			
+			if (is_aconst && !is_bconst) {
 				f->nodes.payload[i].i_arith.a = b;
 				f->nodes.payload[i].i_arith.b = a;
 				changes++;
@@ -94,8 +103,8 @@ bool tb_opt_canonicalize(TB_Function* f) {
 			TB_Register base = f->nodes.payload[i].array_access.base;
 			TB_Register index = f->nodes.payload[i].array_access.index;
 			
-			if (f->nodes.type[index] == TB_INT_CONST) {
-				uint64_t index_imm = f->nodes.payload[index].i_const;
+			if (f->nodes.type[index] == TB_SIGNED_CONST || f->nodes.type[index] == TB_UNSIGNED_CONST) {
+				uint64_t index_imm = f->nodes.payload[index].u_const;
 				
 				if (index_imm == 0) {
 					f->nodes.type[i] = TB_PASS;

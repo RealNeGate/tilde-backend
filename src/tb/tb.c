@@ -611,10 +611,15 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			fprintf(out, "  r%u\t=\t", i);
 			fprintf(out, " NOP\n");
 			break;
-            case TB_INT_CONST:
+            case TB_SIGNED_CONST:
 			fprintf(out, "  r%u\t=\t", i);
 			tb_print_type(out, dt);
-			fprintf(out, " %" PRIu64 "\n", p.i_const);
+			fprintf(out, " %" PRIi64 "\n", p.s_const);
+			break;
+            case TB_UNSIGNED_CONST:
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " %" PRIu64 "\n", p.u_const);
 			break;
 			case TB_STRING_CONST:
 			fprintf(out, "  r%u\t=\t\"%.*s\"\n", i, (int)f->nodes.payload[i].str_const.len, f->nodes.payload[i].str_const.data);

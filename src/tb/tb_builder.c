@@ -156,11 +156,22 @@ uint64_t tb_fold_div(TB_DataType dt, uint64_t a, uint64_t b) {
 	return (q >> shift) & mask; 
 }
 
-static TB_Register tb_bin_arith(TB_Function* f, int type, TB_DataType dt, TB_ArithmaticBehavior arith_behavior, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, type, dt);
+static TB_Register tb_bin_arith(TB_Function* f, int type, TB_ArithmaticBehavior arith_behavior, TB_Register a, TB_Register b) {
+	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	
+	TB_Register r = tb_make_reg(f, type, f->nodes.dt[a]);
 	f->nodes.payload[r].i_arith.arith_behavior = arith_behavior;
 	f->nodes.payload[r].i_arith.a = a;
 	f->nodes.payload[r].i_arith.b = b;
+	return r;
+}
+
+static TB_Register tb_bin_farith(TB_Function* f, int type, TB_Register a, TB_Register b) {
+	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	
+	TB_Register r = tb_make_reg(f, type, f->nodes.dt[a]);
+	f->nodes.payload[r].f_arith.a = a;
+	f->nodes.payload[r].f_arith.b = b;
 	return r;
 }
 
@@ -282,11 +293,19 @@ TB_API void tb_inst_initialize_mem(TB_Function* f, TB_Register addr, TB_Initiali
 	f->nodes.payload[r].init.id = src;
 }
 
-TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm) {
+TB_API TB_Register tb_inst_uconst(TB_Function* f, TB_DataType dt, uint64_t imm) {
 	assert(dt.type == TB_BOOL || dt.type == TB_PTR || (dt.type >= TB_I8 && dt.type <= TB_I64));
 	
-	TB_Register r = tb_make_reg(f, TB_INT_CONST, dt);
-	f->nodes.payload[r].i_const = imm;
+	TB_Register r = tb_make_reg(f, TB_UNSIGNED_CONST, dt);
+	f->nodes.payload[r].u_const = imm;
+	return r;
+}
+
+TB_API TB_Register tb_inst_sconst(TB_Function* f, TB_DataType dt, int64_t imm) {
+	assert(dt.type == TB_BOOL || dt.type == TB_PTR || (dt.type >= TB_I8 && dt.type <= TB_I64));
+	
+	TB_Register r = tb_make_reg(f, TB_SIGNED_CONST, dt);
+	f->nodes.payload[r].s_const = imm;
 	return r;
 }
 
@@ -426,15 +445,19 @@ TB_API void tb_inst_memcpy(TB_Function* f, TB_Register dst, TB_Register src, TB_
 	f->nodes.payload[r].mem_op.align = align;
 }
 
-TB_API TB_Register tb_inst_not(TB_Function* f, TB_DataType dt, TB_Register n) {
+TB_API TB_Register tb_inst_not(TB_Function* f, TB_Register n) {
+	TB_DataType dt = f->nodes.dt[n];
+	
 	TB_Register r = tb_make_reg(f, TB_NOT, dt);
 	f->nodes.payload[r].unary = n;
 	return r;
 }
 
-TB_API TB_Register tb_inst_neg(TB_Function* f, TB_DataType dt, TB_Register n) {
-	if (f->nodes.type[n] == TB_INT_CONST) {
-		return tb_inst_iconst(f, dt, -f->nodes.payload[n].i_const);
+TB_API TB_Register tb_inst_neg(TB_Function* f, TB_Register n) {
+	TB_DataType dt = f->nodes.dt[n];
+	
+	if (f->nodes.type[n] == TB_SIGNED_CONST) {
+		return tb_inst_sconst(f, dt, -f->nodes.payload[n].s_const);
 	} else if (f->nodes.type[n] == TB_FLOAT_CONST) {
 		return tb_inst_fconst(f, dt, -f->nodes.payload[n].f_const);
 	}
@@ -444,128 +467,74 @@ TB_API TB_Register tb_inst_neg(TB_Function* f, TB_DataType dt, TB_Register n) {
 	return r;
 }
 
-TB_API TB_Register tb_inst_and(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
+TB_API TB_Register tb_inst_and(TB_Function* f, TB_Register a, TB_Register b) {
 	// bitwise operators can't wrap
-	return tb_bin_arith(f, TB_AND, dt, TB_ASSUME_NUW, a, b);
+	return tb_bin_arith(f, TB_AND, TB_ASSUME_NUW, a, b);
 }
 
-TB_API TB_Register tb_inst_or(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
+TB_API TB_Register tb_inst_or(TB_Function* f, TB_Register a, TB_Register b) {
 	// bitwise operators can't wrap
-	return tb_bin_arith(f, TB_OR, dt, TB_ASSUME_NUW, a, b);
+	return tb_bin_arith(f, TB_OR, TB_ASSUME_NUW, a, b);
 }
 
-TB_API TB_Register tb_inst_xor(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
+TB_API TB_Register tb_inst_xor(TB_Function* f, TB_Register a, TB_Register b) {
 	// bitwise operators can't wrap
-	return tb_bin_arith(f, TB_XOR, dt, TB_ASSUME_NUW, a, b);
+	return tb_bin_arith(f, TB_XOR, TB_ASSUME_NUW, a, b);
 }
 
-TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
-	if (f->nodes.type[a] == TB_INT_CONST) tb_swap(a, b);
-	
-	TB_RegType a_type = f->nodes.type[a];
-	TB_RegType b_type = f->nodes.type[b];
-	
-	if (a_type == TB_INT_CONST && b_type == TB_INT_CONST) {
-		uint64_t sum = tb_fold_add(arith_behavior, dt, f->nodes.payload[a].i_const, f->nodes.payload[b].i_const);
-		
-		return tb_inst_iconst(f, dt, sum);
-	} else if (b_type == TB_INT_CONST && f->nodes.payload[b].i_const == 0) {
-		return a;
-	} else if (a_type == TB_ADD) {
-		// reassoc
-		TB_Register aa = f->nodes.payload[a].i_arith.a;
-		TB_Register ab = f->nodes.payload[a].i_arith.b;
-		
-		return tb_inst_add(f, dt, aa, tb_inst_add(f, dt, ab, b, arith_behavior), arith_behavior);
-	}
-	
-	return tb_bin_arith(f, TB_ADD, dt, arith_behavior, a, b);
+TB_API TB_Register tb_inst_add(TB_Function* f, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
+	return tb_bin_arith(f, TB_ADD, arith_behavior, a, b);
 }
 
-TB_API TB_Register tb_inst_sub(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
-	if (a == b) return tb_inst_iconst(f, dt, 0);
-	
-	if (f->nodes.type[a] == TB_INT_CONST && f->nodes.type[b] == TB_INT_CONST) {
-		uint64_t sum = tb_fold_sub(arith_behavior, dt, f->nodes.payload[a].i_const, f->nodes.payload[b].i_const);
-		
-		return tb_inst_iconst(f, dt, sum);
-	}
-	
-	return tb_bin_arith(f, TB_SUB, dt, arith_behavior, a, b);
+TB_API TB_Register tb_inst_sub(TB_Function* f, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
+	return tb_bin_arith(f, TB_SUB, arith_behavior, a, b);
 }
 
-TB_API TB_Register tb_inst_mul(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
-	TB_RegType a_type = f->nodes.type[a];
-	TB_RegType b_type = f->nodes.type[b];
-	
-	if (a_type == TB_INT_CONST && b_type == TB_INT_CONST) {
-		uint64_t sum = tb_fold_mul(arith_behavior, dt, f->nodes.payload[a].i_const, f->nodes.payload[b].i_const);
-		
-		return tb_inst_iconst(f, dt, sum);
-	}
-	
-	return tb_bin_arith(f, TB_MUL, dt, arith_behavior, a, b);
+TB_API TB_Register tb_inst_mul(TB_Function* f, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
+	return tb_bin_arith(f, TB_MUL, arith_behavior, a, b);
 }
 
-TB_API TB_Register tb_inst_div(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness) {
-	TB_RegType a_type = f->nodes.type[a];
-	TB_RegType b_type = f->nodes.type[b];
-	
-	if (a_type == TB_INT_CONST && b_type == TB_INT_CONST) {
-		uint64_t sum = tb_fold_div(dt, f->nodes.payload[a].i_const, f->nodes.payload[b].i_const);
-		
-		return tb_inst_iconst(f, dt, sum);
-	}
-	
+TB_API TB_Register tb_inst_div(TB_Function* f, TB_Register a, TB_Register b, bool signedness) {
 	// division can't wrap or overflow
-	return tb_bin_arith(f, signedness ? TB_SDIV : TB_UDIV, dt, TB_ASSUME_NUW, a, b);
+	return tb_bin_arith(f, signedness ? TB_SDIV : TB_UDIV, TB_ASSUME_NUW, a, b);
 }
 
-TB_API TB_Register tb_inst_shl(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
-	return tb_bin_arith(f, TB_SHL, dt, arith_behavior, a, b);
+TB_API TB_Register tb_inst_shl(TB_Function* f, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
+	return tb_bin_arith(f, TB_SHL, arith_behavior, a, b);
 }
 
 // TODO(NeGate): Maybe i should split the bitshift operations into a separate kind of
 // operator that has different arithmatic behaviors, maybe like trap on a large shift amount
-TB_API TB_Register tb_inst_sar(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
+TB_API TB_Register tb_inst_sar(TB_Function* f, TB_Register a, TB_Register b) {
 	// shift right can't wrap or overflow
-	return tb_bin_arith(f, TB_SAR, dt, TB_ASSUME_NUW, a, b);
+	return tb_bin_arith(f, TB_SAR, TB_ASSUME_NUW, a, b);
 }
 
-TB_API TB_Register tb_inst_shr(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
+TB_API TB_Register tb_inst_shr(TB_Function* f, TB_Register a, TB_Register b) {
 	// shift right can't wrap or overflow
-	return tb_bin_arith(f, TB_SHR, dt, TB_ASSUME_NUW, a, b);
+	return tb_bin_arith(f, TB_SHR, TB_ASSUME_NUW, a, b);
 }
 
-TB_API TB_Register tb_inst_fadd(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_FADD, dt);
-	f->nodes.payload[r].f_arith.a = a;
-	f->nodes.payload[r].f_arith.b = b;
-	return r;
+TB_API TB_Register tb_inst_fadd(TB_Function* f, TB_Register a, TB_Register b) {
+	return tb_bin_farith(f, TB_FADD, a, b);
 }
 
-TB_API TB_Register tb_inst_fsub(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_FSUB, dt);
-	f->nodes.payload[r].f_arith.a = a;
-	f->nodes.payload[r].f_arith.b = b;
-	return r;
+TB_API TB_Register tb_inst_fsub(TB_Function* f, TB_Register a, TB_Register b) {
+	return tb_bin_farith(f, TB_FSUB, a, b);
 }
 
-TB_API TB_Register tb_inst_fmul(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_FMUL, dt);
-	f->nodes.payload[r].f_arith.a = a;
-	f->nodes.payload[r].f_arith.b = b;
-	return r;
+TB_API TB_Register tb_inst_fmul(TB_Function* f, TB_Register a, TB_Register b) {
+	return tb_bin_farith(f, TB_FMUL, a, b);
 }
 
-TB_API TB_Register tb_inst_fdiv(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
-	TB_Register r = tb_make_reg(f, TB_FDIV, dt);
-	f->nodes.payload[r].f_arith.a = a;
-	f->nodes.payload[r].f_arith.b = b;
-	return r;
+TB_API TB_Register tb_inst_fdiv(TB_Function* f, TB_Register a, TB_Register b) {
+	return tb_bin_farith(f, TB_FDIV, a, b);
 }
 
-TB_API TB_Register tb_inst_cmp_eq(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
+TB_API TB_Register tb_inst_cmp_eq(TB_Function* f, TB_Register a, TB_Register b) {
+	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	TB_DataType dt = f->nodes.dt[a];
+	
 	TB_Register r = tb_make_reg(f, TB_CMP_EQ, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = a;
 	f->nodes.payload[r].cmp.b = b;
@@ -573,7 +542,10 @@ TB_API TB_Register tb_inst_cmp_eq(TB_Function* f, TB_DataType dt, TB_Register a,
 	return r;
 }
 
-TB_API TB_Register tb_inst_cmp_ne(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
+TB_API TB_Register tb_inst_cmp_ne(TB_Function* f, TB_Register a, TB_Register b) {
+	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	TB_DataType dt = f->nodes.dt[a];
+	
 	TB_Register r = tb_make_reg(f, TB_CMP_NE, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = a;
 	f->nodes.payload[r].cmp.b = b;
@@ -581,7 +553,10 @@ TB_API TB_Register tb_inst_cmp_ne(TB_Function* f, TB_DataType dt, TB_Register a,
 	return r;
 }
 
-TB_API TB_Register tb_inst_cmp_ilt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness) {
+TB_API TB_Register tb_inst_cmp_ilt(TB_Function* f, TB_Register a, TB_Register b, bool signedness) {
+	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	TB_DataType dt = f->nodes.dt[a];
+	
 	TB_Register r = tb_make_reg(f, signedness ? TB_CMP_SLT : TB_CMP_ULT, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = a;
 	f->nodes.payload[r].cmp.b = b;
@@ -589,7 +564,10 @@ TB_API TB_Register tb_inst_cmp_ilt(TB_Function* f, TB_DataType dt, TB_Register a
 	return r;
 }
 
-TB_API TB_Register tb_inst_cmp_ile(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness) {
+TB_API TB_Register tb_inst_cmp_ile(TB_Function* f, TB_Register a, TB_Register b, bool signedness) {
+	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	TB_DataType dt = f->nodes.dt[a];
+	
 	TB_Register r = tb_make_reg(f, signedness ? TB_CMP_SLE : TB_CMP_ULE, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = a;
 	f->nodes.payload[r].cmp.b = b;
@@ -597,7 +575,10 @@ TB_API TB_Register tb_inst_cmp_ile(TB_Function* f, TB_DataType dt, TB_Register a
 	return r;
 }
 
-TB_API TB_Register tb_inst_cmp_igt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness) {
+TB_API TB_Register tb_inst_cmp_igt(TB_Function* f, TB_Register a, TB_Register b, bool signedness) {
+	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	TB_DataType dt = f->nodes.dt[a];
+	
 	TB_Register r = tb_make_reg(f, signedness ? TB_CMP_SLT : TB_CMP_ULT, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = b;
 	f->nodes.payload[r].cmp.b = a;
@@ -605,7 +586,10 @@ TB_API TB_Register tb_inst_cmp_igt(TB_Function* f, TB_DataType dt, TB_Register a
 	return r;
 }
 
-TB_API TB_Register tb_inst_cmp_ige(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness) {
+TB_API TB_Register tb_inst_cmp_ige(TB_Function* f, TB_Register a, TB_Register b, bool signedness) {
+	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	TB_DataType dt = f->nodes.dt[a];
+	
 	TB_Register r = tb_make_reg(f, signedness ? TB_CMP_SLE : TB_CMP_ULE, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = b;
 	f->nodes.payload[r].cmp.b = a;
@@ -613,7 +597,10 @@ TB_API TB_Register tb_inst_cmp_ige(TB_Function* f, TB_DataType dt, TB_Register a
 	return r;
 }
 
-TB_API TB_Register tb_inst_cmp_flt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
+TB_API TB_Register tb_inst_cmp_flt(TB_Function* f, TB_Register a, TB_Register b) {
+	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	TB_DataType dt = f->nodes.dt[a];
+	
 	TB_Register r = tb_make_reg(f, TB_CMP_FLT, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = a;
 	f->nodes.payload[r].cmp.b = b;
@@ -621,7 +608,10 @@ TB_API TB_Register tb_inst_cmp_flt(TB_Function* f, TB_DataType dt, TB_Register a
 	return r;
 }
 
-TB_API TB_Register tb_inst_cmp_fle(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
+TB_API TB_Register tb_inst_cmp_fle(TB_Function* f, TB_Register a, TB_Register b) {
+	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	TB_DataType dt = f->nodes.dt[a];
+	
 	TB_Register r = tb_make_reg(f, TB_CMP_FLE, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = a;
 	f->nodes.payload[r].cmp.b = b;
@@ -629,7 +619,10 @@ TB_API TB_Register tb_inst_cmp_fle(TB_Function* f, TB_DataType dt, TB_Register a
 	return r;
 }
 
-TB_API TB_Register tb_inst_cmp_fgt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
+TB_API TB_Register tb_inst_cmp_fgt(TB_Function* f, TB_Register a, TB_Register b) {
+	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	TB_DataType dt = f->nodes.dt[a];
+	
 	TB_Register r = tb_make_reg(f, TB_CMP_FLT, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = b;
 	f->nodes.payload[r].cmp.b = a;
@@ -637,7 +630,10 @@ TB_API TB_Register tb_inst_cmp_fgt(TB_Function* f, TB_DataType dt, TB_Register a
 	return r;
 }
 
-TB_API TB_Register tb_inst_cmp_fge(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b) {
+TB_API TB_Register tb_inst_cmp_fge(TB_Function* f, TB_Register a, TB_Register b) {
+	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	TB_DataType dt = f->nodes.dt[a];
+	
 	TB_Register r = tb_make_reg(f, TB_CMP_FLE, TB_TYPE_BOOL);
 	f->nodes.payload[r].cmp.a = b;
 	f->nodes.payload[r].cmp.b = a;
@@ -645,7 +641,10 @@ TB_API TB_Register tb_inst_cmp_fge(TB_Function* f, TB_DataType dt, TB_Register a
 	return r;
 }
 
-TB_API TB_Register tb_inst_phi2(TB_Function* f, TB_DataType dt, TB_Label a_label, TB_Register a, TB_Label b_label, TB_Register b) {
+TB_API TB_Register tb_inst_phi2(TB_Function* f, TB_Label a_label, TB_Register a, TB_Label b_label, TB_Register b) {
+	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	TB_DataType dt = f->nodes.dt[a];
+	
 	TB_Register r = tb_make_reg(f, TB_PHI2, dt);
 	f->nodes.payload[r].phi2.a_label = tb_find_reg_from_label(f, a_label);
 	f->nodes.payload[r].phi2.a = a;

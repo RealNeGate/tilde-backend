@@ -26,9 +26,10 @@
 			// that's within the same basic block
 			// and the memcpy matches the size of the stack slot
 			if (f->nodes.type[src_reg] != TB_LOCAL) continue;
-			if (f->nodes.type[size_reg] != TB_INT_CONST) continue;
+			if (f->nodes.type[size_reg] != TB_SIGNED_CONST) continue;
+			if (f->nodes.type[size_reg] != TB_UNSIGNED_CONST) continue;
 			if (src_reg < bb && src_reg > bb_end) continue;
-			if (f->nodes.payload[size_reg].i_const != f->nodes.payload[src_reg].local.size) continue;
+			if (f->nodes.payload[size_reg].u_const != f->nodes.payload[src_reg].local.size) continue;
 			
 			// We should probably invest in smarter escape analysis but 
 			// for now we'll assume that any CALLs are somehow escaping

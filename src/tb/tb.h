@@ -348,7 +348,8 @@ extern "C" {
 	
 	TB_API void tb_inst_initialize_mem(TB_Function* f, TB_Register addr, TB_InitializerID src);
 	
-	TB_API TB_Register tb_inst_iconst(TB_Function* f, TB_DataType dt, uint64_t imm);
+	TB_API TB_Register tb_inst_sconst(TB_Function* f, TB_DataType dt, int64_t imm);
+	TB_API TB_Register tb_inst_uconst(TB_Function* f, TB_DataType dt, uint64_t imm);
 	TB_API TB_Register tb_inst_fconst(TB_Function* f, TB_DataType dt, double imm);
 	
 	// string is a UTF-8 null terminated string
@@ -371,43 +372,43 @@ extern "C" {
 	TB_API void tb_inst_memset(TB_Function* f, TB_Register dst, TB_Register val, TB_Register size, int align);
 	TB_API void tb_inst_memcpy(TB_Function* f, TB_Register dst, TB_Register src, TB_Register size, int align);
 	
-	TB_API TB_Register tb_inst_not(TB_Function* f, TB_DataType dt, TB_Register n);
-	TB_API TB_Register tb_inst_neg(TB_Function* f, TB_DataType dt, TB_Register n);
+	TB_API TB_Register tb_inst_not(TB_Function* f, TB_Register n);
+	TB_API TB_Register tb_inst_neg(TB_Function* f, TB_Register n);
 	
-	TB_API TB_Register tb_inst_and(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	TB_API TB_Register tb_inst_or(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	TB_API TB_Register tb_inst_xor(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	TB_API TB_Register tb_inst_add(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
-	TB_API TB_Register tb_inst_sub(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
-	TB_API TB_Register tb_inst_mul(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
-	TB_API TB_Register tb_inst_div(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness);
+	TB_API TB_Register tb_inst_and(TB_Function* f, TB_Register a, TB_Register b);
+	TB_API TB_Register tb_inst_or(TB_Function* f, TB_Register a, TB_Register b);
+	TB_API TB_Register tb_inst_xor(TB_Function* f, TB_Register a, TB_Register b);
+	TB_API TB_Register tb_inst_add(TB_Function* f, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
+	TB_API TB_Register tb_inst_sub(TB_Function* f, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
+	TB_API TB_Register tb_inst_mul(TB_Function* f, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
+	TB_API TB_Register tb_inst_div(TB_Function* f, TB_Register a, TB_Register b, bool signedness);
 	
-	TB_API TB_Register tb_inst_shl(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
-	TB_API TB_Register tb_inst_sar(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	TB_API TB_Register tb_inst_shr(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
+	TB_API TB_Register tb_inst_shl(TB_Function* f, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);
+	TB_API TB_Register tb_inst_sar(TB_Function* f, TB_Register a, TB_Register b);
+	TB_API TB_Register tb_inst_shr(TB_Function* f, TB_Register a, TB_Register b);
 	
-	TB_API TB_Register tb_inst_fadd(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	TB_API TB_Register tb_inst_fsub(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	TB_API TB_Register tb_inst_fmul(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	TB_API TB_Register tb_inst_fdiv(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
+	TB_API TB_Register tb_inst_fadd(TB_Function* f, TB_Register a, TB_Register b);
+	TB_API TB_Register tb_inst_fsub(TB_Function* f, TB_Register a, TB_Register b);
+	TB_API TB_Register tb_inst_fmul(TB_Function* f, TB_Register a, TB_Register b);
+	TB_API TB_Register tb_inst_fdiv(TB_Function* f, TB_Register a, TB_Register b);
 	
-	TB_API TB_Register tb_inst_cmp_eq(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	TB_API TB_Register tb_inst_cmp_ne(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
+	TB_API TB_Register tb_inst_cmp_eq(TB_Function* f, TB_Register a, TB_Register b);
+	TB_API TB_Register tb_inst_cmp_ne(TB_Function* f, TB_Register a, TB_Register b);
 	
-	TB_API TB_Register tb_inst_cmp_ilt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness);
-	TB_API TB_Register tb_inst_cmp_ile(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness);
-	TB_API TB_Register tb_inst_cmp_igt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness);
-	TB_API TB_Register tb_inst_cmp_ige(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b, bool signedness);
+	TB_API TB_Register tb_inst_cmp_ilt(TB_Function* f, TB_Register a, TB_Register b, bool signedness);
+	TB_API TB_Register tb_inst_cmp_ile(TB_Function* f, TB_Register a, TB_Register b, bool signedness);
+	TB_API TB_Register tb_inst_cmp_igt(TB_Function* f, TB_Register a, TB_Register b, bool signedness);
+	TB_API TB_Register tb_inst_cmp_ige(TB_Function* f, TB_Register a, TB_Register b, bool signedness);
 	
-	TB_API TB_Register tb_inst_cmp_flt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	TB_API TB_Register tb_inst_cmp_fle(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	TB_API TB_Register tb_inst_cmp_fgt(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
-	TB_API TB_Register tb_inst_cmp_fge(TB_Function* f, TB_DataType dt, TB_Register a, TB_Register b);
+	TB_API TB_Register tb_inst_cmp_flt(TB_Function* f, TB_Register a, TB_Register b);
+	TB_API TB_Register tb_inst_cmp_fle(TB_Function* f, TB_Register a, TB_Register b);
+	TB_API TB_Register tb_inst_cmp_fgt(TB_Function* f, TB_Register a, TB_Register b);
+	TB_API TB_Register tb_inst_cmp_fge(TB_Function* f, TB_Register a, TB_Register b);
 	
 	// Gives you a reference to a local label, doesn't place it anywhere.
 	TB_API TB_Label tb_inst_new_label_id(TB_Function* f);
 	
-	TB_API TB_Register tb_inst_phi2(TB_Function* f, TB_DataType dt, TB_Label a_label, TB_Register a, TB_Label b_label, TB_Register b);
+	TB_API TB_Register tb_inst_phi2(TB_Function* f, TB_Label a_label, TB_Register a, TB_Label b_label, TB_Register b);
 	TB_API TB_Register tb_inst_label(TB_Function* f, TB_Label id);
 	TB_API void tb_inst_goto(TB_Function* f, TB_Label id);
 	TB_API TB_Register tb_inst_if(TB_Function* f, TB_Register cond, TB_Label if_true, TB_Label if_false);

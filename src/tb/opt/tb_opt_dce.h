@@ -32,7 +32,8 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
 				case TB_UNREACHABLE:
 				break;
 				// delete:
-                case TB_INT_CONST:
+                case TB_UNSIGNED_CONST:
+                case TB_SIGNED_CONST:
                 case TB_LOCAL:
                 case TB_PASS:
                 case TB_NOT:

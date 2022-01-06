@@ -7,8 +7,9 @@ bool tb_opt_strength_reduction(TB_Function* f) {
 			TB_Register b = f->nodes.payload[i].i_arith.b;
 			TB_DataType dt = f->nodes.dt[i];
 			
-			if (f->nodes.type[b] == TB_INT_CONST) {
-				uint64_t b_const = f->nodes.payload[b].i_const;
+			if (f->nodes.type[b] == TB_SIGNED_CONST ||
+				f->nodes.type[b] == TB_UNSIGNED_CONST) {
+				uint64_t b_const = f->nodes.payload[b].u_const;
 				
 				int log2 = __builtin_ffs(b_const) - 1;
 				if (b_const == (1 << log2)) {
@@ -16,10 +17,10 @@ bool tb_opt_strength_reduction(TB_Function* f) {
 					TB_Register new_op = i - 1;
 					tb_insert_op(f, new_op);
 					
-					f->nodes.type[new_op] = TB_INT_CONST;
+					f->nodes.type[new_op] = TB_UNSIGNED_CONST;
 					f->nodes.dt[new_op] = dt;
 					f->nodes.payload[new_op] = (TB_RegPayload){
-						.i_const = log2
+						.u_const = log2
 					};
 					
 					// shift over `i` because it's infront of the insertion

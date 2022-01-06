@@ -92,7 +92,8 @@ typedef enum TB_RegTypeEnum {
 	TB_UNREACHABLE, /* it's undefined behavior to reach this */
 	
 	// Immediates
-	TB_INT_CONST,
+	TB_UNSIGNED_CONST,
+	TB_SIGNED_CONST,
     TB_FLOAT_CONST,
     TB_STRING_CONST,
     
@@ -178,15 +179,15 @@ typedef uint8_t TB_RegType;
 
 #define TB_IS_NODE_SIDE_EFFECT(type) ((type) >= TB_SIDE_EFFECT_MIN && (type) <= TB_SIDE_EFFECT_MAX)
 #define TB_IS_NODE_TERMINATOR(type) ((type) >= TB_TERMINATOR_MIN && (type) <= TB_TERMINATOR_MAX)
-#define TB_DATA_TYPE_EQUALS(a, b) (memcmp(&(a), &(b), sizeof(TB_DataType)) == 0)
-#define TB_DATA_TYPE_NOT_EQUALS(a, b) (memcmp(&(a), &(b), sizeof(TB_DataType)) != 0)
+#define TB_DATA_TYPE_EQUALS(a, b) tb_data_type_match(&(a), &(b))
 
 #define TB_FIRST_PARAMETER_REG 2
 
 typedef union TB_RegPayload {
 	uint32_t raw[4];
 	
-	uint64_t i_const;
+	int64_t s_const;
+	uint64_t u_const;
 	double f_const;
 	struct {
 		size_t len;
@@ -543,7 +544,7 @@ typedef struct TB_TemporaryStorage {
 } TB_TemporaryStorage;
 
 // the maximum size the prologue and epilogue can be for any machine code impl
-#define PROEPI_BUFFER 512
+#define PROEPI_BUFFER 256
 
 typedef struct ICodeGen {
 	void(*emit_call_patches)(TB_Module* m, uint32_t func_layout[]);
@@ -696,6 +697,10 @@ void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, siz
 #endif
 
 TB_Register* tb_vla_reserve(TB_Function* f, size_t count);
+
+inline static bool tb_data_type_match(const TB_DataType* a, const TB_DataType* b) {
+	return a->type == b->type && a->count == b->count;
+}
 
 // NOTE(NeGate): Place all the codegen interfaces down here
 extern ICodeGen x64_fast_code_gen;

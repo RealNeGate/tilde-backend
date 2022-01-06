@@ -55,10 +55,11 @@ bool tb_opt_fold(TB_Function* f) {
 		
 		if (f->nodes.type[i] >= TB_AND &&
 			f->nodes.type[i] <= TB_SDIV &&
-			f->nodes.type[a] == TB_INT_CONST &&
-			f->nodes.type[b] == TB_INT_CONST) {
-			uint64_t ai = f->nodes.payload[a].i_const;
-			uint64_t bi = f->nodes.payload[b].i_const;
+			f->nodes.type[a] == f->nodes.type[b] &&
+			(f->nodes.type[a] == TB_SIGNED_CONST || f->nodes.type[b] == TB_UNSIGNED_CONST)) {
+			bool is_signed = f->nodes.type[a] == TB_SIGNED_CONST;
+			uint64_t ai = f->nodes.payload[a].u_const;
+			uint64_t bi = f->nodes.payload[b].u_const;
 			
 			uint64_t result;
 			switch (f->nodes.type[i]) {
@@ -90,16 +91,37 @@ bool tb_opt_fold(TB_Function* f) {
 				tb_todo();
 			}
 			
-			f->nodes.type[i] = TB_INT_CONST;
-			f->nodes.payload[i].i_const = result;
+			f->nodes.type[i] = is_signed ? TB_SIGNED_CONST : TB_UNSIGNED_CONST;
+			f->nodes.payload[i].u_const = result;
 			changes++;
-		}
-		else if (f->nodes.type[i] == TB_SIGN_EXT || f->nodes.type[i] == TB_ZERO_EXT) {
+		} else if (f->nodes.type[i] == TB_SIGN_EXT) {
 			TB_Register src = f->nodes.payload[i].ext;
 			
-			if (f->nodes.type[src] == TB_INT_CONST) {
-				f->nodes.type[i] = TB_INT_CONST;
-				f->nodes.payload[i].i_const = f->nodes.payload[src].i_const;
+			if (f->nodes.type[src] == TB_SIGNED_CONST) {
+				// NOTE(NeGate): We're using unsigned numbers because we're operating
+				// on the raw bits but it's reinterpreted to signed integers.
+				uint64_t shift = 64 - (8 << (dt.type - TB_I8));
+				uint64_t mask = (~0ull) >> shift;
+				uint16_t sign_bit = (f->nodes.payload[src].u_const >> (shift - 1)) & 1;
+				
+				uint64_t num = (f->nodes.payload[src].u_const & mask) | (sign_bit ? ~mask : 0);
+				
+				assert(0 && "Just check over this when the time comes.");
+				
+				f->nodes.type[i] = TB_SIGNED_CONST;
+				f->nodes.payload[i].u_const = num;
+				changes++;
+			}
+		} else if (f->nodes.type[i] == TB_ZERO_EXT) {
+			TB_Register src = f->nodes.payload[i].ext;
+			
+			if (f->nodes.type[src] == TB_UNSIGNED_CONST) {
+				uint64_t shift = 64 - (8 << (dt.type - TB_I8));
+				uint64_t mask = (~0ull) >> shift;
+				uint64_t num = (f->nodes.payload[src].u_const & mask);
+				
+				f->nodes.type[i] = TB_UNSIGNED_CONST;
+				f->nodes.payload[i].u_const = num;
 				changes++;
 			}
 		}

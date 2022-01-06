@@ -41,7 +41,7 @@ TB_API bool tb_function_validate(TB_Function* restrict f) {
 			TB_DataType a = f->nodes.dt[p->i_arith.a];
 			TB_DataType b = f->nodes.dt[p->i_arith.b];
 			
-			if (TB_UNLIKELY(TB_DATA_TYPE_NOT_EQUALS(dt, a) || TB_DATA_TYPE_NOT_EQUALS(dt, b))) {
+			if (TB_UNLIKELY(!TB_DATA_TYPE_EQUALS(dt, a) || !TB_DATA_TYPE_EQUALS(dt, b))) {
 				printf("error on %s:r%u: Arithmatic operands must match output type!\n", f->name, i);
 				error_count++;
 			}
@@ -56,7 +56,7 @@ TB_API bool tb_function_validate(TB_Function* restrict f) {
 			TB_DataType a = f->nodes.dt[p->i_arith.a];
 			TB_DataType b = f->nodes.dt[p->i_arith.b];
 			
-			if (TB_UNLIKELY(TB_DATA_TYPE_NOT_EQUALS(dt, a) || TB_DATA_TYPE_NOT_EQUALS(dt, b))) {
+			if (TB_UNLIKELY(!TB_DATA_TYPE_EQUALS(dt, a) || !TB_DATA_TYPE_EQUALS(dt, b))) {
 				printf("error on %s:r%u: Arithmatic operands must match output type!\n", f->name, i);
 				error_count++;
 			}
@@ -84,7 +84,8 @@ TB_RegType type = f->nodes.type[i]; \
 TB_RegPayload* p = &f->nodes.payload[i]; \
 switch (type) { \
 case TB_NULL: \
-case TB_INT_CONST: \
+case TB_SIGNED_CONST: \
+case TB_UNSIGNED_CONST: \
 case TB_FLOAT_CONST: \
 case TB_STRING_CONST: \
 case TB_LOCAL: \
@@ -327,7 +328,8 @@ TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params, TB_Reg
 		
 		switch (type) {
 			case TB_NULL:
-			case TB_INT_CONST:
+			case TB_SIGNED_CONST:
+			case TB_UNSIGNED_CONST:
 			case TB_LOCAL:
 			break;
 			case TB_PARAM: {

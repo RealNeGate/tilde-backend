@@ -49,8 +49,7 @@ casted; \
 
 #define MAX_JOBS_PER_JOB_SYSTEM 4096
 
-// TODO(NeGate): eventually i'll make it dynamic
-#define PROTOTYPES_ARENA_SIZE (16u << 20u)
+#define PROTOTYPES_ARENA_SIZE (32u << 20u)
 #define CODE_REGION_BUFFER_SIZE (512 * 1024 * 1024)
 
 typedef struct TB_Emitter {

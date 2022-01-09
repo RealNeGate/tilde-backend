@@ -65,10 +65,10 @@ static __stdcall int ir_gen(FuzzerInfo* i) {
 		
 		char temp[64];
 		sprintf_s(temp, 64, "trial_%d_%d", i->thread_id, n);
-		TB_Function* f = tb_prototype_build(m, p, temp);
+		TB_Function* f = tb_prototype_build(m, p, temp, TB_LINKAGE_PUBLIC);
 		for (int i = 0; i < param_count; i++) pool[pool_size++] = tb_inst_param(f, i);
 		
-		int inst_count = gen_random(1, 200);
+		int inst_count = gen_random(1, 50);
 		for (int i = 0; i < inst_count; i++) {
 			TB_DataType dt = gen_random_int_dt();
 			
@@ -85,23 +85,23 @@ static __stdcall int ir_gen(FuzzerInfo* i) {
 					
 					TB_Register dst = TB_NULL_REG;
 					if (rng == 1) {
-						dst = tb_inst_add(f, dt, a, b, gen_random_arith());
+						dst = tb_inst_add(f, a, b, gen_random_arith());
 					} else if (rng == 2) {
-						dst = tb_inst_sub(f, dt, a, b, gen_random_arith());
+						dst = tb_inst_sub(f, a, b, gen_random_arith());
 					} else if (rng == 3) {
-						dst = tb_inst_mul(f, dt, a, b, gen_random_arith());
+						dst = tb_inst_mul(f, a, b, gen_random_arith());
 					} else if (rng == 4) {
-						dst = tb_inst_div(f, dt, a, b, gen_random_bool());
+						dst = tb_inst_div(f, a, b, gen_random_bool());
 					} else if (rng == 5) {
-						dst = tb_inst_and(f, dt, a, b);
+						dst = tb_inst_and(f, a, b);
 					} else if (rng == 6) {
-						dst = tb_inst_or(f, dt, a, b);
+						dst = tb_inst_or(f, a, b);
 					} else if (rng == 7) {
-						dst = tb_inst_xor(f, dt, a, b);
+						dst = tb_inst_xor(f, a, b);
 					} else if (rng == 8) {
-						dst = tb_inst_neg(f, dt, a);
+						dst = tb_inst_neg(f, a);
 					} else if (rng == 9) {
-						dst = tb_inst_not(f, dt, a);
+						dst = tb_inst_not(f, a);
 					} 
 					
 					pool[pool_size++] = dst;
@@ -111,7 +111,7 @@ static __stdcall int ir_gen(FuzzerInfo* i) {
 			
 			int rng = gen_random(0, 4);
 			if (rng == 0) {
-				pool[pool_size++] = tb_inst_iconst(f, dt, gen_random_any() & 0xFFFFull);
+				pool[pool_size++] = tb_inst_sint(f, dt, gen_random_any() & 0xFFFFull);
 			} else if (rng == 1 && var_pool_size > 0) {
 				pool[pool_size++] = tb_inst_load(f, dt, var_pool[gen_random(0, var_pool_size)], dt.type == TB_I32 ? 4 : 8);
 			} else if (rng == 2 && var_pool_size > 0) {
@@ -192,7 +192,8 @@ int main(int argc, char** argv) {
 	}
 	
 	uint64_t t2 = get_timer_counter();
-	printf("IR generation took %f ms\n", ((t2 - t1) * freq) * 1000.0);
+	double ir_gen_time = (t2 - t1) * freq;
+	printf("IR generation took %f ms\n", ir_gen_time * 1000.0);
 	
 	if (!tb_module_export(m, "./test_x64.obj")) abort();
 	
@@ -204,10 +205,13 @@ int main(int argc, char** argv) {
 		   "Compilation took %f ms\n", compile_time * 1000.0);
 	
 	size_t node_count = tb_DEBUG_module_get_full_node_count(m);
-	double speed = ((double)node_count / compile_time) / 1000000.0;
-	
 	printf("Node count: %zu\n", node_count);
-	printf("  %f million nodes/second\n", speed);
+	
+	double speed = ((double)node_count / ir_gen_time) / 1000000.0;
+	printf("  %f million nodes/second (IR gen time)\n", speed);
+	
+	speed = ((double)node_count / compile_time) / 1000000.0;
+	printf("  %f million nodes/second (Full)\n", speed);
 	
 	tb_module_destroy(m);
 	return 0;
@@ -237,14 +241,14 @@ static uint32_t gen_random_bool() {
 static TB_DataType gen_random_dt() {
 	return (TB_DataType){
 		.type = (gen_random_any() % TB_MAX_TYPES),
-		.count = 1
+		.width = 0
 	};
 }
 
 static TB_DataType gen_random_int_dt() {
 	return (TB_DataType){
 		.type = (gen_random_any() & 1) ? TB_I64 : TB_I32, // ignores i128
-		.count = 1
+		.width = 0
 	};
 }
 

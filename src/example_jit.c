@@ -42,7 +42,12 @@ int main(int argc, char** argv) {
 	clock_t t1 = clock();
 	
 	TB_FeatureSet features = { 0 };
+	
+#if _WIN32
 	TB_Module* m = tb_module_create(TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features);
+#else
+	TB_Module* m = tb_module_create(TB_ARCH_X86_64, TB_SYSTEM_LINUX, &features);
+#endif
 	
 	TB_Function* fib_func = test_fib(m);
 	tb_module_compile_func(m, fib_func);

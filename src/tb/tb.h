@@ -242,18 +242,18 @@ extern "C" {
 	
 #else
 	
-#define TB_TYPE_VOID (TB_DataType){ TB_VOID }
+#define TB_TYPE_VOID (TB_DataType){ TB_VOID, 0 }
 	
-#define TB_TYPE_I8 (TB_DataType){ TB_I8 }
-#define TB_TYPE_I16 (TB_DataType){ TB_I16 }
-#define TB_TYPE_I32 (TB_DataType){ TB_I32 }
-#define TB_TYPE_I64 (TB_DataType){ TB_I64 }
+#define TB_TYPE_I8 (TB_DataType){ TB_I8, 0 }
+#define TB_TYPE_I16 (TB_DataType){ TB_I16, 0 }
+#define TB_TYPE_I32 (TB_DataType){ TB_I32, 0 }
+#define TB_TYPE_I64 (TB_DataType){ TB_I64, 0 }
 	
-#define TB_TYPE_F32 (TB_DataType){ TB_F32 }
-#define TB_TYPE_F64 (TB_DataType){ TB_F64 }
+#define TB_TYPE_F32 (TB_DataType){ TB_F32, 0 }
+#define TB_TYPE_F64 (TB_DataType){ TB_F64, 0 }
 	
-#define TB_TYPE_BOOL (TB_DataType){ TB_BOOL }
-#define TB_TYPE_PTR (TB_DataType){ TB_PTR }
+#define TB_TYPE_BOOL (TB_DataType){ TB_BOOL, 0 }
+#define TB_TYPE_PTR (TB_DataType){ TB_PTR, 0 }
 	
 #endif
 	

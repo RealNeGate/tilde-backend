@@ -4,7 +4,7 @@
 TB_Function* test_fib(TB_Module* m) {
 	TB_FunctionPrototype* p = tb_prototype_create(m, TB_STDCALL, TB_TYPE_I32, 1, false);
 	tb_prototype_add_params(p, 1, (TB_DataType[]) { TB_TYPE_I32 });
-	TB_Function* func = tb_prototype_build(m, p, __FUNCTION__);
+	TB_Function* func = tb_prototype_build(m, p, __FUNCTION__, TB_LINKAGE_PUBLIC);
 	
 	TB_Register n = tb_inst_param(func, 0);
 	

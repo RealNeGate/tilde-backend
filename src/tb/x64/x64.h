@@ -302,8 +302,11 @@ static const Inst2 inst2_tbl[] = {
 };
 
 // NOTE(NeGate): This is for Win64, we can handle SysV later
-static const uint16_t ABI_CALLER_SAVED = (1u << RAX) | (1u << RCX) | (1u << RDX) | (1u << R8) | (1u << R9) | (1u << R10) | (1u << R11);
-static const uint16_t ABI_CALLEE_SAVED = ~ABI_CALLER_SAVED;
+static const uint16_t WIN64_ABI_CALLER_SAVED = (1u << RAX) | (1u << RCX) | (1u << RDX) | (1u << R8) | (1u << R9) | (1u << R10) | (1u << R11);
+static const uint16_t WIN64_ABI_CALLEE_SAVED = ~WIN64_ABI_CALLER_SAVED;
+
+static const uint16_t SYSV_ABI_CALLER_SAVED = (1u << RAX) | (1u << RDI) | (1u << RSI) | (1u << RCX) | (1u << RDX) | (1u << R8) | (1u << R9) | (1u << R10) | (1u << R11);
+static const uint16_t SYSV_ABI_CALLEE_SAVED = ~SYSV_ABI_CALLER_SAVED;
 
 // TODO(NeGate): Maybe move this out, other things might like it
 inline static int align_up(int a, int b) { return a + (b - (a % b)) % b; }

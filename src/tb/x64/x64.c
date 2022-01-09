@@ -725,8 +725,9 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 				int param_count = p->call.param_end - p->call.param_start;
 				
 				// Evict the GPRs that are caller saved
+				uint16_t caller_saved = (ctx->is_sysv ? SYSV_ABI_CALLER_SAVED : WIN64_ABI_CALLER_SAVED);
 				for (size_t j = 0; j < 16; j++) {
-					if (ABI_CALLER_SAVED & (1u << j)) evict_gpr(ctx, f, j, r);
+					if (caller_saved & (1u << j)) evict_gpr(ctx, f, j, r);
 				}
 				
 				// Evict the XMMs that are caller saved
@@ -1861,7 +1862,7 @@ static Val def_new_gpr(Ctx* ctx, TB_Function* f, TB_Register r, int dt_type) {
 			
 			if (ctx->gpr_desc[gpr] == 0 && (gpr_temp_bits & (1u << gpr)) == 0) {
 				// mark register as to be saved
-				ctx->regs_to_save |= (1u << gpr) & ABI_CALLEE_SAVED;
+				ctx->regs_to_save |= (1u << gpr) & (ctx->is_sysv ? SYSV_ABI_CALLEE_SAVED : WIN64_ABI_CALLEE_SAVED);
 				
 				Val val = val_gpr(dt_type, gpr);
 				ctx->gpr_desc[gpr] = r;

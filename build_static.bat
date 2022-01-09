@@ -31,5 +31,5 @@ set tb_object_files=tb.o ^
 	
 llvm-ar rc W:/Workspace/Cuik/tinybackend.lib %tb_object_files%
 
-cd W:/Workspace/Cuik/
-build.bat
+rem cd W:/Workspace/Cuik/
+rem build.bat

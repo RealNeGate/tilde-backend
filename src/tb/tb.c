@@ -68,6 +68,12 @@ TB_API void tb_function_free(TB_Function* f) {
 	f->vla.data = NULL;
 }
 
+TB_API TB_DataType tb_vector_type(TB_DataTypeEnum type, int width) {
+	assert(!tb_is_power_of_two(width));
+	
+	return (TB_DataType) { .type = type, .width = __builtin_ffs(width) - 1 };
+}
+
 TB_API TB_Module* tb_module_create(TB_Arch target_arch,
                                    TB_System target_system,
                                    const TB_FeatureSet* features) {

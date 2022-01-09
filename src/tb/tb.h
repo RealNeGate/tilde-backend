@@ -490,7 +490,7 @@ extern "C" {
 	// IR access
 	////////////////////////////////
 	TB_API TB_FunctionID tb_function_get_id(TB_Module* m, TB_Function* f);
-	TB_API TB_Function* tb_get_function_by_id(TB_Module* m, TB_FunctionID id);
+	TB_API TB_Function* tb_function_from_id(TB_Module* m, TB_FunctionID id);
 	
 	TB_API TB_Register tb_node_get_last_register(TB_Function* f);
 	TB_API TB_DataType tb_node_get_data_type(TB_Function* f, TB_Register r);

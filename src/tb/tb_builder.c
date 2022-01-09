@@ -15,7 +15,7 @@ TB_API TB_FunctionID tb_function_get_id(TB_Module* m, TB_Function* f) {
 	return safe_cast(TB_FunctionID, f - m->functions.data);
 }
 
-TB_API TB_Function* tb_get_function_by_id(TB_Module* m, TB_FunctionID id) {
+TB_API TB_Function* tb_function_from_id(TB_Module* m, TB_FunctionID id) {
 	assert(id < m->functions.count);
 	return &m->functions.data[id];
 }

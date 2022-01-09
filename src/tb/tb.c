@@ -113,9 +113,8 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 }
 
 #define OPT(x) if (tb_opt_ ## x (f)) { \
-printf("%s   ", #x); \
-tb_function_print(f, stdout); \
-printf("\n\n\n"); \
+/* printf("%s   ", #x); */ \
+/* tb_function_print(f, stdout); */ \
 goto repeat_opt; \
 }
 
@@ -306,7 +305,7 @@ TB_API void tb_prototype_add_params(TB_FunctionPrototype* p, size_t count, const
 	p->param_count += count;
 }
 
-TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, const char* name) {
+TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, const char* name, TB_Linkage linkage) {
 	size_t i = m->functions.count++;
 	assert(i < TB_MAX_FUNCTIONS);
 	assert(p->param_count == p->param_capacity);
@@ -314,6 +313,7 @@ TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, co
 	TB_Function* f = &m->functions.data[i];
 	*f = (TB_Function){
 		.module = m,
+		.linkage = linkage,
 		.prototype = p,
 		.name = tb_platform_string_alloc(name)
 	};
@@ -357,10 +357,10 @@ TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, co
 		}
 		
 		assert(size);
-		assert(dt.count > 0);
+		assert(dt.width < 8 && "Vector width too big!");
 		f->nodes.payload[2+i] = (TB_RegPayload){
 			.param.id = i,
-			.param.size = size * dt.count
+			.param.size = size << dt.width
 		};
 	}
 	
@@ -408,7 +408,7 @@ TB_API void* tb_initializer_add_region(TB_Module* m, TB_InitializerID id, size_t
 	return ptr;
 }
 
-TB_API TB_GlobalID tb_global_create(TB_Module* m, const char* name, TB_InitializerID initializer) {
+TB_API TB_GlobalID tb_global_create(TB_Module* m, TB_InitializerID initializer, const char* name, TB_Linkage linkage) {
 	int tid = get_local_thread_id();
 	
 	// each thread gets their own grouping of global ids
@@ -433,6 +433,7 @@ TB_API TB_GlobalID tb_global_create(TB_Module* m, const char* name, TB_Initializ
 	TB_GlobalID i = (tid * per_thread_stride) + arrlen(m->globals[tid]);
 	TB_Global g = {
 		.name = tb_platform_string_alloc(name),
+		.linkage = linkage,
 		.init = initializer,
 		.pos = pos
 	};
@@ -583,16 +584,18 @@ void tb_emit_global_patch(TB_Module* m, uint32_t func_id, size_t pos, TB_GlobalI
 // IR PRINTER
 //
 static void tb_print_type(FILE* out, TB_DataType dt) {
+	assert(dt.width < 8 && "Vector width too big!");
+	
 	switch (dt.type) {
         case TB_VOID:   printf("[void]   \t"); break;
-        case TB_BOOL:   printf("[bool x %d]\t", dt.count); break;
-        case TB_I8:     printf("[i8  x %d]\t", dt.count); break;
-        case TB_I16:    printf("[i16 x %d]\t", dt.count); break;
-        case TB_I32:    printf("[i32 x %d]\t", dt.count); break;
-        case TB_I64:    printf("[i64 x %d]\t", dt.count); break;
+        case TB_BOOL:   printf("[bool]    \t"); break;
+        case TB_I8:     printf("[i8  x %02d]\t", 1 << dt.width); break;
+        case TB_I16:    printf("[i16 x %02d]\t", 1 << dt.width); break;
+        case TB_I32:    printf("[i32 x %02d]\t", 1 << dt.width); break;
+        case TB_I64:    printf("[i64 x %02d]\t", 1 << dt.width); break;
         case TB_PTR:    printf("[ptr]    \t"); break;
-        case TB_F32:    printf("[f32 x %d]\t", dt.count); break;
-        case TB_F64:    printf("[f64 x %d]\t", dt.count); break;
+        case TB_F32:    printf("[f32 x %02d]\t", 1 << dt.width); break;
+        case TB_F64:    printf("[f64 x %02d]\t", 1 << dt.width); break;
         default:        tb_todo();
 	}
 }
@@ -602,7 +605,7 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 	fprintf(out, "%s():\n", f->name);
     
 	for (TB_Register i = 1; i < f->nodes.count; i++) {
-		TB_RegType type = f->nodes.type[i];
+		TB_RegTypeEnum type = f->nodes.type[i];
 		TB_DataType dt = f->nodes.dt[i];
 		TB_RegPayload p = f->nodes.payload[i];
         
@@ -631,6 +634,11 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			fprintf(out, "  r%u\t=\t", i);
 			tb_print_type(out, dt);
             fprintf(out, " %f\n", p.f_const);
+			break;
+            case TB_FLOAT_EXT:
+			fprintf(out, "  r%u\t=\t", i);
+			tb_print_type(out, dt);
+			fprintf(out, " FPXT r%u\n", p.ext);
 			break;
             case TB_ZERO_EXT:
 			fprintf(out, "  r%u\t=\t", i);
@@ -676,6 +684,24 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			fprintf(out, "  r%u\t=\t", i);
 			tb_print_type(out, dt);
 			fprintf(out, " &r%u[r%u * %d]\n", p.array_access.base, p.array_access.index, p.array_access.stride);
+			break;
+			case TB_ATOMIC_XCHG:
+			fprintf(out, "  r%u\t=\tATOMIC XCHG *r%u, r%u\n", i, p.atomic.addr, p.atomic.src);
+			break;
+			case TB_ATOMIC_ADD:
+			fprintf(out, "  r%u\t=\tATOMIC ADD *r%u, r%u\n", i, p.atomic.addr, p.atomic.src);
+			break;
+			case TB_ATOMIC_SUB:
+			fprintf(out, "  r%u\t=\tATOMIC SUB *r%u, r%u\n", i, p.atomic.addr, p.atomic.src);
+			break;
+			case TB_ATOMIC_AND:
+			fprintf(out, "  r%u\t=\tATOMIC AND *r%u, r%u\n", i, p.atomic.addr, p.atomic.src);
+			break;
+			case TB_ATOMIC_XOR:
+			fprintf(out, "  r%u\t=\tATOMIC XOR *r%u, r%u\n", i, p.atomic.addr, p.atomic.src);
+			break;
+			case TB_ATOMIC_OR: 
+			fprintf(out, "  r%u\t=\tATOMIC OR *r%u, r%u\n", i, p.atomic.addr, p.atomic.src);
 			break;
 			case TB_AND:
             case TB_OR:
@@ -857,6 +883,7 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
 			fprintf(out, " r%u (%d align)\n", p.store.value, p.store.alignment);
 			break;
             case TB_LABEL:
+			if (p.label.id > 0) fprintf(out, "\n"); 
 			fprintf(out, "L%d: # r%u terminates at r%u\n", p.label.id, i, p.label.terminator);
 			break;
             case TB_GOTO:
@@ -888,6 +915,8 @@ TB_API void tb_function_print(TB_Function* f, FILE* out) {
             default: tb_todo();
 		}
 	}
+	
+	printf("\n\n\n");
 }
 
 //

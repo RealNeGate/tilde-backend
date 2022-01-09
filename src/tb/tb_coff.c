@@ -815,10 +815,12 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 		   }, sizeof(COFF_AuxSectionSymbol), 1, f);
 	
 	for (size_t i = 0; i < m->compiled_functions.count; i++) {
+		bool is_extern = m->compiled_functions.data[i].linkage == TB_LINKAGE_PUBLIC;
+		
 		COFF_Symbol sym = {
 			.value = func_layout[i],
 			.section_number = 1,
-			.storage_class = IMAGE_SYM_CLASS_EXTERNAL
+			.storage_class = is_extern ? IMAGE_SYM_CLASS_EXTERNAL : IMAGE_SYM_CLASS_STATIC
 		};
 		
 		size_t name_len = strlen(m->compiled_functions.data[i].name);
@@ -868,10 +870,12 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	loop(i, m->max_threads) {
 		loop(j, arrlen(m->globals[i])) {
 			const TB_Global* restrict g = &m->globals[i][j];
+			
+			bool is_extern = g->linkage == TB_LINKAGE_PUBLIC;
 			COFF_Symbol sym = {
 				.value = g->pos,
 				.section_number = 3, // data section
-				.storage_class = IMAGE_SYM_CLASS_STATIC
+				.storage_class = is_extern ? IMAGE_SYM_CLASS_EXTERNAL : IMAGE_SYM_CLASS_STATIC
 			};
 			
 			size_t name_len = strlen(g->name);

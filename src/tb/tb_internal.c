@@ -105,6 +105,15 @@ break; \
 case TB_KEEPALIVE: \
 X(p->keepalive); \
 break; \
+case TB_ATOMIC_XCHG: \
+case TB_ATOMIC_ADD: \
+case TB_ATOMIC_SUB: \
+case TB_ATOMIC_AND: \
+case TB_ATOMIC_XOR: \
+case TB_ATOMIC_OR: \
+X(p->atomic.addr); \
+X(p->atomic.src); \
+break; \
 case TB_MEMCPY: \
 case TB_MEMSET: \
 X(p->mem_op.dst); \

@@ -71,14 +71,19 @@ typedef enum Scale {
 	SCALE_X8
 } Scale;
 
+typedef enum Inst2FPFlags {
+	INST2FP_DOUBLE = 1,
+	INST2FP_PACKED = 2
+} Inst2FPFlags;
+
 typedef struct Val {
 	ValType type : 8;
 	TB_DataType dt;
     
 	union {
-		GPR gpr : 8;
-        XMM xmm : 8;
-        Cond cond : 8;
+		GPR gpr;
+        XMM xmm;
+        Cond cond;
 		struct {
 			bool is_rvalue;
 			GPR base : 8;
@@ -94,6 +99,9 @@ typedef struct Val {
         int32_t imm;
 	};
 } Val;
+
+_Static_assert(offsetof(Val, gpr) == offsetof(Val, xmm),
+			   "Val::gpr and Val::xmm must alias!");
 
 _Static_assert(offsetof(Val, global.is_rvalue) == offsetof(Val, mem.is_rvalue),
 			   "Val::mem.is_rvalue and Val::global.is_rvalue must alias!");
@@ -133,6 +141,8 @@ typedef struct MemCacheDesc {
 typedef struct Ctx {
 	uint8_t* out;
 	uint8_t* start_out;
+	
+	bool is_sysv;
 	
 	size_t function_id;
 	TB_Function* f;
@@ -195,19 +205,13 @@ typedef enum Inst2Type {
     TEST, LEA, IMUL, XCHG,
 	
 	MOVSXB, MOVSXW, MOVSXD, 
-	MOVZXB, MOVZXW,
-    
-    // Scalar Single
-    MOVSS, ADDSS, MULSS, SUBSS, DIVSS,
-    CMPSS, CVTSS2SD,
-	
-    // Scalar Double
-    MOVSD, ADDSD, MULSD, SUBSD, DIVSD,
-    CMPSD, CVTSD2SS,
-	
-	// Packed Single
-	MOVAPS, MOVUPS, ADDPS, SUBPS, MULPS, DIVPS 
+	MOVZXB, MOVZXW
 } Inst2Type;
+
+typedef enum Inst2FPType {
+	FP_MOV, FP_ADD, FP_SUB, FP_MUL, FP_DIV, FP_CMP,
+	FP_CVT, // cvtss2sd or cvtsd2ss
+} Inst2FPType;
 
 typedef enum ExtMode {
     // Normal
@@ -249,8 +253,12 @@ typedef struct Inst2 {
     ExtMode ext : 8;
 } Inst2;
 
-static const GPR GPR_PARAMETERS[4] = {
+static const GPR WIN64_GPR_PARAMETERS[4] = {
 	RCX, RDX, R8, R9
+};
+
+static const GPR SYSV_GPR_PARAMETERS[6] = {
+	RDI, RSI, RDX, RCX, R8, R9
 };
 
 static const GPR GPR_PRIORITY_LIST[] = {
@@ -290,30 +298,7 @@ static const Inst2 inst2_tbl[] = {
 	[MOVSXD] = { 0x63, .ext = EXT_DEF2 },
 	
 	[MOVZXB] = { 0xB6, .ext = EXT_DEF2 },
-	[MOVZXW] = { 0xB7, .ext = EXT_DEF2 },
-    
-	[MOVSS] = { 0x10, .ext = EXT_SSE_SS },
-	[ADDSS] = { 0x58, .ext = EXT_SSE_SS },
-	[MULSS] = { 0x59, .ext = EXT_SSE_SS },
-	[SUBSS] = { 0x5C, .ext = EXT_SSE_SS },
-	[DIVSS] = { 0x5E, .ext = EXT_SSE_SS },
-	[CMPSS] = { 0xC2, .ext = EXT_SSE_SS },
-	[CVTSS2SD] = { 0x5A, .ext = EXT_SSE_SS },
-	
-	[MOVSD] = { 0x10, .ext = EXT_SSE_SD },
-	[ADDSD] = { 0x58, .ext = EXT_SSE_SD },
-	[MULSD] = { 0x59, .ext = EXT_SSE_SD },
-	[SUBSD] = { 0x5C, .ext = EXT_SSE_SD },
-	[DIVSD] = { 0x5E, .ext = EXT_SSE_SD },
-	[CMPSD] = { 0xC2, .ext = EXT_SSE_SD },
-	[CVTSD2SS] = { 0x5A, .ext = EXT_SSE_SD },
-	
-	[MOVAPS] = { 0x28, .ext = EXT_SSE_PS },
-	[MOVUPS] = { 0x10, .ext = EXT_SSE_PS },
-	[ADDPS] = { 0x58, .ext = EXT_SSE_PS },
-	[SUBPS] = { 0x5C, .ext = EXT_SSE_PS },
-	[MULPS] = { 0x59, .ext = EXT_SSE_PS },
-	[DIVPS] = { 0x5E, .ext = EXT_SSE_PS }
+	[MOVZXW] = { 0xB7, .ext = EXT_DEF2 }
 };
 
 // NOTE(NeGate): This is for Win64, we can handle SysV later
@@ -327,7 +312,7 @@ inline static int align_up(int a, int b) { return a + (b - (a % b)) % b; }
 inline static Val val_gpr(int dt_type, GPR g) {
 	return (Val) {
 		.type = VAL_GPR,
-		.dt.count = 1,
+		.dt.width = 0,
 		.dt.type = dt_type,
 		.gpr = g
 	};
@@ -500,3 +485,5 @@ static Val load_into(Ctx* ctx, TB_Function* f, TB_DataType dt, TB_Register r, TB
 
 // used to add patches since there's separate arrays per thread
 static _Thread_local size_t s_local_thread_id;
+
+#define TODO_VECTOR_TYPES(dt) assert((dt).width == 0 && "TODO: vector types")

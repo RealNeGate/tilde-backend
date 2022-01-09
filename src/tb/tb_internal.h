@@ -1,6 +1,4 @@
-// Private header stuff, don't include TB_INTERNAL into your code,
-// it's for the other implementation files of TB
-//
+// Private header stuff
 //
 // The internal structure of a function's IR:
 // It's broken down into streams which are easy to scan through and 
@@ -53,7 +51,6 @@ casted; \
 
 // TODO(NeGate): eventually i'll make it dynamic
 #define PROTOTYPES_ARENA_SIZE (16u << 20u)
-
 #define CODE_REGION_BUFFER_SIZE (512 * 1024 * 1024)
 
 typedef struct TB_Emitter {
@@ -61,7 +58,7 @@ typedef struct TB_Emitter {
 	uint8_t* data;
 } TB_Emitter;
 
-// NOTE(NeGate): Don't reorder this stuff... bitch
+// NOTE(NeGate): Don't reorder this stuff...
 typedef enum TB_RegTypeEnum {
     TB_NULL,
 	
@@ -78,9 +75,24 @@ typedef enum TB_RegTypeEnum {
 	TB_LOAD,
     TB_STORE,
 	
+	TB_MEMCLR,
 	TB_MEMCPY,
 	TB_MEMSET,
 	TB_MEMCMP,
+	
+	// Atomics
+	TB_ATOMIC_TEST_AND_SET,
+	TB_ATOMIC_CLEAR,
+	
+	TB_ATOMIC_XCHG,
+	TB_ATOMIC_ADD,
+	TB_ATOMIC_SUB,
+	TB_ATOMIC_AND,
+	TB_ATOMIC_XOR,
+	TB_ATOMIC_OR,
+	
+	TB_ATOMIC_CMPXCHG, /* These are always bundled together */
+	TB_ATOMIC_CMPXCHG2,
 	
 	// Terminators
     TB_LABEL,
@@ -120,6 +132,8 @@ typedef enum TB_RegTypeEnum {
     TB_SAR,
     TB_UDIV,
     TB_SDIV,
+    TB_UMOD,
+    TB_SMOD,
     
     // Float arithmatic
     TB_FADD,
@@ -169,7 +183,7 @@ typedef enum TB_RegTypeEnum {
 	
 	// helpful for certain scans
 	TB_SIDE_EFFECT_MIN = TB_LINE_INFO,
-	TB_SIDE_EFFECT_MAX = TB_MEMCMP,
+	TB_SIDE_EFFECT_MAX = TB_ATOMIC_CMPXCHG2,
 	
 	TB_TERMINATOR_MIN = TB_LABEL,
 	TB_TERMINATOR_MAX = TB_RET
@@ -181,6 +195,8 @@ typedef uint8_t TB_RegType;
 #define TB_IS_NODE_TERMINATOR(type) ((type) >= TB_TERMINATOR_MIN && (type) <= TB_TERMINATOR_MAX)
 #define TB_DATA_TYPE_EQUALS(a, b) tb_data_type_match(&(a), &(b))
 
+// first is the null register, then the entry
+// label, then parameters, then everything else
 #define TB_FIRST_PARAMETER_REG 2
 
 typedef union TB_RegPayload {
@@ -214,21 +230,26 @@ typedef union TB_RegPayload {
 	struct {
 		TB_Register base;
 		TB_Register index;
-		int32_t stride;
+		TB_CharUnits stride;
 	} array_access;
 	struct {
+		TB_Register a;
+		TB_Register b;
+		TB_CharUnits stride;
+	} ptrdiff;
+	struct {
 		uint32_t id;
-		uint32_t size;
+		TB_CharUnits size;
 	} param;
 	struct {
 		TB_Register param;
 		
-		uint32_t size;
-		uint32_t alignment;
+		TB_CharUnits size;
+		TB_CharUnits alignment;
 	} param_addr;
 	struct {
-		uint32_t size;
-		uint32_t alignment;
+		TB_CharUnits size;
+		TB_CharUnits alignment;
 	} local;
 	TB_Register unary;
 	struct {
@@ -250,15 +271,23 @@ typedef union TB_RegPayload {
 	} cvt;
 	struct {
 		TB_Register address;
-		uint32_t alignment;
+		TB_CharUnits alignment;
 		bool is_volatile;
 	} load;
 	struct {
 		TB_Register address;
 		TB_Register value;
-		uint32_t alignment;
+		TB_CharUnits alignment;
 		bool is_volatile;
 	} store;
+	struct {
+		TB_Register addr;
+		TB_Register src;
+		TB_MemoryOrder order : 8;
+		
+		// NOTE(NeGate): this is used for fail
+		TB_MemoryOrder order2 : 8;
+	} atomic;
 	struct {
 		TB_Register value;
 	} ret;
@@ -310,8 +339,13 @@ typedef union TB_RegPayload {
 		TB_Register dst;
 		TB_Register src;
 		TB_Register size;
-		int align;
+		TB_CharUnits align;
 	} mem_op;
+	struct {
+		TB_Register dst;
+		TB_CharUnits size;
+		TB_CharUnits align;
+	} clear;
 	struct {
 		TB_Register addr;
 		TB_InitializerID id;
@@ -349,6 +383,7 @@ typedef struct TB_ExternFunctionPatch {
 
 typedef struct TB_FunctionOutput {
 	const char* name;
+	TB_Linkage linkage;
 	
 	// NOTE(NeGate): This data is actually specific to the
 	// architecture run but generically can be thought of as
@@ -396,10 +431,10 @@ typedef struct TB_InitObj {
 		TB_INIT_OBJ_RELOC_FUNC,
 		TB_INIT_OBJ_RELOC_GLOBAL
 	} type;
-	uint32_t offset;
+	TB_CharUnits offset;
 	union {
 		struct {
-			uint32_t size;
+			TB_CharUnits size;
 			const void* ptr;
 		} region;
 		
@@ -411,7 +446,7 @@ typedef struct TB_InitObj {
 
 typedef struct TB_Initializer {
 	// header
-	uint32_t size, align;
+	TB_CharUnits size, align;
 	uint32_t obj_capacity;
 	uint32_t obj_count;
 	
@@ -421,6 +456,7 @@ typedef struct TB_Initializer {
 
 typedef struct TB_Global {
 	char* name;
+	TB_Linkage linkage;
 	TB_InitializerID init;
 	size_t pos;
 } TB_Global;
@@ -428,6 +464,7 @@ typedef struct TB_Global {
 struct TB_Function {
 	// It's kinda a weird circular reference but yea
 	TB_Module* module;
+	TB_Linkage linkage;
 	
 	char* name;
 	const TB_FunctionPrototype* prototype;
@@ -565,11 +602,11 @@ b = temp; \
 } while(0)
 
 #ifndef NDEBUG
-#define tb_unreachable() __builtin_trap()
 #define tb_todo() __builtin_trap()
+#define tb_unreachable() __builtin_trap()
 #else
-#define tb_unreachable() __builtin_unreachable()
 #define tb_todo() __builtin_unreachable()
+#define tb_unreachable() __builtin_unreachable()
 #endif
 
 #define tb_arrlen(a) (sizeof(a) / sizeof(a[0]))
@@ -699,8 +736,15 @@ void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, siz
 TB_Register* tb_vla_reserve(TB_Function* f, size_t count);
 
 inline static bool tb_data_type_match(const TB_DataType* a, const TB_DataType* b) {
-	return a->type == b->type && a->count == b->count;
+	return a->type == b->type && a->width == b->width;
 }
+
+// NOTE(NeGate): This is used when we do switch statements on data types.
+typedef union TB_DataTypeRaw {
+	TB_DataType dt;
+	uint16_t raw;
+} TB_DataTypeRaw;
+#define TB_DATA_TYPE_RAW(t, w) ((TB_DataType) { .dt = { .type = t, .width = w }).raw
 
 // NOTE(NeGate): Place all the codegen interfaces down here
 extern ICodeGen x64_fast_code_gen;

@@ -2,9 +2,7 @@
 bool tb_opt_load_elim(TB_Function* f) {
 	int changes = 0;
 	
-	loop(i, f->nodes.count) {
-		if (f->nodes.type[i] != TB_LOAD) continue;
-		
+	loop(i, f->nodes.count) if (f->nodes.type[i] == TB_LOAD) {
 		TB_DataType dt = f->nodes.dt[i];
 		TB_Register addr = f->nodes.payload[i].load.address;
 		uint32_t alignment = f->nodes.payload[i].load.alignment;

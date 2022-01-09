@@ -77,6 +77,8 @@ TB_API TB_Register tb_node_arith_get_right(TB_Function* f, TB_Register r) {
 	return f->nodes.payload[r].i_arith.b;
 }
 
+
+
 static TB_Register tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
 	// Cannot add registers to terminated basic blocks, except labels
 	// which start new basic blocks
@@ -242,7 +244,7 @@ TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line) {
 	f->module->line_info_count++;
 }
 
-TB_API TB_Register tb_inst_local(TB_Function* f, uint32_t size, uint32_t alignment) {
+TB_API TB_Register tb_inst_local(TB_Function* f, uint32_t size, TB_CharUnits alignment) {
 	assert(size > 0);
 	assert(alignment > 0 && tb_is_power_of_two(alignment));
 	
@@ -252,7 +254,7 @@ TB_API TB_Register tb_inst_local(TB_Function* f, uint32_t size, uint32_t alignme
 	return r;
 }
 
-TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr, uint32_t alignment) {
+TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr, TB_CharUnits alignment) {
 	assert(f->current_label);
 	
 	TB_Register r = tb_make_reg(f, TB_LOAD, dt);
@@ -269,7 +271,7 @@ TB_API void tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_R
 	return;
 }
 
-TB_API TB_Register tb_inst_volatile_load(TB_Function* f, TB_DataType dt, TB_Register addr, uint32_t alignment) {
+TB_API TB_Register tb_inst_volatile_load(TB_Function* f, TB_DataType dt, TB_Register addr, TB_CharUnits alignment) {
 	assert(f->current_label);
 	
 	TB_Register r = tb_make_reg(f, TB_LOAD, dt);
@@ -279,7 +281,7 @@ TB_API TB_Register tb_inst_volatile_load(TB_Function* f, TB_DataType dt, TB_Regi
 	return r;
 }
 
-TB_API void tb_inst_volatile_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_Register val, uint32_t alignment) {
+TB_API void tb_inst_volatile_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_Register val, TB_CharUnits alignment) {
 	TB_Register r = tb_make_reg(f, TB_STORE, dt);
 	f->nodes.payload[r].store.address = addr;
 	f->nodes.payload[r].store.value = val;
@@ -293,15 +295,27 @@ TB_API void tb_inst_initialize_mem(TB_Function* f, TB_Register addr, TB_Initiali
 	f->nodes.payload[r].init.id = src;
 }
 
-TB_API TB_Register tb_inst_uconst(TB_Function* f, TB_DataType dt, uint64_t imm) {
-	assert(dt.type == TB_BOOL || dt.type == TB_PTR || (dt.type >= TB_I8 && dt.type <= TB_I64));
+TB_API TB_Register tb_inst_bool(TB_Function* f, bool imm) {
+	TB_Register r = tb_make_reg(f, TB_UNSIGNED_CONST, TB_TYPE_BOOL);
+	f->nodes.payload[r].u_const = imm;
+	return r;
+}
+
+TB_API TB_Register tb_inst_ptr(TB_Function* f, uint64_t imm) {
+	TB_Register r = tb_make_reg(f, TB_UNSIGNED_CONST, TB_TYPE_PTR);
+	f->nodes.payload[r].u_const = imm;
+	return r;
+}
+
+TB_API TB_Register tb_inst_uint(TB_Function* f, TB_DataType dt, uint64_t imm) {
+	assert(dt.type >= TB_I8 && dt.type <= TB_I64);
 	
 	TB_Register r = tb_make_reg(f, TB_UNSIGNED_CONST, dt);
 	f->nodes.payload[r].u_const = imm;
 	return r;
 }
 
-TB_API TB_Register tb_inst_sconst(TB_Function* f, TB_DataType dt, int64_t imm) {
+TB_API TB_Register tb_inst_sint(TB_Function* f, TB_DataType dt, int64_t imm) {
 	assert(dt.type == TB_BOOL || dt.type == TB_PTR || (dt.type >= TB_I8 && dt.type <= TB_I64));
 	
 	TB_Register r = tb_make_reg(f, TB_SIGNED_CONST, dt);
@@ -309,13 +323,13 @@ TB_API TB_Register tb_inst_sconst(TB_Function* f, TB_DataType dt, int64_t imm) {
 	return r;
 }
 
-TB_API TB_Register tb_inst_fconst(TB_Function* f, TB_DataType dt, double imm) {
+TB_API TB_Register tb_inst_float(TB_Function* f, TB_DataType dt, double imm) {
 	TB_Register r = tb_make_reg(f, TB_FLOAT_CONST, dt);
 	f->nodes.payload[r].f_const = imm;
 	return r;
 }
 
-TB_API TB_Register tb_inst_const_cstr(TB_Function* f, const char* str) {
+TB_API TB_Register tb_inst_cstring(TB_Function* f, const char* str) {
 	size_t len = strlen(str);
 	char* newstr = tb_platform_arena_alloc(len + 1);
 	memcpy(newstr, str, len);
@@ -327,7 +341,7 @@ TB_API TB_Register tb_inst_const_cstr(TB_Function* f, const char* str) {
 	return r;
 }
 
-TB_API TB_Register tb_inst_const_string(TB_Function* f, const char* str, size_t len) {
+TB_API TB_Register tb_inst_string(TB_Function* f, size_t len, const char* str) {
 	char* newstr = tb_platform_arena_alloc(len + 1);
 	memcpy(newstr, str, len);
 	newstr[len] = '\0';
@@ -429,7 +443,7 @@ TB_API TB_Register tb_inst_ecall(TB_Function* f, TB_DataType dt, const TB_Extern
 	return r;
 }
 
-TB_API void tb_inst_memset(TB_Function* f, TB_Register dst, TB_Register val, TB_Register size, int align) {
+TB_API void tb_inst_memset(TB_Function* f, TB_Register dst, TB_Register val, TB_Register size, TB_CharUnits align) {
 	TB_Register r = tb_make_reg(f, TB_MEMSET, TB_TYPE_PTR);
 	f->nodes.payload[r].mem_op.dst = dst;
 	f->nodes.payload[r].mem_op.src = val;
@@ -437,12 +451,19 @@ TB_API void tb_inst_memset(TB_Function* f, TB_Register dst, TB_Register val, TB_
 	f->nodes.payload[r].mem_op.align = align;
 }
 
-TB_API void tb_inst_memcpy(TB_Function* f, TB_Register dst, TB_Register src, TB_Register size, int align) {
+TB_API void tb_inst_memcpy(TB_Function* f, TB_Register dst, TB_Register src, TB_Register size, TB_CharUnits align) {
 	TB_Register r = tb_make_reg(f, TB_MEMCPY, TB_TYPE_PTR);
 	f->nodes.payload[r].mem_op.dst = dst;
 	f->nodes.payload[r].mem_op.src = src;
 	f->nodes.payload[r].mem_op.size = size;
 	f->nodes.payload[r].mem_op.align = align;
+}
+
+TB_API void tb_inst_memclr(TB_Function* f, TB_Register addr, TB_CharUnits size, TB_CharUnits align) {
+	TB_Register r = tb_make_reg(f, TB_MEMCLR, TB_TYPE_PTR);
+	f->nodes.payload[r].clear.dst = addr;
+	f->nodes.payload[r].clear.size = size;
+	f->nodes.payload[r].clear.align = align;
 }
 
 TB_API TB_Register tb_inst_not(TB_Function* f, TB_Register n) {
@@ -457,9 +478,9 @@ TB_API TB_Register tb_inst_neg(TB_Function* f, TB_Register n) {
 	TB_DataType dt = f->nodes.dt[n];
 	
 	if (f->nodes.type[n] == TB_SIGNED_CONST) {
-		return tb_inst_sconst(f, dt, -f->nodes.payload[n].s_const);
+		return tb_inst_sint(f, dt, -f->nodes.payload[n].s_const);
 	} else if (f->nodes.type[n] == TB_FLOAT_CONST) {
-		return tb_inst_fconst(f, dt, -f->nodes.payload[n].f_const);
+		return tb_inst_float(f, dt, -f->nodes.payload[n].f_const);
 	}
 	
 	TB_Register r = tb_make_reg(f, TB_NEG, dt);
@@ -499,8 +520,120 @@ TB_API TB_Register tb_inst_div(TB_Function* f, TB_Register a, TB_Register b, boo
 	return tb_bin_arith(f, signedness ? TB_SDIV : TB_UDIV, TB_ASSUME_NUW, a, b);
 }
 
+TB_API TB_Register tb_inst_mod(TB_Function* f, TB_Register a, TB_Register b, bool signedness) {
+	// modulo can't wrap or overflow
+	return tb_bin_arith(f, signedness ? TB_SMOD : TB_UMOD, TB_ASSUME_NUW, a, b);
+}
+
 TB_API TB_Register tb_inst_shl(TB_Function* f, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
 	return tb_bin_arith(f, TB_SHL, arith_behavior, a, b);
+}
+
+////////////////////////////////
+// Atomics
+////////////////////////////////
+TB_API TB_Register tb_inst_atomic_test_and_set(TB_Function* f, TB_Register addr, TB_MemoryOrder order) {
+	TB_Register r = tb_make_reg(f, TB_ATOMIC_TEST_AND_SET, TB_TYPE_BOOL);
+	f->nodes.payload[r].atomic.addr = addr;
+	f->nodes.payload[r].atomic.src = TB_NULL_REG;
+	f->nodes.payload[r].atomic.order = order;
+	f->nodes.payload[r].atomic.order2 = TB_MEM_ORDER_SEQ_CST;
+	return r;
+}
+
+TB_API TB_Register tb_inst_atomic_clear(TB_Function* f, TB_Register addr, TB_MemoryOrder order) {
+	TB_Register r = tb_make_reg(f, TB_ATOMIC_CLEAR, TB_TYPE_BOOL);
+	f->nodes.payload[r].atomic.addr = addr;
+	f->nodes.payload[r].atomic.src = TB_NULL_REG;
+	f->nodes.payload[r].atomic.order = order;
+	f->nodes.payload[r].atomic.order2 = TB_MEM_ORDER_SEQ_CST;
+	return r;
+}
+
+TB_API TB_Register tb_inst_atomic_xchg(TB_Function* f, TB_Register addr, TB_Register src, TB_MemoryOrder order) {
+	TB_DataType dt = f->nodes.dt[src];
+	
+	TB_Register r = tb_make_reg(f, TB_ATOMIC_XCHG, dt);
+	f->nodes.payload[r].atomic.addr = addr;
+	f->nodes.payload[r].atomic.src = src;
+	f->nodes.payload[r].atomic.order = order;
+	f->nodes.payload[r].atomic.order2 = TB_MEM_ORDER_SEQ_CST;
+	return r;
+}
+
+TB_API TB_Register tb_inst_atomic_add(TB_Function* f, TB_Register addr, TB_Register src, TB_MemoryOrder order) {
+	TB_DataType dt = f->nodes.dt[src];
+	
+	TB_Register r = tb_make_reg(f, TB_ATOMIC_ADD, dt);
+	f->nodes.payload[r].atomic.addr = addr;
+	f->nodes.payload[r].atomic.src = src;
+	f->nodes.payload[r].atomic.order = order;
+	f->nodes.payload[r].atomic.order2 = TB_MEM_ORDER_SEQ_CST;
+	return r;
+}
+
+TB_API TB_Register tb_inst_atomic_sub(TB_Function* f, TB_Register addr, TB_Register src, TB_MemoryOrder order) {
+	TB_DataType dt = f->nodes.dt[src];
+	
+	TB_Register r = tb_make_reg(f, TB_ATOMIC_SUB, dt);
+	f->nodes.payload[r].atomic.addr = addr;
+	f->nodes.payload[r].atomic.src = src;
+	f->nodes.payload[r].atomic.order = order;
+	f->nodes.payload[r].atomic.order2 = TB_MEM_ORDER_SEQ_CST;
+	return r;
+}
+
+TB_API TB_Register tb_inst_atomic_and(TB_Function* f, TB_Register addr, TB_Register src, TB_MemoryOrder order) {
+	TB_DataType dt = f->nodes.dt[src];
+	
+	TB_Register r = tb_make_reg(f, TB_ATOMIC_AND, dt);
+	f->nodes.payload[r].atomic.addr = addr;
+	f->nodes.payload[r].atomic.src = src;
+	f->nodes.payload[r].atomic.order = order;
+	f->nodes.payload[r].atomic.order2 = TB_MEM_ORDER_SEQ_CST;
+	return r;
+}
+
+TB_API TB_Register tb_inst_atomic_xor(TB_Function* f, TB_Register addr, TB_Register src, TB_MemoryOrder order) {
+	TB_DataType dt = f->nodes.dt[src];
+	
+	TB_Register r = tb_make_reg(f, TB_ATOMIC_XOR, dt);
+	f->nodes.payload[r].atomic.addr = addr;
+	f->nodes.payload[r].atomic.src = src;
+	f->nodes.payload[r].atomic.order = order;
+	f->nodes.payload[r].atomic.order2 = TB_MEM_ORDER_SEQ_CST;
+	return r;
+}
+
+TB_API TB_Register tb_inst_atomic_or(TB_Function* f, TB_Register addr, TB_Register src, TB_MemoryOrder order) {
+	TB_DataType dt = f->nodes.dt[src];
+	
+	TB_Register r = tb_make_reg(f, TB_ATOMIC_OR, dt);
+	f->nodes.payload[r].atomic.addr = addr;
+	f->nodes.payload[r].atomic.src = src;
+	f->nodes.payload[r].atomic.order = order;
+	f->nodes.payload[r].atomic.order2 = TB_MEM_ORDER_SEQ_CST;
+	return r;
+}
+
+TB_API TB_CmpXchgResult tb_inst_atomic_cmpxchg(TB_Function* f, TB_Register addr, TB_Register expected, TB_Register desired, TB_MemoryOrder succ, TB_MemoryOrder fail) {
+	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[desired], f->nodes.dt[expected]));
+	TB_DataType dt = f->nodes.dt[desired];
+	
+	TB_Register r = tb_make_reg(f, TB_ATOMIC_CMPXCHG, TB_TYPE_BOOL);
+	TB_Register r2 = tb_make_reg(f, TB_ATOMIC_CMPXCHG2, dt);
+	
+	assert(r+1 == r2);
+	f->nodes.payload[r].atomic.addr = addr;
+	f->nodes.payload[r].atomic.src = expected;
+	f->nodes.payload[r].atomic.order = succ;
+	f->nodes.payload[r].atomic.order2 = fail;
+	
+	f->nodes.payload[r2].atomic.addr = addr;
+	f->nodes.payload[r2].atomic.src = desired;
+	f->nodes.payload[r2].atomic.order = succ;
+	f->nodes.payload[r2].atomic.order2 = fail;
+	return (TB_CmpXchgResult) { .success = r, .old_value = r2 };
 }
 
 // TODO(NeGate): Maybe i should split the bitshift operations into a separate kind of

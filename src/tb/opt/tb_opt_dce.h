@@ -30,6 +30,12 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
                 case TB_KEEPALIVE:
                 case TB_TRAP:
 				case TB_UNREACHABLE:
+				case TB_ATOMIC_XCHG:
+				case TB_ATOMIC_ADD:
+				case TB_ATOMIC_SUB:
+				case TB_ATOMIC_AND:
+				case TB_ATOMIC_XOR:
+				case TB_ATOMIC_OR:
 				break;
 				// delete:
                 case TB_UNSIGNED_CONST:

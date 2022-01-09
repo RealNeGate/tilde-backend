@@ -39,7 +39,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 	// Allocate all the memory we'll need
 	////////////////////////////////
 	bool is_ctx_heap_allocated = false;
-	Ctx* ctx;
+	Ctx* restrict ctx;
 	
 	size_t caller_usage = 0;
 	{
@@ -124,6 +124,9 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 		ctx->f = f;
 		ctx->function_id = f - f->module->functions.data;
 		
+		ctx->is_sysv = (f->module->target_system == TB_SYSTEM_LINUX ||
+						f->module->target_system == TB_SYSTEM_MACOS);
+		
 		if (is_ctx_heap_allocated) {
 			ctx->intervals = malloc(f->nodes.count * sizeof(TB_Register));
 			ctx->use_count = malloc(f->nodes.count * sizeof(int));
@@ -180,6 +183,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 	DEBUG_LOG("\n\n\nFUNCTION %s:\n", f->name);
 	
 	const TB_FunctionPrototype* restrict proto = f->prototype;
+	const GPR* parameter_gprs = ctx->is_sysv ? SYSV_GPR_PARAMETERS : WIN64_GPR_PARAMETERS;
 	loop(i, (size_t) proto->param_count) {
 		TB_DataType dt = proto->params[i];
 		
@@ -192,15 +196,22 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 		// not memory addresses but they have space reserved
 		// for spilling so it's fine that we mark them in the
 		// locals.
-		if (i < 4) {
-			if (TB_IS_FLOAT_TYPE(dt.type) || dt.count > 1) {
+		bool is_xmm = TB_IS_FLOAT_TYPE(dt.type) || dt.width;
+		
+		int register_params = 4;
+		if (!is_xmm && ctx->is_sysv) {
+			register_params = 6;
+		}
+		
+		if (i < register_params) {
+			if (is_xmm) {
 				DEBUG_LOG("   PARAM XMM%zu\n", i);
 				
 				def(ctx, f, val_xmm(dt, i), reg);
 			} else if (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR) {
-				DEBUG_LOG("   PARAM GPR %s\n", GPR_NAMES[GPR_PARAMETERS[i]]);
+				DEBUG_LOG("   PARAM GPR %s\n", GPR_NAMES[parameter_gprs[i]]);
 				
-				def(ctx, f, val_gpr(dt.type, GPR_PARAMETERS[i]), reg);
+				def(ctx, f, val_gpr(dt.type, parameter_gprs[i]), reg);
 			}
 		} else {
 			def(ctx, f, val_stack(dt, -stack_usage), reg);
@@ -225,7 +236,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 			if (id < 4) {
 				saves_parameters = true;
 				
-				if (TB_IS_FLOAT_TYPE(dt.type) || dt.count > 1) {
+				if (TB_IS_FLOAT_TYPE(dt.type) || dt.width) {
 					// the parameters map to XMM0-XMM3
 					Val src = val_xmm(dt, id);
 					
@@ -234,22 +245,18 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 					ctx->xmm_desc[id] = 0;
 					
 					// save the shadow space into the stack
-					if (dt.count > 1) {
-						inst2(ctx, MOVAPS, &dst, &src, dt.type);
-					} else {
-						if (dt.type == TB_F32) {
-							inst2(ctx, MOVSS, &dst, &src, dt.type);
-						} else if (dt.type == TB_F64) {
-							inst2(ctx, MOVSD, &dst, &src, dt.type);
-						} else tb_unreachable();
-					}
+					uint8_t flags = 0;
+					flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+					flags |= (dt.width) ? INST2FP_PACKED : 0;
+					
+					inst2sse(ctx, FP_MOV, &dst, &src, flags);
 				} else if (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR) {
-					Val src = val_gpr(TB_I64, GPR_PARAMETERS[id]); 
+					Val src = val_gpr(TB_I64, parameter_gprs[id]); 
 					
 					// don't keep reference to GPR, we'll be using the
 					// memory version only
-					ctx->gpr_desc[GPR_PARAMETERS[id]] = 0;
-					DEBUG_LOG("   move to stack slot %s\n", GPR_NAMES[GPR_PARAMETERS[id]]);
+					ctx->gpr_desc[parameter_gprs[id]] = 0;
+					DEBUG_LOG("   move to stack slot %s\n", GPR_NAMES[parameter_gprs[id]]);
 					
 					// save the shadow space into the stack
 					inst2(ctx, MOV, &dst, &src, dt.type);
@@ -304,16 +311,15 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 			if (p.ret.value) {
 				Val value = use_as_rvalue(ctx, f, p.ret.value);
 				
-				if (TB_IS_FLOAT_TYPE(value.dt.type) || value.dt.count > 1) {
+				if (TB_IS_FLOAT_TYPE(value.dt.type) || value.dt.width) {
 					// Float results use XMM0
-					Val dst = val_xmm(value.dt, XMM0);
-					
 					if (!is_value_xmm(&value, XMM0)) {
-						int mov_type = MOVSS;
-						if (value.dt.type == TB_F64) mov_type = MOVSD;
-						if (value.dt.count > 1) mov_type = MOVAPS;
+						uint8_t flags = 0;
+						flags |= (value.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+						flags |= (value.dt.width) ? INST2FP_PACKED : 0;
 						
-						inst2(ctx, mov_type, &dst, &value, value.dt.type);
+						Val dst = val_xmm(value.dt, XMM0);
+						inst2sse(ctx, FP_MOV, &dst, &value, flags);
 					}
 				} else if (value.dt.type == TB_I8 ||
 						   value.dt.type == TB_I16 ||
@@ -321,8 +327,6 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 						   value.dt.type == TB_I64 ||
 						   value.dt.type == TB_PTR) {
 					// Integer results use RAX and if result is extended RDX
-					Val dst = val_gpr(value.dt.type, RAX);
-					
 					if (value.type == VAL_IMM) {
 						assert(value.imm < INT32_MAX);
 						if (value.imm == 0) {
@@ -334,6 +338,8 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 							emit4(value.imm);
 						}
 					} else if (!is_value_gpr(&value, RAX)) {
+						Val dst = val_gpr(value.dt.type, RAX);
+						
 						inst2(ctx, MOV, &dst, &value, value.dt.type);
 					}
 				} else tb_todo();
@@ -466,6 +472,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 	
 	TB_FunctionOutput func_out = {
 		.name = f->name,
+		.linkage = f->linkage,
 		.code = ctx->start_out,
 		.code_size = ctx->out - ctx->start_out,
 		.stack_usage = stack_usage,
@@ -675,14 +682,20 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 				Val v = load_into(ctx, f, dt, r, addr_reg);
 				
 				if (explicit_load) {
-					int real_mov = MOV;
-					if (dt.count > 1) real_mov = MOVAPS;
-					else if (dt.type == TB_F32) real_mov = MOVSS;
-					else if (dt.type == TB_F64) real_mov = MOVSD;
-					
 					// Load into register
 					Val storage = def_new_gpr(ctx, f, r, dt.type);
-					inst2(ctx, real_mov, &storage, &v, dt.type);
+					
+					if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
+						// weird wacky SSE mov
+						uint8_t flags = 0;
+						flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+						flags |= dt.width ? INST2FP_PACKED : 0;
+						
+						inst2sse(ctx, FP_MOV, &storage, &v, flags);
+					} else {
+						// normal scalar cool mov
+						inst2(ctx, MOV, &storage, &v, dt.type);
+					}
 					
 					def(ctx, f, storage, r);
 				} else {
@@ -720,13 +733,13 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 				for (size_t j = 0; j < param_count; j++) {
 					TB_DataType param_dt = f->nodes.dt[param_start + j];
 					
-					if (j < 4 && (param_dt.count > 1 || TB_IS_FLOAT_TYPE(param_dt.type))) {
+					if (j < 4 && (param_dt.width || TB_IS_FLOAT_TYPE(param_dt.type))) {
 						evict_xmm(ctx, f, j, r);
 					}
 				}
 				
 				// evict return value
-				if (dt.count > 1 || TB_IS_FLOAT_TYPE(dt.type)) {
+				if (TB_IS_FLOAT_TYPE(dt.type) || dt.width) {
 					evict_xmm(ctx, f, XMM0, r);
 					temporary_reserve_xmm(ctx, f, XMM0);
 				} else if (dt.type != TB_VOID) {
@@ -735,48 +748,66 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 				}
 				
 				// evaluate parameters
+				const GPR* parameter_gprs = ctx->is_sysv ? SYSV_GPR_PARAMETERS : WIN64_GPR_PARAMETERS;
 				for (size_t j = 0; j < param_count; j++) {
 					TB_Register param_reg = f->vla.data[param_start + j];
-					
 					Val param = use_as_rvalue(ctx, f, param_reg);
 					
-					if (j < 4) {
-						if (param.dt.count > 1 ||
-							TB_IS_FLOAT_TYPE(param.dt.type)) {
+					bool is_xmm = TB_IS_FLOAT_TYPE(dt.type) || dt.width;
+					
+					int register_params = 4;
+					if (!is_xmm && ctx->is_sysv) {
+						register_params = 6;
+					}
+					
+					if (j < register_params) {
+						if (is_xmm) {
 							Val dst = val_xmm(param.dt, j);
 							
 							// move into param slot
-							inst2(ctx,
-								  param.dt.count == 1 ? MOVSS : MOVAPS,
-								  &dst, &param,
-								  TB_F32);
+							uint8_t flags = 0;
+							flags |= (param.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+							flags |= (param.dt.width) ? INST2FP_PACKED : 0;
+							
+							inst2sse(ctx, FP_MOV, &dst, &param, flags);
 							
 							// reserve for a bit
 							temporary_reserve_xmm(ctx, f, j);
 						} else if (param.dt.type != TB_VOID) {
-							Val dst = val_gpr(param.dt.type, GPR_PARAMETERS[j]);
-							if (!is_value_gpr(&param, GPR_PARAMETERS[j])) {
+							Val dst = val_gpr(param.dt.type, parameter_gprs[j]);
+							if (!is_value_gpr(&param, parameter_gprs[j])) {
 								inst2(ctx, MOV, &dst, &param, param.dt.type);
 							}
 							
 							// reserve for a bit
-							temporary_reserve_gpr(ctx, f, GPR_PARAMETERS[j]);
+							temporary_reserve_gpr(ctx, f, parameter_gprs[j]);
 						}
 					} else {
 						Val dst = val_base_disp(param.dt, RSP, 8 * j);
 						
 						// parameter is in memory
-						if (param.dt.count > 1 ||
-							TB_IS_FLOAT_TYPE(param.dt.type)) {
-							tb_todo();
-						}
-						else if (param.dt.type != TB_VOID) {
-							Val tmp = val_gpr(param.dt.type, RAX);
+						if (is_xmm) {
+							uint8_t flags = 0;
+							flags |= (param.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+							flags |= (param.dt.width) ? INST2FP_PACKED : 0;
+							
 							if (param.type == VAL_MEM) {
+								temporary_reserve_xmm(ctx, f, XMM0);
+								Val tmp = val_xmm(param.dt, XMM0);
+								
+								inst2sse(ctx, FP_MOV, &tmp, &param, flags);
+								inst2sse(ctx, FP_MOV, &dst, &tmp, flags);
+							} else {
+								inst2sse(ctx, FP_MOV, &dst, &param, flags);
+							}
+						} else {
+							if (param.type == VAL_MEM) {
+								temporary_reserve_gpr(ctx, f, RAX);
+								Val tmp = val_gpr(param.dt.type, RAX);
+								
 								inst2(ctx, MOV, &tmp, &param, param.dt.type);
 								inst2(ctx, MOV, &dst, &tmp, param.dt.type);
-							}
-							else {
+							} else {
 								inst2(ctx, MOV, &dst, &param, param.dt.type);
 							}
 						}
@@ -818,12 +849,10 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 				// the return value
 				if (dt.type == TB_VOID) {
 					/* none */
-				} else if (dt.count > 1 || TB_IS_FLOAT_TYPE(dt.type)) {
-					Val xmm0 = val_xmm(dt, XMM0);
-					def(ctx, f, xmm0, r);
+				} else if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
+					def(ctx, f, val_xmm(dt, XMM0), r);
 				} else {
-					Val rax = val_gpr(dt.type, RAX);
-					def(ctx, f, rax, r);
+					def(ctx, f, val_gpr(dt.type, RAX), r);
 				}
 				break;
 			}
@@ -962,8 +991,50 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 				emit(0xA4);
 				break;
 			}
-			default:
-			break;
+			case TB_ATOMIC_TEST_AND_SET: {
+				assert(0 && "Atomic flag test&set not supported yet.");
+				break;
+			}
+			case TB_ATOMIC_CLEAR: {
+				assert(0 && "Atomic flag clear not supported yet.");
+				break;
+			}
+			case TB_ATOMIC_XCHG:
+			case TB_ATOMIC_ADD:
+			case TB_ATOMIC_SUB:
+			case TB_ATOMIC_AND:
+			case TB_ATOMIC_XOR:
+			case TB_ATOMIC_OR: {
+				const static int tbl[] = { XCHG, ADD, SUB, AND, XOR, OR };
+				
+				Val src = use_as_rvalue(ctx, f, p->atomic.src);
+				Val addr = use_as_address(ctx, f, p->atomic.addr);
+				
+				// sometimes we only need to do the operation atomic without
+				// a fetch, then things get... fancy
+				if (ctx->intervals[r]) {
+					assert(0 && "Atomics with fetch are not supported yet.");
+				} else {
+					if (is_value_mem(&src) || (reg_type == TB_ATOMIC_XCHG && src.type == VAL_IMM)) {
+						Val tmp = def_new_gpr(ctx, f, r, dt.type);
+						inst2(ctx, MOV, &tmp, &src, dt.type);
+						src = tmp;
+					}
+					
+					emit(0xF0); // LOCK prefix
+					
+					int op = tbl[reg_type - TB_ATOMIC_XCHG];
+					inst2(ctx, op, &addr, &src, dt.type);
+				}
+				break;
+			}
+			case TB_ATOMIC_CMPXCHG: {
+				//TB_RegPayload* restrict p2 = &f->nodes.payload[r + 1];
+				assert(0 && "Atomic cmpxchg not supported yet.");
+				break;
+			}
+			case TB_ATOMIC_CMPXCHG2: break;
+			default: break;
 		}
 		
 		// clear all temporaries
@@ -1003,10 +1074,9 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 		case TB_FLOAT_CONST: {
 			// Unlike integers, there's no float immediates
 			Val v = def_new_xmm(ctx, f, r, dt);
-			
 			XMM dst_xmm = v.xmm;
 			
-			assert((dt.type == TB_F32 || dt.type == TB_F64) && dt.count == 1);
+			assert(TB_IS_FLOAT_TYPE(dt.type) && dt.width == 0);
 			uint64_t imm = (Cvt_F64U64){ .f = p->f_const }.i;
 			
 			if (imm == 0) {
@@ -1184,12 +1254,14 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			return v;
 		}
 		case TB_TRUNCATE: {
-			if (dt.type == TB_F32) {
+			if (TB_IS_FLOAT_TYPE(dt.type)) {
 				Val src = use_as_rvalue(ctx, f, p->ext);
-				assert(src.dt.type == TB_F64);
-				
 				Val v = def_new_xmm(ctx, f, r, dt);
-				inst2(ctx, CVTSD2SS, &v, &src, dt.type);
+				
+				uint8_t flags = 0;
+				flags |= (src.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+				flags |= (src.dt.width) ? INST2FP_PACKED : 0;
+				inst2sse(ctx, FP_CVT, &v, &src, flags);
 				return v;
 			} else {
 				Val src = use_as_rvalue(ctx, f, p->ext);
@@ -1223,8 +1295,8 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			if (src.dt.type == TB_I32 &&
 				dt.type == TB_I64 &&
 				can_recycle_into(ctx, f, p->ext, r)) {
-				assert(src.dt.count == 1);
-				assert(dt.count == 1);
+				TODO_VECTOR_TYPES(src.dt);
+				TODO_VECTOR_TYPES(dt);
 				
 				if (!is_value_mem(&src)) {
 					src.dt.type = TB_I64;
@@ -1260,7 +1332,10 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			Val src = use_as_rvalue(ctx, f, p->ext);
 			Val v = def_new_xmm(ctx, f, r, dt);
 			
-			inst2(ctx, CVTSS2SD, &v, &src, dt.type);
+			uint8_t flags = 0;
+			flags |= (src.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+			flags |= (src.dt.width) ? INST2FP_PACKED : 0;
+			inst2sse(ctx, FP_CVT, &v, &src, flags);
 			return v;
 		}
 		case TB_SIGN_EXT: {
@@ -1305,8 +1380,8 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 				 src.dt.type == TB_I64 ||
 				 src.dt.type == TB_PTR) &&
 				can_recycle_into(ctx, f, p->ext, r)) {
-				assert(src.dt.count == 1);
-				assert(dt.count == 1);
+				TODO_VECTOR_TYPES(src.dt);
+				TODO_VECTOR_TYPES(dt);
 				
 				if (!is_value_mem(&src)) {
 					src.dt.type = TB_PTR;
@@ -1418,54 +1493,62 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 		case TB_FSUB:
 		case TB_FMUL:
 		case TB_FDIV: {
-			const static IselInfo tbl[] = {
-				// inst   commut has_imm mem_dst mem_src   
-				{ ADDSS,  true,  true,   false,  true },
-				{ SUBSS,  true,  true,   false,  true },
-				{ MULSS,  true,  true,   false,  true },
-				{ DIVSS,  true,  true,   false,  true },
-				
-				{ ADDSD,  true,  true,   false,  true },
-				{ SUBSD,  true,  true,   false,  true },
-				{ MULSD,  true,  true,   false,  true },
-				{ DIVSD,  true,  true,   false,  true },
-				
-				// 4-wide versions
-				{ ADDPS,  true,  true,   false,  true },
-				{ SUBPS,  true,  true,   false,  true },
-				{ MULPS,  true,  true,   false,  true },
-				{ DIVPS,  true,  true,   false,  true },
-				
-				// TODO(NeGate): This is incorrect but i
-				// don't wanna implement
-				{ ADDPS,  true,  true,   false,  true },
-				{ SUBPS,  true,  true,   false,  true },
-				{ MULPS,  true,  true,   false,  true },
-				{ DIVPS,  true,  true,   false,  true },
+			const static Inst2FPType tbl[] = {
+				FP_ADD, FP_SUB, FP_MUL, FP_DIV
 			};
 			
 			// supported modes
-			assert((dt.type == TB_F32 && dt.count == 1) ||
-				   (dt.type == TB_F64 && dt.count == 1) ||
-				   (dt.type == TB_F32 && dt.count == 4) ||
-				   (dt.type == TB_F64 && dt.count == 2));
-			
-			// TODO(NeGate): Implement [f64 x 2]
-			assert(dt.count != 2);
-			const IselInfo* info = &tbl[(dt.count == 4 ? 8 : 0) + (reg_type - TB_FADD) + (dt.type == TB_F64 ? 4 : 0)];
+			assert((dt.type == TB_F32 && dt.width == 0) ||
+				   (dt.type == TB_F64 && dt.width == 0) ||
+				   (dt.type == TB_F32 && dt.width == 2) ||
+				   (dt.type == TB_F64 && dt.width == 1));
 			
 			TB_Register a_reg = p->f_arith.a;
 			TB_Register b_reg = p->f_arith.b;
 			
+			uint8_t flags = 0;
+			flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+			flags |= (dt.width) ? INST2FP_PACKED : 0;
+			
+			Inst2FPType op = tbl[reg_type - TB_FADD];
 			if (a_reg == b_reg) {
 				Val src = use_as_rvalue(ctx, f, a_reg);
 				
-				return isel_aliased(ctx, f, info, r, a_reg, &src);
+				bool recycle = src.type != VAL_IMM && can_recycle_into(ctx, f, a_reg, r);
+				if (recycle) {
+					inst2sse(ctx, op, &src, &src, flags);
+					return src;
+				} else {
+					Val v = def_new_gpr(ctx, f, r, dt.type);
+					inst2sse(ctx, FP_MOV, &v, &src, flags);
+					inst2sse(ctx, op, &v, &src, flags);
+					return v;
+				}
 			} else {
 				Val a = use_as_rvalue(ctx, f, a_reg);
 				Val b = use_as_rvalue(ctx, f, b_reg);
 				
-				return isel(ctx, f, info, r, a_reg, b_reg, &a, &b);
+				// NOTE(NeGate): The operands are ordered for this "magic"
+				if ((reg_type == TB_FADD || reg_type == TB_FMUL) && a.type < b.type) {
+					tb_swap(a, b);
+				}
+				
+				if (is_value_mem(&a) && is_value_mem(&b)) {
+					Val tmp = def_new_xmm(ctx, f, r, dt);
+					inst2sse(ctx, FP_MOV, &tmp, &a, flags);
+					a = tmp;
+				}
+				
+				bool recycle = a.type != VAL_IMM && can_recycle_into(ctx, f, a_reg, r);
+				if (recycle) {
+					inst2sse(ctx, op, &a, &b, flags);
+					return a;
+				} else {
+					Val v = def_new_xmm(ctx, f, r, dt);
+					inst2sse(ctx, FP_MOV, &v, &a, flags);
+					inst2sse(ctx, op, &v, &b, flags);
+					return v;
+				}
 			}
 		}
 		case TB_AND:
@@ -1496,10 +1579,8 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 				Val a = use_as_rvalue(ctx, f, a_reg);
 				Val b = use_as_rvalue(ctx, f, b_reg);
 				
-				if (dt.count == 1 &&
-					reg_type == TB_ADD &&
-					a.type == VAL_GPR &&
-					b.type == VAL_GPR) {
+				if (!dt.width && reg_type == TB_ADD &&
+					a.type == VAL_GPR && b.type == VAL_GPR) {
 					Val v = def_new_gpr(ctx, f, r, dt.type);
 					
 					// lea _0, [_1 + _2]
@@ -1509,17 +1590,15 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 					emit(mod_rx_rm(MOD_INDIRECT, v.gpr, RSP));
 					emit(mod_rx_rm(SCALE_X1, (b.gpr & 7) == RSP ? RSP : b.gpr, a.gpr));
 					return v;
-				} else if (dt.count == 1 &&
-						   reg_type == TB_ADD &&
-						   a.type == VAL_GPR &&
-						   b.type == VAL_IMM) {
+				} else if (!dt.width && reg_type == TB_ADD &&
+						   a.type == VAL_GPR && b.type == VAL_IMM) {
 					// lea _0, [_1 + _2]
 					Val v = def_new_gpr(ctx, f, r, dt.type);
 					Val arith = val_base_disp(dt, a.gpr, b.imm);
 					
 					inst2(ctx, LEA, &v, &arith, dt.type);
 					return v;
-				} else if (dt.count == 1 &&
+				} else if (!dt.width &&
 						   reg_type == TB_SUB &&
 						   a.type == VAL_GPR &&
 						   b.type == VAL_IMM) {
@@ -1668,77 +1747,85 @@ static Val load_into(Ctx* ctx, TB_Function* f, TB_DataType dt, TB_Register r, TB
 static void store_into(Ctx* ctx, TB_Function* f, TB_DataType dt, const Val* dst, TB_Register r, TB_Register dst_reg, TB_Register val_reg) {
 	desugar_dt(&dt);
 	
-	int op = MOV;
-	
-	// Peephole folded operation:
-	// OP dst, src
-	if (f->nodes.type[val_reg] >= TB_AND && f->nodes.type[val_reg] <= TB_MUL) {
-		TB_Register a = f->nodes.payload[val_reg].i_arith.a;
-		TB_Register b = f->nodes.payload[val_reg].i_arith.b;
+	if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
+		Val value = use_as_rvalue(ctx, f, val_reg);
 		
-		if (ctx->addr_desc[a].type == VAL_NONE) {
-			def(ctx, f, use(ctx, f, a), a);
+		// if they match and it's just a MOV, don't do it
+		if (is_value_match(dst, &value)) return;
+		
+		uint8_t flags = 0;
+		flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+		flags |= (dt.width) ? INST2FP_PACKED : 0;
+		
+		if (!is_value_mem(&value)) {
+			inst2sse(ctx, FP_MOV, dst, &value, flags);
+		} else {
+			Val tmp = def_new_xmm(ctx, f, r, dt);
+			
+			inst2sse(ctx, FP_MOV, &tmp, &value, flags);
+			inst2sse(ctx, FP_MOV, dst, &tmp, flags);
+			
+			kill(ctx, f, r);
 		}
+	} else {
+		int op = MOV;
 		
-		if (ctx->addr_desc[b].type == VAL_NONE) {
-			def(ctx, f, use(ctx, f, b), b);
-		}
-		
-		{
-			bool is_phi = f->nodes.type[r] == TB_PHI2;
-			bool folded = false;
-			if (is_phi) {
-				folded = is_phi_that_contains(f, r, val_reg);
-				folded |= (f->nodes.type[val_reg] == TB_MUL && dst->type == VAL_GPR);
-			} else {
-				folded = (f->nodes.type[a] == TB_LOAD && f->nodes.payload[a].load.address == dst_reg) &&
-					(f->nodes.type[val_reg] != TB_MUL);
+		// Peephole folded operation:
+		// OP dst, src
+		if (f->nodes.type[val_reg] >= TB_AND && f->nodes.type[val_reg] <= TB_MUL) {
+			TB_Register a = f->nodes.payload[val_reg].i_arith.a;
+			TB_Register b = f->nodes.payload[val_reg].i_arith.b;
+			
+			if (ctx->addr_desc[a].type == VAL_NONE) {
+				def(ctx, f, use(ctx, f, a), a);
 			}
 			
-			if (folded) {
-				switch (f->nodes.type[val_reg]) {
-					case TB_AND: op = AND; break;
-					case TB_OR: op = OR; break;
-					case TB_XOR: op = XOR; break;
-					case TB_ADD: op = ADD; break;
-					case TB_SUB: op = SUB; break;
-					case TB_MUL: op = IMUL; break;
-					default: tb_unreachable();
+			if (ctx->addr_desc[b].type == VAL_NONE) {
+				def(ctx, f, use(ctx, f, b), b);
+			}
+			
+			{
+				bool is_phi = f->nodes.type[r] == TB_PHI2;
+				bool folded = false;
+				if (is_phi) {
+					folded = is_phi_that_contains(f, r, val_reg);
+					folded |= (f->nodes.type[val_reg] == TB_MUL && dst->type == VAL_GPR);
+				} else {
+					folded = (f->nodes.type[a] == TB_LOAD && f->nodes.payload[a].load.address == dst_reg) &&
+						(f->nodes.type[val_reg] != TB_MUL);
 				}
 				
-				val_reg = b;
+				if (folded) {
+					switch (f->nodes.type[val_reg]) {
+						case TB_AND: op = AND; break;
+						case TB_OR: op = OR; break;
+						case TB_XOR: op = XOR; break;
+						case TB_ADD: op = ADD; break;
+						case TB_SUB: op = SUB; break;
+						case TB_MUL: op = IMUL; break;
+						default: tb_unreachable();
+					}
+					
+					val_reg = b;
+				}
 			}
 		}
-	}
-	
-	int real_mov = MOV;
-	if (dt.count > 1) real_mov = MOVAPS;
-	else if (dt.type == TB_F32) real_mov = MOVSS;
-	else if (dt.type == TB_F64) real_mov = MOVSD;
-	
-	// Default case:
-	// mov dst, src
-	// or
-	// mov temp, src
-	// mov dst, temp
-	Val value = use_as_rvalue(ctx, f, val_reg);
-	
-	// if they match and it's just a MOV, don't do it
-	if (op == MOV) {
-		op = real_mov;
 		
-		if (is_value_match(dst, &value)) return;
-	}
-	
-	if (!is_value_mem(&value)) {
-		inst2(ctx, op, dst, &value, dt.type);
-	} else {
-		Val temp = def_new_gpr(ctx, f, r, dt.type);
+		Val value = use_as_rvalue(ctx, f, val_reg);
 		
-		inst2(ctx, real_mov, &temp, &value, dt.type);
-		inst2(ctx, op, dst, &temp, dt.type);
+		// if they match and it's just a MOV, don't do it
+		if (op == MOV && is_value_match(dst, &value)) return;
 		
-		kill(ctx, f, r);
+		if (!is_value_mem(&value)) {
+			inst2(ctx, op, dst, &value, dt.type);
+		} else {
+			Val temp = def_new_gpr(ctx, f, r, dt.type);
+			
+			inst2(ctx, MOV, &temp, &value, dt.type);
+			inst2(ctx, op, dst, &temp, dt.type);
+			
+			kill(ctx, f, r);
+		}
 	}
 }
 
@@ -1912,27 +1999,21 @@ static bool evict_xmm(Ctx* ctx, TB_Function* f, XMM x, TB_Register r) {
 		// spill it
 		TB_DataType dt = f->nodes.dt[bound];
 		
-		Val dst;
-		if (dt.count > 1) {
+		if (dt.width) {
 			ctx->stack_usage = align_up(ctx->stack_usage + 16, 16);
-			dst = val_stack(f->nodes.dt[bound], -ctx->stack_usage);
-			
-			Val src = val_xmm(dt, x);
-			inst2(ctx, MOVAPS, &dst, &src, TB_F32);
 		} else if (dt.type == TB_F32) {
 			ctx->stack_usage = align_up(ctx->stack_usage + 4, 4);
-			dst = val_stack(f->nodes.dt[bound], -ctx->stack_usage);
-			
-			Val src = val_xmm(dt, x);
-			inst2(ctx, MOVSS, &dst, &src, TB_F32);
 		} else if (dt.type == TB_F64) {
 			ctx->stack_usage = align_up(ctx->stack_usage + 8, 8);
-			dst = val_stack(f->nodes.dt[bound], -ctx->stack_usage);
-			
-			Val src = val_xmm(dt, x);
-			inst2(ctx, MOVSD, &dst, &src, TB_F64);
 		} else tb_todo();
 		
+		Val dst = val_stack(dt, -ctx->stack_usage);
+		
+		uint8_t flags = 0;
+		flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+		flags |= (dt.width) ? INST2FP_PACKED : 0;
+		
+		inst2sse(ctx, FP_MOV, &dst, &ctx->addr_desc[bound], flags);
 		ctx->addr_desc[bound] = dst;
 		return true;
 	}
@@ -1949,25 +2030,9 @@ static void temporary_reserve_xmm(Ctx* ctx, TB_Function* f, XMM x) {
 }
 
 static Val materialize(Ctx* ctx, TB_Function* f, const Val* src, TB_Register src_reg, TB_DataType dt) {
-	if (dt.count > 1) {
-		Val v = def_new_xmm(ctx, f, src_reg, dt);
-		inst2(ctx, MOVAPS, &v, src, dt.type);
-		return v;
-	} else if (dt.type == TB_F32) {
-		Val v = def_new_xmm(ctx, f, src_reg, dt);
-		inst2(ctx, MOVSS, &v, src, dt.type);
-		return v;
-	} else if (dt.type == TB_F64) {
-		Val v = def_new_xmm(ctx, f, src_reg, dt);
-		inst2(ctx, MOVSD, &v, src, dt.type);
-		return v;
-	} else if (TB_IS_INTEGER_TYPE(dt.type) || dt.type == TB_PTR) {
-		Val v = def_new_gpr(ctx, f, src_reg, dt.type);
-		inst2(ctx, MOV, &v, src, dt.type);
-		return v;
-	} else {
-		tb_todo();
-	}
+	Val v = def_new_gpr(ctx, f, src_reg, dt.type);
+	inst2(ctx, MOV, &v, src, dt.type);
+	return v;
 }
 
 static Val isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
@@ -1977,12 +2042,11 @@ static Val isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
 	assert(a != b);
 	
 	TB_DataType dst_dt = f->nodes.dt[dst_reg];
-	bool is_xmm = dst_dt.count > 1 || TB_IS_FLOAT_TYPE(dst_dt.type);
 	
 	// (i8 | i16) => i32
 	TB_DataType prev_dt;
 	int mov_extend = MOVZXW;
-	bool is_promoted = dst_dt.count == 1 && (dst_dt.type == TB_I8 || dst_dt.type == TB_I16);
+	bool is_promoted = !dst_dt.width && (dst_dt.type == TB_I8 || dst_dt.type == TB_I16);
 	if (is_promoted) {
 		prev_dt = dst_dt;
 		dst_dt = TB_TYPE_I32;
@@ -2004,8 +2068,6 @@ static Val isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
 	// Some instructions don't have an immediate form
 	Val bv;
 	if (!info->has_immediates && b->type == VAL_IMM) {
-		assert(TB_IS_INTEGER_TYPE(dst_dt.type) || dst_dt.type == TB_PTR);
-		
 		// special case of materialize where it can only ever 
 		// be an integral type
 		bv = def_new_gpr(ctx, f, b_reg, dst_dt.type);
@@ -2033,16 +2095,9 @@ static Val isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
 		return av;
 	} else {
 		// dst = a, dst += b;
-		Val v;
-		if (is_xmm) v = def_new_xmm(ctx, f, dst_reg, dst_dt);
-		else v = def_new_gpr(ctx, f, dst_reg, dst_dt.type);
+		Val v = def_new_gpr(ctx, f, dst_reg, dst_dt.type);
 		
-		int mov_type = MOV;
-		if (dst_dt.count > 1) mov_type = MOVAPS;
-		else if (dst_dt.type == TB_F32) mov_type = MOVSS;
-		else if (dst_dt.type == TB_F64) mov_type = MOVSD;
-		
-		inst2(ctx, mov_type, &v, &av, dst_dt.type);
+		inst2(ctx, MOV, &v, &av, dst_dt.type);
 		inst2(ctx, info->inst, &v, &bv, dst_dt.type);
 		
 		if (is_promoted) inst2(ctx, mov_extend, &v, &v, prev_dt.type);
@@ -2058,7 +2113,7 @@ static Val isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
 	// (i8 | i16) => i32
 	TB_DataType prev_dt;
 	int mov_extend = MOVZXW;
-	bool is_promoted = dst_dt.count == 1 && (dst_dt.type == TB_BOOL || dst_dt.type == TB_I8 || dst_dt.type == TB_I16);
+	bool is_promoted = !dst_dt.width && (dst_dt.type == TB_BOOL || dst_dt.type == TB_I8 || dst_dt.type == TB_I16);
 	if (is_promoted) {
 		prev_dt = dst_dt;
 		dst_dt = TB_TYPE_I32;
@@ -2082,13 +2137,7 @@ static Val isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
 	} else {
 		// dst = src, dst += src;
 		Val v = def_new_gpr(ctx, f, dst_reg, dst_dt.type);
-		
-		int mov_type = MOV;
-		if (dst_dt.count > 1) mov_type = MOVAPS;
-		else if (dst_dt.type == TB_F32) mov_type = MOVSS;
-		else if (dst_dt.type == TB_F64) mov_type = MOVSD;
-		
-		inst2(ctx, mov_type, &v, src, dst_dt.type);
+		inst2(ctx, MOV, &v, src, dst_dt.type);
 		
 		if (info->inst == IMUL && src->type == VAL_IMM) {
 			// imul reg/mem64, imm32 isn't a thing, it's a bit fancier than
@@ -2204,17 +2253,14 @@ static Val use_as_rvalue(Ctx* ctx, TB_Function* f, TB_Register r) {
 			
 			return new_v;
 		} else if (!v.mem.is_rvalue) {
-			if (v.dt.count > 1) {
+			if (v.dt.width || TB_IS_FLOAT_TYPE(v.dt.type)) {
 				Val new_v = def_new_xmm(ctx, f, r, v.dt);
-				inst2(ctx, MOVAPS, &new_v, &v, TB_F32);
-				return new_v;
-			} else if (v.dt.type == TB_F32) {
-				Val new_v = def_new_xmm(ctx, f, r, v.dt);
-				inst2(ctx, MOVSS, &new_v, &v, TB_F32);
-				return new_v;
-			} else if (v.dt.type == TB_F64) {
-				Val new_v = def_new_xmm(ctx, f, r, v.dt);
-				inst2(ctx, MOVSD, &new_v, &v, TB_F64);
+				
+				uint8_t flags = 0;
+				flags |= (v.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+				flags |= (v.dt.width) ? INST2FP_PACKED : 0;
+				
+				inst2sse(ctx, FP_MOV, &new_v, &v, flags);
 				return new_v;
 			} else {
 				Val new_v = def_new_gpr(ctx, f, r, v.dt.type);
@@ -2299,18 +2345,20 @@ static bool is_address_node(TB_RegType t) {
 }
 
 static int get_data_type_size(const TB_DataType dt) {
+	assert(dt.width < 8 && "Vector width too big!");
+	
 	switch (dt.type) {
 		case TB_VOID:
 		case TB_BOOL:
 		return 1;
 		case TB_I8: 
-		return 1 * dt.count;
+		return 1 << dt.width;
 		case TB_I16: 
-		return 2 * dt.count;
+		return 2 << dt.width;
 		case TB_I32: case TB_F32:
-		return 4 * dt.count;
+		return 4 << dt.width;
 		case TB_I64: case TB_F64:
-		return 8 * dt.count;
+		return 8 << dt.width;
 		case TB_PTR:
 		return 8;
 		default: tb_todo();

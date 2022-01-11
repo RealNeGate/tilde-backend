@@ -231,11 +231,21 @@ inline static void inst2sse(Ctx* ctx, Inst2FPType op, const Val* a, const Val* b
 	}
 	
 	uint8_t rx = a->xmm;
-	uint8_t base = (b->type == VAL_MEM ? b->mem.base : 0);
-	uint8_t index = (b->type == VAL_MEM ? b->mem.index : 0);
+	
+	uint8_t base, index;
+	if (b->type == VAL_MEM) {
+		base = b->mem.base;
+		index = b->mem.index != GPR_NONE ? b->mem.index : 0;
+	} else if (b->type == VAL_XMM) {
+		base = b->xmm;
+		index = 0;
+	} else if (b->type == VAL_GLOBAL) {
+		base = 0;
+		index = 0;
+	} else tb_todo();
 	
 	if (rx >= 8 || base >= 8 || index >= 8) {
-		emit(rex(true, rx, base, index));
+		emit(rex(false, rx, base, index));
 	}
 	
 	emit(OPCODES[op] + (supports_mem_dst ? dir : 0));

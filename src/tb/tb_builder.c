@@ -20,6 +20,11 @@ TB_API TB_Function* tb_function_from_id(TB_Module* m, TB_FunctionID id) {
 	return &m->functions.data[id];
 }
 
+TB_API TB_RegTypeEnum tb_node_get_type(TB_Function* f, TB_Register r) {
+	assert(r < f->nodes.count);
+	return f->nodes.type[r];
+}
+
 TB_API TB_DataType tb_node_get_data_type(TB_Function* f, TB_Register r) {
 	assert(r < f->nodes.count);
 	return f->nodes.dt[r];
@@ -83,7 +88,12 @@ static TB_Register tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
 	// Cannot add registers to terminated basic blocks, except labels
 	// which start new basic blocks
 	assert(f);
-	assert((type == TB_LABEL || f->current_label) && "Cannot create node without parent basic block");
+	if (type != TB_LABEL && f->current_label == 0) {
+		fprintf(stderr, "Cannot create node without parent basic block\n");
+		tb_function_print(f, tb_default_print_callback, stderr);
+		fprintf(stderr, "\n\n\n");
+		abort();
+	}
     
 	if (f->nodes.count + 1 >= f->nodes.capacity) {
 		tb_resize_node_stream(f, tb_next_pow2(f->nodes.count + 1));
@@ -178,13 +188,15 @@ static TB_Register tb_bin_farith(TB_Function* f, int type, TB_Register a, TB_Reg
 }
 
 TB_API TB_Register tb_inst_trunc(TB_Function* f, TB_Register src, TB_DataType dt) {
+	assert(f->nodes.dt[src].width == dt.width);
+	
 	TB_Register r = tb_make_reg(f, TB_TRUNCATE, dt);
 	f->nodes.payload[r].trunc = src;
 	return r;
 }
 
 TB_API TB_Register tb_inst_int2ptr(TB_Function* f, TB_Register src) {
-	assert(f);
+	assert(f->nodes.dt[src].width == 0);
 	
 	TB_Register r = tb_make_reg(f, TB_INT2PTR, TB_TYPE_PTR);
 	f->nodes.payload[r].ptrcast = src;
@@ -192,24 +204,49 @@ TB_API TB_Register tb_inst_int2ptr(TB_Function* f, TB_Register src) {
 }
 
 TB_API TB_Register tb_inst_ptr2int(TB_Function* f, TB_Register src, TB_DataType dt) {
+	assert(dt.width == 0);
+	assert(f->nodes.dt[src].width == 0);
+	
 	TB_Register r = tb_make_reg(f, TB_PTR2INT, dt);
 	f->nodes.payload[r].ptrcast = src;
 	return r;
 }
 
+TB_API TB_Register tb_inst_int2float(TB_Function* f, TB_Register src, TB_DataType dt) {
+	assert(f->nodes.dt[src].width == dt.width);
+	
+	TB_Register r = tb_make_reg(f, TB_INT2FLOAT, dt);
+	f->nodes.payload[r].cvt.src = src;
+	return r;
+}
+
+TB_API TB_Register tb_inst_float2int(TB_Function* f, TB_Register src, TB_DataType dt) {
+	assert(f->nodes.dt[src].width == dt.width);
+	
+	TB_Register r = tb_make_reg(f, TB_FLOAT2INT, dt);
+	f->nodes.payload[r].cvt.src = src;
+	return r;
+}
+
 TB_API TB_Register tb_inst_fpxt(TB_Function* f, TB_Register src, TB_DataType dt) {
+	assert(dt.width == f->nodes.dt[src].width);
+	
 	TB_Register r = tb_make_reg(f, TB_FLOAT_EXT, dt);
 	f->nodes.payload[r].ext = src;
 	return r;
 }
 
 TB_API TB_Register tb_inst_sxt(TB_Function* f, TB_Register src, TB_DataType dt) {
+	assert(dt.width == f->nodes.dt[src].width);
+	
 	TB_Register r = tb_make_reg(f, TB_SIGN_EXT, dt);
 	f->nodes.payload[r].ext = src;
 	return r;
 }
 
 TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt) {
+	assert(dt.width == f->nodes.dt[src].width);
+	
 	TB_Register r = tb_make_reg(f, TB_ZERO_EXT, dt);
 	f->nodes.payload[r].ext = src;
 	return r;

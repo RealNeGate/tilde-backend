@@ -57,141 +57,8 @@ typedef struct TB_Emitter {
 	uint8_t* data;
 } TB_Emitter;
 
-// NOTE(NeGate): Don't reorder this stuff...
-typedef enum TB_RegTypeEnum {
-    TB_NULL,
-	
-	// instructions with side-effects
-	TB_LINE_INFO,
-	TB_KEEPALIVE,
-	TB_INITIALIZE,
-	
-	TB_ICALL, /* internal use only, inline call */
-	TB_CALL,
-    TB_VCALL, /* virtual call */
-	TB_ECALL, /* extern call */
-	
-	TB_LOAD,
-    TB_STORE,
-	
-	TB_MEMCLR,
-	TB_MEMCPY,
-	TB_MEMSET,
-	TB_MEMCMP,
-	
-	// Atomics
-	TB_ATOMIC_TEST_AND_SET,
-	TB_ATOMIC_CLEAR,
-	
-	TB_ATOMIC_XCHG,
-	TB_ATOMIC_ADD,
-	TB_ATOMIC_SUB,
-	TB_ATOMIC_AND,
-	TB_ATOMIC_XOR,
-	TB_ATOMIC_OR,
-	
-	TB_ATOMIC_CMPXCHG, /* These are always bundled together */
-	TB_ATOMIC_CMPXCHG2,
-	
-	// Terminators
-    TB_LABEL,
-    TB_GOTO,
-    TB_SWITCH,
-    TB_IF,
-    TB_RET,
-	TB_TRAP,
-	TB_UNREACHABLE, /* it's undefined behavior to reach this */
-	
-	// Immediates
-	TB_UNSIGNED_CONST,
-	TB_SIGNED_CONST,
-    TB_FLOAT_CONST,
-    TB_STRING_CONST,
-    
-    // Casts
-    TB_TRUNCATE,
-    TB_FLOAT_EXT,
-    TB_SIGN_EXT,
-    TB_ZERO_EXT,
-    
-	// Unary ops
-	TB_NOT,
-	TB_NEG,
-	
-    // Integer arithmatic
-    TB_AND,
-	TB_OR,
-	TB_XOR,
-    TB_ADD,
-    TB_SUB,
-    TB_MUL,
-	
-    TB_SHL,
-    TB_SHR,
-    TB_SAR,
-    TB_UDIV,
-    TB_SDIV,
-    TB_UMOD,
-    TB_SMOD,
-    
-    // Float arithmatic
-    TB_FADD,
-    TB_FSUB,
-    TB_FMUL,
-    TB_FDIV,
-    
-    // Comparisons
-    TB_CMP_EQ,
-    TB_CMP_NE,
-    TB_CMP_SLT,
-    TB_CMP_SLE,
-    TB_CMP_ULT,
-    TB_CMP_ULE,
-    TB_CMP_FLT,
-    TB_CMP_FLE,
-    
-    // Conversions
-    TB_INT2PTR,
-    TB_PTR2INT,
-    
-    // Memory
-    TB_LOCAL,
-    TB_PARAM,
-    TB_PARAM_ADDR,
-	
-	TB_FUNC_ADDRESS,
-	TB_EFUNC_ADDRESS,
-	TB_GLOBAL_ADDRESS,
-	
-	// Pointer math
-	TB_MEMBER_ACCESS,
-	TB_ARRAY_ACCESS,
-    
-    // PHI
-    // NOTE(NeGate): I provide multiple shorthands
-	// because we ideally don't want to use the VLA
-	// space.
-	TB_PHI1,
-    TB_PHI2,
-	TB_PHIN,
-	
-    // NOTE(NeGate): only used internally, if you
-    // see one in normal IR things went wrong in
-    // an optimization pass
-    TB_PASS,
-	
-	// helpful for certain scans
-	TB_SIDE_EFFECT_MIN = TB_LINE_INFO,
-	TB_SIDE_EFFECT_MAX = TB_ATOMIC_CMPXCHG2,
-	
-	TB_TERMINATOR_MIN = TB_LABEL,
-	TB_TERMINATOR_MAX = TB_RET
-} TB_RegTypeEnum;
-
 typedef uint8_t TB_RegType;
 
-#define TB_IS_NODE_SIDE_EFFECT(type) ((type) >= TB_SIDE_EFFECT_MIN && (type) <= TB_SIDE_EFFECT_MAX)
-#define TB_IS_NODE_TERMINATOR(type) ((type) >= TB_TERMINATOR_MIN && (type) <= TB_TERMINATOR_MAX)
 #define TB_DATA_TYPE_EQUALS(a, b) tb_data_type_match(&(a), &(b))
 
 // first is the null register, then the entry
@@ -737,13 +604,6 @@ TB_Register* tb_vla_reserve(TB_Function* f, size_t count);
 inline static bool tb_data_type_match(const TB_DataType* a, const TB_DataType* b) {
 	return a->type == b->type && a->width == b->width;
 }
-
-// NOTE(NeGate): This is used when we do switch statements on data types.
-typedef union TB_DataTypeRaw {
-	TB_DataType dt;
-	uint16_t raw;
-} TB_DataTypeRaw;
-#define TB_DATA_TYPE_RAW(t, w) ((TB_DataType) { .dt = { .type = t, .width = w }).raw
 
 // NOTE(NeGate): Place all the codegen interfaces down here
 extern ICodeGen x64_fast_code_gen;

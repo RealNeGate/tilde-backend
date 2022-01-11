@@ -11,7 +11,7 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
 			switch (f->nodes.type[i]) {
 				// keep
 				case TB_NULL:
-                case TB_LABEL:
+				case TB_LABEL:
 				case TB_INITIALIZE:
                 case TB_PHI1:
                 case TB_PHI2:
@@ -19,16 +19,15 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
                 case TB_IF:
                 case TB_RET:
                 case TB_STORE:
-                case TB_LOAD:
                 case TB_CALL:
 				case TB_VCALL:
 				case TB_ECALL:
-                case TB_SWITCH:
-                case TB_PARAM:
+				case TB_SWITCH:
+				case TB_PARAM:
 				case TB_MEMSET:
 				case TB_MEMCPY:
-                case TB_KEEPALIVE:
-                case TB_TRAP:
+				case TB_KEEPALIVE:
+				case TB_TRAP:
 				case TB_UNREACHABLE:
 				case TB_ATOMIC_XCHG:
 				case TB_ATOMIC_ADD:
@@ -38,8 +37,13 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
 				case TB_ATOMIC_OR:
 				break;
 				// delete:
-                case TB_UNSIGNED_CONST:
-                case TB_SIGNED_CONST:
+                case TB_LOAD:
+				case TB_UNSIGNED_CONST:
+				case TB_SIGNED_CONST:
+				case TB_INT2PTR:
+				case TB_PTR2INT:
+				case TB_INT2FLOAT:
+				case TB_FLOAT2INT:
                 case TB_LOCAL:
                 case TB_PASS:
                 case TB_NOT:

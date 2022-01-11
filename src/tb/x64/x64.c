@@ -44,7 +44,6 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 	size_t caller_usage = 0;
 	{
 		size_t phi_count = 0;
-		size_t locals_count = 0;
 		size_t return_count = 0;
 		size_t label_patch_count = 0;
 		
@@ -61,9 +60,6 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 			
 			phi_count += COUNT_OF_TYPE_IN_M128(TB_PHI2);
 			
-			locals_count += COUNT_OF_TYPE_IN_M128(TB_LOCAL);
-			locals_count += COUNT_OF_TYPE_IN_M128(TB_PARAM);
-			
 			return_count += COUNT_OF_TYPE_IN_M128(TB_RET);
 			
 			label_patch_count += COUNT_OF_TYPE_IN_M128(TB_GOTO);
@@ -75,8 +71,6 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 			TB_RegType t = f->nodes[i].type;
 			
 			if (t == TB_PHI2) phi_count++;
-			else if (t == TB_LOCAL) locals_count++;
-			else if (t == TB_PARAM) locals_count++;
 			else if (t == TB_RET) return_count++;
 			else if (t == TB_IF) label_patch_count += 2;
 			else if (t == TB_GOTO) label_patch_count++;
@@ -159,7 +153,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 	
 	// On Win64 if we have at least one parameter, the caller must reserve 32bytes
 	// called the shadow space.
-	if (ctx->caller_usage > 0 && ctx->caller_usage < 4) ctx->caller_usage = 4;
+	if (!ctx->is_sysv && caller_usage > 0 && caller_usage < 4) caller_usage = 4;
 	
 	tb_find_live_intervals(f, ctx->intervals);
 	tb_find_use_count(f, ctx->use_count);
@@ -613,6 +607,47 @@ static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_
 	ctx->phi_queue_count = 0;
 }
 
+static Val gen_float_const(Ctx* ctx, TB_Function* f, TB_Register r, double float_value, TB_DataType dt) {
+	// Unlike integers, there's no float immediates
+	Val v = def_new_xmm(ctx, f, r, dt);
+	XMM dst_xmm = v.xmm;
+	
+	assert(TB_IS_FLOAT_TYPE(dt.type) && dt.width == 0);
+	uint64_t imm = (Cvt_F64U64){ .f = float_value }.i;
+	
+	if (imm == 0) {
+		if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
+		emit(0x0F);
+		emit(0x57);
+		emit(mod_rx_rm(MOD_DIRECT, dst_xmm, dst_xmm));
+	} else {
+		// Convert it to raw bits
+		if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
+		emit(dt.type == TB_F64 ? 0xF2 : 0xF3);
+		emit(0x0F);
+		emit(0x10);
+		emit(((dst_xmm & 7) << 3) | RBP);
+		
+		uint32_t disp;
+		if (dt.type == TB_F64) {
+			uint64_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint64_t));
+			*rdata_payload = imm;
+			
+			disp = tb_emit_const_patch(f->module, ctx->function_id, code_pos(), rdata_payload, sizeof(uint64_t), s_local_thread_id);
+		} else {
+			uint32_t imm32 = (Cvt_F32U32){ .f = float_value }.i;
+			
+			uint32_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint32_t));
+			*rdata_payload = imm32;
+			
+			disp = tb_emit_const_patch(f->module, ctx->function_id, code_pos(), rdata_payload, sizeof(uint32_t), s_local_thread_id);
+		}
+		emit4(disp);
+	}
+	
+	return v;
+}
+
 static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Register bb_end) {
 	ctx->current_bb = bb;
 	ctx->current_bb_end = bb_end;
@@ -678,26 +713,27 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					}
 				}
 				
-				TB_DataType dt = f->nodes.dt[r];
+				desugar_dt(&dt);
 				Val v = load_into(ctx, f, dt, r, addr_reg);
 				
 				if (explicit_load) {
 					// Load into register
-					Val storage = def_new_gpr(ctx, f, r, dt.type);
-					
 					if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
 						// weird wacky SSE mov
+						Val storage = def_new_xmm(ctx, f, r, dt);
+						
 						uint8_t flags = 0;
 						flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
 						flags |= dt.width ? INST2FP_PACKED : 0;
 						
 						inst2sse(ctx, FP_MOV, &storage, &v, flags);
+						def(ctx, f, storage, r);
 					} else {
 						// normal scalar cool mov
+						Val storage = def_new_gpr(ctx, f, r, dt.type);
 						inst2(ctx, MOV, &storage, &v, dt.type);
+						def(ctx, f, storage, r);
 					}
-					
-					def(ctx, f, storage, r);
 				} else {
 					// this means it's ok to use folded loads like
 					// add rcx, [rbp-8]
@@ -754,7 +790,7 @@ static void eval_basic_block(Ctx* ctx, TB_Function* f, TB_Register bb, TB_Regist
 					TB_Register param_reg = f->vla.data[param_start + j];
 					Val param = use_as_rvalue(ctx, f, param_reg);
 					
-					bool is_xmm = TB_IS_FLOAT_TYPE(dt.type) || dt.width;
+					bool is_xmm = TB_IS_FLOAT_TYPE(param.dt.type) || param.dt.width;
 					
 					int register_params = 4;
 					if (!is_xmm && ctx->is_sysv) {
@@ -1073,44 +1109,7 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			return v;
 		}
 		case TB_FLOAT_CONST: {
-			// Unlike integers, there's no float immediates
-			Val v = def_new_xmm(ctx, f, r, dt);
-			XMM dst_xmm = v.xmm;
-			
-			assert(TB_IS_FLOAT_TYPE(dt.type) && dt.width == 0);
-			uint64_t imm = (Cvt_F64U64){ .f = p->f_const }.i;
-			
-			if (imm == 0) {
-				if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
-				emit(0x0F);
-				emit(0x57);
-				emit(mod_rx_rm(MOD_DIRECT, dst_xmm, dst_xmm));
-			} else {
-				// Convert it to raw bits
-				if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
-				emit(dt.type == TB_F64 ? 0xF2 : 0xF3);
-				emit(0x0F);
-				emit(0x10);
-				emit(((dst_xmm & 7) << 3) | RBP);
-				
-				uint32_t disp;
-				if (dt.type == TB_F64) {
-					uint64_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint64_t));
-					*rdata_payload = imm;
-					
-					disp = tb_emit_const_patch(f->module, ctx->function_id, code_pos(), rdata_payload, sizeof(uint64_t), s_local_thread_id);
-				} else {
-					uint32_t imm32 = (Cvt_F32U32){ .f = p->f_const }.i;
-					
-					uint32_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint32_t));
-					*rdata_payload = imm32;
-					
-					disp = tb_emit_const_patch(f->module, ctx->function_id, code_pos(), rdata_payload, sizeof(uint32_t), s_local_thread_id);
-				}
-				emit4(disp);
-			}
-			
-			return v;
+			return gen_float_const(ctx, f, r, p->f_const, dt);
 		}
 		case TB_STRING_CONST: {
 			const char* str = f->nodes.payload[r].str_const.data;
@@ -1370,7 +1369,7 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			return v;
 		}
 		case TB_INT2PTR: {
-			Val src = use_as_rvalue(ctx, f, p->ext);
+			Val src = use_as_rvalue(ctx, f, p->ptrcast);
 			if (src.type == VAL_IMM) {
 				src.dt = TB_TYPE_PTR;
 				def(ctx, f, src, r);
@@ -1420,6 +1419,112 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 				}
 				return v;
 			}
+		}
+		case TB_PTR2INT: {
+			Val src = use_as_rvalue(ctx, f, p->ptrcast);
+			if (src.type == VAL_IMM) {
+				src.dt = TB_TYPE_PTR;
+				def(ctx, f, src, r);
+				return src;
+			}
+			
+			if (src.dt.type == TB_I32 ||
+				src.dt.type == TB_I64 ||
+				src.dt.type == TB_PTR) {
+				if (can_recycle_into(ctx, f, p->ext, r)) {
+					kill(ctx, f, p->ext);
+					def(ctx, f, src, r);
+					return src;
+				}
+				
+				Val v = def_new_gpr(ctx, f, r, TB_I64);
+				inst2(ctx, MOV, &v, &src, src.dt.type);
+				return v;
+			}
+			
+			tb_todo();
+		}
+		case TB_FLOAT2INT: {
+			Val src = use_as_rvalue(ctx, f, p->cvt.src);
+			TODO_VECTOR_TYPES(src.dt);
+			assert(src.type == VAL_MEM || src.type == VAL_GLOBAL || src.type == VAL_XMM);
+			
+			Val v = def_new_gpr(ctx, f, r, dt.type);
+			
+			// it's either 32bit or 64bit conversion
+			// F3 0F 2D /r            CVTSS2SI xmm1, r/m32
+			// F3 REX.W 0F 2D /r      CVTSS2SI xmm1, r/m64
+			// F2 0F 2D /r            CVTSD2SI xmm1, r/m32
+			// F2 REX.W 0F 2D /r      CVTSD2SI xmm1, r/m64
+			if (src.dt.width == 0) {
+				emit((src.dt.type == TB_F64) ? 0xF2 : 0xF3);
+			} else if (src.dt.type == TB_F64) {
+				// packed double
+				emit(0x66);
+			}
+			
+			uint8_t rx = v.gpr;
+			uint8_t base, index;
+			if (src.type == VAL_MEM) {
+				base = src.mem.base;
+				index = src.mem.index != GPR_NONE ? src.mem.index : 0;
+			} else if (src.type == VAL_XMM) {
+				base = src.xmm;
+				index = 0;
+			} else tb_todo();
+			
+			bool is_64bit = (dt.type == TB_I64);
+			if (is_64bit || rx >= 8 || base >= 8 || index >= 8) {
+				emit(rex(is_64bit, rx, base, index));
+			}
+			
+			emit(0x0F);
+			emit(0x2D);
+			emit_memory_operand(ctx, rx, &src);
+			return v;
+		}
+		case TB_INT2FLOAT: {
+			TODO_VECTOR_TYPES(dt);
+			
+			Val src = use_as_rvalue(ctx, f, p->cvt.src);
+			if (src.type == VAL_IMM) {
+				return gen_float_const(ctx, f, r, (double)src.imm, dt);
+			}
+			
+			assert(src.type == VAL_MEM || src.type == VAL_GLOBAL || src.type == VAL_GPR);
+			Val v = def_new_xmm(ctx, f, r, dt);
+			
+			// it's either 32bit or 64bit conversion
+			// F3 0F 2A /r            CVTSI2SS xmm1, r/m32
+			// F3 REX.W 0F 2A /r      CVTSI2SS xmm1, r/m64
+			// F2 0F 2A /r            CVTSI2SD xmm1, r/m32
+			// F2 REX.W 0F 2A /r      CVTSI2SD xmm1, r/m64
+			if (dt.width == 0) {
+				emit((dt.type == TB_F64) ? 0xF2 : 0xF3);
+			} else if (dt.type == TB_F64) {
+				// packed double
+				emit(0x66);
+			}
+			
+			uint8_t rx = v.xmm;
+			uint8_t base, index;
+			if (src.type == VAL_MEM) {
+				base = src.mem.base;
+				index = src.mem.index != GPR_NONE ? src.mem.index : 0;
+			} else if (src.type == VAL_GPR) {
+				base = src.gpr;
+				index = 0;
+			} else tb_todo();
+			
+			bool is_64bit = (src.dt.type == TB_I64);
+			if (is_64bit || rx >= 8 || base >= 8 || index >= 8) {
+				emit(rex(is_64bit, rx, base, index));
+			}
+			
+			emit(0x0F);
+			emit(0x2A);
+			emit_memory_operand(ctx, rx, &src);
+			return v;
 		}
 		case TB_NEG: {
 			Val src = use_as_rvalue(ctx, f, p->unary);
@@ -1620,15 +1725,15 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 			TB_Register b_reg = p->i_arith.b;
 			
 			Val a = use_as_rvalue(ctx, f, a_reg);
+			
+			Val v = def_new_gpr(ctx, f, r, dt.type);
+			inst2(ctx, MOV, &v, &a, dt.type);
+			
+			GPR dst_gpr = v.gpr;
+			bool is_64bit = dt.type == TB_I64 || dt.type == TB_PTR;
 			if (f->nodes.type[b_reg] == TB_SIGNED_CONST || 
 				f->nodes.type[b_reg] == TB_UNSIGNED_CONST) {
 				assert(f->nodes.payload[b_reg].u_const < 64);
-				
-				Val v = def_new_gpr(ctx, f, r, dt.type);
-				inst2(ctx, MOV, &v, &a, dt.type);
-				
-				GPR dst_gpr = v.gpr;
-				bool is_64bit = dt.type == TB_I64 || dt.type == TB_PTR;
 				
 				if (dt.type == TB_I16) emit(0x66);
 				emit(rex(is_64bit, 0x00, dst_gpr, 0x00));
@@ -1638,7 +1743,21 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 				return v;
 			}
 			
-			tb_todo();
+			evict_gpr(ctx, f, RCX, r);
+			
+			Val b = use_as_rvalue(ctx, f, b_reg);
+			if (!is_value_gpr(&b, RCX)) {
+				Val rcx = val_gpr(TB_I64, RCX);
+				inst2(ctx, MOV, &rcx, &b, TB_I64);
+			}
+			temporary_reserve_gpr(ctx, f, RCX);
+			
+			// D2 /4       shl r/m, cl
+			if (dt.type == TB_I16) emit(0x66);
+			emit(rex(is_64bit, 0x00, dst_gpr, 0x00));
+			emit(dt.type == TB_I8 ? 0xD2 : 0xD3);
+			emit(mod_rx_rm(MOD_DIRECT, 0x04, dst_gpr));
+			return v;
 		}
 		case TB_UDIV:
 		case TB_SDIV: {
@@ -1723,14 +1842,18 @@ static Val use(Ctx* ctx, TB_Function* f, TB_Register r) {
 		default: break;
 	}
 	
-	tb_function_print(f, stdout);
-	printf("\n\n\n");
+	tb_function_print(f, tb_default_print_callback, stderr);
+	fprintf(stderr, "\n\n\n");
 	abort();
 }
 
 static Val load_into(Ctx* ctx, TB_Function* f, TB_DataType dt, TB_Register r, TB_Register addr) {
 	Val v = use(ctx, f, addr);
-	desugar_dt(&v.dt);
+	
+	desugar_dt(&dt);
+	v.dt = dt;
+	
+	if (!is_value_mem(&v)) return v;
 	
 	if (v.mem.is_rvalue) {
 		// deref
@@ -1740,7 +1863,6 @@ static Val load_into(Ctx* ctx, TB_Function* f, TB_DataType dt, TB_Register r, TB
 		v = val_base_disp(v.dt, new_v.gpr, 0);
 	}
 	
-	v.dt = dt;
 	v.mem.is_rvalue = true;
 	return v;
 }

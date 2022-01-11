@@ -33,6 +33,33 @@ TB_Function* test_atomics(TB_Module* m) {
 	return func;
 }
 
+TB_Function* test_cvt_int_and_floats(TB_Module* m) {
+	TB_FunctionPrototype* p = tb_prototype_create(m, TB_STDCALL, TB_TYPE_VOID, 4, false);
+	tb_prototype_add_params(p, 4, (TB_DataType[]) { TB_TYPE_PTR, TB_TYPE_PTR, TB_TYPE_PTR, TB_TYPE_PTR });
+	TB_Function* func = tb_prototype_build(m, p, __FUNCTION__, TB_LINKAGE_PUBLIC);
+	
+	TB_Register params[4];
+	for (int i = 0; i < 4; i++) {
+		params[i] = tb_inst_param_addr(func, i);
+	}
+	
+	static const TB_DataType dt[] = { TB_TYPE_I8, TB_TYPE_I16, TB_TYPE_I32, TB_TYPE_I64 };
+	static const int sizes[] = { 1, 2, 4, 8 };
+	for (int i = 0; i < 4; i++) {
+		TB_Register r = tb_inst_load(func, dt[i], params[i], sizes[i]);
+		
+		r = tb_inst_int2float(func, r, TB_TYPE_F32);
+		r = tb_inst_float2int(func, r, dt[i]);
+		r = tb_inst_int2float(func, r, TB_TYPE_F64);
+		r = tb_inst_float2int(func, r, dt[i]);
+		
+		tb_inst_store(func, dt[i], params[i], r, sizes[i]);
+	}
+    
+	tb_inst_ret(func, TB_NULL_REG);
+	return func;
+}
+
 TB_Function* test_div_i64(TB_Module* m) {
 	TB_FunctionPrototype* p = tb_prototype_create(m, TB_STDCALL, TB_TYPE_I64, 2, false);
 	tb_prototype_add_params(p, 2, (TB_DataType[]) { TB_TYPE_I64, TB_TYPE_I64 });
@@ -502,60 +529,133 @@ TB_Function* test_entry(TB_Module* m) {
 	return func;
 }
 
-void do_tests(const char* obj_path, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
+typedef TB_Function*(*TestFunction)(TB_Module* m);
+static const TestFunction test_functions[] = {
+	test_cvt_int_and_floats,
+#if 0
+	test_fact,
+	test_add_f64,
+	test_cvt_f32f64,
+	test_atomics,
+	test_add_i8,
+	test_add_i16,
+	test_add_i32,
+	test_mul_i64,
+	test_sat_uadd_i32,
+	test_safe_add_i32,
+	test_add_i64,
+	test_div_i64,
+	test_locals_1,
+	test_locals_2,
+	test_params_1,
+	test_params_2,
+	test_bools_1,
+	test_zero_mem,
+	test_add_sub_i32,
+	test_locals_params_1,
+	test_add_f32,
+	test_add_f64,
+	test_cvt_f32f64,
+	test_andor_i32,
+	test_muladd_f32,
+	test_fib,
+	test_array_access,
+	test_foo,
+	test_entry
+#endif
+};
+enum { TEST_FUNCTION_COUNT = sizeof(test_functions) / sizeof(test_functions[0]) };
+
+static void print_function_as_html(FILE* out, TB_Function* f, const char* title) {
+	fprintf(out, "<td valign=\"top\">\n");
+	fprintf(out, "%s:<br>\n", title);
+	fprintf(out, "<pre>\n");
+	tb_function_print(f, tb_default_print_callback, out);
+	fprintf(out, "</pre>\n");
+	fprintf(out, "</td>\n");
+}
+
+#define OPT(x) if (tb_opt_ ## x (f)) { \
+print_function_as_html(out, f, #x); \
+goto repeat_opt; \
+}
+
+void visualize_tests(const char* output_path, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
 	TB_Module* m = tb_module_create(arch, system, features);
     
-	typedef TB_Function*(*TestFunction)(TB_Module* m);
-	static const TestFunction test_functions[] = {
-		test_fact,
-		test_add_f64,
-		test_cvt_f32f64,
-		test_atomics,
-#if 1
-		test_add_i8,
-		test_add_i16,
-		test_add_i32,
-		test_mul_i64,
-		test_sat_uadd_i32,
-		test_safe_add_i32,
-		test_add_i64,
-		test_div_i64,
-		test_locals_1,
-		test_locals_2,
-		test_params_1,
-		test_params_2,
-		test_bools_1,
-		test_zero_mem,
-		test_add_sub_i32,
-		test_locals_params_1,
-		test_add_f32,
-		test_add_f64,
-		test_cvt_f32f64,
-		test_andor_i32,
-		test_muladd_f32,
-		test_fib,
-		test_array_access,
-		test_foo,
-		test_entry
-#endif
-	};
-	size_t count = sizeof(test_functions) / sizeof(test_functions[0]);
 	test_external1 = tb_extern_create(m, "GetModuleHandleA");
 	test_external2 = tb_extern_create(m, "OutputDebugStringA");
 	
 	TB_InitializerID test_init = tb_initializer_create(m, 4, 4, 0);
 	test_global = tb_global_create(m, test_init, "some_global", TB_LINKAGE_PUBLIC);
 	
-	for (size_t i = 0; i < count; i++) {
+	// Create HTML file
+	FILE* out = fopen(output_path, "wb");
+	
+	fprintf(out, "<html>\n");
+	fprintf(out, "<style>\n");
+	fprintf(out, "table, th {\n");
+	fprintf(out, "border:1px solid black;\n");
+	fprintf(out, "}\n");
+	fprintf(out, "td {\n");
+	fprintf(out, "border:1px solid black;\n");
+	fprintf(out, "padding: 0.5em;\n");
+	fprintf(out, "}\n");
+	fprintf(out, "</style>\n");
+	fprintf(out, "<body>\n");
+	fprintf(out, "<table>\n");
+	
+	for (size_t i = 0; i < TEST_FUNCTION_COUNT; i++) {
+		fprintf(out, "<tr>\n");
+		
+		TB_Function* f = test_functions[i](m);
+        print_function_as_html(out, f, "start");
+		
+		repeat_opt: {
+			OPT(dead_expr_elim);
+			OPT(remove_pass_node);
+			OPT(canonicalize);
+			OPT(fold);
+			OPT(load_elim);
+			OPT(strength_reduction);
+			OPT(hoist_locals);
+			OPT(mem2reg);
+			OPT(dead_block_elim);
+			OPT(deshort_circuit);
+			OPT(copy_elision);
+			OPT(compact_dead_regs);
+		}
+		
+		print_function_as_html(out, f, "end");
+		fprintf(out, "</tr>\n");
+	}
+	
+	fprintf(out, "</table>\n");
+	fprintf(out, "</body>\n");
+	fprintf(out, "</html>\n");
+	fclose(out);
+	
+	tb_module_destroy(m);
+}
+#undef OPT
+
+void do_tests(const char* output_path, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
+	TB_Module* m = tb_module_create(arch, system, features);
+    
+	test_external1 = tb_extern_create(m, "GetModuleHandleA");
+	test_external2 = tb_extern_create(m, "OutputDebugStringA");
+	
+	TB_InitializerID test_init = tb_initializer_create(m, 4, 4, 0);
+	test_global = tb_global_create(m, test_init, "some_global", TB_LINKAGE_PUBLIC);
+	
+	for (size_t i = 0; i < TEST_FUNCTION_COUNT; i++) {
 		TB_Function* func = test_functions[i](m);
         
-		tb_function_optimize(func, TB_OPT_O1);
         tb_module_compile_func(m, func);
-		//tb_function_print(func, stdout);
 	}
-    
+	
 	if (!tb_module_compile(m)) abort();
-	if (!tb_module_export(m, obj_path)) abort();
+	if (!tb_module_export(m, output_path)) abort();
 	
 	tb_module_destroy(m);
 }
@@ -564,7 +664,7 @@ int main(int argc, char** argv) {
 	TB_FeatureSet features = { 0 };
 	
 #if 0
-	do_tests("./test_x64.o", TB_ARCH_X86_64, TB_SYSTEM_LINUX, &features);
+	visualize_tests("./test.html", TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features);
 #else
 	do_tests("./test_x64.obj", TB_ARCH_X86_64, TB_SYSTEM_WINDOWS, &features);
 #endif

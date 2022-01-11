@@ -66,8 +66,10 @@ TB_API bool tb_function_validate(TB_Function* restrict f) {
 	} while (i < node_count);
 	
 	if (error_count) {
-		printf("Validation Error!!");
-		tb_function_print(f, stdout);
+		fprintf(stdout, "Validation Error!!");
+		tb_function_print(f, tb_default_print_callback, stderr);
+		fprintf(stderr, "\n\n\n");
+		
 		return false;
 	}
 	
@@ -158,6 +160,9 @@ break; \
 case TB_INT2PTR: \
 case TB_PTR2INT: \
 X(p->ptrcast); \
+case TB_INT2FLOAT: \
+case TB_FLOAT2INT: \
+X(p->cvt.src); \
 break; \
 case TB_TRUNCATE: \
 X(p->trunc); \

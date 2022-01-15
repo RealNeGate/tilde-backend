@@ -179,19 +179,7 @@ extern "C" {
 		TB_ECALL, /* extern call */
 		
 		/* Memory operations */
-		TB_LOCAL,
-		TB_PARAM,
-		TB_PARAM_ADDR,
-		
-		TB_LOAD,
 		TB_STORE,
-		
-		TB_FUNC_ADDRESS,
-		TB_EFUNC_ADDRESS,
-		TB_GLOBAL_ADDRESS,
-		
-		TB_MEMBER_ACCESS,
-		TB_ARRAY_ACCESS,
 		
 		TB_MEMCLR,
 		TB_MEMCPY,
@@ -221,6 +209,21 @@ extern "C" {
 		TB_RET,
 		TB_TRAP,
 		TB_UNREACHABLE,
+		
+		/* Load */
+		TB_LOAD,
+		
+		/* Generators */
+		TB_LOCAL,
+		TB_PARAM,
+		TB_PARAM_ADDR,
+		TB_FUNC_ADDRESS,
+		TB_EFUNC_ADDRESS,
+		TB_GLOBAL_ADDRESS,
+		
+		/* Pointer math */
+		TB_MEMBER_ACCESS,
+		TB_ARRAY_ACCESS,
 		
 		/* Immediates */
 		TB_UNSIGNED_CONST,

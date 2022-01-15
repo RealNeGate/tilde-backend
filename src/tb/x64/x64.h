@@ -78,6 +78,12 @@ typedef enum Inst2FPFlags {
 
 typedef struct Val {
 	ValType type : 8;
+	
+	// owned values means the value is owned
+	// by the node we get it from in tree eval
+	// if not we can't recycle the value or free
+	// it.
+	bool is_owned;
 	TB_DataType dt;
     
 	union {
@@ -138,6 +144,21 @@ typedef struct MemCacheDesc {
     Val value;
 } MemCacheDesc;
 
+typedef struct StackSlot {
+	TB_Register reg;
+	int32_t pos;
+	GPR gpr : 8;
+	XMM xmm : 8;
+} StackSlot;
+
+typedef short TreeNodeIndex;
+
+typedef struct TreeNode {
+	TB_Register reg;
+	TreeNodeIndex a, b;
+	Val val;
+} TreeNode;
+
 typedef struct Ctx {
 	uint8_t* out;
 	uint8_t* start_out;
@@ -155,18 +176,16 @@ typedef struct Ctx {
 	size_t phi_queue_count;
 	TB_Register* phi_queue;
 	
-	//
 	// Patch info
-	//
 	uint32_t label_patch_count;
 	
 	uint32_t* labels;
 	LabelPatch* label_patches;
 	
 	// Some analysis crap
-	int32_t* params;
+	dyn_array(StackSlot) locals;
+	
 	TB_Register* intervals;
-	int* use_count;
 	PhiValue* phis;
 	ReturnPatch* ret_patches;
 	
@@ -178,25 +197,24 @@ typedef struct Ctx {
 	uint32_t stack_usage;
 	
 	// Register allocation:
-	// these just keep track of which register is
-	// bound to a value, there's no such thing as
-	// aliasing one physical register with two
-	// virtual registers if some optimizations need
-	// that they need to handle it in the IR earlier.
-	TB_Register gpr_desc[16];
-	TB_Register xmm_desc[16];
-	
-	// reserved for a side-effect node
-	uint16_t gpr_temp_bits;
-	uint16_t xmm_temp_bits;
+	uint16_t gpr_allocator;
+	uint16_t xmm_allocator;
 	
 	// GPRs are the bottom 32bit
 	// XMM is the top 32bit
 	uint64_t regs_to_save;
 	
-	// The value of all virtual registers
-	// VAL_NONE is for unmapped registers
-	Val addr_desc[];
+	// This measures how far back the tree eval can actually
+	// see backwards, beyond this and the root_reg values are
+	// found via spills.
+	TB_Register last_fence;
+	
+	// root_reg is what you're evaluating with eval(...)
+	// and next_reg is what eval is evaluating for.
+	TB_Register root_reg, next_reg;
+	
+	size_t tree_cap, tree_len;
+	TreeNode tree[];
 } Ctx;
 
 typedef enum Inst2Type {
@@ -222,25 +240,8 @@ typedef enum ExtMode {
 	
 	// same as DEF but for MOVZX and MOVSX
 	// these are forced as always load.
-	EXT_DEF2,
-    
-    // SSE scalar-single instructions have a F3 0F prefix
-    EXT_SSE_SS,
-	
-    // SSE scalar-single instructions have a F2 0F prefix
-    EXT_SSE_SD,
-	
-    EXT_SSE_PS
+	EXT_DEF2
 } ExtMode;
-
-typedef struct IselInfo {
-	int inst;
-	
-	bool communitive;
-	bool has_immediates;
-	bool has_memory_dst;
-	bool has_memory_src;
-} IselInfo;
 
 // Describes what general 2 operand instructions are like
 typedef struct Inst2 {
@@ -439,54 +440,19 @@ inline static bool is_value_match(const Val* a, const Val* b) {
 
 #define patch4(p, b) (*((uint32_t*) &ctx->start_out[p]) = (b))
 
-static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, GPR gpr, TB_Register bb, TB_Register bb_end);
+static bool is_address_node(TB_RegType t);
 
-static Val use(Ctx* ctx, TB_Function* f, TB_Register r);
-static Val use_as_rvalue(Ctx* ctx, TB_Function* f, TB_Register r);
-static Val use_as_address(Ctx* ctx, TB_Function* f, TB_Register r);
+static Val val_rvalue(Ctx* ctx, TB_Function* f, Val v, TB_Register r);
+static Val val_addressof(Ctx* ctx, TB_Function* f, Val v);
 
-static void kill(Ctx* ctx, TB_Function* f, TB_Register r);
+// returns true if we have the register is free now
+static bool evict_gpr(Ctx* restrict ctx, TB_Function* f, GPR g);
+static bool evict_xmm(Ctx* restrict ctx, TB_Function* f, XMM x);
 
-static void def(Ctx* ctx, TB_Function* f, const Val v, TB_Register r);
-
-// allocates a new gpr as the `r` virtual reg
-static Val def_new_gpr(Ctx* ctx, TB_Function* f, TB_Register r, int dt_type);
-
-// allocates a new xmm as the `r` virtual reg
-static Val def_new_xmm(Ctx* ctx, TB_Function* f, TB_Register r, TB_DataType dt);
-
-// if something is bound to this GPR, it's spilled into a stack slot
-// returns true if it spilled
-static bool evict_gpr(Ctx* ctx, TB_Function* f, GPR g, TB_Register r);
-
-// same as evict_gpr(...) but for XMM
-static bool evict_xmm(Ctx* ctx, TB_Function* f, XMM x, TB_Register r);
-
-static void temporary_reserve_gpr(Ctx* ctx, TB_Function* f, GPR g);
-static void temporary_reserve_xmm(Ctx* ctx, TB_Function* f, XMM x);
-
-static Val materialize(Ctx* ctx, TB_Function* f, const Val* src, TB_Register src_reg, TB_DataType dt);
-
-static Val isel(Ctx* ctx, TB_Function* f, const IselInfo* info,
-				TB_Register dst_reg, TB_Register a_reg, TB_Register b_reg, 
-				const Val* a, const Val* b);
-
-// Same as isel(...) except both parameters are the same so things are slightly simpler
-static Val isel_aliased(Ctx* ctx, TB_Function* f, const IselInfo* info,
-						TB_Register dst_reg, TB_Register src_reg, 
-						const Val* src);
-
-// Garbage collects up to the `r` register (doesn't handle registers 
-// between basic blocks only locals).
-// Returns true if any virtual registers were unused and now gone.
-static bool garbage_collect_gpr(Ctx* ctx, TB_Function* f, TB_Register r);
-static bool garbage_collect_xmm(Ctx* ctx, TB_Function* f, TB_Register r);
-
+static PhiValue* find_phi(Ctx* ctx, TB_Register r);
 static bool is_phi_that_contains(TB_Function* f, TB_Register phi, TB_Register reg);
-static void store_into(Ctx* ctx, TB_Function* f, TB_DataType dt, const Val* dst, TB_Register r, TB_Register dst_reg, TB_Register val_reg);
-static Val load_into(Ctx* ctx, TB_Function* f, TB_DataType dt, TB_Register r, TB_Register addr);
+
+static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, TB_Register bound, TB_Register bb, TB_Register bb_end);
 
 // used to add patches since there's separate arrays per thread
 static _Thread_local size_t s_local_thread_id;
-
-#define TODO_VECTOR_TYPES(dt) assert((dt).width == 0 && "TODO: vector types")

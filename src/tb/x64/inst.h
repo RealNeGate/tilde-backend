@@ -153,35 +153,6 @@ inline static void inst2(Ctx* ctx, Inst2Type op, const Val* a, const Val* b, int
 		
 		emit(opcode | sz | (dir_flag ? 2 : 0));
 	}
-	else if (inst->ext == EXT_SSE_SS || inst->ext == EXT_SSE_SD || inst->ext == EXT_SSE_PS) {
-		assert(b->type != VAL_IMM);
-		
-		// SSE also extends to integer vectors so this is wrong
-		//assert(dt_type == TB_F32 || dt_type == TB_F64);
-		
-		bool is_vec_mov = inst->op == 0x10 || inst->op == 0x28;
-		
-		// TODO(NeGate): normal SSE instructions don't support store mode, except MOV__
-		if (!is_vec_mov && a->type == VAL_MEM) assert(dir); 
-		
-		if (a->type == VAL_MEM) base = a->mem.base;
-		else base = a->xmm;
-		rx = b->xmm;
-		
-		// This is pretty nasty but essentially the normal SSE instructions are always
-		// in the flipped form (except for MOV__)
-		if (!is_vec_mov && a->type != VAL_MEM) tb_swap(base, rx);
-		
-		if (rx >= 8 || base >= 8) {
-			emit(rex(true, rx, base, 0));
-		}
-		
-		if (inst->ext == EXT_SSE_SS) emit(0xF3);
-		else if (inst->ext == EXT_SSE_SD) emit(0xF2);
-		
-		emit(0x0F);
-		emit(is_vec_mov ? inst->op + !dir : inst->op);
-	}
 	else tb_unreachable();
 	
 	// We forgot a case!

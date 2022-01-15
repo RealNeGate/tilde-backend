@@ -531,37 +531,37 @@ TB_Function* test_entry(TB_Module* m) {
 
 typedef TB_Function*(*TestFunction)(TB_Module* m);
 static const TestFunction test_functions[] = {
-	test_cvt_int_and_floats,
-#if 0
-	test_fact,
-	test_add_f64,
-	test_cvt_f32f64,
+	test_fib,
+	test_zero_mem,
 	test_atomics,
+	test_fact,
+	test_add_sub_i32,
 	test_add_i8,
 	test_add_i16,
 	test_add_i32,
 	test_mul_i64,
-	test_sat_uadd_i32,
-	test_safe_add_i32,
 	test_add_i64,
-	test_div_i64,
 	test_locals_1,
 	test_locals_2,
 	test_params_1,
 	test_params_2,
-	test_bools_1,
-	test_zero_mem,
-	test_add_sub_i32,
-	test_locals_params_1,
-	test_add_f32,
-	test_add_f64,
-	test_cvt_f32f64,
 	test_andor_i32,
-	test_muladd_f32,
-	test_fib,
+	test_div_i64,
+	test_sat_uadd_i32,
+	test_safe_add_i32,
+	test_bools_1,
+	test_locals_params_1,
 	test_array_access,
 	test_foo,
 	test_entry
+#if 0
+	test_cvt_int_and_floats,
+	test_add_f64,
+	test_cvt_f32f64,
+	test_add_f32,
+	test_add_f64,
+	test_cvt_f32f64,
+	test_muladd_f32,
 #endif
 };
 enum { TEST_FUNCTION_COUNT = sizeof(test_functions) / sizeof(test_functions[0]) };
@@ -651,6 +651,7 @@ void do_tests(const char* output_path, TB_Arch arch, TB_System system, const TB_
 	for (size_t i = 0; i < TEST_FUNCTION_COUNT; i++) {
 		TB_Function* func = test_functions[i](m);
         
+		//tb_function_optimize(func, TB_OPT_O1);
         tb_module_compile_func(m, func);
 	}
 	

@@ -495,7 +495,11 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					
 					spill_stack_slot(ctx, f, slot);
 				} else if (f->nodes.type[j] != TB_LOCAL &&
-						   f->nodes.type[j] != TB_PARAM_ADDR) {
+						   f->nodes.type[j] != TB_PARAM_ADDR &&
+						   f->nodes.type[j] != TB_SIGNED_CONST &&
+						   f->nodes.type[j] != TB_UNSIGNED_CONST &&
+						   f->nodes.type[j] != TB_FLOAT_CONST &&
+						   f->nodes.type[j] != TB_STRING_CONST) {
 					TB_DataType dt = f->nodes.dt[j];
 					
 					// TODO(NeGate): Implement saving to registers when enough are
@@ -517,7 +521,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					
 					// TODO(NeGate): Implement XMM-based movs
 					if (is_value_mem(&dst) && is_value_mem(&src)) {
-						Val tmp = alloc_gpr(ctx, f, dt.type);
+						Val tmp = alloc_gpr(ctx, f, dt.type, 0);
 						
 						inst2(ctx, MOV, &tmp, &src, dt.type);
 						inst2(ctx, MOV, &dst, &tmp, dt.type);
@@ -526,9 +530,10 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					} else {
 						inst2(ctx, MOV, &dst, &src, dt.type);
 					}
+					free_val(ctx, f, src);
 					
 					arrput(ctx->locals, slot);
-					DEBUG_LOG("%s: spilled value r%zu because of barrier at r%zu\n", f->name, j, r);
+					printf("%s: spilled value r%zu because of barrier at r%zu\n", f->name, j, r);
 				}
 			}
 		}
@@ -574,6 +579,9 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 						assert(evict_xmm(ctx, f, j));
 					}
 				}
+				
+				uint16_t before_gpr_reserves = ctx->gpr_allocator;
+				uint16_t before_xmm_reserves = ctx->xmm_allocator;
 				
 				// evict & reserve return value
 				if (TB_IS_FLOAT_TYPE(dt.type) || dt.width) {
@@ -638,7 +646,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 							}
 						} else {
 							if (param.type == VAL_MEM) {
-								Val tmp = alloc_gpr(ctx, f, dt.type);
+								Val tmp = alloc_gpr(ctx, f, dt.type, 0);
 								
 								inst2(ctx, MOV, &tmp, &param, param.dt.type);
 								inst2(ctx, MOV, &dst, &tmp, param.dt.type);
@@ -684,6 +692,9 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					// call r/m64
 					inst1(ctx, CALL_RM, &target);
 				}
+				
+				ctx->gpr_allocator = before_gpr_reserves;
+				ctx->xmm_allocator = before_xmm_reserves;
 				
 				// the return value
 				if (dt.type == TB_VOID) {
@@ -785,7 +796,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					// it's actually a MOV which is naturally atomic
 					// when aligned.
 					if (is_value_mem(&src)) {
-						Val tmp = alloc_gpr(ctx, f, dt.type);
+						Val tmp = alloc_gpr(ctx, f, dt.type, 0);
 						inst2(ctx, MOV, &tmp, &src, dt.type);
 						
 						if (reg_type != TB_ATOMIC_XCHG) emit(0xF0);
@@ -886,7 +897,7 @@ if (!is_value_mem(&value)) {
 		if (!is_value_mem(&value)) {
 			inst2(ctx, op, dst, &value, dt.type);
 		} else {
-			Val tmp = alloc_gpr(ctx, f, dt.type);
+			Val tmp = alloc_gpr(ctx, f, dt.type, 0);
 			
 			inst2(ctx, MOV, &tmp, &value, dt.type);
 			inst2(ctx, op, dst, &tmp, dt.type);
@@ -1050,7 +1061,7 @@ static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_
 				phi->value = src_value;
 			} else {
 				// Create a new GPR and map it
-				phi->value = alloc_gpr(ctx, f, dt.type);
+				phi->value = alloc_gpr(ctx, f, dt.type, 0);
 				
 				// TODO(NeGate): Handle vector and float types
 				if (!is_value_gpr(&src_value, phi->value.gpr)) {

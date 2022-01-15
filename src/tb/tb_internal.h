@@ -475,6 +475,7 @@ b = temp; \
 #define tb_unreachable() __builtin_unreachable()
 #endif
 
+#define tb_panic(condition, ...) do { if (!(condition)) { printf(__VA_ARGS__); abort(); } } while (0)
 #define tb_arrlen(a) (sizeof(a) / sizeof(a[0]))
 
 #define loop(iterator, count) \

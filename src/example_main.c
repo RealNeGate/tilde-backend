@@ -380,7 +380,7 @@ TB_Function* test_array_access(TB_Module* m) {
 	TB_Register a = tb_inst_param(func, 0);
 	TB_Register b = tb_inst_param(func, 1);
 	
-	tb_inst_ret(func, tb_inst_array_access(func, a, b, 24));
+	tb_inst_ret(func, tb_inst_array_access(func, a, b, 16));
 	return func;
 }
 
@@ -501,6 +501,40 @@ TB_Function* test_foo(TB_Module* m) {
 	return func;
 }
 
+TB_Function* test_derefs(TB_Module* m) {
+	TB_FunctionPrototype* p = tb_prototype_create(m, TB_STDCALL, TB_TYPE_I32, 1, false);
+	tb_prototype_add_params(p, 1, (TB_DataType[]) { TB_TYPE_PTR });
+	TB_Function* func = tb_prototype_build(m, p, __FUNCTION__, TB_LINKAGE_PUBLIC);
+	
+	TB_Register ptr = tb_inst_param(func, 0);
+	for (int i = 0; i < 30; i++) {
+		ptr = tb_inst_load(func, TB_TYPE_PTR, ptr, 8);
+	}
+	
+	tb_inst_ret(func, tb_inst_load(func, TB_TYPE_I32, ptr, 4));
+	return func;
+}
+
+TB_Register test_spills_step(TB_Function* func, int step, int mode) {
+	if (step == 0) {
+		return tb_inst_param(func, mode);
+	}
+	
+	return tb_inst_mul(func, 
+					   test_spills_step(func, step-1, 0),
+					   test_spills_step(func, step-1, 1), 
+					   TB_ASSUME_NUW);
+}
+
+TB_Function* test_spills(TB_Module* m) {
+	TB_FunctionPrototype* p = tb_prototype_create(m, TB_STDCALL, TB_TYPE_I32, 2, false);
+	tb_prototype_add_params(p, 2, (TB_DataType[]) { TB_TYPE_I32, TB_TYPE_I32 });
+	TB_Function* func = tb_prototype_build(m, p, __FUNCTION__, TB_LINKAGE_PUBLIC);
+	
+	tb_inst_ret(func, test_spills_step(func, 4, 0));
+	return func;
+}
+
 TB_Function* test_entry(TB_Module* m) {
 	TB_FunctionPrototype* p = tb_prototype_create(m, TB_STDCALL, TB_TYPE_PTR, 1, false);
 	tb_prototype_add_params(p, 1, (TB_DataType[]) { TB_TYPE_I32 });
@@ -531,7 +565,8 @@ TB_Function* test_entry(TB_Module* m) {
 
 typedef TB_Function*(*TestFunction)(TB_Module* m);
 static const TestFunction test_functions[] = {
-	test_fib,
+	test_derefs,
+	test_spills,
 	test_zero_mem,
 	test_atomics,
 	test_fact,
@@ -553,7 +588,9 @@ static const TestFunction test_functions[] = {
 	test_locals_params_1,
 	test_array_access,
 	test_foo,
-	test_entry
+	test_fib,
+	test_entry,
+	
 #if 0
 	test_cvt_int_and_floats,
 	test_add_f64,
@@ -582,7 +619,7 @@ goto repeat_opt; \
 
 void visualize_tests(const char* output_path, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
 	TB_Module* m = tb_module_create(arch, system, features);
-    
+	
 	test_external1 = tb_extern_create(m, "GetModuleHandleA");
 	test_external2 = tb_extern_create(m, "OutputDebugStringA");
 	
@@ -609,7 +646,7 @@ void visualize_tests(const char* output_path, TB_Arch arch, TB_System system, co
 		fprintf(out, "<tr>\n");
 		
 		TB_Function* f = test_functions[i](m);
-        print_function_as_html(out, f, "start");
+		print_function_as_html(out, f, "start");
 		
 		repeat_opt: {
 			OPT(dead_expr_elim);
@@ -641,7 +678,7 @@ void visualize_tests(const char* output_path, TB_Arch arch, TB_System system, co
 
 void do_tests(const char* output_path, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
 	TB_Module* m = tb_module_create(arch, system, features);
-    
+	
 	test_external1 = tb_extern_create(m, "GetModuleHandleA");
 	test_external2 = tb_extern_create(m, "OutputDebugStringA");
 	
@@ -650,9 +687,12 @@ void do_tests(const char* output_path, TB_Arch arch, TB_System system, const TB_
 	
 	for (size_t i = 0; i < TEST_FUNCTION_COUNT; i++) {
 		TB_Function* func = test_functions[i](m);
-        
+		
+		tb_function_print(func, tb_default_print_callback, stdout);
+		printf("\n\n\n");
+		
 		//tb_function_optimize(func, TB_OPT_O1);
-        tb_module_compile_func(m, func);
+		tb_module_compile_func(m, func);
 	}
 	
 	if (!tb_module_compile(m)) abort();

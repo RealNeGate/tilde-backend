@@ -454,5 +454,7 @@ static bool is_phi_that_contains(TB_Function* f, TB_Register phi, TB_Register re
 
 static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, TB_Register bound, TB_Register bb, TB_Register bb_end);
 
+static int get_data_type_size(const TB_DataType dt);
+
 // used to add patches since there's separate arrays per thread
 static _Thread_local size_t s_local_thread_id;

@@ -214,9 +214,11 @@ extern "C" {
 		TB_LOAD,
 		
 		/* Generators */
-		TB_LOCAL,
+		TB_RESTRICT,   // all three of these are the only ways to 
+		TB_LOCAL,      // generate restrict pointers meaning that
+		TB_PARAM_ADDR, // they do not alias with any other pointers
+		
 		TB_PARAM,
-		TB_PARAM_ADDR,
 		TB_FUNC_ADDRESS,
 		TB_EFUNC_ADDRESS,
 		TB_GLOBAL_ADDRESS,
@@ -266,6 +268,10 @@ extern "C" {
 		TB_FSUB,
 		TB_FMUL,
 		TB_FDIV,
+		
+		// Special float ops
+		TB_SQRT,
+		TB_RSQRT,
 		
 		// Comparisons
 		TB_CMP_EQ,
@@ -581,6 +587,9 @@ extern "C" {
 	TB_API TB_Register tb_inst_fmul(TB_Function* f, TB_Register a, TB_Register b);
 	TB_API TB_Register tb_inst_fdiv(TB_Function* f, TB_Register a, TB_Register b);
 	
+	TB_API TB_Register tb_inst_sqrt(TB_Function* f, TB_Register a);
+	TB_API TB_Register tb_inst_rsqrt(TB_Function* f, TB_Register a);
+	
 	// Comparisons
 	TB_API TB_Register tb_inst_cmp_eq(TB_Function* f, TB_Register a, TB_Register b);
 	TB_API TB_Register tb_inst_cmp_ne(TB_Function* f, TB_Register a, TB_Register b);
@@ -594,6 +603,8 @@ extern "C" {
 	TB_API TB_Register tb_inst_cmp_fle(TB_Function* f, TB_Register a, TB_Register b);
 	TB_API TB_Register tb_inst_cmp_fgt(TB_Function* f, TB_Register a, TB_Register b);
 	TB_API TB_Register tb_inst_cmp_fge(TB_Function* f, TB_Register a, TB_Register b);
+	
+	TB_API TB_Register tb_inst_restrict(TB_Function* f, TB_Register value);
 	
 	// Control flow
 	TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Register* params);

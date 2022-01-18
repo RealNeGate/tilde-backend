@@ -1,3 +1,4 @@
+#include "../tb_internal.h"
 
 bool tb_opt_dead_expr_elim(TB_Function* f) {
 	int changes = 0;

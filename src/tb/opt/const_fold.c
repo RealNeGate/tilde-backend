@@ -1,39 +1,58 @@
+#include "../tb_internal.h"
 
 bool tb_opt_load_elim(TB_Function* f) {
 	int changes = 0;
 	
-	loop(i, f->nodes.count) if (f->nodes.type[i] == TB_LOAD) {
-		TB_DataType dt = f->nodes.dt[i];
-		TB_Register addr = f->nodes.payload[i].load.address;
-		uint32_t alignment = f->nodes.payload[i].load.alignment;
-		
-		// Find memory latest revision
-		TB_Register j = i - 1;
-		do {
-			assert(i != j);
-			TB_RegType t = f->nodes.type[j];
+	loop(i, f->nodes.count) {
+		if (f->nodes.type[i] == TB_LOAD) {
+			TB_DataType dt = f->nodes.dt[i];
+			TB_Register addr = f->nodes.payload[i].load.address;
+			uint32_t alignment = f->nodes.payload[i].load.alignment;
 			
-			if (t == TB_STORE) {
-				if (TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[j]) &&
-					f->nodes.payload[j].store.alignment == alignment &&
-					f->nodes.payload[j].store.address == addr) {
+			// Find any duplicates
+			loop_range(j, i + 1, f->nodes.count) {
+				TB_RegType t = f->nodes.type[j];
+				
+				if (t == TB_LOAD &&
+					f->nodes.payload[j].load.alignment == alignment &&
+					f->nodes.payload[j].load.address == addr &&
+					TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[j])) {
 					// if the load and store pair up, then elide the load
 					// don't remove the store since it's unknown if it's
 					// used elsewhere.
-					f->nodes.type[i] = TB_PASS;
-					f->nodes.payload[i].pass = f->nodes.payload[j].store.value;
+					f->nodes.type[j] = TB_PASS;
+					f->nodes.payload[j].pass = i;
 					changes++;
+				} else if (TB_IS_NODE_TERMINATOR(t) || TB_IS_NODE_SIDE_EFFECT(t)) {
+					// Can't read past side effects or terminators, don't
+					// know what might happen
+					break;
 				}
-				
-				// aliasing problems...
-				// TODO(NeGate): Implement a noalias
-				break;
-			} else if (TB_IS_NODE_TERMINATOR(t) || TB_IS_NODE_SIDE_EFFECT(t)) {
-				// Can't read past side effects or terminators, don't
-				// know what might happen
-				break;
 			}
-		} while (j--);
+		} else if (f->nodes.type[i] == TB_MEMBER_ACCESS) {
+			TB_Register base = f->nodes.payload[i].member_access.base;
+			int32_t offset = f->nodes.payload[i].member_access.offset;
+			
+			// Find any duplicates
+			loop_range(j, i + 1, f->nodes.count) {
+				TB_RegType t = f->nodes.type[j];
+				
+				if (t == TB_MEMBER_ACCESS &&
+					f->nodes.payload[j].member_access.base == base &&
+					f->nodes.payload[j].member_access.offset == offset) {
+					// if the load and store pair up, then elide the load
+					// don't remove the store since it's unknown if it's
+					// used elsewhere.
+					f->nodes.type[j] = TB_PASS;
+					f->nodes.payload[j].pass = i;
+					changes++;
+				} else if (TB_IS_NODE_TERMINATOR(t) || TB_IS_NODE_SIDE_EFFECT(t)) {
+					// Can't read past side effects or terminators, don't
+					// know what might happen
+					break;
+				}
+			}
+		}
 	}
 	
 	return changes;
@@ -86,7 +105,7 @@ bool tb_opt_fold(TB_Function* f) {
 				result = tb_fold_div(dt, ai, bi);
 				break;
 				default: 
-				tb_todo();
+				tb_unreachable();
 			}
 			
 			f->nodes.type[i] = is_signed ? TB_SIGNED_CONST : TB_UNSIGNED_CONST;

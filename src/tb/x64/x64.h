@@ -129,8 +129,11 @@ typedef struct F32Patch {
 
 typedef struct PhiValue {
 	TB_Register reg;
-	TB_Register storage_a;
-	TB_Register storage_b;
+	TB_Register storage_a, storage_b;
+	
+	// if it's not 0, then at termination, we need 
+	// to reload into the 'value'
+	int spill;
 	Val value;
 } PhiValue;
 
@@ -185,6 +188,7 @@ typedef struct Ctx {
 	// Some analysis crap
 	dyn_array(StackSlot) locals;
 	
+	TB_Register* use_count;
 	TB_Register* intervals;
 	PhiValue* phis;
 	ReturnPatch* ret_patches;
@@ -229,6 +233,7 @@ typedef enum Inst2Type {
 typedef enum Inst2FPType {
 	FP_MOV, FP_ADD, FP_SUB, FP_MUL, FP_DIV, FP_CMP,
 	FP_CVT, // cvtss2sd or cvtsd2ss
+	FP_SQRT, FP_RSQRT
 } Inst2FPType;
 
 typedef enum ExtMode {
@@ -453,6 +458,7 @@ static PhiValue* find_phi(Ctx* ctx, TB_Register r);
 static bool is_phi_that_contains(TB_Function* f, TB_Register phi, TB_Register reg);
 
 static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, TB_Register bound, TB_Register bb, TB_Register bb_end);
+static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register start, TB_Register end);
 
 static int get_data_type_size(const TB_DataType dt);
 

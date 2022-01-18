@@ -1,3 +1,4 @@
+#include "../tb_internal.h"
 
 // We just move them up because it's slightly easier to think about them
 bool tb_opt_hoist_locals(TB_Function* f) {

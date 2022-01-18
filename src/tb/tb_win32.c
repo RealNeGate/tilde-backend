@@ -34,12 +34,12 @@ char* tb_platform_string_alloc(const char* str) {
 		string_buffer = tb_platform_valloc(64 << 20);
 	}
 	
-	size_t len = strlen(str) + 1;
-	size_t pos = atomic_fetch_add(&string_head, len);
+	size_t len = strlen(str);
+	size_t pos = atomic_fetch_add(&string_head, len + 1);
 	
 	char* new_str = &string_buffer[pos];
-	strcpy(new_str, str);
-	
+	memcpy(new_str, str, len);
+	new_str[len] = '\0';
 	return new_str;
 }
 

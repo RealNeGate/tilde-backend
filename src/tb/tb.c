@@ -70,7 +70,7 @@ TB_API void tb_function_free(TB_Function* f) {
 }
 
 TB_API TB_DataType tb_vector_type(TB_DataTypeEnum type, int width) {
-	assert(!tb_is_power_of_two(width));
+	assert(tb_is_power_of_two(width));
 	
 	return (TB_DataType) { .type = type, .width = __builtin_ffs(width) - 1 };
 }
@@ -121,16 +121,17 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 
 #define OPT(x) if (tb_opt_ ## x (f)) { \
 /* printf("%s   ", #x); */ \
-/* tb_function_print(f, stdout); */ \
+/* tb_function_print(f, tb_default_print_callback, stdout); */ \
 goto repeat_opt; \
 }
 
 TB_API void tb_function_optimize(TB_Function* f, TB_OptLevel opt) {
 	/*printf("INITIAL   ");
-	tb_function_print(f, stdout);
+	tb_function_print(f, tb_default_print_callback, stdout);
 	printf("\n\n\n");*/
 	
 	repeat_opt: {
+		// Passive optimizations
 		OPT(dead_expr_elim);
 		OPT(remove_pass_node);
 		OPT(canonicalize);
@@ -138,16 +139,16 @@ TB_API void tb_function_optimize(TB_Function* f, TB_OptLevel opt) {
 		OPT(load_elim);
 		OPT(strength_reduction);
 		OPT(hoist_locals);
+		OPT(copy_elision);
 		OPT(mem2reg);
 		OPT(dead_block_elim);
 		OPT(deshort_circuit);
-		OPT(copy_elision);
 		OPT(compact_dead_regs);
 	}
 	
-	/*printf("FINAL   ");
-	tb_function_print(f, stdout);
-	printf("\n\n\n");*/
+	//printf("FINAL   ");
+	//tb_function_print(f, tb_default_print_callback, stdout);
+	//printf("\n\n\n");
 }
 #undef OPT
 
@@ -689,6 +690,9 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
 			tb_print_type(dt, callback, user_data);
 			callback(user_data, " TRUNC r%u\n", p.trunc);
 			break;
+            case TB_RESTRICT:
+			callback(user_data, "  r%u\t=\tRESTRICT r%u\n", i, p.restrict_);
+			break;
 			case TB_MEMSET:
 			callback(user_data, "  MEMSET\t(r%d, r%d, r%d)\n", p.mem_op.dst, p.mem_op.src, p.mem_op.size);
 			break;
@@ -735,6 +739,8 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
             case TB_MUL:
             case TB_UDIV:
             case TB_SDIV:
+            case TB_UMOD:
+            case TB_SMOD:
             case TB_SHL:
             case TB_SHR:
             case TB_SAR:
@@ -751,6 +757,8 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
                 case TB_MUL: callback(user_data, "*"); break;
                 case TB_UDIV: callback(user_data, "/u"); break;
                 case TB_SDIV: callback(user_data, "/s"); break;
+                case TB_UMOD: callback(user_data, "%%u"); break;
+                case TB_SMOD: callback(user_data, "%%s"); break;
 				case TB_SHL: callback(user_data, "<<"); break;
 				case TB_SHR: callback(user_data, ">>"); break;
 				case TB_SAR: callback(user_data, ">>s"); break;
@@ -811,6 +819,16 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
 			callback(user_data, " NOT r%u\n", p.unary);
+			break;
+            case TB_SQRT:
+			callback(user_data, "  r%u\t=\t", i);
+			tb_print_type(dt, callback, user_data);
+			callback(user_data, " SQRT r%u\n", p.unary);
+			break;
+            case TB_RSQRT:
+			callback(user_data, "  r%u\t=\t", i);
+			tb_print_type(dt, callback, user_data);
+			callback(user_data, " RSQRT r%u\n", p.unary);
 			break;
             case TB_LOCAL:
 			callback(user_data, "  r%u\t=\tLOCAL %d (%d align)\n", i, p.local.size, p.local.alignment);

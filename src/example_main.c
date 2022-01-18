@@ -563,6 +563,58 @@ TB_Function* test_entry(TB_Module* m) {
 	return func;
 }
 
+TB_Function* test_float_array_add(TB_Module* m) {
+	TB_FunctionPrototype* p = tb_prototype_create(m, TB_STDCALL, TB_TYPE_VOID, 3, false);
+	tb_prototype_add_params(p, 3, (TB_DataType[]) { TB_TYPE_I64, TB_TYPE_PTR, TB_TYPE_PTR });
+	TB_Function* func = tb_prototype_build(m, p, __FUNCTION__, TB_LINKAGE_PUBLIC);
+	
+	TB_Register count_addr = tb_inst_param_addr(func, 0);
+	TB_Register dst_addr = tb_inst_param_addr(func, 1);
+	TB_Register src_addr = tb_inst_param_addr(func, 2);
+	
+	TB_Register i_addr = tb_inst_local(func, 4, 4);
+	tb_inst_store(func, TB_TYPE_I32, i_addr, tb_inst_sint(func, TB_TYPE_I32, 1) , 4);
+	
+	TB_Label loop_entry = tb_inst_new_label_id(func);
+	TB_Label loop_body = tb_inst_new_label_id(func);
+	TB_Label loop_exit = tb_inst_new_label_id(func);
+	
+	// Loop entry
+	{
+		tb_inst_label(func, loop_entry);
+		TB_Register i_ld = tb_inst_load(func, TB_TYPE_I64, i_addr, 8);
+		TB_Register count_ld = tb_inst_load(func, TB_TYPE_I64, count_addr, 8);
+		tb_inst_if(func, tb_inst_cmp_ilt(func, i_ld, count_ld, false), loop_body, loop_exit);
+	}
+	
+	// Loop body
+	{
+		tb_inst_label(func, loop_body);
+		
+		// dst[i] += src[i]
+		TB_Register dst_ld = tb_inst_restrict(func, tb_inst_load(func, TB_TYPE_PTR, dst_addr, 8));
+		TB_Register src_ld = tb_inst_restrict(func, tb_inst_load(func, TB_TYPE_PTR, src_addr, 8));
+		TB_Register i_ld = tb_inst_load(func, TB_TYPE_I64, i_addr, 8);
+		
+		TB_Register dst_i = tb_inst_array_access(func, dst_ld, i_ld, 4);
+		TB_Register src_i = tb_inst_array_access(func, src_ld, i_ld, 4);
+		TB_Register dst_i_ld = tb_inst_load(func, TB_TYPE_F32, dst_i, 4);
+		TB_Register src_i_ld = tb_inst_load(func, TB_TYPE_F32, src_i, 4);
+		
+		tb_inst_store(func, TB_TYPE_F32, dst_i, tb_inst_fadd(func, dst_i_ld, src_i_ld), 4);
+		
+		// i++
+		i_ld = tb_inst_load(func, TB_TYPE_I64, i_addr, 8);
+		tb_inst_store(func, TB_TYPE_I32, i_addr, tb_inst_add(func, i_ld, tb_inst_uint(func, TB_TYPE_I64, 1), TB_ASSUME_NUW), 8);
+		
+		tb_inst_goto(func, loop_entry);
+	}
+	
+	tb_inst_label(func, loop_exit);
+	tb_inst_ret(func, TB_NULL_REG);
+	return func;
+}
+
 typedef TB_Function*(*TestFunction)(TB_Module* m);
 static const TestFunction test_functions[] = {
 	test_derefs,
@@ -591,7 +643,6 @@ static const TestFunction test_functions[] = {
 	test_fib,
 	test_entry,
 	
-#if 0
 	test_cvt_int_and_floats,
 	test_add_f64,
 	test_cvt_f32f64,
@@ -599,6 +650,9 @@ static const TestFunction test_functions[] = {
 	test_add_f64,
 	test_cvt_f32f64,
 	test_muladd_f32,
+	
+#if 0
+	test_float_array_add,
 #endif
 };
 enum { TEST_FUNCTION_COUNT = sizeof(test_functions) / sizeof(test_functions[0]) };

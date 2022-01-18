@@ -28,10 +28,6 @@ static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const 
 // Just handles the PHI nodes that we'll encounter when leaving `from` into `to`
 static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_Register from_terminator, TB_Register to, TB_Register to_terminator);
 
-static void desugar_dt(TB_DataType* dt) {
-	if (dt->type == TB_BOOL) dt->type = TB_I8;
-}
-
 TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
 	s_local_thread_id = local_thread_id;
 	TB_TemporaryStorage* tls = tb_tls_allocate();
@@ -115,7 +111,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 			is_ctx_heap_allocated = true;
 			ctx = malloc(ctx_size);
 			
-			printf("Could not allocate x64 code gen context: using heap fallback.\n");
+			//printf("Could not allocate x64 code gen context: using heap fallback.\n");
 		}
 		
 		memset(ctx, 0, ctx_size);
@@ -132,6 +128,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 		locals_count += f->prototype->param_count;
 		
 		if (is_ctx_heap_allocated) {
+			ctx->use_count = malloc(f->nodes.count * sizeof(TB_Register));
 			ctx->intervals = malloc(f->nodes.count * sizeof(TB_Register));
 			ctx->phis = malloc(phi_count * sizeof(PhiValue));
 			
@@ -141,6 +138,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 			ctx->label_patches = malloc(label_patch_count * sizeof(LabelPatch));
 			ctx->ret_patches = malloc(return_count * sizeof(ReturnPatch));
 		} else {
+			ctx->use_count = tb_tls_push(tls, f->nodes.count * sizeof(TB_Register));
 			ctx->intervals = tb_tls_push(tls, f->nodes.count * sizeof(TB_Register));
 			ctx->phis = tb_tls_push(tls, phi_count * sizeof(PhiValue));
 			
@@ -163,6 +161,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 	// called the shadow space.
 	if (!ctx->is_sysv && caller_usage > 0 && caller_usage < 4) caller_usage = 4;
 	
+	tb_find_use_count(f, ctx->use_count);
 	tb_find_live_intervals(f, ctx->intervals);
 	
 	// Create phi lookup table for later evaluation stages
@@ -272,6 +271,11 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 		//const TB_DataType dt = f->nodes.dt[bb_end];
 		const TB_RegPayload p = f->nodes.payload[bb_end];
 		
+		// Resolve any leftover expressions which are used later
+		TB_Register next_label = bb_end + (reg_type == TB_LABEL ? 0 : 1);
+		eval_compiler_fence(ctx, f, ctx->last_fence, next_label);
+		ctx->last_fence = next_label;
+		
 		if (reg_type == TB_RET) {
 			// Evaluate return value
 			if (p.ret.value) {
@@ -341,6 +345,8 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 				if (dst != f->nodes.payload[bb_end + 1].label.id) jmp(ctx, dst);
 			} else {
 				// Implicit convert into FLAGS
+				if (cond.dt.type == TB_BOOL) cond.dt.type = TB_I8;
+				
 				if (cond.type == VAL_GPR) {
 					inst2(ctx, TEST, &cond, &cond, cond.dt.type);
 					cond = val_flags(NE);
@@ -403,8 +409,18 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 			tb_todo();
 		}
 		
+		// Kill any stack slots and registers which aren't used 
+		// beyond this basic block
+		loop_range(i, bb, bb_end) if (ctx->intervals[i] <= bb_end) {
+			loop(j, arrlen(ctx->locals)) if (ctx->locals[j].reg == i) {
+				printf("kill r%d\n", i);
+				arrdelswap(ctx->locals, j);
+				break;
+			}
+		}
+		
 		// Next Basic block
-		bb = bb_end + ((reg_type == TB_LABEL) ? 0 : 1);
+		bb = next_label;
 	} while (bb < f->nodes.count);
 	
 	// Align stack usage to 16bytes and add 8 bytes for the return address
@@ -443,6 +459,7 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 	arrfree(ctx->locals);
 	
 	if (is_ctx_heap_allocated) {
+		free(ctx->use_count);
 		free(ctx->intervals);
 		free(ctx->phis);
 		
@@ -456,71 +473,129 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 	return func_out;
 }
 
-static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, TB_Register bb_end) {
-	ctx->current_bb = bb;
-	ctx->current_bb_end = bb_end;
-	
-	// Evaluate all side effect instructions
-	for (size_t r = bb + 1; r < bb_end; r++) {
-		TB_RegTypeEnum reg_type = f->nodes.type[r];
-		if (!TB_IS_NODE_SIDE_EFFECT(reg_type)) continue;
-		
-		// If there's any non-side effect instructions which happen before a 
-		// fence/side-effect instruction but are used afterwards, they're evaluated
-		// before the fence. Also post-pone their death... eheh
-		for (size_t j = ctx->last_fence; j < r; j++) {
-			if (ctx->intervals[j] > r) {
-				if (f->nodes.type[j] == TB_PARAM) {
+// If there's any non-side effect instructions which happen before a 
+// fence/side-effect instruction but are used afterwards, they're evaluated
+// before the fence.
+static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register start, TB_Register end) {
+	for (size_t j = start; j < end; j++) {
+		if (ctx->use_count[j] > 1 &&
+			f->nodes.type[j] != TB_PARAM &&
+			f->nodes.type[j] != TB_SIGNED_CONST &&
+			f->nodes.type[j] != TB_UNSIGNED_CONST) {
+			/* nothing for now */
+			TB_DataType dt = f->nodes.dt[j];
+			
+			Val src = val_rvalue(ctx, f, eval(ctx, f, j, 0), j);
+			if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
+				// Spill into new slot
+				Val dst;
+				if (src.is_owned && src.type == VAL_XMM) {
+					dst = src;
+				} else {
+					dst = alloc_xmm(ctx, f, dt);
+					
+					uint8_t flags = 0;
+					flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+					flags |= (dt.width) ? INST2FP_PACKED : 0;
+					inst2sse(ctx, FP_MOV, &dst, &src, flags);
+					
+					free_val(ctx, f, src);
+				}
+				
+				StackSlot slot = {
+					.reg = j, .pos = 0,
+					.gpr = GPR_NONE, .xmm = dst.xmm
+				};
+				arrput(ctx->locals, slot);
+				printf("%s: r%zu is shared in XMM%d.\n", f->name, j, dst.xmm);
+			} else {
+				Val dst;
+				if (src.is_owned && src.type == VAL_GPR) {
+					dst = src;
+				} else {
+					dst = alloc_gpr(ctx, f, dt.type, 0);
+					inst2(ctx, MOV, &dst, &src, dt.type);
+					free_val(ctx, f, src);
+				}
+				
+				StackSlot slot = {
+					.reg = j, .pos = 0,
+					.gpr = dst.gpr, .xmm = XMM_NONE
+				};
+				arrput(ctx->locals, slot);
+				printf("%s: r%zu is shared in GPR%d.\n", f->name, j, dst.gpr);
+			}
+		} else if (ctx->intervals[j] > end) {
+			if (f->nodes.type[j] == TB_PARAM) {
+				if (TB_IS_NODE_TERMINATOR(f->nodes.type[end]) && f->nodes.type[end] != TB_RET) {
 					spill_stack_slot(ctx, f, &ctx->locals[j - TB_FIRST_PARAMETER_REG]);
-				} else if (f->nodes.type[j] == TB_CALL ||
-						   f->nodes.type[j] == TB_ECALL ||
-						   f->nodes.type[j] == TB_VCALL) {
-					TB_DataType dt = f->nodes.dt[j];
-					
-					// NOTE(NeGate): These generally generate their own stack slot reservations
-					// so just append to it.
-					StackSlot* slot = NULL;
-					loop(l, arrlen(ctx->locals)) if (ctx->locals[l].reg == j) {
-						slot = &ctx->locals[l];
-						break;
-					}
-					assert(slot);
-					
-					if (slot->pos == 0) {
-						int size = get_data_type_size(dt);
-						ctx->stack_usage = align_up(ctx->stack_usage + size, size);
-						
-						slot->pos = -ctx->stack_usage;
-					}
-					
-					spill_stack_slot(ctx, f, slot);
-				} else if (f->nodes.type[j] != TB_LOCAL &&
-						   f->nodes.type[j] != TB_PARAM_ADDR &&
-						   f->nodes.type[j] != TB_SIGNED_CONST &&
-						   f->nodes.type[j] != TB_UNSIGNED_CONST &&
-						   f->nodes.type[j] != TB_FLOAT_CONST &&
-						   f->nodes.type[j] != TB_STRING_CONST) {
-					TB_DataType dt = f->nodes.dt[j];
-					
-					// TODO(NeGate): Implement saving to registers when enough are
-					// available
-					//
-					// Allocate space in stack
+				}
+			} else if (f->nodes.type[j] == TB_CALL ||
+					   f->nodes.type[j] == TB_ECALL ||
+					   f->nodes.type[j] == TB_VCALL) {
+				TB_DataType dt = f->nodes.dt[j];
+				
+				// NOTE(NeGate): These generally generate their own stack slot reservations
+				// so just append to it.
+				StackSlot* slot = NULL;
+				loop(l, arrlen(ctx->locals)) if (ctx->locals[l].reg == j) {
+					slot = &ctx->locals[l];
+					break;
+				}
+				assert(slot);
+				
+				if (slot->pos == 0) {
 					int size = get_data_type_size(dt);
 					ctx->stack_usage = align_up(ctx->stack_usage + size, size);
 					
-					// Setup cache
-					StackSlot slot = { 
-						.reg = j, .pos = -ctx->stack_usage,
-						.gpr = GPR_NONE, .xmm = XMM_NONE
-					};
+					slot->pos = -ctx->stack_usage;
+				}
+				
+				spill_stack_slot(ctx, f, slot);
+			} else if (f->nodes.type[j] != TB_LOCAL &&
+					   f->nodes.type[j] != TB_LABEL &&
+					   f->nodes.type[j] != TB_PARAM_ADDR &&
+					   f->nodes.type[j] != TB_SIGNED_CONST &&
+					   f->nodes.type[j] != TB_UNSIGNED_CONST &&
+					   f->nodes.type[j] != TB_FLOAT_CONST &&
+					   f->nodes.type[j] != TB_STRING_CONST) {
+				TB_DataType dt = f->nodes.dt[j];
+				
+				// TODO(NeGate): Implement saving to registers when enough are
+				// available
+				//
+				// Allocate space in stack
+				int size = get_data_type_size(dt);
+				ctx->stack_usage = align_up(ctx->stack_usage + size, size);
+				
+				// Setup cache
+				StackSlot slot = { 
+					.reg = j, .pos = -ctx->stack_usage,
+					.gpr = GPR_NONE, .xmm = XMM_NONE
+				};
+				
+				// Spill into new slot
+				Val dst = val_stack(dt, slot.pos);
+				Val src = val_rvalue(ctx, f, eval(ctx, f, j, 0), j);
+				
+				if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
+					uint8_t flags = 0;
+					flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+					flags |= (dt.width) ? INST2FP_PACKED : 0;
 					
-					// Spill into new slot
-					Val dst = val_stack(dt, slot.pos);
-					Val src = val_rvalue(ctx, f, eval(ctx, f, j, 0), j);
-					
+					if (!is_value_mem(&src)) {
+						inst2sse(ctx, FP_MOV, &dst, &src, flags);
+					} else {
+						Val tmp = alloc_xmm(ctx, f, dt);
+						
+						inst2sse(ctx, FP_MOV, &tmp, &src, flags);
+						inst2sse(ctx, FP_MOV, &dst, &tmp, flags);
+						
+						free_val(ctx, f, tmp);
+					}
+				} else {
 					// TODO(NeGate): Implement XMM-based movs
-					if (is_value_mem(&dst) && is_value_mem(&src)) {
+					if (is_value_mem(&src)) {
 						Val tmp = alloc_gpr(ctx, f, dt.type, 0);
 						
 						inst2(ctx, MOV, &tmp, &src, dt.type);
@@ -530,13 +605,26 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					} else {
 						inst2(ctx, MOV, &dst, &src, dt.type);
 					}
-					free_val(ctx, f, src);
-					
-					arrput(ctx->locals, slot);
-					printf("%s: spilled value r%zu because of barrier at r%zu\n", f->name, j, r);
 				}
+				
+				free_val(ctx, f, src);
+				arrput(ctx->locals, slot);
+				printf("%s: spilled value r%zu because of barrier at r%d\n", f->name, j, end);
 			}
 		}
+	}
+}
+
+static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, TB_Register bb_end) {
+	ctx->current_bb = bb;
+	ctx->current_bb_end = bb_end;
+	
+	// Evaluate all side effect instructions
+	for (size_t r = bb + 1; r < bb_end; r++) {
+		TB_RegTypeEnum reg_type = f->nodes.type[r];
+		if (!TB_IS_NODE_SIDE_EFFECT(reg_type)) continue;
+		
+		eval_compiler_fence(ctx, f, ctx->last_fence, r);
 		
 		TB_DataType dt = f->nodes.dt[r];
 		TB_RegPayload* restrict p = &f->nodes.payload[r];
@@ -554,6 +642,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 				Val address = val_addressof(ctx, f, eval(ctx, f, addr_reg, r));
 				
 				store_into(ctx, f, dt, &address, r, addr_reg, val_reg);
+				
+				free_val(ctx, f, address);
 				break;
 			}
 			
@@ -657,6 +747,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 							}
 						}
 					}
+					
+					free_val(ctx, f, param);
 				}
 				
 				// CALL instruction and patch
@@ -691,6 +783,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					
 					// call r/m64
 					inst1(ctx, CALL_RM, &target);
+					
+					free_val(ctx, f, target);
 				}
 				
 				ctx->gpr_allocator = before_gpr_reserves;
@@ -730,8 +824,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					if (!is_value_gpr(&param, RDI)) {
 						Val dst = val_gpr(TB_PTR, RDI);
 						inst2(ctx, MOV, &dst, &param, TB_PTR);
-						free_val(ctx, f, param);
 					}
+					free_val(ctx, f, param);
 					ctx->gpr_allocator |= (1u << RDI);
 				}
 				
@@ -740,8 +834,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					if (!is_value_gpr(&param, RAX)) {
 						Val dst = val_gpr(TB_PTR, RAX);
 						inst2(ctx, MOV, &dst, &param, TB_PTR);
-						free_val(ctx, f, param);
 					}
+					free_val(ctx, f, param);
 					ctx->gpr_allocator |= (1u << RAX);
 				}
 				
@@ -750,8 +844,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					if (!is_value_gpr(&param, RCX)) {
 						Val dst = val_gpr(TB_PTR, RCX);
 						inst2(ctx, MOV, &dst, &param, TB_PTR);
-						free_val(ctx, f, param);
 					}
+					free_val(ctx, f, param);
 					ctx->gpr_allocator |= (1u << RCX);
 				}
 				
@@ -763,6 +857,58 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 				ctx->gpr_allocator &= ~(1u << RAX);
 				ctx->gpr_allocator &= ~(1u << RCX);
 				ctx->gpr_allocator &= ~(1u << RDI);
+				break;
+			}
+			
+			case TB_MEMCPY: {
+				TB_Register dst_reg = p->mem_op.dst;
+				TB_Register src_reg = p->mem_op.src;
+				TB_Register size_reg = p->mem_op.size;
+				
+				// TODO(NeGate): Implement vector memset
+				// rep movsb, ol' reliable
+				assert(evict_gpr(ctx, f, RCX));
+				assert(evict_gpr(ctx, f, RSI));
+				assert(evict_gpr(ctx, f, RDI));
+				
+				{
+					Val param = val_rvalue(ctx, f, eval(ctx, f, dst_reg, r), dst_reg);
+					if (!is_value_gpr(&param, RDI)) {
+						Val dst = val_gpr(TB_PTR, RDI);
+						inst2(ctx, MOV, &dst, &param, TB_PTR);
+					}
+					free_val(ctx, f, param);
+					ctx->gpr_allocator |= (1u << RDI);
+				}
+				
+				{
+					Val param = val_rvalue(ctx, f, eval(ctx, f, src_reg, r), src_reg);
+					if (!is_value_gpr(&param, RSI)) {
+						Val dst = val_gpr(TB_PTR, RSI);
+						inst2(ctx, MOV, &dst, &param, TB_PTR);
+					}
+					free_val(ctx, f, param);
+					ctx->gpr_allocator |= (1u << RSI);
+				}
+				
+				{
+					Val param = val_rvalue(ctx, f, eval(ctx, f, size_reg, r), size_reg);
+					if (!is_value_gpr(&param, RCX)) {
+						Val dst = val_gpr(TB_PTR, RCX);
+						inst2(ctx, MOV, &dst, &param, TB_PTR);
+					}
+					free_val(ctx, f, param);
+					ctx->gpr_allocator |= (1u << RCX);
+				}
+				
+				// rep movsb
+				emit(0xF3);
+				emit(0xA4);
+				
+				// free up stuff
+				ctx->gpr_allocator &= ~(1u << RSI);
+				ctx->gpr_allocator &= ~(1u << RDI);
+				ctx->gpr_allocator &= ~(1u << RCX);
 				break;
 			}
 			
@@ -831,29 +977,30 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 }
 
 static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const Val* dst, TB_Register r, TB_Register dst_reg, TB_Register val_reg) {
-	desugar_dt(&dt);
+	if (dt.type == TB_BOOL) dt.type = TB_I8;
 	
 	if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
-		assert(0 && "TODO: allow storing XMM-based values");
-		/*Val value = val_rvalue(ctx, f, val_reg);
-
-// if they match and it's just a MOV, don't do it
-if (is_value_match(dst, &value)) return;
-
-uint8_t flags = 0;
-flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
-flags |= (dt.width) ? INST2FP_PACKED : 0;
-
-if (!is_value_mem(&value)) {
-	inst2sse(ctx, FP_MOV, dst, &value, flags);
-} else {
-	Val tmp = def_new_xmm(ctx, f, r, dt);
-	
-	inst2sse(ctx, FP_MOV, &tmp, &value, flags);
-	inst2sse(ctx, FP_MOV, dst, &tmp, flags);
-	
-	kill(ctx, f, r);
-}*/
+		Val value = val_rvalue(ctx, f, eval(ctx, f, val_reg, r), val_reg);
+		
+		// if they match and it's just a MOV, don't do it
+		if (is_value_match(dst, &value)) return;
+		
+		uint8_t flags = 0;
+		flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+		flags |= (dt.width) ? INST2FP_PACKED : 0;
+		
+		if (!is_value_mem(&value)) {
+			inst2sse(ctx, FP_MOV, dst, &value, flags);
+		} else {
+			Val tmp = alloc_xmm(ctx, f, dt);
+			
+			inst2sse(ctx, FP_MOV, &tmp, &value, flags);
+			inst2sse(ctx, FP_MOV, dst, &tmp, flags);
+			
+			free_val(ctx, f, tmp);
+		}
+		
+		free_val(ctx, f, value);
 	} else {
 		int op = MOV;
 		
@@ -904,6 +1051,8 @@ if (!is_value_mem(&value)) {
 			
 			free_val(ctx, f, tmp);
 		}
+		
+		free_val(ctx, f, value);
 	}
 }
 
@@ -911,55 +1060,96 @@ static bool evict_gpr(Ctx* restrict ctx, TB_Function* f, GPR g) {
 	if ((ctx->gpr_allocator & (1u << g)) == 0) return true;
 	
 	// find the stack slot that maps to this GPR
-	StackSlot* slot = NULL;
 	loop(i, arrlen(ctx->locals)) if (ctx->locals[i].gpr == g) {
-		slot = &ctx->locals[i];
-		break;
-	}
-	
-	if (!slot) return false;
-	
-	//printf("evict notice: %s\n", GPR_NAMES[g]);
-	ctx->gpr_allocator &= ~(1u << g);
-	
-	// if it has no spill location we automatically give it one
-	TB_DataType dt = f->nodes.dt[slot->reg];
-	if (slot->pos == 0) {
-		int size = get_data_type_size(dt);
-		ctx->stack_usage = align_up(ctx->stack_usage + size, size);
+		StackSlot* slot = &ctx->locals[i];
+		ctx->gpr_allocator &= ~(1u << g);
 		
-		slot->pos = -ctx->stack_usage;
+		// if it has no spill location we automatically give it one
+		TB_DataType dt = f->nodes.dt[slot->reg];
+		if (slot->pos == 0) {
+			int size = get_data_type_size(dt);
+			ctx->stack_usage = align_up(ctx->stack_usage + size, size);
+			
+			slot->pos = -ctx->stack_usage;
+		}
+		
+		spill_stack_slot(ctx, f, slot);
+		return true;
 	}
 	
-	spill_stack_slot(ctx, f, slot);
-	return true;
+	loop(i, ctx->phi_count) {
+		PhiValue* restrict phi = &ctx->phis[i];
+		if (phi->value.type == VAL_GPR && phi->value.gpr == g) {
+			TB_DataType dt = f->nodes.dt[phi->reg];
+			
+			ctx->gpr_allocator &= ~(1u << phi->value.gpr);
+			
+			if (phi->spill == 0) {
+				int size = get_data_type_size(dt);
+				ctx->stack_usage = align_up(ctx->stack_usage + size, size);
+				
+				phi->spill = -ctx->stack_usage;
+			}
+			
+			Val dst = val_stack(dt, phi->spill);
+			Val src = val_gpr(dt.type, phi->value.gpr);
+			inst2(ctx, MOV, &dst, &src, dt.type);
+			return true;
+		}
+	}
+	
+	return false;
 }
 
 static bool evict_xmm(Ctx* restrict ctx, TB_Function* f, XMM x) {
 	if ((ctx->xmm_allocator & (1u << x)) == 0) return true;
 	
-	// find the stack slot that maps to this GPR
-	StackSlot* slot = NULL;
+	// find the stack slot that maps to this XMM
 	loop(i, arrlen(ctx->locals)) if (ctx->locals[i].xmm == x) {
-		slot = &ctx->locals[i];
-		break;
-	}
-	
-	if (!slot) return false;
-	
-	ctx->xmm_allocator &= ~(1u << x);
-	
-	// if it has no spill location we automatically give it one
-	TB_DataType dt = f->nodes.dt[slot->reg];
-	if (slot->pos == 0) {
-		int size = get_data_type_size(dt);
-		ctx->stack_usage = align_up(ctx->stack_usage + size, size);
+		StackSlot* slot = &ctx->locals[i];
 		
-		slot->pos = -ctx->stack_usage;
+		ctx->xmm_allocator &= ~(1u << x);
+		
+		// if it has no spill location we automatically give it one
+		TB_DataType dt = f->nodes.dt[slot->reg];
+		if (slot->pos == 0) {
+			int size = get_data_type_size(dt);
+			ctx->stack_usage = align_up(ctx->stack_usage + size, size);
+			
+			slot->pos = -ctx->stack_usage;
+		}
+		
+		spill_stack_slot(ctx, f, slot);
+		return true;
 	}
 	
-	spill_stack_slot(ctx, f, slot);
-	return true;
+	loop(i, ctx->phi_count) {
+		PhiValue* restrict phi = &ctx->phis[i];
+		
+		if (phi->value.type == VAL_XMM && phi->value.xmm == x) {
+			TB_DataType dt = f->nodes.dt[phi->reg];
+			
+			ctx->xmm_allocator &= ~(1u << phi->value.xmm);
+			
+			if (phi->spill == 0) {
+				int size = get_data_type_size(dt);
+				ctx->stack_usage = align_up(ctx->stack_usage + size, size);
+				
+				phi->spill = -ctx->stack_usage;
+			}
+			
+			uint8_t flags = 0;
+			flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+			flags |= (dt.width) ? INST2FP_PACKED : 0;
+			
+			Val dst = val_stack(dt, phi->spill);
+			Val src = val_xmm(dt, phi->value.xmm);
+			inst2sse(ctx, FP_MOV, &dst, &src, flags);
+			return true;
+		}
+	}
+	
+	return false;
 }
 
 static bool is_address_node(TB_RegType t) {
@@ -975,7 +1165,7 @@ static bool is_address_node(TB_RegType t) {
 }
 
 static int get_data_type_size(const TB_DataType dt) {
-	assert(dt.width < 8 && "Vector width too big!");
+	assert(dt.width <= 2 && "Vector width too big!");
 	
 	switch (dt.type) {
 		case TB_VOID:
@@ -991,7 +1181,7 @@ static int get_data_type_size(const TB_DataType dt) {
 		return 8 << dt.width;
 		case TB_PTR:
 		return 8;
-		default: tb_todo();
+		default: tb_unreachable();
 	}
 }
 
@@ -1052,6 +1242,21 @@ static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_
 		else tb_unreachable();
 		
 		PhiValue* phi = find_phi(ctx, r);
+		if (phi->spill) {
+			Val src = val_stack(dt, phi->spill);
+			
+			if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
+				uint8_t flags = 0;
+				flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+				flags |= (dt.width) ? INST2FP_PACKED : 0;
+				
+				inst2sse(ctx, FP_MOV, &phi->value, &src, flags);
+			} else {
+				inst2(ctx, MOV, &phi->value, &src, dt.type);
+			}
+			phi->spill = 0;
+		}
+		
 		if (phi->value.type == VAL_NONE) {
 			// Initialize it
 			Val src_value = val_rvalue(ctx, f, eval(ctx, f, src, r), src);

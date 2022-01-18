@@ -1,5 +1,6 @@
 // Based on "Simple and Efficient SSA Construction":
 // https://pp.info.uni-karlsruhe.de/uploads/publikationen/braun13cc.pdf
+#include "../tb_internal.h"
 
 static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_DataType* dt);
 

@@ -1,3 +1,4 @@
+#include "../tb_internal.h"
 
 bool tb_opt_compact_dead_regs(TB_Function* f) {
 	// Shift the dead regs out
@@ -98,6 +99,15 @@ bool tb_opt_canonicalize(TB_Function* f) {
 				f->nodes.payload[a].i_arith.a = y;
 				f->nodes.payload[a].i_arith.b = z;
 				changes++;*/
+			}
+		} else if (type == TB_MEMBER_ACCESS) {
+			TB_Register base = f->nodes.payload[i].member_access.base;
+			int32_t offset = f->nodes.payload[i].member_access.offset;
+			
+			if (offset == 0) {
+				f->nodes.type[i] = TB_PASS;
+				f->nodes.payload[i].pass = base;
+				changes++;
 			}
 		} else if (type == TB_ARRAY_ACCESS) {
 			TB_Register base = f->nodes.payload[i].array_access.base;

@@ -1,5 +1,6 @@
+#include "../tb_internal.h"
 
-	TB_API bool tb_opt_copy_elision(TB_Function* f) {
+TB_API bool tb_opt_copy_elision(TB_Function* f) {
 	int changes = 0;
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	

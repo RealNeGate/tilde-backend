@@ -79,6 +79,7 @@ typedef union TB_RegPayload {
 	TB_Register ext;
 	TB_Register trunc;
 	TB_Register ptrcast;
+	TB_Register restrict_;
 	const TB_Function* func_addr;
 	TB_ExternalID efunc_addr;
 	TB_GlobalID global_addr;
@@ -468,7 +469,7 @@ b = temp; \
 } while(0)
 
 #ifndef NDEBUG
-#define tb_todo() __builtin_trap()
+#define tb_todo() assert(0 && "TODO")
 #define tb_unreachable() __builtin_trap()
 #else
 #define tb_todo() __builtin_unreachable()
@@ -524,9 +525,9 @@ void tb_out2b(TB_Emitter* o, uint16_t i);
 void tb_out4b(TB_Emitter* o, uint32_t i);
 void tb_out8b(TB_Emitter* o, uint64_t i);
 
-//
+////////////////////////////////
 // IR ANALYSIS
-//
+////////////////////////////////
 TB_Register tb_find_reg_from_label(TB_Function* f, TB_Label id);
 TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t start, size_t end);
 void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Register replace);
@@ -541,9 +542,9 @@ inline static void tb_kill_op(TB_Function* f, TB_Register at) {
 	f->nodes.payload[at] = (TB_RegPayload){ 0 };
 }
 
-//
+////////////////////////////////
 // HELPER FUNCTIONS
-//
+////////////////////////////////
 #define TB_LIKELY(x)      __builtin_expect(!!(x), 1)
 #define TB_UNLIKELY(x)    __builtin_expect(!!(x), 0)
 

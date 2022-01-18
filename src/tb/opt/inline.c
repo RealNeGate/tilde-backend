@@ -1,3 +1,4 @@
+#include "../tb_internal.h"
 
 static int tb_estimate_expr_pressure(const TB_Function* f, TB_Register i) {
 	switch (f->nodes.type[i]) {
@@ -45,7 +46,7 @@ static int tb_estimate_expr_pressure(const TB_Function* f, TB_Register i) {
 			else if (a > b) return a;
 			else return b;
 		}
-		default: tb_todo();
+		default: tb_unreachable();
 	}
 }
 

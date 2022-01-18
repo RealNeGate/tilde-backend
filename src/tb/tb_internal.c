@@ -107,6 +107,9 @@ break; \
 case TB_KEEPALIVE: \
 X(p->keepalive); \
 break; \
+case TB_RESTRICT: \
+X(p->restrict_); \
+break; \
 case TB_ATOMIC_XCHG: \
 case TB_ATOMIC_ADD: \
 case TB_ATOMIC_SUB: \
@@ -183,6 +186,8 @@ X(p->i_arith.b); \
 break; \
 case TB_NOT: \
 case TB_NEG: \
+case TB_SQRT: \
+case TB_RSQRT: \
 X(p->unary); \
 break; \
 case TB_FADD: \
@@ -424,6 +429,8 @@ TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params, TB_Reg
 			break;
 			case TB_CALL:
 			case TB_ICALL:
+			case TB_ECALL:
+			case TB_VCALL:
 			for (size_t j = p->call.param_start; j < p->call.param_end; j++) {
 				ffu(f->vla.data[j]);
 			}

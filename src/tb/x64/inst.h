@@ -182,17 +182,9 @@ inline static void inst2sse(Ctx* ctx, Inst2FPType op, const Val* a, const Val* b
 		[FP_DIV] = 0x5E,
 		[FP_CMP] = 0xC2,
 		[FP_CVT] = 0x5A,
+		[FP_SQRT] = 0x51,
+		[FP_RSQRT] = 0x52,
 	};
-	
-	if ((flags & INST2FP_PACKED) == 0) {
-		emit(flags & INST2FP_DOUBLE ? 0xF2 : 0xF3);
-	} else if (flags & INST2FP_DOUBLE) {
-		// packed double
-		emit(0x66);
-	}
-	
-	// extension prefix
-	emit(0x0F);
 	
 	// most SSE instructions (that aren't mov__) are mem src only
 	bool supports_mem_dst = (op == FP_MOV);
@@ -218,6 +210,16 @@ inline static void inst2sse(Ctx* ctx, Inst2FPType op, const Val* a, const Val* b
 	if (rx >= 8 || base >= 8 || index >= 8) {
 		emit(rex(false, rx, base, index));
 	}
+	
+	if ((flags & INST2FP_PACKED) == 0) {
+		emit(flags & INST2FP_DOUBLE ? 0xF2 : 0xF3);
+	} else if (flags & INST2FP_DOUBLE) {
+		// packed double
+		emit(0x66);
+	}
+	
+	// extension prefix
+	emit(0x0F);
 	
 	emit(OPCODES[op] + (supports_mem_dst ? dir : 0));
 	emit_memory_operand(ctx, rx, b);

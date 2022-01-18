@@ -169,7 +169,11 @@ uint64_t tb_fold_div(TB_DataType dt, uint64_t a, uint64_t b) {
 }
 
 static TB_Register tb_bin_arith(TB_Function* f, int type, TB_ArithmaticBehavior arith_behavior, TB_Register a, TB_Register b) {
-	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	//assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	if (!TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b])) {
+		tb_function_print(f, tb_default_print_callback, stderr);
+		abort();
+	}
 	
 	TB_Register r = tb_make_reg(f, type, f->nodes.dt[a]);
 	f->nodes.payload[r].i_arith.arith_behavior = arith_behavior;
@@ -291,6 +295,12 @@ TB_API TB_Register tb_inst_local(TB_Function* f, uint32_t size, TB_CharUnits ali
 	return r;
 }
 
+TB_API TB_Register tb_inst_restrict(TB_Function* f, TB_Register value) {
+	TB_Register r = tb_make_reg(f, TB_RESTRICT, TB_TYPE_PTR);
+	f->nodes.payload[r].restrict_ = value;
+	return r;
+}
+
 TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr, TB_CharUnits alignment) {
 	assert(f->current_label);
 	
@@ -345,7 +355,7 @@ TB_API TB_Register tb_inst_ptr(TB_Function* f, uint64_t imm) {
 }
 
 TB_API TB_Register tb_inst_uint(TB_Function* f, TB_DataType dt, uint64_t imm) {
-	assert(dt.type >= TB_I8 && dt.type <= TB_I64);
+	assert(dt.type == TB_BOOL || dt.type == TB_PTR || (dt.type >= TB_I8 && dt.type <= TB_I64));
 	
 	TB_Register r = tb_make_reg(f, TB_UNSIGNED_CONST, dt);
 	f->nodes.payload[r].u_const = imm;
@@ -699,6 +709,22 @@ TB_API TB_Register tb_inst_fmul(TB_Function* f, TB_Register a, TB_Register b) {
 
 TB_API TB_Register tb_inst_fdiv(TB_Function* f, TB_Register a, TB_Register b) {
 	return tb_bin_farith(f, TB_FDIV, a, b);
+}
+
+TB_API TB_Register tb_inst_sqrt(TB_Function* f, TB_Register a) {
+	TB_DataType dt = f->nodes.dt[a];
+	
+	TB_Register r = tb_make_reg(f, TB_SQRT, dt);
+	f->nodes.payload[r].unary = a;
+	return r;
+}
+
+TB_API TB_Register tb_inst_rsqrt(TB_Function* f, TB_Register a) {
+	TB_DataType dt = f->nodes.dt[a];
+	
+	TB_Register r = tb_make_reg(f, TB_RSQRT, dt);
+	f->nodes.payload[r].unary = a;
+	return r;
 }
 
 TB_API TB_Register tb_inst_cmp_eq(TB_Function* f, TB_Register a, TB_Register b) {

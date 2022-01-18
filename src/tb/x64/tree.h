@@ -64,6 +64,8 @@ static TreeNodeIndex gen_tree(Ctx* restrict ctx, TB_Function* f, TB_Register r) 
 		
 		case TB_NEG:
 		case TB_NOT:
+		case TB_SQRT:
+		case TB_RSQRT:
 		return push_unary(ctx, r, gen_tree(ctx, f, p->unary));
 		
 		case TB_FADD:
@@ -119,25 +121,23 @@ static Val spill_stack_slot(Ctx* restrict ctx, TB_Function* f, StackSlot* restri
 	
 	Val dst = val_stack(dt, slot->pos);
 	if (slot->gpr != GPR_NONE) {
+		// desugar booleans
+		if (dt.type == TB_BOOL) dt.type = TB_I8;
+		
 		Val src = val_gpr(TB_I64, slot->gpr);
 		
 		// don't keep reference to GPR, we'll be using the
 		// memory version only
 		ctx->gpr_allocator &= ~(1u << slot->gpr);
 		
-		// save the shadow space into the stack
 		inst2(ctx, MOV, &dst, &src, dt.type);
 		
 		slot->gpr = GPR_NONE;
 	} else if (slot->xmm != XMM_NONE) {
-		// the parameters map to XMM0-XMM3
 		Val src = val_xmm(dt, slot->xmm);
 		
-		// don't keep reference to XMM, we'll be using the memory
-		// version only
 		ctx->xmm_allocator &= ~(1u << slot->xmm);
 		
-		// save the shadow space into the stack
 		uint8_t flags = 0;
 		flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
 		flags |= (dt.width) ? INST2FP_PACKED : 0;
@@ -200,6 +200,33 @@ static Val alloc_gpr(Ctx* restrict ctx, TB_Function* f, int dt_type, TreeNodeInd
 	};
 }
 
+static Val alloc_xmm(Ctx* restrict ctx, TB_Function* f, TB_DataType dt) {
+	if (ctx->xmm_allocator == 0xFFFF) {
+		// Start by trying to spill any locals until we've freed enough
+		bool success = false;
+		loop(i, arrlen(ctx->locals)) if (ctx->locals[i].xmm != XMM_NONE) {
+			spill_stack_slot(ctx, f, &ctx->locals[i]);
+			success = true;
+			break;
+		}
+		
+		tb_panic(success, "Failed to allocate a XMM");
+	}
+	
+	int search = __builtin_ffs(~ctx->xmm_allocator);
+	
+	XMM xmm = (XMM)(search-1);
+	ctx->xmm_allocator |= (1u << xmm);
+	printf("Alloc XMM%d\n", xmm);
+	
+	return (Val) {
+		.type = VAL_XMM,
+		.is_owned = true,
+		.dt = dt,
+		.xmm = xmm
+	};
+}
+
 static void free_val(Ctx* restrict ctx, TB_Function* f, Val v) {
 	if (!v.is_owned) return;
 	
@@ -207,6 +234,7 @@ static void free_val(Ctx* restrict ctx, TB_Function* f, Val v) {
 		ctx->gpr_allocator &= ~(1u << v.gpr);
 	} else if (v.type == VAL_XMM) {
 		ctx->xmm_allocator &= ~(1u << v.xmm);
+		printf("Free XMM%d\n", v.xmm);
 	} else if (v.type == VAL_MEM) {
 		if (v.mem.base != RSP && v.mem.base != RBP) {
 			ctx->gpr_allocator &= ~(1u << v.mem.base);
@@ -216,6 +244,48 @@ static void free_val(Ctx* restrict ctx, TB_Function* f, Val v) {
 			ctx->gpr_allocator &= ~(1u << v.mem.index);
 		}
 	}
+}
+
+static Val gen_float_const(Ctx* ctx, TB_Function* f, double float_value, TB_DataType dt) {
+	// Unlike integers, there's no float immediates
+	Val v = alloc_xmm(ctx, f, dt);
+	XMM dst_xmm = v.xmm;
+	
+	assert(TB_IS_FLOAT_TYPE(dt.type) && dt.width == 0);
+	uint64_t imm = (Cvt_F64U64){ .f = float_value }.i;
+	
+	if (imm == 0) {
+		if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
+		emit(0x0F);
+		emit(0x57);
+		emit(mod_rx_rm(MOD_DIRECT, dst_xmm, dst_xmm));
+	} else {
+		// Convert it to raw bits
+		if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
+		emit(dt.type == TB_F64 ? 0xF2 : 0xF3);
+		emit(0x0F);
+		emit(0x10);
+		emit(((dst_xmm & 7) << 3) | RBP);
+		
+		uint32_t disp;
+		if (dt.type == TB_F64) {
+			uint64_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint64_t));
+			*rdata_payload = imm;
+			
+			disp = tb_emit_const_patch(f->module, ctx->function_id, code_pos(), rdata_payload, sizeof(uint64_t), s_local_thread_id);
+		} else {
+			uint32_t imm32 = (Cvt_F32U32){ .f = float_value }.i;
+			
+			uint32_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint32_t));
+			*rdata_payload = imm32;
+			
+			disp = tb_emit_const_patch(f->module, ctx->function_id, code_pos(), rdata_payload, sizeof(uint32_t), s_local_thread_id);
+		}
+		
+		emit4(disp);
+	}
+	
+	return v;
 }
 
 // Each of these eval_node functions will set a value in ctx->tree[n].val
@@ -230,7 +300,8 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 	TB_RegPayload* restrict p = &f->nodes.payload[r];
 	
 	node->val.type = VAL_NONE;
-	if (TB_UNLIKELY(r < ctx->last_fence || r >= ctx->root_reg)) {
+	
+	if (TB_UNLIKELY(ctx->use_count[r] > 1 || r < ctx->last_fence || r >= ctx->root_reg)) {
 		// these are always thought of as out-of-scope in a weird way and have their
 		// own special behavior described in the normal path.
 		if (reg_type != TB_UNSIGNED_CONST && 
@@ -246,8 +317,10 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 					node->val = val_gpr(dt.type, slot->gpr);
 				} else if (slot->xmm != XMM_NONE) {
 					node->val = val_xmm(dt, slot->xmm);
+					printf("r%u <- xmm%d\n", r, slot->xmm);
 				} else {
 					node->val = val_stack(dt, slot->pos);
+					//node->val.mem.is_rvalue = true;
 				}
 				return;
 			}
@@ -272,6 +345,10 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			emit8(p->u_const);
 			
 			node->val = dst;
+			break;
+		}
+		case TB_FLOAT_CONST: {
+			node->val = gen_float_const(ctx, f, p->f_const, dt);
 			break;
 		}
 		case TB_STRING_CONST: {
@@ -341,7 +418,10 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			StackSlot* slot = &ctx->locals[id];
 			if (slot->gpr != GPR_NONE) node->val = val_gpr(dt.type, slot->gpr);
 			else if (slot->xmm != XMM_NONE) node->val = val_xmm(dt, slot->xmm);
-			else node->val = val_stack(dt, slot->pos);
+			else {
+				node->val = val_stack(dt, slot->pos);
+				node->val.mem.is_rvalue = true;
+			}
 			break;
 		}
 		case TB_PARAM_ADDR: {
@@ -494,6 +574,46 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			}
 		}
 		
+		// Float binary operators
+		case TB_FADD:
+		case TB_FSUB:
+		case TB_FMUL:
+		case TB_FDIV: {
+			// supported modes (for now)
+			assert(dt.width <= 2);
+			
+			const static Inst2FPType tbl[] = { FP_ADD, FP_SUB, FP_MUL, FP_DIV };
+			
+			eval_node(ctx, f, node->a, n);
+			eval_node(ctx, f, node->b, n);
+			
+			Val a = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
+			Val b = val_rvalue(ctx, f, ctx->tree[node->b].val, ctx->tree[node->b].reg);
+			
+			uint8_t flags = 0;
+			flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+			flags |= (dt.width) ? INST2FP_PACKED : 0;
+			
+			Val dst;
+			bool recycled = a.is_owned && a.type == VAL_XMM;
+			if (recycled) {
+				dst = a;
+				printf("recycled XMM%d for r%d (originally from r%d)\n", a.xmm, r, ctx->tree[node->a].reg);
+			} else {
+				dst = alloc_xmm(ctx, f, dt);
+				inst2sse(ctx, FP_MOV, &dst, &a, flags);
+			}
+			
+			Inst2FPType op = tbl[reg_type - TB_FADD];
+			inst2sse(ctx, op, &dst, &b, flags);
+			
+			if (!recycled) free_val(ctx, f, a);
+			free_val(ctx, f, b);
+			
+			node->val = dst;
+			break;
+		}
+		
 		// Integer binary operations
 		case TB_AND:
 		case TB_OR:
@@ -532,7 +652,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			Val b = val_rvalue(ctx, f, ctx->tree[node->b].val, ctx->tree[node->b].reg);
 			
 			Val dst;
-			bool recycled = a.is_owned && !(a.type == VAL_MEM && !info->has_memory_dst);
+			bool recycled = a.is_owned && !(is_value_mem(&a) && !info->has_memory_dst);
 			if (recycled) {
 				dst = a;
 			} else {
@@ -557,9 +677,90 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 				inst2(ctx, info->inst, &dst, &b, dt.type);
 			}
 			
-			free_val(ctx, f, a);
+			if (!recycled) free_val(ctx, f, a);
 			free_val(ctx, f, b);
 			
+			node->val = dst;
+			break;
+		}
+		
+		case TB_SHR:
+		case TB_SHL:
+		case TB_SAR: {
+			eval_node(ctx, f, node->a, n);
+			eval_node(ctx, f, node->b, n);
+			
+			Val a = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
+			Val b = val_rvalue(ctx, f, ctx->tree[node->b].val, ctx->tree[node->b].reg);
+			
+			if (a.type == VAL_IMM && b.type == VAL_IMM) {
+				node->val = val_imm(dt, a.imm << b.imm);
+				break;
+			}
+			
+			Val dst = alloc_gpr(ctx, f, dt.type, n);
+			bool recycled = a.is_owned && a.type == VAL_GPR;
+			if (recycled) {
+				dst = a;
+			} else {
+				dst = alloc_gpr(ctx, f, dt.type, n);
+				inst2(ctx, MOV, &dst, &a, dt.type);
+			}
+			
+			bool is_64bit = dt.type == TB_I64;
+			if (b.type == VAL_IMM) {
+				assert(b.imm < 64);
+				
+				// shl r/m, imm
+				if (dt.type == TB_I16) emit(0x66);
+				emit(rex(is_64bit, 0x00, dst.gpr, 0x00));
+				emit(dt.type == TB_I8 ? 0xC0 : 0xC1);
+				emit(mod_rx_rm(MOD_DIRECT, 0x04, dst.gpr));
+				emit(b.imm);
+				
+				node->val = dst;
+				break;
+			}
+			
+			int rcx_savepoint = 0;
+			if (!evict_gpr(ctx, f, RCX)) {
+				// weird but it works, just give it a basic saveslot
+				ctx->stack_usage = align_up(ctx->stack_usage + 8, 8);
+				rcx_savepoint = -ctx->stack_usage;
+				
+				Val sav = val_stack(TB_TYPE_I64, rcx_savepoint);
+				Val reg = val_gpr(TB_I64, RDX);
+				inst2(ctx, MOV, &sav, &reg, dt.type);
+			}
+			
+			Val rcx = val_gpr(dt.type, RCX);
+			if (!is_value_gpr(&a, RCX)) {
+				inst2(ctx, MOV, &rcx, &a, dt.type);
+			}
+			
+			// D2 /4       shl r/m, cl
+			// D2 /5       shr r/m, cl
+			// D2 /7       sar r/m, cl
+			if (dt.type == TB_I16) emit(0x66);
+			emit(rex(is_64bit, 0x00, dst.gpr, 0x00));
+			emit(dt.type == TB_I8 ? 0xD2 : 0xD3);
+			
+			switch (reg_type) {
+				case TB_SHL:
+				emit(mod_rx_rm(MOD_DIRECT, 0x04, dst.gpr));
+				break;
+				case TB_SHR:
+				emit(mod_rx_rm(MOD_DIRECT, 0x05, dst.gpr));
+				break;
+				case TB_SAR:
+				emit(mod_rx_rm(MOD_DIRECT, 0x07, dst.gpr));
+				break;
+				default:
+				tb_unreachable();
+			}
+			
+			if (!recycled) free_val(ctx, f, a);
+			free_val(ctx, f, b);
 			node->val = dst;
 			break;
 		}
@@ -637,9 +838,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 				
 				ctx->gpr_allocator |= (1u << RAX);*/
 				assert(0 && "TODO");
-			}
-			
-			if (rdx_savepoint) {
+			} else if (rdx_savepoint) {
 				/*Val sav = val_stack(TB_TYPE_I64, rdx_savepoint);
 				Val reg = val_gpr(TB_I64, RAX);
 				inst2(ctx, MOV, &reg, &sav, dt.type);
@@ -661,7 +860,11 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 		case TB_CMP_SLE:
 		case TB_CMP_ULT:
 		case TB_CMP_ULE: {
+			assert(dt.width == 0 && "TODO: Implement vector compares");
 			TB_DataType cmp_dt = p->cmp.dt;
+			
+			// desugar booleans
+			if (dt.type == TB_BOOL) dt.type = TB_I8;
 			
 			eval_node(ctx, f, node->a, n);
 			eval_node(ctx, f, node->b, n);
@@ -703,7 +906,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 				case TB_CMP_SLE: cc = LE; break;
 				case TB_CMP_ULT: cc = B; break;
 				case TB_CMP_ULE: cc = BE; break;
-				default: tb_todo();
+				default: tb_unreachable();
 			}
 			
 			cc ^= invert;
@@ -725,7 +928,58 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			break;
 		}
 		
+		case TB_SQRT:
+		case TB_RSQRT: {
+			eval_node(ctx, f, node->a, n);
+			Val src = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
+			
+			bool recycled = src.is_owned && !is_value_mem(&src);
+			if (recycled) {
+				printf("recycled XMM%d for r%d (originally from r%d)\n", src.xmm, r, ctx->tree[node->a].reg);
+				
+				uint8_t flags = 0;
+				flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+				flags |= (dt.width) ? INST2FP_PACKED : 0;
+				inst2sse(ctx, reg_type == TB_SQRT ? FP_SQRT : FP_RSQRT, &src, &src, flags);
+				
+				node->val = src;
+				break;
+			} else {
+				Val v = alloc_xmm(ctx, f, dt);
+				
+				uint8_t flags = 0;
+				flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+				flags |= (dt.width) ? INST2FP_PACKED : 0;
+				inst2sse(ctx, reg_type == TB_SQRT ? FP_SQRT : FP_RSQRT, &v, &src, flags);
+				
+				free_val(ctx, f, src);
+				node->val = v;
+				break;
+			}
+		}
+		
+		case TB_FLOAT_EXT: {
+			eval_node(ctx, f, node->a, n);
+			Val src = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
+			
+			Val v = alloc_xmm(ctx, f, dt);
+			
+			uint8_t flags = 0;
+			flags |= (src.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+			flags |= (src.dt.width) ? INST2FP_PACKED : 0;
+			inst2sse(ctx, FP_CVT, &v, &src, flags);
+			
+			free_val(ctx, f, src);
+			node->val = v;
+			break;
+		}
+		
+		case TB_INT2PTR:
+		case TB_SIGN_EXT:
 		case TB_ZERO_EXT: {
+			assert(dt.width == 0 && "TODO: Implement vector zero extend");
+			bool sign_ext = (reg_type == TB_SIGN_EXT);
+			
 			eval_node(ctx, f, node->a, n);
 			Val src = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
 			if (src.type == VAL_IMM) {
@@ -743,10 +997,12 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 				inst2(ctx, MOV, &dst, &src, src.dt.type);
 			}
 			
-			if (src.dt.type == TB_I16) {
-				inst2(ctx, MOVZXW, &dst, &src, dt.type);
+			if (src.dt.type == TB_I32 && sign_ext) {
+				inst2(ctx, MOVSXD, &dst, &src, TB_I32);
+			} else if (src.dt.type == TB_I16) {
+				inst2(ctx, sign_ext ? MOVSXW : MOVZXW, &dst, &src, TB_I16);
 			} else if (src.dt.type == TB_I8 || src.dt.type == TB_BOOL) {
-				inst2(ctx, MOVZXB, &dst, &src, dt.type);
+				inst2(ctx, sign_ext ? MOVSXB : MOVZXB, &dst, &src, TB_I8);
 			}
 			
 			free_val(ctx, f, src);
@@ -755,10 +1011,11 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 		}
 		
 		case TB_TRUNCATE: {
+			eval_node(ctx, f, node->a, n);
+			Val src = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
+			
 			if (TB_IS_FLOAT_TYPE(dt.type)) {
-				assert(0 && "TODO: implement float truncate");
-				/*Val src = use_as_rvalue(ctx, f, p->ext);
-				Val v = def_new_xmm(ctx, f, r, dt);
+				Val v = alloc_xmm(ctx, f, dt);
 				
 				uint8_t flags = 0;
 				flags |= (src.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
@@ -767,10 +1024,8 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 				
 				free_val(ctx, f, src);
 				node->val = v;
-				break;*/
+				break;
 			} else {
-				eval_node(ctx, f, node->a, n);
-				Val src = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
 				if (src.type == VAL_IMM) {
 					src.dt = dt;
 					
@@ -779,7 +1034,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 				}
 				
 				Val dst;
-				bool recycled = src.is_owned && src.type != VAL_MEM;
+				bool recycled = src.is_owned && src.type == VAL_GPR;
 				if (recycled) {
 					dst = src;
 				} else {
@@ -788,9 +1043,9 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 				}
 				
 				if (dt.type == TB_I16) {
-					inst2(ctx, MOVZXW, &dst, &src, dt.type);
+					inst2(ctx, MOVZXW, &dst, &src, TB_I16);
 				} else if (dt.type == TB_I8 || dt.type == TB_BOOL) {
-					inst2(ctx, MOVZXB, &dst, &src, dt.type);
+					inst2(ctx, MOVZXB, &dst, &src, TB_I8);
 				}
 				
 				free_val(ctx, f, src);
@@ -807,7 +1062,112 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			break;
 		}
 		
-		default: assert(0 && "TODO: Implement node eval");
+		case TB_PTR2INT: {
+			assert(dt.type == TB_I64 && "TODO: implement the other ptr2int variations");
+			
+			eval_node(ctx, f, node->a, n);
+			Val src = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
+			
+			src.dt.type = TB_I64;
+			free_val(ctx, f, src);
+			
+			node->val = src;
+			break;
+		}
+		case TB_FLOAT2INT: {
+			assert(dt.width == 0 && "TODO: Implement vector float2int");
+			
+			eval_node(ctx, f, node->a, n);
+			Val src = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
+			assert(src.type == VAL_MEM || src.type == VAL_GLOBAL || src.type == VAL_XMM);
+			
+			Val v = alloc_gpr(ctx, f, dt.type, n);
+			
+			// it's either 32bit or 64bit conversion
+			// F3 0F 2D /r            CVTSS2SI xmm1, r/m32
+			// F3 REX.W 0F 2D /r      CVTSS2SI xmm1, r/m64
+			// F2 0F 2D /r            CVTSD2SI xmm1, r/m32
+			// F2 REX.W 0F 2D /r      CVTSD2SI xmm1, r/m64
+			if (src.dt.width == 0) {
+				emit((src.dt.type == TB_F64) ? 0xF2 : 0xF3);
+			} else if (src.dt.type == TB_F64) {
+				// packed double
+				emit(0x66);
+			}
+			
+			uint8_t rx = v.gpr;
+			uint8_t base, index;
+			if (src.type == VAL_MEM) {
+				base = src.mem.base;
+				index = src.mem.index != GPR_NONE ? src.mem.index : 0;
+			} else if (src.type == VAL_XMM) {
+				base = src.xmm;
+				index = 0;
+			} else tb_todo();
+			
+			bool is_64bit = (dt.type == TB_I64);
+			if (is_64bit || rx >= 8 || base >= 8 || index >= 8) {
+				emit(rex(is_64bit, rx, base, index));
+			}
+			
+			emit(0x0F);
+			emit(0x2D);
+			emit_memory_operand(ctx, rx, &src);
+			
+			free_val(ctx, f, src);
+			node->val = v;
+			break;
+		}
+		case TB_INT2FLOAT: {
+			assert(dt.width == 0 && "TODO: Implement vector int2float");
+			
+			eval_node(ctx, f, node->a, n);
+			Val src = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
+			if (src.type == VAL_IMM) {
+				node->val = gen_float_const(ctx, f, (double)src.imm, dt);
+				break;
+			}
+			
+			assert(src.type == VAL_MEM || src.type == VAL_GLOBAL || src.type == VAL_GPR);
+			Val v = alloc_xmm(ctx, f, dt);
+			
+			// it's either 32bit or 64bit conversion
+			// F3 0F 2A /r            CVTSI2SS xmm1, r/m32
+			// F3 REX.W 0F 2A /r      CVTSI2SS xmm1, r/m64
+			// F2 0F 2A /r            CVTSI2SD xmm1, r/m32
+			// F2 REX.W 0F 2A /r      CVTSI2SD xmm1, r/m64
+			if (dt.width == 0) {
+				emit((dt.type == TB_F64) ? 0xF2 : 0xF3);
+			} else if (dt.type == TB_F64) {
+				// packed double
+				emit(0x66);
+			}
+			
+			uint8_t rx = v.xmm;
+			uint8_t base, index;
+			if (src.type == VAL_MEM) {
+				base = src.mem.base;
+				index = src.mem.index != GPR_NONE ? src.mem.index : 0;
+			} else if (src.type == VAL_GPR) {
+				base = src.gpr;
+				index = 0;
+			} else tb_unreachable();
+			
+			bool is_64bit = (src.dt.type == TB_I64);
+			if (is_64bit || rx >= 8 || base >= 8 || index >= 8) {
+				emit(rex(is_64bit, rx, base, index));
+			}
+			
+			emit(0x0F);
+			emit(0x2A);
+			emit_memory_operand(ctx, rx, &src);
+			node->val = v;
+			break;
+		}
+		
+		default:
+		assert(0 && "TODO: Implement node eval");
+		break;
 	}
 	
 	assert(node->val.type && "Value not initialized");
@@ -841,8 +1201,10 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 	
 	// Walk tree to generate machine code
 	assert(ctx->tree_len > 1 && "We should have pushed some nodes");
-	
 	TreeNodeIndex root_node = ctx->tree_len - 1;
+	
+	//print_tree(ctx, f, root_node, 0);
+	
 	assert(ctx->tree[root_node].reg == root_reg);
 	ctx->tree[root_node].val.type = 0;
 	
@@ -915,6 +1277,7 @@ static Val val_rvalue(Ctx* ctx, TB_Function* f, Val v, TB_Register r) {
 			
 			Val new_v = alloc_gpr(ctx, f, v.dt.type, 0);
 			inst2(ctx, LEA, &new_v, &v, v.dt.type);
+			free_val(ctx, f, v);
 			return new_v;
 		} else if (!v.mem.is_rvalue) {
 			if (v.dt.width || TB_IS_FLOAT_TYPE(v.dt.type)) {

@@ -217,7 +217,7 @@ static Val alloc_xmm(Ctx* restrict ctx, TB_Function* f, TB_DataType dt) {
 	
 	XMM xmm = (XMM)(search-1);
 	ctx->xmm_allocator |= (1u << xmm);
-	printf("Alloc XMM%d\n", xmm);
+	//printf("Alloc XMM%d\n", xmm);
 	
 	return (Val) {
 		.type = VAL_XMM,
@@ -234,7 +234,7 @@ static void free_val(Ctx* restrict ctx, TB_Function* f, Val v) {
 		ctx->gpr_allocator &= ~(1u << v.gpr);
 	} else if (v.type == VAL_XMM) {
 		ctx->xmm_allocator &= ~(1u << v.xmm);
-		printf("Free XMM%d\n", v.xmm);
+		//printf("Free XMM%d\n", v.xmm);
 	} else if (v.type == VAL_MEM) {
 		if (v.mem.base != RSP && v.mem.base != RBP) {
 			ctx->gpr_allocator &= ~(1u << v.mem.base);
@@ -317,7 +317,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 					node->val = val_gpr(dt.type, slot->gpr);
 				} else if (slot->xmm != XMM_NONE) {
 					node->val = val_xmm(dt, slot->xmm);
-					printf("r%u <- xmm%d\n", r, slot->xmm);
+					//printf("r%u <- xmm%d\n", r, slot->xmm);
 				} else {
 					node->val = val_stack(dt, slot->pos);
 					//node->val.mem.is_rvalue = true;
@@ -598,7 +598,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			bool recycled = a.is_owned && a.type == VAL_XMM;
 			if (recycled) {
 				dst = a;
-				printf("recycled XMM%d for r%d (originally from r%d)\n", a.xmm, r, ctx->tree[node->a].reg);
+				//printf("recycled XMM%d for r%d (originally from r%d)\n", a.xmm, r, ctx->tree[node->a].reg);
 			} else {
 				dst = alloc_xmm(ctx, f, dt);
 				inst2sse(ctx, FP_MOV, &dst, &a, flags);
@@ -935,7 +935,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			
 			bool recycled = src.is_owned && !is_value_mem(&src);
 			if (recycled) {
-				printf("recycled XMM%d for r%d (originally from r%d)\n", src.xmm, r, ctx->tree[node->a].reg);
+				//printf("recycled XMM%d for r%d (originally from r%d)\n", src.xmm, r, ctx->tree[node->a].reg);
 				
 				uint8_t flags = 0;
 				flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
@@ -1171,7 +1171,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 	}
 	
 	assert(node->val.type && "Value not initialized");
-	if (ctx->gpr_allocator == 0xFFFF) {
+	if (__builtin_popcount(ctx->gpr_allocator) >= 14) {
 		// Pre-emptive spilling:
 		// we just spill right before we would actually run out of registers
 		if (node->val.is_owned && node->val.type == VAL_GPR) {
@@ -1184,8 +1184,6 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			Val dst = val_stack(dt, -ctx->stack_usage);
 			inst2(ctx, MOV, &dst, &node->val, dt.type);
 			node->val = dst;
-		} else {
-			tb_panic(0, "Somehow we can't free anything but have filled up all registers");
 		}
 	}
 }

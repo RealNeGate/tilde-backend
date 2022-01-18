@@ -411,11 +411,13 @@ __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 		
 		// Kill any stack slots and registers which aren't used 
 		// beyond this basic block
-		loop_range(i, bb, bb_end) if (ctx->intervals[i] <= bb_end) {
-			loop(j, arrlen(ctx->locals)) if (ctx->locals[j].reg == i) {
-				printf("kill r%d\n", i);
-				arrdelswap(ctx->locals, j);
-				break;
+		if (next_label < f->nodes.count) {
+			loop_range(i, bb, bb_end) if (ctx->intervals[i] <= bb_end) {
+				loop(j, arrlen(ctx->locals)) if (ctx->locals[j].reg == i) {
+					//printf("kill r%d\n", i);
+					arrdelswap(ctx->locals, j);
+					break;
+				}
 			}
 		}
 		
@@ -507,7 +509,7 @@ static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register s
 					.gpr = GPR_NONE, .xmm = dst.xmm
 				};
 				arrput(ctx->locals, slot);
-				printf("%s: r%zu is shared in XMM%d.\n", f->name, j, dst.xmm);
+				//printf("%s: r%zu is shared in XMM%d.\n", f->name, j, dst.xmm);
 			} else {
 				Val dst;
 				if (src.is_owned && src.type == VAL_GPR) {
@@ -523,7 +525,7 @@ static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register s
 					.gpr = dst.gpr, .xmm = XMM_NONE
 				};
 				arrput(ctx->locals, slot);
-				printf("%s: r%zu is shared in GPR%d.\n", f->name, j, dst.gpr);
+				//printf("%s: r%zu is shared in GPR%d.\n", f->name, j, dst.gpr);
 			}
 		} else if (ctx->intervals[j] > end) {
 			if (f->nodes.type[j] == TB_PARAM) {
@@ -609,7 +611,7 @@ static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register s
 				
 				free_val(ctx, f, src);
 				arrput(ctx->locals, slot);
-				printf("%s: spilled value r%zu because of barrier at r%d\n", f->name, j, end);
+				//printf("%s: spilled value r%zu because of barrier at r%d\n", f->name, j, end);
 			}
 		}
 	}

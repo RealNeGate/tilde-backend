@@ -76,7 +76,7 @@ void tb_platform_arena_init() {
 void* tb_platform_arena_alloc(size_t size) {
 	// align to max_align
 	size_t align_mask = _Alignof(max_align_t)-1;
-	size = (size + align_mask) & align_mask;
+	size = (size + align_mask) & ~align_mask;
 	
 	// If this ever happens... literally how...
 	assert(size < ARENA_SEGMENT_SIZE);

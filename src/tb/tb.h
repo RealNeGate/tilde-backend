@@ -213,7 +213,7 @@ extern "C" {
 		/* Load */
 		TB_LOAD,
 		
-		/* Generators */
+		/* Pointers */
 		TB_RESTRICT,   // all three of these are the only ways to 
 		TB_LOCAL,      // generate restrict pointers meaning that
 		TB_PARAM_ADDR, // they do not alias with any other pointers
@@ -223,7 +223,6 @@ extern "C" {
 		TB_EFUNC_ADDRESS,
 		TB_GLOBAL_ADDRESS,
 		
-		/* Pointer math */
 		TB_MEMBER_ACCESS,
 		TB_ARRAY_ACCESS,
 		
@@ -242,6 +241,10 @@ extern "C" {
 		TB_PTR2INT,
 		TB_INT2FLOAT,
 		TB_FLOAT2INT,
+		TB_BITCAST,
+		
+		/* Select */
+		TB_SELECT,
 		
 		/* Unary operations */
 		TB_NOT,
@@ -269,11 +272,10 @@ extern "C" {
 		TB_FMUL,
 		TB_FDIV,
 		
-		// Special float ops
-		TB_SQRT,
-		TB_RSQRT,
+		/* Vectors */
 		
-		// Comparisons
+		
+		/* Comparisons */
 		TB_CMP_EQ,
 		TB_CMP_NE,
 		TB_CMP_SLT,
@@ -294,6 +296,10 @@ extern "C" {
 		// see one in normal IR things went wrong in
 		// an optimization pass
 		TB_PASS,
+		
+		// x86 intrinsics
+		TB_X86INTRIN_SQRT,
+		TB_X86INTRIN_RSQRT,
 	} TB_RegTypeEnum;
 	
 #define TB_IS_NODE_SIDE_EFFECT(type) ((type) >= TB_LINE_INFO && (type) <= TB_ATOMIC_CMPXCHG2)
@@ -499,6 +505,7 @@ extern "C" {
 	TB_API TB_Register tb_inst_ptr2int(TB_Function* f, TB_Register src, TB_DataType dt);
 	TB_API TB_Register tb_inst_int2float(TB_Function* f, TB_Register src, TB_DataType dt);
 	TB_API TB_Register tb_inst_float2int(TB_Function* f, TB_Register src, TB_DataType dt);
+	TB_API TB_Register tb_inst_bitcast(TB_Function* f, TB_Register src, TB_DataType dt);
 	
 	TB_API TB_Register tb_inst_local(TB_Function* f, uint32_t size, TB_CharUnits align);
 	TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr, TB_CharUnits align);
@@ -538,6 +545,14 @@ extern "C" {
 	TB_API TB_Register tb_inst_get_func_address(TB_Function* f, const TB_Function* target);
 	TB_API TB_Register tb_inst_get_extern_address(TB_Function* f, TB_ExternalID target);
 	TB_API TB_Register tb_inst_get_global_address(TB_Function* f, TB_GlobalID target);
+	
+	// Performs a conditional select between two values, if the operation is performed
+	// wide then the cond is expected to be the same type as a and b where the condition
+	// is resolved as true if the MSB (per component) is 1.
+	// 
+	// result = cond ? a : b
+	// a, b must match in type
+	TB_API TB_Register tb_inst_select(TB_Function* f, TB_Register cond, TB_Register a, TB_Register b);
 	
 	// Integer arithmatic
 	TB_API TB_Register tb_inst_add(TB_Function* f, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior);

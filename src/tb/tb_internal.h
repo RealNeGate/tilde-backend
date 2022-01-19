@@ -114,40 +114,47 @@ typedef union TB_RegPayload {
 		TB_CharUnits size;
 		TB_CharUnits alignment;
 	} param_addr;
-	struct {
+	struct TB_NodeLocal {
 		TB_CharUnits size;
 		TB_CharUnits alignment;
 	} local;
-	TB_Register unary;
-	struct {
+	struct TB_NodeUnary {
+		TB_Register src;
+	} unary;
+	struct TB_NodeIntBinary {
 		TB_Register a;
 		TB_Register b;
 		TB_ArithmaticBehavior arith_behavior;
 	} i_arith;
-	struct {
+	struct TB_NodeFloatBinary {
 		TB_Register a;
 		TB_Register b;
 	} f_arith;
-	struct {
+	struct TB_NodeCompare {
 		TB_Register a;
 		TB_Register b;
 		TB_DataType dt;
 	} cmp;
-	struct {
+	struct TB_NodeSelect {
+		TB_Register a;
+		TB_Register b;
+		TB_Register cond;
+	} select;
+	struct TB_NodeConvert {
 		TB_Register src;
 	} cvt;
-	struct {
+	struct TB_NodeLoad {
 		TB_Register address;
 		TB_CharUnits alignment;
 		bool is_volatile;
 	} load;
-	struct {
+	struct TB_NodeStore {
 		TB_Register address;
 		TB_Register value;
 		TB_CharUnits alignment;
 		bool is_volatile;
 	} store;
-	struct {
+	struct TB_NodeAtomicRMW {
 		TB_Register addr;
 		TB_Register src;
 		TB_MemoryOrder order : 8;
@@ -155,15 +162,15 @@ typedef union TB_RegPayload {
 		// NOTE(NeGate): this is used for fail
 		TB_MemoryOrder order2 : 8;
 	} atomic;
-	struct {
+	struct TB_NodeReturn {
 		TB_Register value;
 	} ret;
 	TB_Register pass;
-	struct {
+	struct TB_NodePhi1 {
 		TB_Register a_label;
 		TB_Register a;
 	} phi1;
-	struct {
+	struct TB_NodePhi2 {
 		TB_Register a_label;
 		TB_Register a;
 		TB_Register b_label;
@@ -172,48 +179,48 @@ typedef union TB_RegPayload {
 	struct {
 		int param_start, param_end;
 	} phin;
-	struct {
+	struct TB_NodeLabel {
 		TB_Label id;
 		TB_Register terminator;
 		bool is_loop;
 	} label;
-	struct {
+	struct TB_NodeIf {
 		TB_Register cond;
 		TB_Label if_true;
 		TB_Label if_false;
 	} if_;
-	struct {
+	struct TB_NodeGoto {
 		TB_Label label;
 	} goto_;
-	struct {
+	struct TB_NodeExternCall {
 		int param_start, param_end;
 		TB_ExternalID target;
 	} ecall;
-	struct {
+	struct TB_NodeDynamicCall {
 		int param_start, param_end;
 		TB_Register target;
 	} vcall;
-	struct {
+	struct TB_NodeFunctionCall {
 		int param_start, param_end;
 		const TB_Function* target;
 	} call;
-	struct {
+	struct TB_NodeSwitch {
 		TB_Register key;
 		TB_Label default_label;
 		int entries_start, entries_end;
 	} switch_;
-	struct {
+	struct TB_NodeMemXXX {
 		TB_Register dst;
 		TB_Register src;
 		TB_Register size;
 		TB_CharUnits align;
 	} mem_op;
-	struct {
+	struct TB_NodeMemClear {
 		TB_Register dst;
 		TB_CharUnits size;
 		TB_CharUnits align;
 	} clear;
-	struct {
+	struct TB_NodeInitialize {
 		TB_Register addr;
 		TB_InitializerID id;
 	} init;
@@ -499,6 +506,7 @@ void* tb_tls_push(TB_TemporaryStorage* store, size_t size);
 void* tb_tls_try_push(TB_TemporaryStorage* store, size_t size);
 void* tb_tls_pop(TB_TemporaryStorage* store, size_t size);
 void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance);
+bool tb_tls_can_fit(TB_TemporaryStorage* store, size_t size);
 
 void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path);
 void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char* path);

@@ -28,6 +28,104 @@ static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const 
 // Just handles the PHI nodes that we'll encounter when leaving `from` into `to`
 static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_Register from_terminator, TB_Register to, TB_Register to_terminator);
 
+typedef struct FunctionTally {
+	size_t memory_usage;
+	
+	size_t phi_count;
+	size_t tree_count;
+	size_t locals_count;
+	size_t return_count;
+	size_t label_patch_count;
+} FunctionTally;
+
+static FunctionTally tally_memory_usage(TB_Function* restrict f) {
+	size_t phi_count = 0;
+	size_t locals_count = 0;
+	size_t return_count = 0;
+	size_t label_patch_count = 0;
+	
+#if TB_HOST_ARCH == TB_HOST_X86_64
+#define COUNT_OF_TYPE_IN_M128(t) __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
+	
+	// the node types are aligned to a cache line so we could in theory
+	// grab up to 64bytes aligned without UB
+	for (size_t i = 0; i < f->nodes.count; i += 16) {
+		__m128i bytes = _mm_load_si128((__m128i*)&f->nodes.type[i]);
+		
+		phi_count += COUNT_OF_TYPE_IN_M128(TB_PHI2);
+		locals_count += COUNT_OF_TYPE_IN_M128(TB_LOCAL);
+		
+		return_count += COUNT_OF_TYPE_IN_M128(TB_RET);
+		
+		label_patch_count += COUNT_OF_TYPE_IN_M128(TB_GOTO);
+		label_patch_count += COUNT_OF_TYPE_IN_M128(TB_IF) * 2;
+	}
+#undef COUNT_OF_TYPE_IN_M128
+#else
+	for (size_t i = 1; i < f->nodes.count; i++) {
+		TB_RegType t = f->nodes[i].type;
+		
+		if (t == TB_PHI2) phi_count++;
+		else if (t == TB_RET) return_count++;
+		else if (t == TB_LOCAL) locals_count++;
+		else if (t == TB_IF) label_patch_count += 2;
+		else if (t == TB_GOTO) label_patch_count++;
+	}
+#endif
+	
+	size_t tree_count = f->nodes.count;
+	if (tree_count < 2048) tree_count = 2048;
+	//printf("%s: max tree nodes = %zu\n", f->name, tree_count);
+	
+	// parameters are locals too... ish
+	locals_count += f->prototype->param_count;
+	
+	size_t align_mask = _Alignof(max_align_t)-1;
+	size_t tally = 0;
+	
+	// context
+	tally += sizeof(Ctx) + (tree_count * sizeof(TreeNode));
+	tally = (tally + align_mask) & ~align_mask;
+	
+	// use_count
+	tally += f->nodes.count * sizeof(TB_Register);
+	tally = (tally + align_mask) & ~align_mask;
+	
+	// intervals
+	tally += f->nodes.count * sizeof(TB_Register);
+	tally = (tally + align_mask) & ~align_mask;
+	
+	// phis
+	tally += phi_count * sizeof(PhiValue);
+	tally = (tally + align_mask) & ~align_mask;
+	
+	// phi_queue
+	tally += phi_count * sizeof(TB_Register);
+	tally = (tally + align_mask) & ~align_mask;
+	
+	// labels
+	tally += f->label_count * sizeof(uint32_t);
+	tally = (tally + align_mask) & ~align_mask;
+	
+	// label_patches
+	tally += label_patch_count * sizeof(LabelPatch);
+	tally = (tally + align_mask) & ~align_mask;
+	
+	// ret_patches
+	tally += return_count * sizeof(ReturnPatch);
+	tally = (tally + align_mask) & ~align_mask;
+	
+	return (FunctionTally){
+		.memory_usage = tally,
+		
+		.phi_count = phi_count,
+		.tree_count = tree_count,
+		.locals_count = locals_count,
+		.return_count = return_count,
+		.label_patch_count = label_patch_count
+	};
+}
+
 TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
 	s_local_thread_id = local_thread_id;
 	TB_TemporaryStorage* tls = tb_tls_allocate();
@@ -38,123 +136,71 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 	bool is_ctx_heap_allocated = false;
 	Ctx* restrict ctx = NULL;
 	
-	size_t caller_usage = 0;
 	{
-		size_t phi_count = 0;
-		size_t locals_count = 0;
-		size_t return_count = 0;
-		size_t label_patch_count = 0;
+		// if we can't fit our memory usage into memory, we fallback
+		FunctionTally tally = tally_memory_usage(f);
+		is_ctx_heap_allocated = !tb_tls_can_fit(tls, tally.memory_usage);
 		
-		// TODO(NeGate): Consider splitting this into two separate versions, one with 
-		// SSE, one without.
-#if TB_HOST_ARCH == TB_HOST_X86_64
-#define COUNT_OF_TYPE_IN_M128(t) \
-__builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
-		
-		// the node types are aligned to a cache line so we could in theory
-		// grab up to 64bytes aligned without UB
-		for (size_t i = 0; i < f->nodes.count; i += 16) {
-			__m128i bytes = _mm_load_si128((__m128i*)&f->nodes.type[i]);
+		size_t ctx_size = sizeof(Ctx) + (tally.tree_count * sizeof(TreeNode));
+		if (is_ctx_heap_allocated) {
+			//printf("Could not allocate x64 code gen context: using heap fallback. (%zu bytes)\n", tally.memory_usage);
 			
-			phi_count += COUNT_OF_TYPE_IN_M128(TB_PHI2);
-			locals_count += COUNT_OF_TYPE_IN_M128(TB_LOCAL);
+			ctx = calloc(1, ctx_size);
 			
-			return_count += COUNT_OF_TYPE_IN_M128(TB_RET);
+			ctx->use_count = malloc(f->nodes.count * sizeof(TB_Register));
+			ctx->intervals = malloc(f->nodes.count * sizeof(TB_Register));
+			ctx->phis = malloc(tally.phi_count * sizeof(PhiValue));
 			
-			label_patch_count += COUNT_OF_TYPE_IN_M128(TB_GOTO);
-			label_patch_count += COUNT_OF_TYPE_IN_M128(TB_IF) * 2;
-		}
-#undef COUNT_OF_TYPE_IN_M128
-#else
-		for (size_t i = 1; i < f->nodes.count; i++) {
-			TB_RegType t = f->nodes[i].type;
+			ctx->phi_queue = malloc(tally.phi_count * sizeof(TB_Register));
 			
-			if (t == TB_PHI2) phi_count++;
-			else if (t == TB_RET) return_count++;
-			else if (t == TB_LOCAL) locals_count++;
-			else if (t == TB_IF) label_patch_count += 2;
-			else if (t == TB_GOTO) label_patch_count++;
-		}
-#endif
-		
-		// Skim over the types and look for CALLs
-		// calculate the maximum parameter usage for a call
-		FOR_EACH_NODE(i, f, TB_CALL, {
-						  int param_usage = CALL_NODE_PARAM_COUNT(f, i);
-						  if (caller_usage < param_usage) {
-							  caller_usage = param_usage;
-						  }
-					  });
-		
-		FOR_EACH_NODE(i, f, TB_VCALL, {
-						  int param_usage = CALL_NODE_PARAM_COUNT(f, i);
-						  if (caller_usage < param_usage) {
-							  caller_usage = param_usage;
-						  }
-					  });
-		
-		FOR_EACH_NODE(i, f, TB_ECALL, {
-						  int param_usage = CALL_NODE_PARAM_COUNT(f, i);
-						  if (caller_usage < param_usage) {
-							  caller_usage = param_usage;
-						  }
-					  });
-		
-		const size_t tree_cap = 2048;
-		const size_t ctx_size = sizeof(Ctx) + (tree_cap * sizeof(TreeNode));
-		
-		ctx = tb_tls_try_push(tls, ctx_size);
-		if (!ctx) {
-			// try the heap (not ideal)
-			// also we do an all-or-nothing style where if you can't do the context
-			// in the temporary storage, then none of the other uses of it are available.
-			is_ctx_heap_allocated = true;
-			ctx = malloc(ctx_size);
+			ctx->labels = malloc(f->label_count * sizeof(uint32_t));
+			ctx->label_patches = malloc(tally.label_patch_count * sizeof(LabelPatch));
+			ctx->ret_patches = malloc(tally.return_count * sizeof(ReturnPatch));
+		} else {
+			ctx = tb_tls_push(tls, ctx_size);
 			
-			//printf("Could not allocate x64 code gen context: using heap fallback.\n");
+			// we only care about clearing out the actual context
+			// data, not the tree nodes
+			memset(ctx, 0, sizeof(Ctx));
+			
+			ctx->use_count = tb_tls_push(tls, f->nodes.count * sizeof(TB_Register));
+			ctx->intervals = tb_tls_push(tls, f->nodes.count * sizeof(TB_Register));
+			ctx->phis = tb_tls_push(tls, tally.phi_count * sizeof(PhiValue));
+			
+			ctx->phi_queue = tb_tls_push(tls, tally.phi_count * sizeof(TB_Register));
+			
+			ctx->labels = tb_tls_push(tls, f->label_count * sizeof(uint32_t));
+			ctx->label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch));
+			ctx->ret_patches = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch));
 		}
 		
-		memset(ctx, 0, ctx_size);
+		ctx->tree_cap = tally.tree_count;
 		ctx->start_out = ctx->out = out;
 		ctx->f = f;
 		ctx->function_id = f - f->module->functions.data;
-		ctx->tree_cap = tree_cap;
 		ctx->last_fence = 1;
 		
 		ctx->is_sysv = (f->module->target_system == TB_SYSTEM_LINUX ||
 						f->module->target_system == TB_SYSTEM_MACOS);
 		
-		// parameters are locals too... ish
-		locals_count += f->prototype->param_count;
-		
-		if (is_ctx_heap_allocated) {
-			ctx->use_count = malloc(f->nodes.count * sizeof(TB_Register));
-			ctx->intervals = malloc(f->nodes.count * sizeof(TB_Register));
-			ctx->phis = malloc(phi_count * sizeof(PhiValue));
-			
-			ctx->phi_queue = malloc(phi_count * sizeof(TB_Register));
-			
-			ctx->labels = malloc(f->label_count * sizeof(uint32_t));
-			ctx->label_patches = malloc(label_patch_count * sizeof(LabelPatch));
-			ctx->ret_patches = malloc(return_count * sizeof(ReturnPatch));
-		} else {
-			ctx->use_count = tb_tls_push(tls, f->nodes.count * sizeof(TB_Register));
-			ctx->intervals = tb_tls_push(tls, f->nodes.count * sizeof(TB_Register));
-			ctx->phis = tb_tls_push(tls, phi_count * sizeof(PhiValue));
-			
-			ctx->phi_queue = tb_tls_push(tls, phi_count * sizeof(TB_Register));
-			
-			ctx->labels = tb_tls_push(tls, f->label_count * sizeof(uint32_t));
-			ctx->label_patches = tb_tls_push(tls, label_patch_count * sizeof(LabelPatch));
-			ctx->ret_patches = tb_tls_push(tls, return_count * sizeof(ReturnPatch));
-		}
-		
-		arrsetcap(ctx->locals, locals_count);
+		arrsetcap(ctx->locals, tally.locals_count);
 	}
 	
 	////////////////////////////////
 	// Analyze function for stack, live intervals and phi nodes
 	////////////////////////////////
+	// calculate the maximum parameter usage for a call
+	size_t caller_usage = 0;
+	loop(i, f->nodes.count) {
+		if (f->nodes.type[i] == TB_CALL ||
+			f->nodes.type[i] == TB_ECALL ||
+			f->nodes.type[i] == TB_VCALL) {
+			int param_usage = CALL_NODE_PARAM_COUNT(f, i);
+			if (caller_usage < param_usage) {
+				caller_usage = param_usage;
+			}
+		}
+	}
 	ctx->regs_to_save = 0;
 	
 	// On Win64 if we have at least one parameter, the caller must reserve 32bytes
@@ -810,6 +856,43 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 				break;
 			}
 			
+			case TB_INITIALIZE: {
+				TB_Register addr = p->mem_op.dst;
+				
+				TB_Module* m = f->module;
+				TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
+				TB_Initializer* i = (TB_Initializer*)&m->initializers[p->init.id / per_thread_stride][p->init.id % per_thread_stride];
+				
+				// rep stosb, ol' reliable
+				evict_gpr(ctx, f, RAX);
+				evict_gpr(ctx, f, RCX);
+				evict_gpr(ctx, f, RDI);
+				
+				{
+					Val param = val_rvalue(ctx, f, eval(ctx, f, addr, r), addr);
+					if (!is_value_gpr(&param, RDI)) {
+						Val dst = val_gpr(TB_PTR, RDI);
+						inst2(ctx, MOV, &dst, &param, TB_PTR);
+					}
+					free_val(ctx, f, param);
+				}
+				
+				{
+					Val dst = val_gpr(TB_PTR, RAX);
+					inst2(ctx, XOR, &dst, &dst, TB_I32);
+				}
+				
+				{
+					Val dst = val_gpr(TB_PTR, RCX);
+					Val src = val_imm(TB_TYPE_PTR, i->size);
+					inst2(ctx, MOV, &dst, &src, TB_PTR);
+				}
+				
+				// rep stosb
+				emit(0xF3);
+				emit(0xAA);
+				break;
+			}
 			case TB_MEMSET: {
 				TB_Register dst_reg = p->mem_op.dst;
 				TB_Register val_reg = p->mem_op.src;
@@ -1157,6 +1240,7 @@ static bool evict_xmm(Ctx* restrict ctx, TB_Function* f, XMM x) {
 static bool is_address_node(TB_RegType t) {
 	switch (t) {
 		case TB_LOCAL:
+		case TB_RESTRICT:
 		case TB_PARAM_ADDR:
 		case TB_ARRAY_ACCESS:
 		case TB_MEMBER_ACCESS:

@@ -154,12 +154,11 @@ typedef struct StackSlot {
 	XMM xmm : 8;
 } StackSlot;
 
-typedef short TreeNodeIndex;
+typedef int TreeNodeIndex;
 
 typedef struct TreeNode {
 	TB_Register reg;
 	TreeNodeIndex a, b;
-	Val val;
 } TreeNode;
 
 typedef struct Ctx {
@@ -233,7 +232,8 @@ typedef enum Inst2Type {
 typedef enum Inst2FPType {
 	FP_MOV, FP_ADD, FP_SUB, FP_MUL, FP_DIV, FP_CMP,
 	FP_CVT, // cvtss2sd or cvtsd2ss
-	FP_SQRT, FP_RSQRT
+	FP_SQRT, FP_RSQRT,
+	FP_AND, FP_OR, FP_XOR,
 } Inst2FPType;
 
 typedef enum ExtMode {

@@ -514,6 +514,10 @@ TB_TemporaryStorage* tb_tls_allocate() {
 	return store;
 }
 
+bool tb_tls_can_fit(TB_TemporaryStorage* store, size_t size) {
+	return (sizeof(TB_TemporaryStorage) + store->used + size < TB_TEMPORARY_STORAGE_SIZE);
+}
+
 void* tb_tls_try_push(TB_TemporaryStorage* store, size_t size) {
 	if (sizeof(TB_TemporaryStorage) + store->used + size >= TB_TEMPORARY_STORAGE_SIZE) {
 		return NULL;
@@ -820,15 +824,15 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
 			tb_print_type(dt, callback, user_data);
 			callback(user_data, " NOT r%u\n", p.unary);
 			break;
-            case TB_SQRT:
+            case TB_X86INTRIN_SQRT:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " SQRT r%u\n", p.unary);
+			callback(user_data, " X86.SQRT r%u\n", p.unary);
 			break;
-            case TB_RSQRT:
+            case TB_X86INTRIN_RSQRT:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " RSQRT r%u\n", p.unary);
+			callback(user_data, " X86.RSQRT r%u\n", p.unary);
 			break;
             case TB_LOCAL:
 			callback(user_data, "  r%u\t=\tLOCAL %d (%d align)\n", i, p.local.size, p.local.alignment);

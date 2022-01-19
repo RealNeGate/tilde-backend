@@ -256,6 +256,13 @@ TB_API TB_Register tb_inst_zxt(TB_Function* f, TB_Register src, TB_DataType dt) 
 	return r;
 }
 
+TB_API TB_Register tb_inst_bitcast(TB_Function* f, TB_Register src, TB_DataType dt) {
+	// TODO(NeGate): Do some size checks
+	TB_Register r = tb_make_reg(f, TB_BITCAST, dt);
+	f->nodes.payload[r].cvt.src = src;
+	return r;
+}
+
 TB_API TB_Register tb_inst_param(TB_Function* f, int param_id) {
 	assert(param_id < f->prototype->param_count);
 	return 2 + param_id;
@@ -452,9 +459,7 @@ TB_API TB_Register tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Functio
 	int param_end = f->vla.count;
 	
 	TB_Register r = tb_make_reg(f, TB_CALL, dt);
-	f->nodes.payload[r].call.target = target;
-	f->nodes.payload[r].call.param_start = param_start;
-	f->nodes.payload[r].call.param_end = param_end;
+	f->nodes.payload[r].call = (struct TB_NodeFunctionCall) { param_start, param_end, target };
 	return r;
 }
 
@@ -468,9 +473,7 @@ TB_API TB_Register tb_inst_vcall(TB_Function* f, TB_DataType dt, const TB_Regist
 	int param_end = f->vla.count;
 	
 	TB_Register r = tb_make_reg(f, TB_VCALL, dt);
-	f->nodes.payload[r].vcall.target = target;
-	f->nodes.payload[r].vcall.param_start = param_start;
-	f->nodes.payload[r].vcall.param_end = param_end;
+	f->nodes.payload[r].vcall = (struct TB_NodeDynamicCall) { param_start, param_end, target };
 	return r;
 }
 
@@ -484,40 +487,30 @@ TB_API TB_Register tb_inst_ecall(TB_Function* f, TB_DataType dt, const TB_Extern
 	int param_end = f->vla.count;
 	
 	TB_Register r = tb_make_reg(f, TB_ECALL, dt);
-	f->nodes.payload[r].ecall.target = target;
-	f->nodes.payload[r].ecall.param_start = param_start;
-	f->nodes.payload[r].ecall.param_end = param_end;
+	f->nodes.payload[r].ecall = (struct TB_NodeExternCall) { param_start, param_end, target };
 	return r;
 }
 
 TB_API void tb_inst_memset(TB_Function* f, TB_Register dst, TB_Register val, TB_Register size, TB_CharUnits align) {
 	TB_Register r = tb_make_reg(f, TB_MEMSET, TB_TYPE_PTR);
-	f->nodes.payload[r].mem_op.dst = dst;
-	f->nodes.payload[r].mem_op.src = val;
-	f->nodes.payload[r].mem_op.size = size;
-	f->nodes.payload[r].mem_op.align = align;
+	f->nodes.payload[r].mem_op = (struct TB_NodeMemXXX) { dst, val, size, align };
 }
 
 TB_API void tb_inst_memcpy(TB_Function* f, TB_Register dst, TB_Register src, TB_Register size, TB_CharUnits align) {
 	TB_Register r = tb_make_reg(f, TB_MEMCPY, TB_TYPE_PTR);
-	f->nodes.payload[r].mem_op.dst = dst;
-	f->nodes.payload[r].mem_op.src = src;
-	f->nodes.payload[r].mem_op.size = size;
-	f->nodes.payload[r].mem_op.align = align;
+	f->nodes.payload[r].mem_op = (struct TB_NodeMemXXX) { dst, src, size, align };
 }
 
 TB_API void tb_inst_memclr(TB_Function* f, TB_Register addr, TB_CharUnits size, TB_CharUnits align) {
 	TB_Register r = tb_make_reg(f, TB_MEMCLR, TB_TYPE_PTR);
-	f->nodes.payload[r].clear.dst = addr;
-	f->nodes.payload[r].clear.size = size;
-	f->nodes.payload[r].clear.align = align;
+	f->nodes.payload[r].clear = (struct TB_NodeMemClear) { addr, size, align };
 }
 
 TB_API TB_Register tb_inst_not(TB_Function* f, TB_Register n) {
 	TB_DataType dt = f->nodes.dt[n];
 	
 	TB_Register r = tb_make_reg(f, TB_NOT, dt);
-	f->nodes.payload[r].unary = n;
+	f->nodes.payload[r].unary = (struct TB_NodeUnary) { n };
 	return r;
 }
 
@@ -531,7 +524,7 @@ TB_API TB_Register tb_inst_neg(TB_Function* f, TB_Register n) {
 	}
 	
 	TB_Register r = tb_make_reg(f, TB_NEG, dt);
-	f->nodes.payload[r].unary = n;
+	f->nodes.payload[r].unary = (struct TB_NodeUnary) { n };
 	return r;
 }
 
@@ -548,6 +541,15 @@ TB_API TB_Register tb_inst_or(TB_Function* f, TB_Register a, TB_Register b) {
 TB_API TB_Register tb_inst_xor(TB_Function* f, TB_Register a, TB_Register b) {
 	// bitwise operators can't wrap
 	return tb_bin_arith(f, TB_XOR, TB_ASSUME_NUW, a, b);
+}
+
+TB_API TB_Register tb_inst_select(TB_Function* f, TB_Register cond, TB_Register a, TB_Register b) {
+	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	TB_DataType dt = f->nodes.dt[a];
+	
+	TB_Register r = tb_make_reg(f, TB_SELECT, dt);
+	f->nodes.payload[r].select = (struct TB_NodeSelect) { a, b, cond };
+	return r;
 }
 
 TB_API TB_Register tb_inst_add(TB_Function* f, TB_Register a, TB_Register b, TB_ArithmaticBehavior arith_behavior) {
@@ -711,19 +713,19 @@ TB_API TB_Register tb_inst_fdiv(TB_Function* f, TB_Register a, TB_Register b) {
 	return tb_bin_farith(f, TB_FDIV, a, b);
 }
 
-TB_API TB_Register tb_inst_sqrt(TB_Function* f, TB_Register a) {
+TB_API TB_Register tb_inst_x86_sqrt(TB_Function* f, TB_Register a) {
 	TB_DataType dt = f->nodes.dt[a];
 	
-	TB_Register r = tb_make_reg(f, TB_SQRT, dt);
-	f->nodes.payload[r].unary = a;
+	TB_Register r = tb_make_reg(f, TB_X86INTRIN_SQRT, dt);
+	f->nodes.payload[r].unary = (struct TB_NodeUnary) { a };
 	return r;
 }
 
-TB_API TB_Register tb_inst_rsqrt(TB_Function* f, TB_Register a) {
+TB_API TB_Register tb_inst_x86_rsqrt(TB_Function* f, TB_Register a) {
 	TB_DataType dt = f->nodes.dt[a];
 	
-	TB_Register r = tb_make_reg(f, TB_RSQRT, dt);
-	f->nodes.payload[r].unary = a;
+	TB_Register r = tb_make_reg(f, TB_X86INTRIN_RSQRT, dt);
+	f->nodes.payload[r].unary = (struct TB_NodeUnary) { a };
 	return r;
 }
 

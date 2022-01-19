@@ -186,9 +186,9 @@ X(p->i_arith.b); \
 break; \
 case TB_NOT: \
 case TB_NEG: \
-case TB_SQRT: \
-case TB_RSQRT: \
-X(p->unary); \
+case TB_X86INTRIN_SQRT: \
+case TB_X86INTRIN_RSQRT: \
+X(p->unary.src); \
 break; \
 case TB_FADD: \
 case TB_FSUB: \

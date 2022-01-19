@@ -64,9 +64,10 @@ static TreeNodeIndex gen_tree(Ctx* restrict ctx, TB_Function* f, TB_Register r) 
 		
 		case TB_NEG:
 		case TB_NOT:
-		case TB_SQRT:
-		case TB_RSQRT:
-		return push_unary(ctx, r, gen_tree(ctx, f, p->unary));
+		case TB_X86INTRIN_SQRT:
+		case TB_X86INTRIN_RSQRT:
+		case TB_RESTRICT:
+		return push_unary(ctx, r, gen_tree(ctx, f, p->unary.src));
 		
 		case TB_FADD:
 		case TB_FSUB:
@@ -290,7 +291,7 @@ static Val gen_float_const(Ctx* ctx, TB_Function* f, double float_value, TB_Data
 
 // Each of these eval_node functions will set a value in ctx->tree[n].val
 // we don't directly return it because it can change as spills happen.
-static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNodeIndex next) {
+static Val eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNodeIndex next) {
 	assert(n != 0 && "Invalid node");
 	TreeNode* restrict node = &ctx->tree[n];
 	TB_Register r = node->reg;
@@ -298,8 +299,6 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 	TB_RegTypeEnum reg_type = f->nodes.type[r];
 	TB_DataType dt = f->nodes.dt[r];
 	TB_RegPayload* restrict p = &f->nodes.payload[r];
-	
-	node->val.type = VAL_NONE;
 	
 	if (TB_UNLIKELY(ctx->use_count[r] > 1 || r < ctx->last_fence || r >= ctx->root_reg)) {
 		// these are always thought of as out-of-scope in a weird way and have their
@@ -314,25 +313,23 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			
 			if (slot) {
 				if (slot->gpr != GPR_NONE) {
-					node->val = val_gpr(dt.type, slot->gpr);
+					return val_gpr(dt.type, slot->gpr);
 				} else if (slot->xmm != XMM_NONE) {
-					node->val = val_xmm(dt, slot->xmm);
-					//printf("r%u <- xmm%d\n", r, slot->xmm);
+					return val_xmm(dt, slot->xmm);
 				} else {
-					node->val = val_stack(dt, slot->pos);
-					//node->val.mem.is_rvalue = true;
+					return val_stack(dt, slot->pos);
 				}
-				return;
 			}
 		}
 	}
 	
+	Val val = {};
 	switch (reg_type) {
 		case TB_SIGNED_CONST:
 		case TB_UNSIGNED_CONST: {
 			int32_t imm32 = (int32_t)p->s_const;
 			if (p->s_const == imm32) {
-				node->val = val_imm(dt, imm32);
+				val = val_imm(dt, imm32);
 				break;
 			}
 			
@@ -344,11 +341,11 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			emit(0xB8 + (dst.gpr & 0b111));
 			emit8(p->u_const);
 			
-			node->val = dst;
+			val = dst;
 			break;
 		}
 		case TB_FLOAT_CONST: {
-			node->val = gen_float_const(ctx, f, p->f_const, dt);
+			val = gen_float_const(ctx, f, p->f_const, dt);
 			break;
 		}
 		case TB_STRING_CONST: {
@@ -364,11 +361,11 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			uint32_t disp = tb_emit_const_patch(f->module, ctx->function_id, code_pos(), str, len, s_local_thread_id);
 			emit4(disp);
 			
-			node->val = dst;
+			val = dst;
 			break;
 		}
 		case TB_GLOBAL_ADDRESS: {
-			node->val = val_global(p->global_addr);
+			val = val_global(p->global_addr);
 			break;
 		}
 		case TB_FUNC_ADDRESS: {
@@ -388,7 +385,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 							   code_pos() - 4,
 							   s_local_thread_id);
 			
-			node->val = dst;
+			val = dst;
 			break;
 		}
 		case TB_EFUNC_ADDRESS: {
@@ -407,7 +404,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 								code_pos() - 4,
 								s_local_thread_id);
 			
-			node->val = dst;
+			val = dst;
 			break;
 		}
 		
@@ -416,11 +413,11 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			assert(TB_FIRST_PARAMETER_REG + id == r);
 			
 			StackSlot* slot = &ctx->locals[id];
-			if (slot->gpr != GPR_NONE) node->val = val_gpr(dt.type, slot->gpr);
-			else if (slot->xmm != XMM_NONE) node->val = val_xmm(dt, slot->xmm);
+			if (slot->gpr != GPR_NONE) val = val_gpr(dt.type, slot->gpr);
+			else if (slot->xmm != XMM_NONE) val = val_xmm(dt, slot->xmm);
 			else {
-				node->val = val_stack(dt, slot->pos);
-				node->val.mem.is_rvalue = true;
+				val = val_stack(dt, slot->pos);
+				val.mem.is_rvalue = true;
 			}
 			break;
 		}
@@ -429,7 +426,11 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			int id = f->nodes.payload[param].param.id;
 			assert(TB_FIRST_PARAMETER_REG + id == param);
 			
-			node->val = spill_stack_slot(ctx, f, &ctx->locals[id]);
+			val = spill_stack_slot(ctx, f, &ctx->locals[id]);
+			break;
+		}
+		case TB_RESTRICT: {
+			val = val_addressof(ctx, f, eval_node(ctx, f, node->a, n));
 			break;
 		}
 		
@@ -437,27 +438,23 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 		case TB_ECALL:
 		case TB_VCALL:
 		case TB_LOCAL: {
-			node->val = get_stack_slot(ctx, f, r, dt);
+			val = get_stack_slot(ctx, f, r, dt);
 			break;
 		}
 		
 		case TB_LOAD: {
-			eval_node(ctx, f, node->a, n);
-			Val v = val_addressof(ctx, f, ctx->tree[node->a].val);
+			Val v = val_addressof(ctx, f, eval_node(ctx, f, node->a, n));
 			
 			v.dt = dt;
 			v.mem.is_rvalue = true;
 			
-			node->val = v;
+			val = v;
 			break;
 		}
 		
 		case TB_ARRAY_ACCESS: {
-			eval_node(ctx, f, node->a, n);
-			eval_node(ctx, f, node->b, n);
-			
-			Val base = val_addressof(ctx, f, ctx->tree[node->a].val);
-			Val index = val_rvalue(ctx, f, ctx->tree[node->b].val, ctx->tree[node->b].reg);
+			Val base = val_addressof(ctx, f, eval_node(ctx, f, node->a, n));
+			Val index = val_rvalue(ctx, f, eval_node(ctx, f, node->b, n), ctx->tree[node->b].reg);
 			
 			uint32_t stride = p->array_access.stride;
 			
@@ -474,7 +471,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			// TODO(NeGate): Redo this code, it's scary levels of branchy
 			if (index.type == VAL_IMM) {
 				base.mem.disp += index.imm * stride;
-				node->val = base;
+				val = base;
 			} else if (index.type == VAL_GPR) {
 				GPR base_reg = base.mem.base;
 				int32_t disp = base.mem.disp;
@@ -491,7 +488,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 							assert(0 && "TODO");
 						} else {
 							// single index a[x] with a small power of two
-							node->val = val_base_index_disp(dt, base_reg, index.gpr, stride_as_shift, disp);
+							val = val_base_index_disp(dt, base_reg, index.gpr, stride_as_shift, disp);
 						}
 					} else {
 						if (index.is_owned) {
@@ -515,7 +512,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 						emit(0x01);
 						emit(mod_rx_rm(MOD_DIRECT, base_reg, index.gpr));
 						
-						node->val = index;
+						val = index;
 					}
 				} else {
 					Val dst = alloc_gpr(ctx, f, dt.type, n);
@@ -531,7 +528,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 					emit(0x01);
 					emit(mod_rx_rm(MOD_DIRECT, base_reg, dst.gpr));
 					
-					node->val = dst;
+					val = dst;
 				}
 			}
 			
@@ -541,35 +538,101 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 		}
 		
 		case TB_MEMBER_ACCESS: {
-			eval_node(ctx, f, node->a, n);
-			Val v = val_addressof(ctx, f, ctx->tree[node->a].val);
+			Val v = val_addressof(ctx, f, eval_node(ctx, f, node->a, n));
 			
 			v.mem.disp += p->member_access.offset;
-			node->val = v;
+			val = v;
 			break;
 		}
 		
-		case TB_NEG:
-		case TB_NOT: {
-			int op = (reg_type == TB_NEG ? NEG : NOT);
+		case TB_NEG: {
+			Val src = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
 			
-			eval_node(ctx, f, node->a, n);
-			Val src = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
+			if (dt.type == TB_F64) {
+				// .LCPI0_0:
+				//   .quad   0x8000000000000000
+				//   .quad   0x8000000000000000
+				// ...
+				// xorps   xmm0, xmmword ptr [rip + .LCPI0_0]
+				Val v = alloc_xmm(ctx, f, dt);
+				XMM dst_xmm = v.xmm;
+				
+				if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
+				emit(dt.type == TB_F64 ? 0xF2 : 0xF3);
+				emit(0x0F);
+				emit(0x57);
+				emit(((dst_xmm & 7) << 3) | RBP);
+				
+				uint64_t* rdata_payload = tb_platform_arena_alloc(2 * sizeof(uint64_t));
+				rdata_payload[0] = (1ull << 63ull);
+				rdata_payload[1] = (1ull << 63ull);
+				
+				uint32_t disp = tb_emit_const_patch(f->module, ctx->function_id, code_pos(), rdata_payload, 2 * sizeof(uint64_t), s_local_thread_id);
+				emit4(disp);
+				
+				return v;
+			} else if (dt.type == TB_F32) {
+				// .LCPI0_0:
+				//   .long   0x80000000
+				//   .long   0x80000000
+				//   .long   0x80000000
+				//   .long   0x80000000
+				// ...
+				// xorps   xmm0, xmmword ptr [rip + .LCPI0_0]
+				Val v = alloc_xmm(ctx, f, dt);
+				XMM dst_xmm = v.xmm;
+				
+				if (dst_xmm >= 8) emit(rex(true, dst_xmm, dst_xmm, 0));
+				emit(0x0F);
+				emit(0x57);
+				emit(((dst_xmm & 7) << 3) | RBP);
+				
+				uint64_t* rdata_payload = tb_platform_arena_alloc(4 * sizeof(uint32_t));
+				rdata_payload[0] = (1ull << 31ull);
+				rdata_payload[1] = (1ull << 31ull);
+				rdata_payload[2] = (1ull << 31ull);
+				rdata_payload[3] = (1ull << 31ull);
+				
+				uint32_t disp = tb_emit_const_patch(f->module, ctx->function_id, code_pos(), rdata_payload, 4 * sizeof(uint32_t), s_local_thread_id);
+				emit4(disp);
+				
+				return v;
+			} else {
+				bool recycled = src.is_owned && src.type != VAL_MEM;
+				if (recycled) {
+					inst1(ctx, NEG, &src);
+					
+					val = src;
+					break;
+				} else {
+					Val dst = alloc_gpr(ctx, f, dt.type, n);
+					
+					inst2(ctx, MOV, &dst, &src, dt.type);
+					inst1(ctx, NEG, &dst);
+					
+					free_val(ctx, f, src);
+					val = dst;
+					break;
+				}
+			}
+		}
+		case TB_NOT: {
+			Val src = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
 			
 			bool recycled = src.is_owned && src.type != VAL_MEM;
 			if (recycled) {
-				inst1(ctx, op, &src);
+				inst1(ctx, NOT, &src);
 				
-				node->val = src;
+				val = src;
 				break;
 			} else {
 				Val dst = alloc_gpr(ctx, f, dt.type, n);
 				
 				inst2(ctx, MOV, &dst, &src, dt.type);
-				inst1(ctx, op, &dst);
+				inst1(ctx, NOT, &dst);
 				
 				free_val(ctx, f, src);
-				node->val = dst;
+				val = dst;
 				break;
 			}
 		}
@@ -584,11 +647,8 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			
 			const static Inst2FPType tbl[] = { FP_ADD, FP_SUB, FP_MUL, FP_DIV };
 			
-			eval_node(ctx, f, node->a, n);
-			eval_node(ctx, f, node->b, n);
-			
-			Val a = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
-			Val b = val_rvalue(ctx, f, ctx->tree[node->b].val, ctx->tree[node->b].reg);
+			Val a = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
+			Val b = val_rvalue(ctx, f, eval_node(ctx, f, node->b, n), ctx->tree[node->b].reg);
 			
 			uint8_t flags = 0;
 			flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
@@ -610,7 +670,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			if (!recycled) free_val(ctx, f, a);
 			free_val(ctx, f, b);
 			
-			node->val = dst;
+			val = dst;
 			break;
 		}
 		
@@ -623,78 +683,115 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 		case TB_MUL: {
 			assert(dt.width == 0 && "TODO: Implement vector integer arithmatic");
 			
-			// NOTE(NeGate): It is kinda weird to put my struct here but it's only
-			// relevant here so :p
-			struct IselInfo {
-				int inst;
+			if (dt.width == 0) {
+				// simple scalar ops
+				const static Inst2Type ops[] = { AND, OR, XOR, ADD, SUB, IMUL };
+				bool can_immediates = (reg_type != TB_MUL);
+				bool can_mem_dst = (reg_type != TB_MUL);
 				
-				bool communitive;
-				bool has_immediates;
-				bool has_memory_dst;
-				bool has_memory_src;
-			};
-			
-			const static struct IselInfo tbl[] = {
-				// type               inst  commut  has_imm  mem_dst  mem_src   
-				[TB_AND - TB_AND] = { AND,  true,   true,    true,    true },
-				[TB_OR  - TB_AND] = { OR,   true,   true,    true,    true },
-				[TB_XOR - TB_AND] = { XOR,  true,   true,    true,    true },
-				[TB_ADD - TB_AND] = { ADD,  true,   true,    true,    true },
-				[TB_SUB - TB_AND] = { SUB,  false,  true,    true,    true },
-				[TB_MUL - TB_AND] = { IMUL, true,   false,   false,   true }
-			};
-			const struct IselInfo* info = &tbl[reg_type - TB_AND];
-			
-			eval_node(ctx, f, node->a, n);
-			eval_node(ctx, f, node->b, n);
-			
-			Val a = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
-			Val b = val_rvalue(ctx, f, ctx->tree[node->b].val, ctx->tree[node->b].reg);
-			
-			Val dst;
-			bool recycled = a.is_owned && !(is_value_mem(&a) && !info->has_memory_dst);
-			if (recycled) {
-				dst = a;
+				Val a = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
+				Val b = val_rvalue(ctx, f, eval_node(ctx, f, node->b, n), ctx->tree[node->b].reg);
+				
+				Val dst;
+				bool recycled = a.is_owned && !(is_value_mem(&a) && !can_mem_dst);
+				if (recycled) {
+					dst = a;
+				} else {
+					dst = alloc_gpr(ctx, f, dt.type, n);
+					inst2(ctx, MOV, &dst, &a, dt.type);
+				}
+				
+				// we can't do a OP mem, mem
+				// and imul doesn't support a simple OP r/m, imm mode
+				// we'll need a temporary in those cases
+				bool is_mem_dst = is_value_mem(&dst);
+				if ((is_mem_dst && is_value_mem(&b)) ||
+					(b.type == VAL_IMM && !can_immediates) ||
+					(is_mem_dst && !can_mem_dst)) {
+					Val tmp = alloc_gpr(ctx, f, dt.type, n);
+					
+					inst2(ctx, MOV, &tmp, &b, dt.type);
+					inst2(ctx, ops[reg_type - TB_AND], &dst, &tmp, dt.type);
+					
+					free_val(ctx, f, tmp);
+				} else {
+					inst2(ctx, ops[reg_type - TB_AND], &dst, &b, dt.type);
+				}
+				
+				if (!recycled) free_val(ctx, f, a);
+				free_val(ctx, f, b);
+				
+				val = dst;
+				break;
 			} else {
-				dst = alloc_gpr(ctx, f, dt.type, n);
-				inst2(ctx, MOV, &dst, &a, dt.type);
-			}
-			
-			// we can't do a OP mem, mem
-			// and imul doesn't support a simple OP r/m, imm mode
-			// we'll need a temporary in those cases
-			bool is_mem_dst = is_value_mem(&dst);
-			if ((is_mem_dst && is_value_mem(&b)) ||
-				(b.type == VAL_IMM && !info->has_immediates) ||
-				(is_mem_dst && !info->has_memory_dst)) {
-				Val tmp = alloc_gpr(ctx, f, dt.type, n);
+				// supported modes (for now)
+				assert(dt.width <= 2);
 				
-				inst2(ctx, MOV, &tmp, &b, dt.type);
-				inst2(ctx, info->inst, &dst, &tmp, dt.type);
+				Val a = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
+				Val b = val_rvalue(ctx, f, eval_node(ctx, f, node->b, n), ctx->tree[node->b].reg);
 				
-				free_val(ctx, f, tmp);
-			} else {
-				inst2(ctx, info->inst, &dst, &b, dt.type);
+				uint8_t flags = 0;
+				flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+				flags |= (dt.width) ? INST2FP_PACKED : 0;
+				
+				Val dst;
+				bool recycled = a.is_owned && a.type == VAL_XMM;
+				if (recycled) {
+					dst = a;
+				} else {
+					dst = alloc_xmm(ctx, f, dt);
+					inst2sse(ctx, FP_MOV, &dst, &a, flags);
+				}
+				
+				// integer multiplication is a complex case
+				switch (reg_type) {
+					case TB_AND: inst2sse(ctx, FP_AND, &dst, &b, flags); break;
+					case TB_OR: inst2sse(ctx, FP_OR, &dst, &b, flags); break;
+					case TB_XOR: inst2sse(ctx, FP_XOR, &dst, &b, flags); break;
+					case TB_ADD: {
+						// padd(b|w|d|q)
+						const static uint8_t opcode[] = { 0xFC, 0xFD, 0xFE, 0xD4 };
+						assert((dt.type - TB_I8) < tb_arrlen(opcode));
+						
+						emit(0x66);
+						emit(0x0F);
+						emit(opcode[dt.type - TB_I8]);
+						emit_memory_operand(ctx, dst.xmm, &b);
+						break;
+					}
+					case TB_SUB: {
+						// psub(b|w|d|q)
+						const static uint8_t opcode[] = { 0xF8, 0xF9, 0xFA, 0xFB };
+						assert((dt.type - TB_I8) < tb_arrlen(opcode));
+						
+						emit(0x66);
+						emit(0x0F);
+						emit(opcode[dt.type - TB_I8]);
+						emit_memory_operand(ctx, dst.xmm, &b);
+						break;
+					}
+					case TB_MUL: {
+						tb_panic(0, "Implement vector integer multiply");
+					}
+					default: tb_unreachable();
+				}
+				
+				if (!recycled) free_val(ctx, f, a);
+				free_val(ctx, f, b);
+				
+				val = dst;
+				break;
 			}
-			
-			if (!recycled) free_val(ctx, f, a);
-			free_val(ctx, f, b);
-			
-			node->val = dst;
-			break;
 		}
 		
 		case TB_SHR:
 		case TB_SHL:
 		case TB_SAR: {
-			eval_node(ctx, f, node->a, n);
-			eval_node(ctx, f, node->b, n);
-			
-			Val a = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
-			Val b = val_rvalue(ctx, f, ctx->tree[node->b].val, ctx->tree[node->b].reg);
+			Val a = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
+			Val b = val_rvalue(ctx, f, eval_node(ctx, f, node->b, n), ctx->tree[node->b].reg);
 			
 			if (a.type == VAL_IMM && b.type == VAL_IMM) {
-				node->val = val_imm(dt, a.imm << b.imm);
+				val = val_imm(dt, a.imm << b.imm);
 				break;
 			}
 			
@@ -718,7 +815,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 				emit(mod_rx_rm(MOD_DIRECT, 0x04, dst.gpr));
 				emit(b.imm);
 				
-				node->val = dst;
+				val = dst;
 				break;
 			}
 			
@@ -729,7 +826,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 				rcx_savepoint = -ctx->stack_usage;
 				
 				Val sav = val_stack(TB_TYPE_I64, rcx_savepoint);
-				Val reg = val_gpr(TB_I64, RDX);
+				Val reg = val_gpr(TB_I64, RCX);
 				inst2(ctx, MOV, &sav, &reg, dt.type);
 			}
 			
@@ -759,9 +856,17 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 				tb_unreachable();
 			}
 			
+			if (rcx_savepoint) {
+				// reload
+				Val sav = val_stack(TB_TYPE_I64, rcx_savepoint);
+				Val reg = val_gpr(TB_I64, RCX);
+				
+				inst2(ctx, MOV, &reg, &sav, dt.type);
+			}
+			
 			if (!recycled) free_val(ctx, f, a);
 			free_val(ctx, f, b);
-			node->val = dst;
+			val = dst;
 			break;
 		}
 		
@@ -800,11 +905,12 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 				inst2(ctx, MOV, &sav, &reg, dt.type);
 			}
 			
-			eval_node(ctx, f, node->a, n);
-			eval_node(ctx, f, node->b, n);
+			// reserve
+			ctx->gpr_allocator |= (1u << RAX);
+			ctx->gpr_allocator |= (1u << RDX);
 			
-			Val a = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
-			Val b = val_rvalue(ctx, f, ctx->tree[node->b].val, ctx->tree[node->b].reg);
+			Val a = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
+			Val b = val_rvalue(ctx, f, eval_node(ctx, f, node->b, n), ctx->tree[node->b].reg);
 			
 			// needs to mov the a value into rdx:rax
 			Val rax = val_gpr(dt.type, RAX);
@@ -831,26 +937,34 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			free_val(ctx, f, b);
 			free_val(ctx, f, a);
 			
-			if (rax_savepoint) {
-				/*Val sav = val_stack(TB_TYPE_I64, rax_savepoint);
-				Val reg = val_gpr(TB_I64, RAX);
-				inst2(ctx, MOV, &reg, &sav, dt.type);
-				
-				ctx->gpr_allocator |= (1u << RAX);*/
-				assert(0 && "TODO");
-			} else if (rdx_savepoint) {
-				/*Val sav = val_stack(TB_TYPE_I64, rdx_savepoint);
-				Val reg = val_gpr(TB_I64, RAX);
-				inst2(ctx, MOV, &reg, &sav, dt.type);
-				
-				ctx->gpr_allocator |= (1u << RDX);*/
-				assert(0 && "TODO");
-			}
-			
 			// the return value is in RAX for division
 			// and RDX for modulo
-			node->val = val_gpr(dt.type, is_div ? RAX : RDX);
-			node->val.is_owned = true;
+			val = val_gpr(dt.type, is_div ? RAX : RDX);
+			val.is_owned = true;
+			
+			// NOTE(NeGate): This is bit janky but to reload the old stuff to their
+			// registers while keeping our results we just XCHG (not optimal)
+			if (rax_savepoint) {
+				// reload
+				Val sav = val_stack(TB_TYPE_I64, rax_savepoint);
+				Val reg = val_gpr(TB_I64, RAX);
+				
+				inst2(ctx, is_div ? XCHG : MOV, &reg, &sav, dt.type);
+				if (is_div) val = sav;
+			} else {
+				ctx->gpr_allocator &= ~(1u << RAX);
+			}
+			
+			if (rdx_savepoint) {
+				// reload
+				Val sav = val_stack(TB_TYPE_I64, rdx_savepoint);
+				Val reg = val_gpr(TB_I64, RCX);
+				
+				inst2(ctx, is_div ? MOV : XCHG, &reg, &sav, dt.type);
+				if (!is_div) val = sav;
+			} else {
+				ctx->gpr_allocator &= ~(1u << RDX);
+			}
 			break;
 		}
 		
@@ -866,11 +980,8 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			// desugar booleans
 			if (dt.type == TB_BOOL) dt.type = TB_I8;
 			
-			eval_node(ctx, f, node->a, n);
-			eval_node(ctx, f, node->b, n);
-			
-			Val a = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
-			Val b = val_rvalue(ctx, f, ctx->tree[node->b].val, ctx->tree[node->b].reg);
+			Val a = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
+			Val b = val_rvalue(ctx, f, eval_node(ctx, f, node->b, n), ctx->tree[node->b].reg);
 			
 			Val dst;
 			bool convert_to_reg = (f->nodes.type[ctx->next_reg] != TB_IF);
@@ -921,17 +1032,16 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 				emit(0x90 + cc);
 				emit(mod_rx_rm(MOD_DIRECT, dst.gpr, dst.gpr));
 				
-				node->val = dst;
+				val = dst;
 			} else {
-				node->val = val_flags(cc);
+				val = val_flags(cc);
 			}
 			break;
 		}
 		
-		case TB_SQRT:
-		case TB_RSQRT: {
-			eval_node(ctx, f, node->a, n);
-			Val src = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
+		case TB_X86INTRIN_SQRT:
+		case TB_X86INTRIN_RSQRT: {
+			Val src = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
 			
 			bool recycled = src.is_owned && !is_value_mem(&src);
 			if (recycled) {
@@ -940,9 +1050,9 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 				uint8_t flags = 0;
 				flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
 				flags |= (dt.width) ? INST2FP_PACKED : 0;
-				inst2sse(ctx, reg_type == TB_SQRT ? FP_SQRT : FP_RSQRT, &src, &src, flags);
+				inst2sse(ctx, reg_type == TB_X86INTRIN_SQRT ? FP_SQRT : FP_RSQRT, &src, &src, flags);
 				
-				node->val = src;
+				val = src;
 				break;
 			} else {
 				Val v = alloc_xmm(ctx, f, dt);
@@ -950,17 +1060,16 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 				uint8_t flags = 0;
 				flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
 				flags |= (dt.width) ? INST2FP_PACKED : 0;
-				inst2sse(ctx, reg_type == TB_SQRT ? FP_SQRT : FP_RSQRT, &v, &src, flags);
+				inst2sse(ctx, reg_type == TB_X86INTRIN_SQRT ? FP_SQRT : FP_RSQRT, &v, &src, flags);
 				
 				free_val(ctx, f, src);
-				node->val = v;
+				val = v;
 				break;
 			}
 		}
 		
 		case TB_FLOAT_EXT: {
-			eval_node(ctx, f, node->a, n);
-			Val src = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
+			Val src = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
 			
 			Val v = alloc_xmm(ctx, f, dt);
 			
@@ -970,7 +1079,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			inst2sse(ctx, FP_CVT, &v, &src, flags);
 			
 			free_val(ctx, f, src);
-			node->val = v;
+			val = v;
 			break;
 		}
 		
@@ -980,11 +1089,10 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			assert(dt.width == 0 && "TODO: Implement vector zero extend");
 			bool sign_ext = (reg_type == TB_SIGN_EXT);
 			
-			eval_node(ctx, f, node->a, n);
-			Val src = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
+			Val src = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
 			if (src.type == VAL_IMM) {
 				src.dt = dt;
-				node->val = src;
+				val = src;
 				break;
 			}
 			
@@ -1006,13 +1114,12 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			}
 			
 			free_val(ctx, f, src);
-			node->val = dst;
+			val = dst;
 			break;
 		}
 		
 		case TB_TRUNCATE: {
-			eval_node(ctx, f, node->a, n);
-			Val src = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
+			Val src = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
 			
 			if (TB_IS_FLOAT_TYPE(dt.type)) {
 				Val v = alloc_xmm(ctx, f, dt);
@@ -1023,13 +1130,13 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 				inst2sse(ctx, FP_CVT, &v, &src, flags);
 				
 				free_val(ctx, f, src);
-				node->val = v;
+				val = v;
 				break;
 			} else {
 				if (src.type == VAL_IMM) {
 					src.dt = dt;
 					
-					node->val = src;
+					val = src;
 					break;
 				}
 				
@@ -1049,7 +1156,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 				}
 				
 				free_val(ctx, f, src);
-				node->val = dst;
+				val = dst;
 				break;
 			}
 		}
@@ -1058,27 +1165,25 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			PhiValue* phi = find_phi(ctx, r);
 			assert(phi && "PHI node not initialized but used");
 			
-			node->val = phi->value;
+			val = phi->value;
 			break;
 		}
 		
 		case TB_PTR2INT: {
 			assert(dt.type == TB_I64 && "TODO: implement the other ptr2int variations");
 			
-			eval_node(ctx, f, node->a, n);
-			Val src = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
+			Val src = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
 			
 			src.dt.type = TB_I64;
 			free_val(ctx, f, src);
 			
-			node->val = src;
+			val = src;
 			break;
 		}
 		case TB_FLOAT2INT: {
 			assert(dt.width == 0 && "TODO: Implement vector float2int");
 			
-			eval_node(ctx, f, node->a, n);
-			Val src = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
+			Val src = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
 			assert(src.type == VAL_MEM || src.type == VAL_GLOBAL || src.type == VAL_XMM);
 			
 			Val v = alloc_gpr(ctx, f, dt.type, n);
@@ -1115,16 +1220,15 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			emit_memory_operand(ctx, rx, &src);
 			
 			free_val(ctx, f, src);
-			node->val = v;
+			val = v;
 			break;
 		}
 		case TB_INT2FLOAT: {
 			assert(dt.width == 0 && "TODO: Implement vector int2float");
 			
-			eval_node(ctx, f, node->a, n);
-			Val src = val_rvalue(ctx, f, ctx->tree[node->a].val, ctx->tree[node->a].reg);
+			Val src = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
 			if (src.type == VAL_IMM) {
-				node->val = gen_float_const(ctx, f, (double)src.imm, dt);
+				val = gen_float_const(ctx, f, (double)src.imm, dt);
 				break;
 			}
 			
@@ -1161,7 +1265,7 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 			emit(0x0F);
 			emit(0x2A);
 			emit_memory_operand(ctx, rx, &src);
-			node->val = v;
+			val = v;
 			break;
 		}
 		
@@ -1170,22 +1274,41 @@ static void eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNo
 		break;
 	}
 	
-	assert(node->val.type && "Value not initialized");
+	assert(val.type && "Value not initialized");
+	
+	// Pre-emptive spilling:
+	// we just spill right before we would actually run out of registers
 	if (__builtin_popcount(ctx->gpr_allocator) >= 14) {
-		// Pre-emptive spilling:
-		// we just spill right before we would actually run out of registers
-		if (node->val.is_owned && node->val.type == VAL_GPR) {
+		if (val.is_owned && val.type == VAL_GPR) {
 			// move to stack slot
-			ctx->gpr_allocator &= ~(1u << node->val.gpr);
+			ctx->gpr_allocator &= ~(1u << val.gpr);
 			
 			int size = get_data_type_size(dt);
 			ctx->stack_usage = align_up(ctx->stack_usage + size, size);
 			
 			Val dst = val_stack(dt, -ctx->stack_usage);
-			inst2(ctx, MOV, &dst, &node->val, dt.type);
-			node->val = dst;
+			inst2(ctx, MOV, &dst, &val, dt.type);
+			val = dst;
+		}
+	} else if (__builtin_popcount(ctx->xmm_allocator) >= 14) {
+		if (val.is_owned && val.type == VAL_XMM) {
+			// move to stack slot
+			ctx->xmm_allocator &= ~(1u << val.xmm);
+			
+			int size = get_data_type_size(dt);
+			ctx->stack_usage = align_up(ctx->stack_usage + size, size);
+			
+			Val dst = val_stack(dt, -ctx->stack_usage);
+			uint8_t flags = 0;
+			flags |= (val.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+			flags |= (val.dt.width) ? INST2FP_PACKED : 0;
+			
+			inst2sse(ctx, FP_MOV, &dst, &val, flags);
+			val = dst;
 		}
 	}
+	
+	return val;
 }
 
 static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Register next) {
@@ -1202,13 +1325,9 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 	TreeNodeIndex root_node = ctx->tree_len - 1;
 	
 	//print_tree(ctx, f, root_node, 0);
-	
 	assert(ctx->tree[root_node].reg == root_reg);
-	ctx->tree[root_node].val.type = 0;
 	
-	eval_node(ctx, f, root_node, 0);
-	
-	Val v = ctx->tree[root_node].val;
+	Val v = eval_node(ctx, f, root_node, 0);
 	assert(v.type && "eval failed to initialize the resulting node.");
 	
 	if (v.type == VAL_GPR) {
@@ -1274,20 +1393,19 @@ static Val val_rvalue(Ctx* ctx, TB_Function* f, Val v, TB_Register r) {
 			assert(!v.mem.is_rvalue);
 			
 			Val new_v = alloc_gpr(ctx, f, v.dt.type, 0);
-			inst2(ctx, LEA, &new_v, &v, v.dt.type);
+			inst2(ctx, LEA, &new_v, &v, TB_PTR);
 			free_val(ctx, f, v);
 			return new_v;
 		} else if (!v.mem.is_rvalue) {
 			if (v.dt.width || TB_IS_FLOAT_TYPE(v.dt.type)) {
-				assert(0 && "TODO: Implement lvalue->rvalue conversion for XMM-based values");
-				/*Val new_v = def_new_xmm(ctx, f, r, v.dt);
+				Val new_v = alloc_xmm(ctx, f, v.dt);
 				
 				uint8_t flags = 0;
 				flags |= (v.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
 				flags |= (v.dt.width) ? INST2FP_PACKED : 0;
 				
 				inst2sse(ctx, FP_MOV, &new_v, &v, flags);
-				return new_v;*/
+				return new_v;
 			} else {
 				Val tmp = alloc_gpr(ctx, f, v.dt.type, 0);
 				inst2(ctx, MOV, &tmp, &v, v.dt.type);

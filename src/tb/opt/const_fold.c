@@ -1,10 +1,46 @@
 #include "../tb_internal.h"
 
+static bool tb_address_may_alias(TB_Function* f, TB_Register r, TB_Register target) {
+	switch (f->nodes.type[r]) {
+		case TB_ARRAY_ACCESS:
+		return tb_address_may_alias(f, f->nodes.payload[r].array_access.base, target);
+		
+		case TB_MEMBER_ACCESS:
+		return tb_address_may_alias(f, f->nodes.payload[r].member_access.base, target);
+		
+		case TB_RESTRICT:
+		return (target != r);
+		
+		default:
+		return false;
+	}
+}
+
 bool tb_opt_load_elim(TB_Function* f) {
 	int changes = 0;
 	
 	loop(i, f->nodes.count) {
-		if (f->nodes.type[i] == TB_LOAD) {
+		if (f->nodes.type[i] == TB_RESTRICT) {
+			TB_Register addr = f->nodes.payload[i].unary.src;
+			
+			// Find any duplicates
+			loop_range(j, i + 1, f->nodes.count) {
+				TB_RegType t = f->nodes.type[j];
+				
+				if (t == TB_RESTRICT &&
+					f->nodes.payload[j].unary.src == addr) {
+					f->nodes.type[j] = TB_PASS;
+					f->nodes.payload[j].pass = i;
+					changes++;
+				} else if (TB_IS_NODE_TERMINATOR(t) || TB_IS_NODE_SIDE_EFFECT(t)) {
+					// Can't read past side effects or terminators, don't
+					// know what might happen
+					if (t != TB_STORE || (t == TB_STORE && !tb_address_may_alias(f, f->nodes.payload[j].store.address, addr))) {
+						break;
+					}
+				}
+			}
+		} else if (f->nodes.type[i] == TB_LOAD) {
 			TB_DataType dt = f->nodes.dt[i];
 			TB_Register addr = f->nodes.payload[i].load.address;
 			uint32_t alignment = f->nodes.payload[i].load.alignment;
@@ -17,16 +53,15 @@ bool tb_opt_load_elim(TB_Function* f) {
 					f->nodes.payload[j].load.alignment == alignment &&
 					f->nodes.payload[j].load.address == addr &&
 					TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[j])) {
-					// if the load and store pair up, then elide the load
-					// don't remove the store since it's unknown if it's
-					// used elsewhere.
 					f->nodes.type[j] = TB_PASS;
 					f->nodes.payload[j].pass = i;
 					changes++;
 				} else if (TB_IS_NODE_TERMINATOR(t) || TB_IS_NODE_SIDE_EFFECT(t)) {
 					// Can't read past side effects or terminators, don't
 					// know what might happen
-					break;
+					if (t != TB_STORE || (t == TB_STORE && !tb_address_may_alias(f, f->nodes.payload[j].store.address, addr))) {
+						break;
+					}
 				}
 			}
 		} else if (f->nodes.type[i] == TB_MEMBER_ACCESS) {
@@ -50,6 +85,38 @@ bool tb_opt_load_elim(TB_Function* f) {
 					// Can't read past side effects or terminators, don't
 					// know what might happen
 					break;
+				}
+			}
+		}
+	}
+	
+	// STORE *p, _1 #
+	// ...          # anything but a possible store to addr, terminator,
+	// _2 = LOAD *p # or side effect then _2 = _1
+	loop(i, f->nodes.count) {
+		if (f->nodes.type[i] == TB_STORE) {
+			TB_DataType dt = f->nodes.dt[i];
+			TB_Register value = f->nodes.payload[i].store.value;
+			TB_Register addr = f->nodes.payload[i].store.address;
+			uint32_t alignment = f->nodes.payload[i].store.alignment;
+			
+			// Find any duplicates
+			loop_range(j, i + 1, f->nodes.count) {
+				TB_RegType t = f->nodes.type[j];
+				
+				if (t == TB_LOAD &&
+					f->nodes.payload[j].load.alignment == alignment &&
+					f->nodes.payload[j].load.address == addr &&
+					TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[j])) {
+					f->nodes.type[j] = TB_PASS;
+					f->nodes.payload[j].pass = value;
+					changes++;
+				} else if (TB_IS_NODE_TERMINATOR(t) || TB_IS_NODE_SIDE_EFFECT(t)) {
+					// Can't read past side effects or terminators, don't
+					// know what might happen
+					if (t != TB_STORE || (t == TB_STORE && !tb_address_may_alias(f, f->nodes.payload[j].store.address, addr))) {
+						break;
+					}
 				}
 			}
 		}

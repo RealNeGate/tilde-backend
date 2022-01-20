@@ -62,8 +62,8 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 	}
 #undef COUNT_OF_TYPE_IN_M128
 #else
-	for (size_t i = 1; i < f->nodes.count; i++) {
-		TB_RegType t = f->nodes[i].type;
+	loop(i, f->nodes.count) {
+		TB_RegType t = f->nodes.type[i];
 		
 		if (t == TB_PHI2) phi_count++;
 		else if (t == TB_RET) return_count++;
@@ -72,6 +72,12 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 		else if (t == TB_GOTO) label_patch_count++;
 	}
 #endif
+	
+	loop(i, f->nodes.count) if (f->nodes.type[i] == TB_SWITCH) {
+		const TB_RegPayload* p = &f->nodes.payload[i];
+		
+		label_patch_count += 1 + ((p->switch_.entries_end - p->switch_.entries_start) / 2);
+	}
 	
 	size_t tree_count = f->nodes.count;
 	if (tree_count < 2048) tree_count = 2048;
@@ -213,7 +219,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 	// Create phi lookup table for later evaluation stages
 	FOR_EACH_NODE(i, f, TB_PHI2, {
 					  ctx->phis[ctx->phi_count++] = (PhiValue){
-						  .reg = i, 
+						  .reg = i,
 						  .storage_a = f->nodes.payload[i].phi2.a,
 						  .storage_b = f->nodes.payload[i].phi2.b
 					  };
@@ -261,6 +267,20 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 		}
 		
 		arrput(ctx->locals, slot);
+	}
+	
+	if (proto->has_varargs) {
+		// spill the rest of the parameters (assumes they're all in the GPRs)
+		size_t gpr_count = (ctx->is_sysv ? 6 : 4);
+		size_t extra_param_count = proto->param_count > gpr_count ? 0 : gpr_count - proto->param_count;
+		
+		loop(i, extra_param_count) {
+			ctx->stack_usage = align_up(ctx->stack_usage + 8, 8);
+			
+			Val dst = val_stack(TB_TYPE_I64, -ctx->stack_usage);
+			Val src = val_gpr(TB_I64, parameter_gprs[proto->param_count + i]);
+			inst2(ctx, MOV, &dst, &src, TB_I64);
+		}
 	}
 	
 	// Just the splitting point between parameters
@@ -449,6 +469,62 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 			// ud2
 			emit(0x0F); 
 			emit(0x0B);
+		} else if (reg_type == TB_SWITCH) {
+			_Static_assert(_Alignof(TB_SwitchEntry) == _Alignof(TB_Register), "We don't want any unaligned accesses");
+			
+			Val key = eval(ctx, f, p.switch_.key, bb_end);
+			if (key.type == VAL_IMM) {
+				size_t entry_count = (p.switch_.entries_end - p.switch_.entries_start) / 2;
+				
+				TB_Label target_label = p.switch_.default_label;
+				loop(i, entry_count) {
+					TB_SwitchEntry* entry = (TB_SwitchEntry*) &f->vla.data[p.switch_.entries_start + (i * 2)];
+					
+					if (entry->key == key.imm) {
+						target_label = entry->value;
+						break;
+					}
+				}
+				
+				TB_Register target = tb_find_reg_from_label(f, target_label);
+				TB_Register target_end = f->nodes.payload[target].label.terminator;
+				eval_terminator_phis(ctx, f, bb, bb_end, target, target_end);
+				
+				TB_Label fallthrough_label = f->nodes.payload[bb_end + 1].label.id;
+				if (fallthrough_label != target) {
+					jmp(ctx, target_label);
+				}
+			} else {
+				TB_DataType dt = key.dt;
+				if (dt.type == TB_BOOL) dt.type = TB_I8;
+				
+				if (key.type != VAL_GPR) {
+					Val new_val = alloc_gpr(ctx, f, TB_PTR, 0);
+					inst2(ctx, CMP, &new_val, &key, dt.type);
+					free_val(ctx, f, key);
+					
+					key = new_val;
+				}
+				
+				// Shitty if-chain
+				// CMP key, 0
+				// JE .case0
+				// CMP key, 10
+				// JE .case10
+				// JMP .default
+				size_t entry_count = (p.switch_.entries_end - p.switch_.entries_start) / 2;
+				loop(i, entry_count) {
+					TB_SwitchEntry* entry = (TB_SwitchEntry*) &f->vla.data[p.switch_.entries_start + (i * 2)];
+					
+					Val operand = val_imm(dt, entry->key);
+					inst2(ctx, CMP, &key, &operand, dt.type);
+					
+					jcc(ctx, E, entry->value);
+				}
+				
+				jmp(ctx, p.switch_.default_label);
+				free_val(ctx, f, key);
+			}
 		} else if (reg_type == TB_UNREACHABLE) {
 			// doesn't need to do anything because it's all UB from here
 		} else {
@@ -528,6 +604,8 @@ static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register s
 	for (size_t j = start; j < end; j++) {
 		if (ctx->use_count[j] > 1 &&
 			f->nodes.type[j] != TB_PARAM &&
+			f->nodes.type[j] != TB_LOCAL &&
+			f->nodes.type[j] != TB_LABEL &&
 			f->nodes.type[j] != TB_SIGNED_CONST &&
 			f->nodes.type[j] != TB_UNSIGNED_CONST) {
 			/* nothing for now */
@@ -581,8 +659,6 @@ static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register s
 			} else if (f->nodes.type[j] == TB_CALL ||
 					   f->nodes.type[j] == TB_ECALL ||
 					   f->nodes.type[j] == TB_VCALL) {
-				TB_DataType dt = f->nodes.dt[j];
-				
 				// NOTE(NeGate): These generally generate their own stack slot reservations
 				// so just append to it.
 				StackSlot* slot = NULL;
@@ -591,13 +667,6 @@ static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register s
 					break;
 				}
 				assert(slot);
-				
-				if (slot->pos == 0) {
-					int size = get_data_type_size(dt);
-					ctx->stack_usage = align_up(ctx->stack_usage + size, size);
-					
-					slot->pos = -ctx->stack_usage;
-				}
 				
 				spill_stack_slot(ctx, f, slot);
 			} else if (f->nodes.type[j] != TB_LOCAL &&
@@ -705,7 +774,11 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 				uint16_t caller_saved = (ctx->is_sysv ? SYSV_ABI_CALLER_SAVED : WIN64_ABI_CALLER_SAVED);
 				for (size_t j = 0; j < 16; j++) {
 					if (caller_saved & (1u << j)) {
-						assert(evict_gpr(ctx, f, j));
+						evict_gpr(ctx, f, j);
+						/*if (!evict_gpr(ctx, f, j)) {
+							tb_function_print(f, tb_default_print_callback, stdout);
+							__debugbreak();
+						}*/
 					}
 				}
 				
@@ -714,7 +787,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					TB_DataType param_dt = f->nodes.dt[param_start + j];
 					
 					if (j < 4 && (param_dt.width || TB_IS_FLOAT_TYPE(param_dt.type))) {
-						assert(evict_xmm(ctx, f, j));
+						evict_xmm(ctx, f, j);
 					}
 				}
 				
@@ -751,17 +824,11 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 							flags |= (param.dt.width) ? INST2FP_PACKED : 0;
 							
 							inst2sse(ctx, FP_MOV, &dst, &param, flags);
-							
-							// reserve for a bit
-							ctx->xmm_allocator |= (1u << j);
 						} else if (param.dt.type != TB_VOID) {
 							Val dst = val_gpr(param.dt.type, parameter_gprs[j]);
 							if (!is_value_gpr(&param, parameter_gprs[j])) {
 								inst2(ctx, MOV, &dst, &param, param.dt.type);
 							}
-							
-							// reserve for a bit
-							ctx->gpr_allocator |= (1u << parameter_gprs[j]);
 						}
 					} else {
 						Val dst = val_base_disp(param.dt, RSP, 8 * j);
@@ -797,6 +864,12 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					}
 					
 					free_val(ctx, f, param);
+					
+					if (j < register_params) {
+						// reserve for a bit
+						if (is_xmm) ctx->xmm_allocator |= (1u << j);
+						else ctx->gpr_allocator |= (1u << parameter_gprs[j]);
+					}
 				}
 				
 				// CALL instruction and patch
@@ -1149,15 +1222,6 @@ static bool evict_gpr(Ctx* restrict ctx, TB_Function* f, GPR g) {
 		StackSlot* slot = &ctx->locals[i];
 		ctx->gpr_allocator &= ~(1u << g);
 		
-		// if it has no spill location we automatically give it one
-		TB_DataType dt = f->nodes.dt[slot->reg];
-		if (slot->pos == 0) {
-			int size = get_data_type_size(dt);
-			ctx->stack_usage = align_up(ctx->stack_usage + size, size);
-			
-			slot->pos = -ctx->stack_usage;
-		}
-		
 		spill_stack_slot(ctx, f, slot);
 		return true;
 	}
@@ -1166,6 +1230,7 @@ static bool evict_gpr(Ctx* restrict ctx, TB_Function* f, GPR g) {
 		PhiValue* restrict phi = &ctx->phis[i];
 		if (phi->value.type == VAL_GPR && phi->value.gpr == g) {
 			TB_DataType dt = f->nodes.dt[phi->reg];
+			if (dt.type == TB_BOOL) dt.type = TB_I8;
 			
 			ctx->gpr_allocator &= ~(1u << phi->value.gpr);
 			
@@ -1194,16 +1259,6 @@ static bool evict_xmm(Ctx* restrict ctx, TB_Function* f, XMM x) {
 		StackSlot* slot = &ctx->locals[i];
 		
 		ctx->xmm_allocator &= ~(1u << x);
-		
-		// if it has no spill location we automatically give it one
-		TB_DataType dt = f->nodes.dt[slot->reg];
-		if (slot->pos == 0) {
-			int size = get_data_type_size(dt);
-			ctx->stack_usage = align_up(ctx->stack_usage + size, size);
-			
-			slot->pos = -ctx->stack_usage;
-		}
-		
 		spill_stack_slot(ctx, f, slot);
 		return true;
 	}
@@ -1405,7 +1460,7 @@ static bool is_phi_that_contains(TB_Function* f, TB_Register phi, TB_Register re
 
 void x64_emit_call_patches(TB_Module* m, uint32_t func_layout[]) {
 	loop(i, m->max_threads) {
-		dyn_array(TB_FunctionPatch) patches = m->call_patches[i];
+		TB_FunctionPatch* patches = m->call_patches[i];
 		
 		loop(j, arrlen(patches)) {
 			TB_FunctionPatch* p = &patches[j];

@@ -753,6 +753,7 @@ TB_API TB_Register tb_inst_cmp_ne(TB_Function* f, TB_Register a, TB_Register b) 
 
 TB_API TB_Register tb_inst_cmp_ilt(TB_Function* f, TB_Register a, TB_Register b, bool signedness) {
 	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	assert(TB_IS_INTEGER_TYPE(f->nodes.dt[a].type) || f->nodes.dt[a].type == TB_PTR);
 	TB_DataType dt = f->nodes.dt[a];
 	
 	TB_Register r = tb_make_reg(f, signedness ? TB_CMP_SLT : TB_CMP_ULT, TB_TYPE_BOOL);
@@ -764,6 +765,7 @@ TB_API TB_Register tb_inst_cmp_ilt(TB_Function* f, TB_Register a, TB_Register b,
 
 TB_API TB_Register tb_inst_cmp_ile(TB_Function* f, TB_Register a, TB_Register b, bool signedness) {
 	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	assert(TB_IS_INTEGER_TYPE(f->nodes.dt[a].type) || f->nodes.dt[a].type == TB_PTR);
 	TB_DataType dt = f->nodes.dt[a];
 	
 	TB_Register r = tb_make_reg(f, signedness ? TB_CMP_SLE : TB_CMP_ULE, TB_TYPE_BOOL);
@@ -775,6 +777,7 @@ TB_API TB_Register tb_inst_cmp_ile(TB_Function* f, TB_Register a, TB_Register b,
 
 TB_API TB_Register tb_inst_cmp_igt(TB_Function* f, TB_Register a, TB_Register b, bool signedness) {
 	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	assert(TB_IS_INTEGER_TYPE(f->nodes.dt[a].type) || f->nodes.dt[a].type == TB_PTR);
 	TB_DataType dt = f->nodes.dt[a];
 	
 	TB_Register r = tb_make_reg(f, signedness ? TB_CMP_SLT : TB_CMP_ULT, TB_TYPE_BOOL);
@@ -786,6 +789,7 @@ TB_API TB_Register tb_inst_cmp_igt(TB_Function* f, TB_Register a, TB_Register b,
 
 TB_API TB_Register tb_inst_cmp_ige(TB_Function* f, TB_Register a, TB_Register b, bool signedness) {
 	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	assert(TB_IS_INTEGER_TYPE(f->nodes.dt[a].type) || f->nodes.dt[a].type == TB_PTR);
 	TB_DataType dt = f->nodes.dt[a];
 	
 	TB_Register r = tb_make_reg(f, signedness ? TB_CMP_SLE : TB_CMP_ULE, TB_TYPE_BOOL);
@@ -797,6 +801,7 @@ TB_API TB_Register tb_inst_cmp_ige(TB_Function* f, TB_Register a, TB_Register b,
 
 TB_API TB_Register tb_inst_cmp_flt(TB_Function* f, TB_Register a, TB_Register b) {
 	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	assert(TB_IS_FLOAT_TYPE(f->nodes.dt[a].type));
 	TB_DataType dt = f->nodes.dt[a];
 	
 	TB_Register r = tb_make_reg(f, TB_CMP_FLT, TB_TYPE_BOOL);
@@ -808,6 +813,7 @@ TB_API TB_Register tb_inst_cmp_flt(TB_Function* f, TB_Register a, TB_Register b)
 
 TB_API TB_Register tb_inst_cmp_fle(TB_Function* f, TB_Register a, TB_Register b) {
 	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	assert(TB_IS_FLOAT_TYPE(f->nodes.dt[a].type));
 	TB_DataType dt = f->nodes.dt[a];
 	
 	TB_Register r = tb_make_reg(f, TB_CMP_FLE, TB_TYPE_BOOL);
@@ -819,6 +825,7 @@ TB_API TB_Register tb_inst_cmp_fle(TB_Function* f, TB_Register a, TB_Register b)
 
 TB_API TB_Register tb_inst_cmp_fgt(TB_Function* f, TB_Register a, TB_Register b) {
 	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	assert(TB_IS_FLOAT_TYPE(f->nodes.dt[a].type));
 	TB_DataType dt = f->nodes.dt[a];
 	
 	TB_Register r = tb_make_reg(f, TB_CMP_FLT, TB_TYPE_BOOL);
@@ -830,6 +837,7 @@ TB_API TB_Register tb_inst_cmp_fgt(TB_Function* f, TB_Register a, TB_Register b)
 
 TB_API TB_Register tb_inst_cmp_fge(TB_Function* f, TB_Register a, TB_Register b) {
 	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	assert(TB_IS_FLOAT_TYPE(f->nodes.dt[a].type));
 	TB_DataType dt = f->nodes.dt[a];
 	
 	TB_Register r = tb_make_reg(f, TB_CMP_FLE, TB_TYPE_BOOL);
@@ -857,7 +865,7 @@ TB_API TB_Label tb_inst_new_label_id(TB_Function* f) {
 }
 
 TB_API TB_Register tb_inst_label(TB_Function* f, TB_Label id) {
-	assert(id < f->label_count);
+	assert(id >= 0 && id < f->label_count);
 	
 	TB_Register r = tb_make_reg(f, TB_LABEL, TB_TYPE_PTR);
 	f->nodes.payload[r].label.id = id;
@@ -873,6 +881,7 @@ TB_API TB_Register tb_inst_label(TB_Function* f, TB_Label id) {
 }
 
 TB_API void tb_inst_goto(TB_Function* f, TB_Label id) {
+	assert(id >= 0 && id < f->label_count);
 	if (f->current_label == TB_NULL_REG) {
 		// Was placed after a terminator instruction,
 		// just omit this to avoid any issues since it's

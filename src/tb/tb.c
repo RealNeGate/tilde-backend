@@ -161,6 +161,10 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
 	assert(id < TB_MAX_THREADS);
 	
 	int index = m->compiled_functions.count++;
+	TB_FunctionID index2 = f - m->functions.data;
+	
+	((void)index2);
+	assert(index == index2 && "Decouple compiled functions and IR functions");
 	
 	TB_CodeRegion* restrict region = get_or_allocate_code_region(m, id);
 	TB_FunctionOutput* func_out = m->compiled_functions.data;
@@ -795,6 +799,8 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
             case TB_CMP_ULE:
             case TB_CMP_SLT:
             case TB_CMP_SLE:
+            case TB_CMP_FLT:
+            case TB_CMP_FLE:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
 			callback(user_data, " r%u ", p.cmp.a);
@@ -806,12 +812,15 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
                 case TB_CMP_ULE: callback(user_data, "<="); break;
                 case TB_CMP_SLT: callback(user_data, "<"); break;
                 case TB_CMP_SLE: callback(user_data, "<="); break;
+                case TB_CMP_FLT: callback(user_data, "<"); break;
+                case TB_CMP_FLE: callback(user_data, "<="); break;
                 default: tb_todo();
 			}
             
 			callback(user_data, " r%u", p.cmp.b);
 			
 			if (type == TB_CMP_SLT || type == TB_CMP_SLE) callback(user_data, " # signed\n");
+			else if (type == TB_CMP_FLT || type == TB_CMP_FLE) callback(user_data, " # float\n");
 			else callback(user_data, "\n");
 			break;
             case TB_NEG:

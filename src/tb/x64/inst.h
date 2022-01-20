@@ -23,7 +23,7 @@ inline static void emit_memory_operand(Ctx* ctx, uint8_t rx, const Val* restrict
 		// If it needs an index, it'll put RSP into the base slot
 		// and write the real base into the SIB
 		uint8_t mod = MOD_INDIRECT_DISP32;
-		if (disp == 0) mod = MOD_INDIRECT;
+		if (disp == 0 && base != RBP) mod = MOD_INDIRECT;
 		else if (disp == (int8_t)disp) mod = MOD_INDIRECT_DISP8;
 		
 		emit(mod_rx_rm(mod, rx, needs_index ? RSP : base));
@@ -31,8 +31,11 @@ inline static void emit_memory_operand(Ctx* ctx, uint8_t rx, const Val* restrict
 			emit(mod_rx_rm(scale, (base & 7) == RSP ? RSP : index, base));
 		}
 		
-		if (mod == MOD_INDIRECT_DISP8) emit((int8_t)disp);
-		else if (mod == MOD_INDIRECT_DISP32) emit4(disp);
+		if (mod == MOD_INDIRECT_DISP8) {
+			emit((int8_t)disp);
+		} else if (mod == MOD_INDIRECT_DISP32) {
+			emit4(disp);
+		}
 	} else if (a->type == VAL_GLOBAL) {
 		emit(((rx & 7) << 3) | RBP);
 		emit4(0x0);
@@ -161,7 +164,7 @@ inline static void inst2(Ctx* ctx, Inst2Type op, const Val* a, const Val* b, int
 	
 	if (b->type == VAL_IMM) {
 		if (dt_type == TB_I8 || short_imm) {
-			assert(b->imm == (int8_t)b->imm);
+			if (short_imm) assert(b->imm == (int8_t)b->imm);
 			emit((int8_t)b->imm);
 		} else if (dt_type == TB_I16) {
 			assert(b->imm == (int16_t)b->imm);
@@ -181,6 +184,7 @@ inline static void inst2sse(Ctx* ctx, Inst2FPType op, const Val* a, const Val* b
 		[FP_SUB] = 0x5C,
 		[FP_DIV] = 0x5E,
 		[FP_CMP] = 0xC2,
+		[FP_UCOMI] = 0x2E,
 		[FP_CVT] = 0x5A,
 		[FP_SQRT] = 0x51,
 		[FP_RSQRT] = 0x52,

@@ -178,6 +178,8 @@ case TB_SUB: \
 case TB_MUL: \
 case TB_UDIV: \
 case TB_SDIV: \
+case TB_UMOD: \
+case TB_SMOD: \
 case TB_SAR: \
 case TB_SHL: \
 case TB_SHR: \
@@ -226,7 +228,7 @@ break; \
 case TB_RET: \
 X(p->ret.value); \
 break; \
-default: tb_todo(); \
+default: tb_panic(false, "Unknown node type: %d", type); \
 } \
 }
 

@@ -310,7 +310,7 @@ extern "C" {
 #define TB_IS_POINTER_TYPE(x) ((x) == TB_PTR)
 	
 	typedef struct TB_DataType {
-		TB_DataTypeEnum type : 8;
+		uint8_t type;
 		
 		// 2^N where N is the width value.
 		// Only integers and floats can be wide.
@@ -343,7 +343,7 @@ extern "C" {
 	typedef int TB_Label;
 	
 	typedef struct TB_SwitchEntry {
-		uint32_t key;
+		int32_t key;
 		TB_Label value;
 	} TB_SwitchEntry;
 	
@@ -602,8 +602,8 @@ extern "C" {
 	TB_API TB_Register tb_inst_fmul(TB_Function* f, TB_Register a, TB_Register b);
 	TB_API TB_Register tb_inst_fdiv(TB_Function* f, TB_Register a, TB_Register b);
 	
-	TB_API TB_Register tb_inst_sqrt(TB_Function* f, TB_Register a);
-	TB_API TB_Register tb_inst_rsqrt(TB_Function* f, TB_Register a);
+	TB_API TB_Register tb_inst_x86_sqrt(TB_Function* f, TB_Register a);
+	TB_API TB_Register tb_inst_x86_rsqrt(TB_Function* f, TB_Register a);
 	
 	// Comparisons
 	TB_API TB_Register tb_inst_cmp_eq(TB_Function* f, TB_Register a, TB_Register b);

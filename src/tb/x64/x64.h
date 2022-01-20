@@ -77,15 +77,16 @@ typedef enum Inst2FPFlags {
 } Inst2FPFlags;
 
 typedef struct Val {
-	ValType type : 8;
+	uint8_t type;
 	
 	// owned values means the value is owned
 	// by the node we get it from in tree eval
 	// if not we can't recycle the value or free
 	// it.
 	bool is_owned;
+	
 	TB_DataType dt;
-    
+	
 	union {
 		GPR gpr;
         XMM xmm;
@@ -157,8 +158,9 @@ typedef struct StackSlot {
 typedef int TreeNodeIndex;
 
 typedef struct TreeNode {
-	TB_Register reg;
-	TreeNodeIndex a, b;
+	TB_Register reg;       // 0
+	TreeNodeIndex a, b;    // 4
+	Val val;               // 8
 } TreeNode;
 
 typedef struct Ctx {
@@ -230,7 +232,7 @@ typedef enum Inst2Type {
 } Inst2Type;
 
 typedef enum Inst2FPType {
-	FP_MOV, FP_ADD, FP_SUB, FP_MUL, FP_DIV, FP_CMP,
+	FP_MOV, FP_ADD, FP_SUB, FP_MUL, FP_DIV, FP_CMP, FP_UCOMI,
 	FP_CVT, // cvtss2sd or cvtsd2ss
 	FP_SQRT, FP_RSQRT,
 	FP_AND, FP_OR, FP_XOR,

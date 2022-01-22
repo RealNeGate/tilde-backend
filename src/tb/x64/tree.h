@@ -18,9 +18,45 @@ static TreeNodeIndex push_binary(Ctx* restrict ctx, TB_Register r, TreeNodeIndex
 	return i;
 }
 
+static Val get_stack_slot(Ctx* restrict ctx, TB_Function* f, TB_Register r, TB_DataType dt) {
+	loop(i, arrlen(ctx->locals)) if (ctx->locals[i].reg == r) {
+		if (ctx->locals[i].xmm != XMM_NONE) return val_xmm(dt, ctx->locals[i].xmm);
+		else if (ctx->locals[i].gpr != GPR_NONE) return val_gpr(dt.type, ctx->locals[i].gpr);
+		
+		return val_stack(dt, ctx->locals[i].pos);
+	}
+	
+	tb_function_print(f, tb_default_print_callback, stdout);
+	abort();
+}
+
+static StackSlot* try_get_stack_slot(Ctx* restrict ctx, TB_Function* f, TB_Register r, TB_DataType dt) {
+	loop(i, arrlen(ctx->locals)) if (ctx->locals[i].reg == r) {
+		return &ctx->locals[i];
+	}
+	
+	return NULL;
+}
+
 static TreeNodeIndex gen_tree(Ctx* restrict ctx, TB_Function* f, TB_Register r) {
 	TB_RegTypeEnum reg_type = f->nodes.type[r];
 	TB_RegPayload* restrict p = &f->nodes.payload[r];
+	
+	// TODO(NeGate): Clean this up!!!
+	if (TB_UNLIKELY(ctx->use_count[r] > 1 || r < ctx->last_fence || r >= ctx->root_reg)) {
+		// these are always thought of as out-of-scope in a weird way and have their
+		// own special behavior described in the normal path.
+		if (reg_type != TB_UNSIGNED_CONST && 
+			reg_type != TB_SIGNED_CONST && 
+			reg_type != TB_FLOAT_CONST && 
+			reg_type != TB_PARAM && 
+			reg_type != TB_PARAM_ADDR && 
+			reg_type != TB_LOCAL && 
+			reg_type != TB_PHI2) {
+			StackSlot* slot = try_get_stack_slot(ctx, f, r, f->nodes.dt[r]);
+			if (slot) return push_leaf(ctx, r);
+		}
+	}
 	
 	switch (reg_type) {
 		case TB_PARAM:
@@ -159,26 +195,6 @@ static Val spill_stack_slot(Ctx* restrict ctx, TB_Function* f, StackSlot* restri
 	return dst;
 }
 
-static Val get_stack_slot(Ctx* restrict ctx, TB_Function* f, TB_Register r, TB_DataType dt) {
-	loop(i, arrlen(ctx->locals)) if (ctx->locals[i].reg == r) {
-		if (ctx->locals[i].xmm != XMM_NONE) return val_xmm(dt, ctx->locals[i].xmm);
-		else if (ctx->locals[i].gpr != GPR_NONE) return val_gpr(dt.type, ctx->locals[i].gpr);
-		
-		return val_stack(dt, ctx->locals[i].pos);
-	}
-	
-	tb_function_print(f, tb_default_print_callback, stdout);
-	abort();
-}
-
-static StackSlot* try_get_stack_slot(Ctx* restrict ctx, TB_Function* f, TB_Register r, TB_DataType dt) {
-	loop(i, arrlen(ctx->locals)) if (ctx->locals[i].reg == r) {
-		return &ctx->locals[i];
-	}
-	
-	return NULL;
-}
-
 static Val alloc_gpr(Ctx* restrict ctx, TB_Function* f, int dt_type, TreeNodeIndex node) {
 	if (ctx->gpr_allocator == 0xFFFF) {
 		// Start by trying to spill any locals until we've freed enough
@@ -222,6 +238,7 @@ static Val alloc_gpr(Ctx* restrict ctx, TB_Function* f, int dt_type, TreeNodeInd
 			};
 		}
 		
+		tb_function_print(f, tb_default_print_callback, stdout);
 		tb_panic(0, "Failed to allocate a GPR");
 	}
 	
@@ -254,6 +271,30 @@ static Val alloc_xmm(Ctx* restrict ctx, TB_Function* f, TB_DataType dt) {
 				.is_owned = true,
 				.dt = dt,
 				.xmm = ctx->locals[i].xmm
+			};
+		}
+		
+		loop_range(i, 1, ctx->tree_len) if (ctx->tree[i].val.type == VAL_XMM) {
+			printf("%s: expr XMM%d spill\n", f->name, ctx->tree[i].val.xmm);
+			
+			TB_DataType dt = ctx->tree[i].val.dt;
+			
+			int size = get_data_type_size(dt);
+			ctx->stack_usage = align_up(ctx->stack_usage + size, size);
+			
+			uint8_t flags = 0;
+			flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+			flags |= (dt.width) ? INST2FP_PACKED : 0;
+			
+			Val dst = val_stack(dt, -ctx->stack_usage);
+			Val src = ctx->tree[i].val;
+			inst2sse(ctx, FP_MOV, &dst, &src, flags);
+			
+			return (Val) {
+				.type = VAL_XMM,
+				.is_owned = true,
+				.dt = dt,
+				.xmm = src.xmm
 			};
 		}
 		
@@ -339,391 +380,6 @@ static Val gen_float_const(Ctx* ctx, TB_Function* f, double float_value, TB_Data
 	return v;
 }
 
-// Each of these eval_node functions will set a value in ctx->tree[n].val
-// we don't directly return it because it can change as spills happen.
-static Val eval_node(Ctx* restrict ctx, TB_Function* f, TreeNodeIndex n, TreeNodeIndex next) {
-	assert(n != 0 && "Invalid node");
-	TreeNode* restrict node = &ctx->tree[n];
-	TB_Register r = node->reg;
-	
-	TB_RegTypeEnum reg_type = f->nodes.type[r];
-	TB_DataType dt = f->nodes.dt[r];
-	TB_RegPayload* restrict p = &f->nodes.payload[r];
-	
-	if (TB_UNLIKELY(ctx->use_count[r] > 1 || r < ctx->last_fence || r >= ctx->root_reg)) {
-		// these are always thought of as out-of-scope in a weird way and have their
-		// own special behavior described in the normal path.
-		if (reg_type != TB_UNSIGNED_CONST && 
-			reg_type != TB_SIGNED_CONST && 
-			reg_type != TB_FLOAT_CONST && 
-			reg_type != TB_PARAM && 
-			reg_type != TB_PARAM_ADDR && 
-			reg_type != TB_LOCAL && 
-			reg_type != TB_PHI2) {
-			StackSlot* slot = try_get_stack_slot(ctx, f, r, dt);
-			
-			if (slot) {
-				if (slot->gpr != GPR_NONE) {
-					return val_gpr(dt.type, slot->gpr);
-				} else if (slot->xmm != XMM_NONE) {
-					return val_xmm(dt, slot->xmm);
-				} else {
-					return val_stack(dt, slot->pos);
-				}
-			}
-		}
-	}
-	
-	Val val = {};
-	switch (reg_type) {
-		case TB_SIGNED_CONST:
-		case TB_UNSIGNED_CONST: {
-			int32_t imm32 = (int32_t)p->s_const;
-			if (p->s_const == imm32) {
-				val = val_imm(dt, imm32);
-				break;
-			}
-			
-			// explicit mov
-			Val dst = alloc_gpr(ctx, f, dt.type, n);
-			
-			// mov reg64, imm64
-			emit(rex(true, 0x0, dst.gpr, 0));
-			emit(0xB8 + (dst.gpr & 0b111));
-			emit8(p->u_const);
-			
-			val = dst;
-			break;
-		}
-		case TB_FLOAT_CONST: {
-			val = gen_float_const(ctx, f, p->f_const, dt);
-			break;
-		}
-		case TB_STRING_CONST: {
-			const char* str = p->str_const.data;
-			size_t len = p->str_const.len;
-			
-			Val dst = alloc_gpr(ctx, f, dt.type, n);
-			
-			emit(rex(true, dst.gpr, RBP, 0));
-			emit(0x8D);
-			emit(mod_rx_rm(MOD_INDIRECT, dst.gpr, RBP));
-			
-			uint32_t disp = tb_emit_const_patch(f->module, ctx->function_id, code_pos(), str, len, s_local_thread_id);
-			emit4(disp);
-			
-			val = dst;
-			break;
-		}
-		case TB_GLOBAL_ADDRESS: {
-			val = val_global(p->global_addr);
-			break;
-		}
-		case TB_FUNC_ADDRESS: {
-			int source_func = f - f->module->functions.data;
-			
-			Val dst = alloc_gpr(ctx, f, dt.type, n);
-			
-			emit(rex(true, dst.gpr, RBP, 0));
-			emit(0x8D);
-			emit(mod_rx_rm(MOD_INDIRECT, dst.gpr, RBP));
-			emit4(0x0);
-			
-			int target_func = p->func_addr - f->module->functions.data;
-			tb_emit_call_patch(f->module,
-							   source_func,
-							   target_func,
-							   code_pos() - 4,
-							   s_local_thread_id);
-			
-			val = dst;
-			break;
-		}
-		case TB_EFUNC_ADDRESS: {
-			int source_func = f - f->module->functions.data;
-			
-			Val dst = alloc_gpr(ctx, f, dt.type, n);
-			
-			emit(rex(true, dst.gpr, RBP, 0));
-			emit(0x8D);
-			emit(mod_rx_rm(MOD_INDIRECT, dst.gpr, RBP));
-			emit4(0x0);
-			
-			tb_emit_ecall_patch(f->module,
-								source_func,
-								p->efunc_addr,
-								code_pos() - 4,
-								s_local_thread_id);
-			
-			val = dst;
-			break;
-		}
-		
-		case TB_RESTRICT: {
-			val = val_addressof(ctx, f, eval_node(ctx, f, node->a, n));
-			break;
-		}
-		
-		
-		
-		case TB_ARRAY_ACCESS: {
-			Val base = val_addressof(ctx, f, eval_node(ctx, f, node->a, n));
-			Val index = val_rvalue(ctx, f, eval_node(ctx, f, node->b, n), ctx->tree[node->b].reg);
-			
-			uint32_t stride = p->array_access.stride;
-			
-			// move into a GPR to make life easier
-			if (is_value_mem(&index)) {
-				Val new_index = alloc_gpr(ctx, f, dt.type, n);
-				
-				inst2(ctx, MOV, &new_index, &index, TB_I64);
-				
-				free_val(ctx, f, index);
-				index = new_index;
-			}
-			
-			// TODO(NeGate): Redo this code, it's scary levels of branchy
-			if (index.type == VAL_IMM) {
-				base.mem.disp += index.imm * stride;
-				val = base;
-			} else if (index.type == VAL_GPR) {
-				GPR base_reg = base.mem.base;
-				int32_t disp = base.mem.disp;
-				
-				if (tb_is_power_of_two(stride)) {
-					uint8_t stride_as_shift = __builtin_ffs(stride) - 1;
-					
-					if (stride_as_shift <= 3) {
-						// it can use the shift in the memory operand
-						if (base.mem.index != GPR_NONE) {
-							// nested indices a[x][y]
-							// lea dst, [base + index0 * scale0 + offset]
-							// lea dst, [dst + index1 * scale1] or add dst, index1
-							Val v = alloc_gpr(ctx, f, dt.type, 0);
-							inst2(ctx, LEA, &v, &base, TB_PTR);
-							
-							if (stride_as_shift) {
-								Val addr = val_base_index(dt, v.gpr, index.gpr, stride_as_shift);
-								inst2(ctx, LEA, &v, &addr, TB_PTR);
-							} else {
-								Val idx = val_gpr(TB_PTR, index.gpr);
-								inst2(ctx, ADD, &v, &idx, TB_PTR);
-							}
-							
-							val = val_base_disp(dt, v.gpr, 0);
-						} else {
-							// single index a[x] with a small power of two
-							val = val_base_index_disp(dt, base_reg, index.gpr, stride_as_shift, disp);
-						}
-					} else {
-						if (index.is_owned) {
-							Val new_index = alloc_gpr(ctx, f, dt.type, n);
-							
-							inst2(ctx, MOV, &new_index, &index, TB_I64);
-							
-							free_val(ctx, f, index);
-							index = new_index;
-						}
-						assert(stride_as_shift < 64);
-						
-						// shl index, stride_as_shift
-						emit(rex(true, 0x04, index.gpr, 0));
-						emit(0xC1);
-						emit(mod_rx_rm(MOD_DIRECT, 0x04, index.gpr));
-						emit(stride_as_shift);
-						
-						// add dst, index
-						emit(rex(true, base_reg, index.gpr, 0));
-						emit(0x01);
-						emit(mod_rx_rm(MOD_DIRECT, base_reg, index.gpr));
-						
-						val = index;
-					}
-				} else {
-					Val dst = alloc_gpr(ctx, f, dt.type, n);
-					
-					// imul dst, index, stride
-					emit(rex(true, dst.gpr, index.gpr, 0));
-					emit(0x69);
-					emit(mod_rx_rm(MOD_DIRECT, dst.gpr, index.gpr));
-					emit4(stride);
-					
-					// add dst, base
-					emit(rex(true, base_reg, dst.gpr, 0));
-					emit(0x01);
-					emit(mod_rx_rm(MOD_DIRECT, base_reg, dst.gpr));
-					
-					val = dst;
-				}
-			}
-			
-			free_val(ctx, f, base);
-			free_val(ctx, f, index);
-			break;
-		}
-		
-		case TB_MEMBER_ACCESS: {
-			Val v = val_addressof(ctx, f, eval_node(ctx, f, node->a, n));
-			
-			v.mem.disp += p->member_access.offset;
-			val = v;
-			break;
-		}
-		
-		
-		// Float binary operators
-		case TB_FADD:
-		case TB_FSUB:
-		case TB_FMUL:
-		case TB_FDIV: {
-			// supported modes (for now)
-			assert(dt.width <= 2);
-			
-			const static Inst2FPType tbl[] = { FP_ADD, FP_SUB, FP_MUL, FP_DIV };
-			
-			Val a = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
-			Val b = val_rvalue(ctx, f, eval_node(ctx, f, node->b, n), ctx->tree[node->b].reg);
-			
-			uint8_t flags = 0;
-			flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
-			flags |= (dt.width) ? INST2FP_PACKED : 0;
-			
-			Val dst;
-			bool recycled = a.is_owned && a.type == VAL_XMM;
-			if (recycled) {
-				dst = a;
-				//printf("recycled XMM%d for r%d (originally from r%d)\n", a.xmm, r, ctx->tree[node->a].reg);
-			} else {
-				dst = alloc_xmm(ctx, f, dt);
-				inst2sse(ctx, FP_MOV, &dst, &a, flags);
-			}
-			
-			Inst2FPType op = tbl[reg_type - TB_FADD];
-			inst2sse(ctx, op, &dst, &b, flags);
-			
-			if (!recycled) free_val(ctx, f, a);
-			free_val(ctx, f, b);
-			
-			val = dst;
-			break;
-		}
-		
-		// Integer binary operations
-		case TB_AND:
-		case TB_OR:
-		case TB_XOR:
-		case TB_ADD:
-		case TB_SUB:
-		case TB_MUL: {
-			if (dt.width == 0) {
-				// simple scalar ops
-				const static Inst2Type ops[] = { AND, OR, XOR, ADD, SUB, IMUL };
-				bool can_immediates = (reg_type != TB_MUL);
-				bool can_mem_dst = (reg_type != TB_MUL);
-				
-				Val a = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
-				Val b = val_rvalue(ctx, f, eval_node(ctx, f, node->b, n), ctx->tree[node->b].reg);
-				
-				Val dst;
-				bool recycle = a.is_owned && !(is_value_mem(&a) && !can_mem_dst);
-				if (recycle) {
-					dst = a;
-				} else {
-					dst = alloc_gpr(ctx, f, dt.type, n);
-					inst2(ctx, MOV, &dst, &a, dt.type);
-				}
-				
-				// we can't do a OP mem, mem
-				// and imul doesn't support a simple OP r/m, imm mode
-				// we'll need a temporary in those cases
-				bool is_mem_dst = is_value_mem(&dst);
-				if ((is_mem_dst && is_value_mem(&b)) ||
-					(b.type == VAL_IMM && !can_immediates) ||
-					(is_mem_dst && !can_mem_dst)) {
-					Val tmp = alloc_gpr(ctx, f, dt.type, n);
-					
-					inst2(ctx, MOV, &tmp, &b, dt.type);
-					inst2(ctx, ops[reg_type - TB_AND], &dst, &tmp, dt.type);
-					
-					free_val(ctx, f, tmp);
-				} else {
-					inst2(ctx, ops[reg_type - TB_AND], &dst, &b, dt.type);
-				}
-				
-				if (!recycle) free_val(ctx, f, a);
-				free_val(ctx, f, b);
-				
-				val = dst;
-				break;
-			} else {
-				// supported modes (for now)
-				assert(dt.width <= 2);
-				
-				Val a = val_rvalue(ctx, f, eval_node(ctx, f, node->a, n), ctx->tree[node->a].reg);
-				Val b = val_rvalue(ctx, f, eval_node(ctx, f, node->b, n), ctx->tree[node->b].reg);
-				
-				uint8_t flags = 0;
-				flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
-				flags |= (dt.width) ? INST2FP_PACKED : 0;
-				
-				Val dst;
-				bool recycle = a.is_owned && a.type == VAL_XMM;
-				if (recycle) {
-					dst = a;
-				} else {
-					dst = alloc_xmm(ctx, f, dt);
-					inst2sse(ctx, FP_MOV, &dst, &a, flags);
-				}
-				
-				// integer multiplication is a complex case
-				switch (reg_type) {
-					case TB_AND: inst2sse(ctx, FP_AND, &dst, &b, flags); break;
-					case TB_OR: inst2sse(ctx, FP_OR, &dst, &b, flags); break;
-					case TB_XOR: inst2sse(ctx, FP_XOR, &dst, &b, flags); break;
-					case TB_ADD: {
-						// padd(b|w|d|q)
-						const static uint8_t opcode[] = { 0xFC, 0xFD, 0xFE, 0xD4 };
-						assert((dt.type - TB_I8) < tb_arrlen(opcode));
-						
-						emit(0x66);
-						emit(0x0F);
-						emit(opcode[dt.type - TB_I8]);
-						emit_memory_operand(ctx, dst.xmm, &b);
-						break;
-					}
-					case TB_SUB: {
-						// psub(b|w|d|q)
-						const static uint8_t opcode[] = { 0xF8, 0xF9, 0xFA, 0xFB };
-						assert((dt.type - TB_I8) < tb_arrlen(opcode));
-						
-						emit(0x66);
-						emit(0x0F);
-						emit(opcode[dt.type - TB_I8]);
-						emit_memory_operand(ctx, dst.xmm, &b);
-						break;
-					}
-					case TB_MUL: {
-						tb_panic(0, "Implement vector integer multiply");
-					}
-					default: tb_unreachable();
-				}
-				
-				if (!recycle) free_val(ctx, f, a);
-				free_val(ctx, f, b);
-				
-				val = dst;
-				break;
-			}
-		}
-		
-		default:
-		assert(0 && "TODO: Implement node eval");
-		break;
-	}
-	
-	return val;
-}
-
 // some macros local to eval
 #define kill(n) (ctx->tree[n].val = (Val){})
 #define use(n) (ctx->tree[n].val)
@@ -749,28 +405,24 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 #else
 	// Iterate over the nodes linearly since we've effectively scheduled everything
 	loop_range(n, 1, ctx->tree_len) {
-		// Spill if necessary
-		int steps = 0;
-		while (steps < 2 && __builtin_popcount(ctx->gpr_allocator) >= 14) {
-			loop_range(j, 1, n) if (ctx->tree[j].val.type == VAL_GPR) {
-				TB_DataType dt = ctx->tree[j].val.dt;
-				
-				int size = get_data_type_size(dt);
-				ctx->stack_usage = align_up(ctx->stack_usage + size, size);
-				
-				Val dst = val_stack(dt, -ctx->stack_usage);
-				Val src = ctx->tree[j].val;
-				inst2(ctx, MOV, &dst, &src, dt.type);
-				
-				ctx->tree[j].val = dst;
-				ctx->gpr_allocator &= ~(1u << src.gpr);
-				
-				//printf("Spill internal node %zu to [RBP-%d]\n", j, ctx->stack_usage);
-				break;
+		// Try to spill if things are filling up
+		for (size_t steps = 0; __builtin_popcount(ctx->gpr_allocator) >= 12 && steps < 2; steps++) {
+			loop_range(j, 1, n) {
+				if (ctx->tree[j].val.type == VAL_GPR) {
+					TB_DataType dt = ctx->tree[j].val.dt;
+					
+					int size = get_data_type_size(dt);
+					ctx->stack_usage = align_up(ctx->stack_usage + size, size);
+					
+					Val dst = val_stack(dt, -ctx->stack_usage);
+					Val src = ctx->tree[j].val;
+					inst2(ctx, MOV, &dst, &src, dt.type);
+					
+					ctx->tree[j].val = dst;
+					ctx->gpr_allocator &= ~(1u << src.gpr);
+					break;
+				}
 			}
-			
-			steps++;
-			//printf("Allocated: %d / %d\n", __builtin_popcount(ctx->gpr_allocator), 16);
 		}
 		
 		TreeNode* restrict node = &ctx->tree[n];
@@ -907,13 +559,13 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 			}
 			
 			case TB_RESTRICT: {
-				val = val_addressof(ctx, f, eval_node(ctx, f, node->a, n));
+				val = val_addressof(ctx, f, use(node->a));
 				kill(node->a);
 				break;
 			}
 			case TB_ARRAY_ACCESS: {
-				Val base = val_addressof(ctx, f, eval_node(ctx, f, node->a, n));
-				Val index = val_rvalue(ctx, f, eval_node(ctx, f, node->b, n), ctx->tree[node->b].reg);
+				Val base = val_addressof(ctx, f, use(node->a));
+				Val index = val_rvalue(ctx, f, use(node->b), ctx->tree[node->b].reg);
 				
 				uint32_t stride = p->array_access.stride;
 				
@@ -935,6 +587,9 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 					GPR base_reg = base.mem.base;
 					int32_t disp = base.mem.disp;
 					
+					// use index as dst
+					bool recycle = false;
+					
 					if (tb_is_power_of_two(stride)) {
 						uint8_t stride_as_shift = __builtin_ffs(stride) - 1;
 						
@@ -944,18 +599,18 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 								// nested indices a[x][y]
 								// lea dst, [base + index0 * scale0 + offset]
 								// lea dst, [dst + index1 * scale1] or add dst, index1
-								Val v = alloc_gpr(ctx, f, dt.type, 0);
-								inst2(ctx, LEA, &v, &base, TB_PTR);
+								val = alloc_gpr(ctx, f, dt.type, 0);
+								inst2(ctx, LEA, &val, &base, TB_PTR);
 								
 								if (stride_as_shift) {
-									Val addr = val_base_index(dt, v.gpr, index.gpr, stride_as_shift);
-									inst2(ctx, LEA, &v, &addr, TB_PTR);
+									Val addr = val_base_index(dt, val.gpr, index.gpr, stride_as_shift);
+									inst2(ctx, LEA, &val, &addr, TB_PTR);
 								} else {
 									Val idx = val_gpr(TB_PTR, index.gpr);
-									inst2(ctx, ADD, &v, &idx, TB_PTR);
+									inst2(ctx, ADD, &val, &idx, TB_PTR);
 								}
 								
-								val = val_base_disp(dt, v.gpr, 0);
+								val = val_base_disp(dt, val.gpr, 0);
 							} else {
 								// single index a[x] with a small power of two
 								val = val_base_index_disp(dt, base_reg, index.gpr, stride_as_shift, disp);
@@ -963,11 +618,10 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 						} else {
 							if (index.is_owned) {
 								Val new_index = alloc_gpr(ctx, f, dt.type, n);
-								
 								inst2(ctx, MOV, &new_index, &index, TB_I64);
-								
-								free_val(ctx, f, index);
 								index = new_index;
+								
+								recycle = true;
 							}
 							assert(stride_as_shift < 64);
 							
@@ -998,6 +652,9 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 						emit(0x01);
 						emit(mod_rx_rm(MOD_DIRECT, base_reg, val.gpr));
 					}
+					
+					if (!recycle) free_val(ctx, f, index);
+					free_val(ctx, f, base);
 				}
 				
 				kill(node->a);
@@ -1006,8 +663,8 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 			}
 			case TB_MEMBER_ACCESS: {
 				val = val_addressof(ctx, f, use(node->a));
-				
 				val.mem.disp += p->member_access.offset;
+				
 				kill(node->a);
 				break;
 			}
@@ -1098,6 +755,44 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 					
 					free_val(ctx, f, src);
 				}
+				break;
+			}
+			
+			// Float binary operators
+			case TB_FADD:
+			case TB_FSUB:
+			case TB_FMUL:
+			case TB_FDIV: {
+				// supported modes (for now)
+				assert(dt.width <= 2);
+				
+				const static Inst2FPType tbl[] = { FP_ADD, FP_SUB, FP_MUL, FP_DIV };
+				
+				Val a = val_rvalue(ctx, f, use(node->a), ctx->tree[node->a].reg);
+				Val b = val_rvalue(ctx, f, use(node->b), ctx->tree[node->b].reg);
+				
+				uint8_t flags = 0;
+				flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+				flags |= (dt.width) ? INST2FP_PACKED : 0;
+				
+				Val dst;
+				bool recycle = a.is_owned && a.type == VAL_XMM;
+				if (recycle) {
+					dst = a;
+				} else {
+					dst = alloc_xmm(ctx, f, dt);
+					inst2sse(ctx, FP_MOV, &dst, &a, flags);
+				}
+				
+				Inst2FPType op = tbl[reg_type - TB_FADD];
+				inst2sse(ctx, op, &dst, &b, flags);
+				
+				if (!recycle) free_val(ctx, f, a);
+				free_val(ctx, f, b);
+				
+				kill(node->a);
+				kill(node->b);
+				val = dst;
 				break;
 			}
 			
@@ -1507,6 +1202,8 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 					flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
 					flags |= (dt.width) ? INST2FP_PACKED : 0;
 					inst2sse(ctx, reg_type == TB_X86INTRIN_SQRT ? FP_SQRT : FP_RSQRT, &val, &src, flags);
+					
+					free_val(ctx, f, src);
 				}
 				break;
 			}

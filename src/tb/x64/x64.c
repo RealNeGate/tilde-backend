@@ -534,11 +534,16 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 		// Kill any stack slots and registers which aren't used 
 		// beyond this basic block
 		if (next_label < f->nodes.count) {
-			loop_range(i, bb, bb_end) if (ctx->intervals[i] <= bb_end) {
-				loop(j, arrlen(ctx->locals)) if (ctx->locals[j].reg == i) {
-					//printf("kill r%d\n", i);
-					arrdelswap(ctx->locals, j);
-					break;
+			loop_range(i, bb, bb_end) {
+				if (f->nodes.type[i] != TB_PARAM_ADDR &&
+					f->nodes.type[i] != TB_PARAM &&
+					f->nodes.type[i] != TB_LOCAL &&
+					ctx->intervals[i] <= bb_end) {
+					loop(j, arrlen(ctx->locals)) if (ctx->locals[j].reg == i) {
+						//printf("%s: kill r%d\n", f->name, i);
+						arrdelswap(ctx->locals, j);
+						break;
+					}
 				}
 			}
 		}
@@ -774,11 +779,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 				uint16_t caller_saved = (ctx->is_sysv ? SYSV_ABI_CALLER_SAVED : WIN64_ABI_CALLER_SAVED);
 				for (size_t j = 0; j < 16; j++) {
 					if (caller_saved & (1u << j)) {
-						evict_gpr(ctx, f, j);
-						/*if (!evict_gpr(ctx, f, j)) {
-							tb_function_print(f, tb_default_print_callback, stdout);
-							__debugbreak();
-						}*/
+						if (!evict_gpr(ctx, f, j)) ctx->gpr_allocator &= ~(1u << j);
 					}
 				}
 				
@@ -787,7 +788,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					TB_DataType param_dt = f->nodes.dt[param_start + j];
 					
 					if (j < 4 && (param_dt.width || TB_IS_FLOAT_TYPE(param_dt.type))) {
-						evict_xmm(ctx, f, j);
+						if (!evict_xmm(ctx, f, j)) ctx->xmm_allocator &= ~(1u << j);
 					}
 				}
 				
@@ -921,8 +922,10 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					
 					if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
 						slot.xmm = XMM0;
+						ctx->xmm_allocator |= (1u << XMM0);
 					} else {
 						slot.gpr = RAX;
+						ctx->gpr_allocator |= (1u << RAX);
 					}
 					arrput(ctx->locals, slot);
 				}

@@ -810,8 +810,8 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 					// simple scalar ops
 					const static Inst2Type ops[] = { AND, OR, XOR, ADD, SUB, IMUL };
 					
-					bool recycled = a.is_owned && !(is_value_mem(&a) && reg_type == TB_MUL);
-					if (recycled) {
+					bool recycle = a.is_owned && !(is_value_mem(&a) && reg_type == TB_MUL);
+					if (recycle) {
 						val = a;
 					} else {
 						val = alloc_gpr(ctx, f, dt.type, n);
@@ -837,7 +837,7 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 						inst2(ctx, ops[reg_type - TB_AND], &val, &b, dt.type);
 					}
 					
-					free_val(ctx, f, a);
+					if (!recycle) free_val(ctx, f, a);
 					free_val(ctx, f, b);
 				} else {
 					// supported modes (for now)
@@ -847,8 +847,8 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 					flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
 					flags |= (dt.width) ? INST2FP_PACKED : 0;
 					
-					bool recycled = a.is_owned && a.type == VAL_XMM;
-					if (recycled) {
+					bool recycle = a.is_owned && a.type == VAL_XMM;
+					if (recycle) {
 						val = a;
 					} else {
 						val = alloc_xmm(ctx, f, dt);
@@ -888,7 +888,7 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 						default: tb_unreachable();
 					}
 					
-					free_val(ctx, f, a);
+					if (!recycle) free_val(ctx, f, a);
 					free_val(ctx, f, b);
 				}
 				
@@ -908,15 +908,13 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 					break;
 				}
 				
-				bool recycled = a.is_owned && a.type == VAL_GPR;
-				if (recycled) {
+				bool recycle = a.is_owned && a.type == VAL_GPR;
+				if (recycle) {
 					val = a;
 				} else {
 					val = alloc_gpr(ctx, f, dt.type, n);
 					inst2(ctx, MOV, &val, &a, dt.type);
 				}
-				free_val(ctx, f, a);
-				free_val(ctx, f, b);
 				
 				bool is_64bit = dt.type == TB_I64;
 				if (b.type == VAL_IMM) {
@@ -954,7 +952,7 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 				emit(rex(is_64bit, 0x00, val.gpr, 0x00));
 				emit(dt.type == TB_I8 ? 0xD2 : 0xD3);
 				
-				free_val(ctx, f, a);
+				if (!recycle) free_val(ctx, f, a);
 				free_val(ctx, f, b);
 				
 				switch (reg_type) {
@@ -1253,6 +1251,8 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 					} else if (dt.type == TB_I8 || dt.type == TB_BOOL) {
 						inst2(ctx, MOVZXB, &val, &src, TB_I8);
 					}
+					
+					if (!recycle) free_val(ctx, f, src);
 					break;
 				}
 			}
@@ -1377,12 +1377,11 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 					break;
 				}
 				
-				bool recycled = src.is_owned && src.type != VAL_MEM;
-				if (recycled) {
+				bool recycle = src.is_owned && src.type != VAL_MEM;
+				if (recycle) {
 					val = src;
 				} else {
 					val = alloc_gpr(ctx, f, dt.type, n);
-					inst2(ctx, MOV, &val, &src, src.dt.type);
 				}
 				
 				if (src.dt.type == TB_I32 && sign_ext) {
@@ -1391,9 +1390,11 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register root_reg, TB_Regi
 					inst2(ctx, sign_ext ? MOVSXW : MOVZXW, &val, &src, TB_I16);
 				} else if (src.dt.type == TB_I8 || src.dt.type == TB_BOOL) {
 					inst2(ctx, sign_ext ? MOVSXB : MOVZXB, &val, &src, TB_I8);
+				} else {
+					inst2(ctx, MOV, &val, &src, src.dt.type);
 				}
 				
-				free_val(ctx, f, src);
+				if (!recycle) free_val(ctx, f, src);
 				break;
 			}
 			

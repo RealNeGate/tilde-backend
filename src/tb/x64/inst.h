@@ -75,6 +75,15 @@ inline static void inst1(Ctx* ctx, Inst1 op, const Val* r) {
 		
 		if (mod == MOD_INDIRECT_DISP8) emit((int8_t)disp);
 		else if (mod == MOD_INDIRECT_DISP32) emit4((int32_t)disp);
+	} else if (r->type == VAL_GLOBAL) {
+		uint8_t rx = (op & 0xFF);
+		
+		emit(((rx & 7) << 3) | RBP);
+		emit4(0x0);
+		
+		tb_emit_global_patch(ctx->f->module, ctx->function_id,
+							 code_pos() - 4, r->global.id,
+							 s_local_thread_id);
 	} else tb_unreachable();
 }
 

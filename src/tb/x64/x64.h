@@ -303,7 +303,7 @@ static const Inst2 inst2_tbl[] = {
 	
 	[MOVSXB] = { 0xBE, .ext = EXT_DEF2 },
 	[MOVSXW] = { 0xBF, .ext = EXT_DEF2 },
-	[MOVSXD] = { 0x63, .ext = EXT_DEF2 },
+	[MOVSXD] = { 0x63, .ext = EXT_NONE },
 	
 	[MOVZXB] = { 0xB6, .ext = EXT_DEF2 },
 	[MOVZXW] = { 0xB7, .ext = EXT_DEF2 }

@@ -2,6 +2,13 @@
 #include <emmintrin.h>
 #include <windows.h>
 
+#ifdef _MSC_VER
+#define thread_local __declspec(thread)
+#define __builtin_bswap64(x) _byteswap_uint64(x)
+#else
+#define thread_local _Thread_local
+#endif
+
 #define TRIAL_COUNT 349525 // for max power 349525 
 
 static uint32_t gen_random_any();
@@ -32,10 +39,10 @@ typedef struct FuzzerInfo {
 } FuzzerInfo;
 
 // https://www.pcg-random.org/download.html#minimal-c-implementation
-static _Thread_local struct { uint64_t state;  uint64_t inc; } rng;
+static thread_local struct { uint64_t state;  uint64_t inc; } rng;
 
-static _Thread_local TB_Register pool[512];
-static _Thread_local TB_Register var_pool[512];
+static thread_local TB_Register pool[512];
+static thread_local TB_Register var_pool[512];
 
 static TB_Module* m;
 
@@ -48,7 +55,7 @@ static TB_Register cast_into(TB_Function* f, TB_Register in, TB_DataType to) {
 	return in;
 }
 
-static __stdcall int ir_gen(FuzzerInfo* i) {
+static int ir_gen(FuzzerInfo* i) {
 	rng.state = i->initial_state;
 	rng.inc = i->initial_inc;
 	
@@ -64,7 +71,7 @@ static __stdcall int ir_gen(FuzzerInfo* i) {
 		for (int i = 0; i < param_count; i++) tb_prototype_add_param(p, gen_random_int_dt());
 		
 		char temp[64];
-		sprintf_s(temp, 64, "trial_%d_%d", i->thread_id, n);
+		sprintf_s(temp, 64, "trial_%d_%zu", i->thread_id, n);
 		TB_Function* f = tb_prototype_build(m, p, temp, TB_LINKAGE_PUBLIC);
 		for (int i = 0; i < param_count; i++) pool[pool_size++] = tb_inst_param(f, i);
 		

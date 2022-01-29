@@ -15,7 +15,7 @@ static int get_local_thread_id() {
 	// the value it spits out is zero-based, but
 	// the TIDs consider zero as a NULL space.
 	if (tid == 0) {
-		int new_id = total_tid++;
+		int new_id = tb_atomic_int_add(&total_tid, 1);
 		tid = new_id + 1;
 	}
 	
@@ -128,22 +128,19 @@ TB_API void tb_function_optimize(TB_Function* f, TB_OptLevel opt) {
 	repeat_opt: {
 		// Passive optimizations
 		OPT(dead_expr_elim);
-		OPT(canonicalize);
-		OPT(hoist_locals);
-		OPT(mem2reg);
-		OPT(compact_dead_regs);
-		
-		/*OPT(dead_expr_elim);
 		OPT(remove_pass_node);
 		OPT(fold);
 		OPT(load_elim);
 		OPT(strength_reduction);
 		OPT(copy_elision);
-
-
+		OPT(dead_expr_elim);
+		OPT(canonicalize);
+		OPT(hoist_locals);
+		OPT(mem2reg);
+		OPT(compact_dead_regs);
 		OPT(dead_block_elim);
 		OPT(deshort_circuit);
-		OPT(compact_dead_regs);*/
+		OPT(compact_dead_regs);
 	}
 	
 	//printf("FINAL   ");
@@ -319,7 +316,7 @@ TB_API void tb_prototype_add_params(TB_FunctionPrototype* p, size_t count, const
 }
 
 TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, const char* name, TB_Linkage linkage) {
-	size_t i = m->functions.count++;
+	size_t i = tb_atomic_size_add(&m->functions.count, 1);
 	assert(i < TB_MAX_FUNCTIONS);
 	assert(p->param_count == p->param_capacity);
 	

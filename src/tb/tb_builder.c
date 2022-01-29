@@ -320,8 +320,10 @@ TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr
 	assert(f->current_label);
 	
 	TB_Register r = tb_make_reg(f, TB_LOAD, dt);
-	f->nodes.payload[r].load.address = addr;
-	f->nodes.payload[r].load.alignment = alignment;
+	f->nodes.payload[r].load = (struct TB_NodeLoad) {
+		.address = addr,
+		.alignment = alignment
+	};
 	return r;
 }
 
@@ -330,9 +332,11 @@ TB_API void tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_R
 	assert(val);
 	
 	TB_Register r = tb_make_reg(f, TB_STORE, dt);
-	f->nodes.payload[r].store.address = addr;
-	f->nodes.payload[r].store.value = val;
-	f->nodes.payload[r].store.alignment = alignment;
+	f->nodes.payload[r].store = (struct TB_NodeStore) {
+		.address = addr,
+		.value = val,
+		.alignment = alignment
+	};
 	return;
 }
 
@@ -340,18 +344,22 @@ TB_API TB_Register tb_inst_volatile_load(TB_Function* f, TB_DataType dt, TB_Regi
 	assert(f->current_label);
 	
 	TB_Register r = tb_make_reg(f, TB_LOAD, dt);
-	f->nodes.payload[r].load.address = addr;
-	f->nodes.payload[r].load.alignment = alignment;
-	f->nodes.payload[r].load.is_volatile = true;
+	f->nodes.payload[r].store = (struct TB_NodeStore) {
+		.address = addr,
+		.alignment = alignment,
+		.is_volatile = true
+	};
 	return r;
 }
 
 TB_API void tb_inst_volatile_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_Register val, TB_CharUnits alignment) {
 	TB_Register r = tb_make_reg(f, TB_STORE, dt);
-	f->nodes.payload[r].store.address = addr;
-	f->nodes.payload[r].store.value = val;
-	f->nodes.payload[r].store.alignment = alignment;
-	f->nodes.payload[r].store.is_volatile = true;
+	f->nodes.payload[r].store = (struct TB_NodeStore) {
+		.address = addr,
+		.value = val,
+		.alignment = alignment,
+		.is_volatile = true
+	};
 }
 
 TB_API void tb_inst_initialize_mem(TB_Function* f, TB_Register addr, TB_InitializerID src) {

@@ -210,6 +210,10 @@ inline static void inst2sse(Ctx* ctx, Inst2FPType op, const Val* a, const Val* b
 		[FP_XOR] = 0x57,
 	};
 	
+	if (op == FP_MOV && a->type == VAL_XMM && b->type == VAL_XMM) {
+		if (a->xmm == b->xmm) __debugbreak();
+	}
+	
 	// most SSE instructions (that aren't mov__) are mem src only
 	bool supports_mem_dst = (op == FP_MOV);
 	bool dir = is_value_mem(a);

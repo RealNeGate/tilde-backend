@@ -2,9 +2,14 @@
 // https://pp.info.uni-karlsruhe.de/uploads/publikationen/braun13cc.pdf
 #include "../tb_internal.h"
 
-static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_DataType* dt);
-
-#define MAX_IR_REGISTER_NAMES
+typedef enum {
+	STACK_SLOT_COHERENCY_GOOD,
+	
+	// failure states
+	STACK_SLOT_COHERENCY_USES_ADDRESS,
+	STACK_SLOT_COHERENCY_BAD_DATA_TYPE,
+	STACK_SLOT_COHERENCY_VOLATILE
+} StackSlotCoherency;
 
 typedef struct Mem2Reg_Ctx {
 	TB_Function* f;
@@ -35,6 +40,8 @@ typedef struct Mem2Reg_Ctx {
 	int name_capacity, name_count;
 	TB_Register* names;
 } Mem2Reg_Ctx;
+
+static StackSlotCoherency tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_DataType* dt);
 
 static int bind_name(Mem2Reg_Ctx* restrict c, TB_Register r) {
 	assert(c->name_count+1 < c->name_capacity && "Ran out of names");
@@ -238,13 +245,23 @@ bool tb_opt_mem2reg(TB_Function* f) {
 	loop(i, entry_terminator) {
 		if (f->nodes.type[i] == TB_LOCAL || f->nodes.type[i] == TB_PARAM_ADDR) {
 			TB_DataType dt;
-			if (tb_is_stack_slot_coherent(f, i, &dt)) {
+			StackSlotCoherency coherence = tb_is_stack_slot_coherent(f, i, &dt);
+			
+			if (coherence == STACK_SLOT_COHERENCY_GOOD) {
 				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = i;
 				to_promote_count++;
 				
 				f->nodes.dt[i] = dt;
 				
 				OPTIMIZER_LOG(i, "promoting to IR register");
+			} else if (coherence == STACK_SLOT_COHERENCY_VOLATILE) {
+				OPTIMIZER_LOG(i, "could not mem2reg a stack slot (volatile load/store)");
+			} else if (coherence == STACK_SLOT_COHERENCY_USES_ADDRESS) {
+				OPTIMIZER_LOG(i, "could not mem2reg a stack slot (uses pointer arithmatic)");
+			} else if (coherence == STACK_SLOT_COHERENCY_BAD_DATA_TYPE) {
+				OPTIMIZER_LOG(i, "could not mem2reg a stack slot (data type is too inconsistent)");
+			} else {
+				assert(0 && "unknown stack coherence mode");
 			}
 		}
 	}
@@ -345,7 +362,7 @@ bool tb_opt_mem2reg(TB_Function* f) {
 // the same type and alignment along with not needing any address usage.
 //
 // TODO(NeGate): This might get slow...
-static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_DataType* out_dt) {
+static StackSlotCoherency tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_DataType* out_dt) {
 	// if there's a difference between the times we want the value and the
 	// times we want the address, then some address calculations are being done
 	// and thus we can't mem2reg
@@ -365,22 +382,22 @@ static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_Da
 		
 		if (f->nodes.type[i] == TB_LOAD && p->load.address == address) {
 			value_based_use_count += 1;
-			if (p->load.is_volatile) return false;
+			if (p->load.is_volatile) return STACK_SLOT_COHERENCY_VOLATILE;
 			
 			if (!initialized) dt = f->nodes.dt[i];
-			else if (TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[i])) return false;
+			else if (!TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[i])) return STACK_SLOT_COHERENCY_BAD_DATA_TYPE;
 		} else if (f->nodes.type[i] == TB_STORE && p->store.address == address) {
 			value_based_use_count += 1;
 			
-			if (p->store.is_volatile) return false;
+			if (p->store.is_volatile) return STACK_SLOT_COHERENCY_VOLATILE;
 			
 			if (!initialized) dt = f->nodes.dt[i];
-			else if (TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[i])) return false;
+			else if (!TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[i])) return STACK_SLOT_COHERENCY_BAD_DATA_TYPE;
 		}
 	}
 	
-	if (value_based_use_count != use_count) return false;
+	if (value_based_use_count != use_count) return STACK_SLOT_COHERENCY_USES_ADDRESS;
 	
 	*out_dt = dt;
-	return true;
+	return STACK_SLOT_COHERENCY_GOOD;
 }

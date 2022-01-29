@@ -7,7 +7,11 @@ if "%VSCMD_ARG_TGT_ARCH%" neq "x64" (
   exit /b 1
 )
 
-set cl_settings=/arch:AVX /MTd /WX /Od /Zi /D_DEBUG /RTC1 /D_CRT_SECURE_NO_WARNINGS
+if "%1" equ "debug" (
+  set cl_settings=/arch:AVX /MTd /Od /WX /Zi /D_DEBUG /RTC1 /D_CRT_SECURE_NO_WARNINGS
+) else (
+  set cl_settings=/arch:AVX /GL /Ox /WX /DNDEBUG /GS- /D_CRT_SECURE_NO_WARNINGS
+)
 
 set tb_source_files=src/tb/tb.c ^
 	src/tb/tb_atomic.c ^
@@ -23,6 +27,6 @@ set tb_source_files=src/tb/tb.c ^
 
 IF NOT exist build (mkdir build)
 
-cl /MP src/example_main.c %tb_source_files% %cl_settings% /Fo:build\ /Fe:build\example.exe /link /INCREMENTAL:NO /SUBSYSTEM:CONSOLE
+cl /nologo /MP src/example_fuzzer.c %tb_source_files% %cl_settings% /Fo:build\ /Fe:build\example.exe /link /INCREMENTAL:NO /SUBSYSTEM:CONSOLE
 
 del build\*.obj

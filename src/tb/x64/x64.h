@@ -9,10 +9,6 @@
 static_assert(sizeof(float) == sizeof(uint32_t), "Float needs to be a 32-bit float!");
 static_assert(sizeof(double) == sizeof(uint64_t), "Double needs to be a 64-bit float!");
 
-// can be cleared after the side effect that originally created it
-//#define TB_REG_TEMP (((TB_Register)INT32_MAX) - 1)
-#define X64_TEMP_REG ((TB_Register)0)
-
 typedef union Cvt_F32U32 {
 	float f;
 	uint32_t i;
@@ -52,9 +48,6 @@ enum {
 typedef enum ValType {
 	VAL_NONE,
     
-    // Real encodable types
-	// Their order is based on which should go
-	// on the right hand side of isel(...)
     VAL_IMM,
     VAL_MEM,
     VAL_GPR,
@@ -72,19 +65,13 @@ typedef enum Scale {
 } Scale;
 
 typedef enum Inst2FPFlags {
-	INST2FP_DOUBLE = 1,
-	INST2FP_PACKED = 2
+	INST2FP_DOUBLE = (1u << 0),
+	INST2FP_PACKED = (1u << 1)
 } Inst2FPFlags;
 
 typedef struct Val {
 	uint8_t type;
-	
-	// owned values means the value is owned
-	// by the node we get it from in tree eval
-	// if not we can't recycle the value or free
-	// it.
-	bool is_owned;
-	
+	bool is_temp;
 	TB_DataType dt;
 	
 	union {
@@ -122,12 +109,6 @@ typedef struct LabelPatch {
     TB_Label target_lbl;
 } LabelPatch;
 
-typedef struct F32Patch {
-    TB_Register src;
-	int base;
-    float value;
-} F32Patch;
-
 typedef struct PhiValue {
 	TB_Register reg;
 	TB_Register storage_a, storage_b;
@@ -138,30 +119,12 @@ typedef struct PhiValue {
 	Val value;
 } PhiValue;
 
-typedef struct LocalDesc {
-	TB_Register address;
-    int32_t disp;
-} LocalDesc;
-
-typedef struct MemCacheDesc {
-	TB_Register address;
-    Val value;
-} MemCacheDesc;
-
 typedef struct StackSlot {
 	TB_Register reg;
 	int32_t pos;
 	GPR gpr : 8;
 	XMM xmm : 8;
 } StackSlot;
-
-typedef int TreeNodeIndex;
-
-typedef struct TreeNode {
-	TB_Register reg;       // 0
-	TreeNodeIndex a, b;    // 4
-	Val val;               // 8
-} TreeNode;
 
 typedef struct Ctx {
 	uint8_t* out;
@@ -186,10 +149,6 @@ typedef struct Ctx {
 	uint32_t* labels;
 	LabelPatch* label_patches;
 	
-	// Some analysis crap
-	dyn_array(StackSlot) locals;
-	
-	TB_Register* intervals;
 	TB_Register* use_count;
 	uint8_t* should_share;
 	PhiValue* phis;
@@ -210,17 +169,9 @@ typedef struct Ctx {
 	// XMM is the top 32bit
 	uint64_t regs_to_save;
 	
-	// This measures how far back the tree eval can actually
-	// see backwards, beyond this and the root_reg values are
-	// found via spills.
 	TB_Register last_fence;
 	
-	// root_reg is what you're evaluating with eval(...)
-	// and next_reg is what eval is evaluating for.
-	TB_Register root_reg, next_reg;
-	
-	size_t tree_cap, tree_len;
-	TreeNode tree[];
+	Val values[];
 } Ctx;
 
 typedef enum Inst2Type {
@@ -447,8 +398,8 @@ inline static bool is_value_match(const Val* a, const Val* b) {
 
 static bool is_address_node(TB_RegType t);
 
-static Val val_rvalue(Ctx* ctx, TB_Function* f, Val v, TB_Register r);
-static Val val_addressof(Ctx* ctx, TB_Function* f, Val v);
+static Val eval_addressof(Ctx* ctx, TB_Function* f, TB_Register r);
+static Val eval_rvalue(Ctx* ctx, TB_Function* f, TB_Register r);
 
 // returns true if we have the register is free now
 static bool evict_gpr(Ctx* restrict ctx, TB_Function* f, GPR g);

@@ -73,8 +73,6 @@ size_t tb_atomic_size_store(size_t* dst, size_t src);
 // look and act like normal arrays for access and types.
 #define dyn_array(T) T*
 
-#define MAX_JOBS_PER_JOB_SYSTEM 4096
-
 #define PROTOTYPES_ARENA_SIZE (32u << 20u)
 #define CODE_REGION_BUFFER_SIZE (512 * 1024 * 1024)
 
@@ -171,6 +169,9 @@ typedef union TB_RegPayload {
 	} cvt;
 	struct TB_NodeLoad {
 		TB_Register address;
+		// this is only here to make load and store
+		// payloads match in data layout... just because
+		TB_Register _;
 		TB_CharUnits alignment;
 		bool is_volatile;
 	} load;
@@ -804,7 +805,7 @@ inline static int align_up(int a, int b) { return a + (b - (a % b)) % b; }
 #endif
 
 // NOTE(NeGate): clean this up
-#if 0
+#if 1
 #define OPTIMIZER_LOG(at, ...)
 #else
 #define OPTIMIZER_LOG(at, ...) do { \

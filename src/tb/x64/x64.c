@@ -45,7 +45,7 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 	size_t label_patch_count = 0;
 	
 #if TB_HOST_ARCH == TB_HOST_X86_64
-#define COUNT_OF_TYPE_IN_M128(t) __builtin_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
+#define COUNT_OF_TYPE_IN_M128(t) tb_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
 	
 	// the node types are aligned to a cache line so we could in theory
 	// grab up to 64bytes aligned without UB
@@ -86,7 +86,7 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 	// parameters are locals too... ish
 	locals_count += f->prototype->param_count;
 	
-	size_t align_mask = _Alignof(max_align_t)-1;
+	size_t align_mask = _Alignof(long double)-1;
 	size_t tally = 0;
 	
 	// context
@@ -95,6 +95,10 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 	
 	// use_count
 	tally += f->nodes.count * sizeof(TB_Register);
+	tally = (tally + align_mask) & ~align_mask;
+	
+	// can_share
+	tally += ((f->nodes.count + 7) / 8);
 	tally = (tally + align_mask) & ~align_mask;
 	
 	// intervals
@@ -132,8 +136,9 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 	};
 }
 
-TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
+TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
 	s_local_thread_id = local_thread_id;
+	s_compiled_func_id = id;
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	
 	////////////////////////////////
@@ -154,6 +159,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 			ctx = calloc(1, ctx_size);
 			
 			ctx->use_count = malloc(f->nodes.count * sizeof(TB_Register));
+			ctx->should_share = malloc((f->nodes.count + 7) / 8);
 			ctx->intervals = malloc(f->nodes.count * sizeof(TB_Register));
 			ctx->phis = malloc(tally.phi_count * sizeof(PhiValue));
 			
@@ -170,6 +176,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 			memset(ctx, 0, sizeof(Ctx));
 			
 			ctx->use_count = tb_tls_push(tls, f->nodes.count * sizeof(TB_Register));
+			ctx->should_share = tb_tls_push(tls, (f->nodes.count + 7) / 8);
 			ctx->intervals = tb_tls_push(tls, f->nodes.count * sizeof(TB_Register));
 			ctx->phis = tb_tls_push(tls, tally.phi_count * sizeof(PhiValue));
 			
@@ -216,6 +223,11 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 	tb_find_use_count(f, ctx->use_count);
 	tb_find_live_intervals(f, ctx->intervals);
 	
+	memset(ctx->should_share, 0, (f->nodes.count + 7) / 8);
+	loop(i, f->nodes.count) {
+		ctx->should_share[i / 8] |= (ctx->use_count[i] > 1) ? (1u << (i % 8)) : 0;
+	}
+	
 	// Create phi lookup table for later evaluation stages
 	FOR_EACH_NODE(i, f, TB_PHI2, {
 					  ctx->phis[ctx->phi_count++] = (PhiValue){
@@ -236,16 +248,32 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 	const TB_FunctionPrototype* restrict proto = f->prototype;
 	const GPR* parameter_gprs = ctx->is_sysv ? SYSV_GPR_PARAMETERS : WIN64_GPR_PARAMETERS;
 	
-	loop(i, (size_t)proto->param_count) {
+	if (proto->has_varargs) {
+		// spill the rest of the parameters (assumes they're all in the GPRs)
+		size_t gpr_count = ctx->is_sysv ? 6 : 4;
+		size_t extra_param_count = proto->param_count > gpr_count ? 0 : gpr_count - proto->param_count;
+		
+		loop_reverse(i, extra_param_count) {
+			size_t param_num = proto->param_count + i;
+			
+			Val dst = val_stack(TB_TYPE_I64, 16 + (param_num * 8));
+			Val src = val_gpr(TB_I64, parameter_gprs[param_num]);
+			inst2(ctx, MOV, &dst, &src, TB_I64);
+		}
+	}
+	
+	arrsetlen(ctx->locals, (size_t)proto->param_count);
+	loop_reverse(i, (size_t)proto->param_count) {
 		TB_DataType dt = proto->params[i];
 		
 		// Allocate space in stack
 		int size = get_data_type_size(dt);
 		ctx->stack_usage = align_up(ctx->stack_usage + size, size);
+		assert(size <= 8 && "Parameter too big");
 		
 		// Setup cache
 		StackSlot slot = { 
-			.reg = TB_FIRST_PARAMETER_REG + i, .pos = -ctx->stack_usage,
+			.reg = TB_FIRST_PARAMETER_REG + i, .pos = 16 + (i * 8),
 			.gpr = GPR_NONE, .xmm = XMM_NONE
 		};
 		
@@ -266,21 +294,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 			}
 		}
 		
-		arrput(ctx->locals, slot);
-	}
-	
-	if (proto->has_varargs) {
-		// spill the rest of the parameters (assumes they're all in the GPRs)
-		size_t gpr_count = (ctx->is_sysv ? 6 : 4);
-		size_t extra_param_count = proto->param_count > gpr_count ? 0 : gpr_count - proto->param_count;
-		
-		loop(i, extra_param_count) {
-			ctx->stack_usage = align_up(ctx->stack_usage + 8, 8);
-			
-			Val dst = val_stack(TB_TYPE_I64, -ctx->stack_usage);
-			Val src = val_gpr(TB_I64, parameter_gprs[proto->param_count + i]);
-			inst2(ctx, MOV, &dst, &src, TB_I64);
-		}
+		ctx->locals[i] = slot;
 	}
 	
 	// Just the splitting point between parameters
@@ -334,7 +348,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 		
 		// Evaluate the terminator
 		const TB_RegType reg_type = f->nodes.type[bb_end];
-		//const TB_DataType dt = f->nodes.dt[bb_end];
+		const TB_DataType dt = f->nodes.dt[bb_end];
 		const TB_RegPayload p = f->nodes.payload[bb_end];
 		
 		// Resolve any leftover expressions which are used later
@@ -347,21 +361,21 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 			if (p.ret.value) {
 				Val value = val_rvalue(ctx, f, eval(ctx, f, p.ret.value, bb_end), p.ret.value);
 				
-				if (TB_IS_FLOAT_TYPE(value.dt.type) || value.dt.width) {
+				if (TB_IS_FLOAT_TYPE(dt.type) || dt.width) {
 					// Float results use XMM0
 					if (!is_value_xmm(&value, XMM0)) {
 						uint8_t flags = 0;
-						flags |= (value.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
-						flags |= (value.dt.width) ? INST2FP_PACKED : 0;
+						flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+						flags |= (dt.width) ? INST2FP_PACKED : 0;
 						
-						Val dst = val_xmm(value.dt, XMM0);
+						Val dst = val_xmm(dt, XMM0);
 						inst2sse(ctx, FP_MOV, &dst, &value, flags);
 					}
-				} else if (value.dt.type == TB_I8 ||
-						   value.dt.type == TB_I16 ||
-						   value.dt.type == TB_I32 ||
-						   value.dt.type == TB_I64 ||
-						   value.dt.type == TB_PTR) {
+				} else if (dt.type == TB_I8 ||
+						   dt.type == TB_I16 ||
+						   dt.type == TB_I32 ||
+						   dt.type == TB_I64 ||
+						   dt.type == TB_PTR) {
 					// Integer results use RAX and if result is extended RDX
 					if (value.type == VAL_IMM) {
 						assert(value.imm < INT32_MAX);
@@ -374,9 +388,9 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 							emit4(value.imm);
 						}
 					} else if (!is_value_gpr(&value, RAX)) {
-						Val dst = val_gpr(value.dt.type, RAX);
+						Val dst = val_gpr(dt.type, RAX);
 						
-						inst2(ctx, MOV, &dst, &value, value.dt.type);
+						inst2(ctx, MOV, &dst, &value, dt.type);
 					}
 				} else tb_todo();
 			}
@@ -436,7 +450,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 				// flip the condition and the labels if
 				// it allows for fallthrough
 				if (fallthrough_label == if_true) {
-					tb_swap(if_true, if_false);
+					tb_swap(TB_Label, if_true, if_false);
 					cc ^= 1;
 					
 					has_fallthrough = true;
@@ -470,7 +484,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 			emit(0x0F); 
 			emit(0x0B);
 		} else if (reg_type == TB_SWITCH) {
-			_Static_assert(_Alignof(TB_SwitchEntry) == _Alignof(TB_Register), "We don't want any unaligned accesses");
+			static_assert(_Alignof(TB_SwitchEntry) == _Alignof(TB_Register), "We don't want any unaligned accesses");
 			
 			Val key = eval(ctx, f, p.switch_.key, bb_end);
 			if (key.type == VAL_IMM) {
@@ -552,12 +566,28 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 		bb = next_label;
 	} while (bb < f->nodes.count);
 	
+	// Tally up any saved XMM registers
+	ctx->stack_usage += tb_popcount((ctx->regs_to_save >> 16) & 0xFFFF) * 16;
+	
+	bool spills_params = false;
+	loop_reverse(i, (size_t)proto->param_count) {
+		if (ctx->locals[i].gpr == GPR_NONE && ctx->locals[i].xmm == XMM_NONE) {
+			spills_params = true;
+			break;
+		}
+	}
+	
+	if (spills_params) {
+		// just bias it so that the prologue and epilogue are added
+		ctx->stack_usage += 8;
+	}
+	
 	// Align stack usage to 16bytes and add 8 bytes for the return address
 	ctx->stack_usage = ctx->stack_usage + (caller_usage * 8);
 	if (!saves_parameters && ctx->stack_usage <= param_space && caller_usage == 0) {
 		ctx->stack_usage = 8;
 	} else {
-		ctx->stack_usage = align_up(ctx->stack_usage + 8, 16);
+		ctx->stack_usage = align_up(ctx->stack_usage + 8, 16) + 8;
 	}
 	
 	////////////////////////////////
@@ -577,6 +607,7 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 	
 	TB_FunctionOutput func_out = {
 		.name = f->name,
+		.function = tb_function_get_id(f->module, f),
 		.linkage = f->linkage,
 		.code = ctx->start_out,
 		.code_size = ctx->out - ctx->start_out,
@@ -588,8 +619,9 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 	arrfree(ctx->locals);
 	
 	if (is_ctx_heap_allocated) {
-		free(ctx->use_count);
 		free(ctx->intervals);
+		free(ctx->use_count);
+		free(ctx->should_share);
 		free(ctx->phis);
 		
 		free(ctx->phi_queue);
@@ -607,10 +639,13 @@ TB_FunctionOutput x64_compile_function(TB_Function* restrict f, const TB_Feature
 // before the fence.
 static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register start, TB_Register end) {
 	for (size_t j = start; j < end; j++) {
-		if (ctx->use_count[j] > 1 &&
+		bool share = ctx->should_share[j / 8] & (1u << (j % 8));
+		
+		if (share &&
 			f->nodes.type[j] != TB_PARAM &&
 			f->nodes.type[j] != TB_LOCAL &&
 			f->nodes.type[j] != TB_LABEL &&
+			f->nodes.type[j] != TB_GLOBAL_ADDRESS &&
 			f->nodes.type[j] != TB_SIGNED_CONST &&
 			f->nodes.type[j] != TB_UNSIGNED_CONST) {
 			/* nothing for now */
@@ -676,12 +711,14 @@ static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register s
 				spill_stack_slot(ctx, f, slot);
 			} else if (f->nodes.type[j] != TB_LOCAL &&
 					   f->nodes.type[j] != TB_LABEL &&
+					   f->nodes.type[j] != TB_GLOBAL_ADDRESS &&
 					   f->nodes.type[j] != TB_PARAM_ADDR &&
 					   f->nodes.type[j] != TB_SIGNED_CONST &&
 					   f->nodes.type[j] != TB_UNSIGNED_CONST &&
 					   f->nodes.type[j] != TB_FLOAT_CONST &&
 					   f->nodes.type[j] != TB_STRING_CONST) {
 				TB_DataType dt = f->nodes.dt[j];
+				if (dt.type == TB_BOOL) dt.type = TB_I8;
 				
 				// TODO(NeGate): Implement saving to registers when enough are
 				// available
@@ -716,7 +753,6 @@ static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register s
 						free_val(ctx, f, tmp);
 					}
 				} else {
-					// TODO(NeGate): Implement XMM-based movs
 					if (is_value_mem(&src)) {
 						Val tmp = alloc_gpr(ctx, f, dt.type, 0);
 						
@@ -753,6 +789,11 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 		switch (reg_type) {
 			case TB_LINE_INFO: {
 				p->line_info.pos = code_pos();
+				break;
+			}
+			
+			case TB_DEBUGBREAK: {
+				emit(0xCC);
 				break;
 			}
 			
@@ -874,13 +915,11 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 				}
 				
 				// CALL instruction and patch
-				TB_FunctionID source_func = f - f->module->functions.data;
-				
 				if (reg_type == TB_CALL) {
 					TB_FunctionID target = p->call.target - f->module->functions.data;
 					
 					tb_emit_call_patch(f->module,
-									   source_func,
+									   s_compiled_func_id,
 									   target,
 									   code_pos() + 1,
 									   s_local_thread_id);
@@ -892,7 +931,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					TB_ExternalID target = p->ecall.target;
 					
 					tb_emit_ecall_patch(f->module,
-										source_func,
+										s_compiled_func_id,
 										target,
 										code_pos() + 1,
 										s_local_thread_id);
@@ -976,9 +1015,9 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 				
 				// TODO(NeGate): Implement vector memset
 				// rep stosb, ol' reliable
-				assert(evict_gpr(ctx, f, RAX));
-				assert(evict_gpr(ctx, f, RCX));
-				assert(evict_gpr(ctx, f, RDI));
+				evict_gpr(ctx, f, RAX);
+				evict_gpr(ctx, f, RCX);
+				evict_gpr(ctx, f, RDI);
 				
 				{
 					Val param = val_rvalue(ctx, f, eval(ctx, f, dst_reg, r), dst_reg);
@@ -1028,9 +1067,9 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 				
 				// TODO(NeGate): Implement vector memset
 				// rep movsb, ol' reliable
-				assert(evict_gpr(ctx, f, RCX));
-				assert(evict_gpr(ctx, f, RSI));
-				assert(evict_gpr(ctx, f, RDI));
+				evict_gpr(ctx, f, RCX);
+				evict_gpr(ctx, f, RSI);
+				evict_gpr(ctx, f, RDI);
 				
 				{
 					Val param = val_rvalue(ctx, f, eval(ctx, f, dst_reg, r), dst_reg);
@@ -1300,6 +1339,8 @@ static bool is_address_node(TB_RegType t) {
 		case TB_LOCAL:
 		case TB_RESTRICT:
 		case TB_PARAM_ADDR:
+		case TB_EFUNC_ADDRESS:
+		case TB_GLOBAL_ADDRESS:
 		case TB_ARRAY_ACCESS:
 		case TB_MEMBER_ACCESS:
 		return true;
@@ -1461,13 +1502,13 @@ static bool is_phi_that_contains(TB_Function* f, TB_Register phi, TB_Register re
 	}
 }
 
-void x64_emit_call_patches(TB_Module* m, uint32_t func_layout[]) {
+void x64_emit_call_patches(TB_Module* m, uint32_t* func_layout) {
 	loop(i, m->max_threads) {
 		TB_FunctionPatch* patches = m->call_patches[i];
 		
 		loop(j, arrlen(patches)) {
 			TB_FunctionPatch* p = &patches[j];
-			TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
+			TB_FunctionOutput* out_f = &m->compiled_functions.data[p->source];
 			
 			uint64_t meta = out_f->prologue_epilogue_metadata;
 			uint64_t stack_usage = out_f->stack_usage;
@@ -1476,7 +1517,7 @@ void x64_emit_call_patches(TB_Module* m, uint32_t func_layout[]) {
 			// x64 thinks of relative addresses as being relative
 			// to the end of the instruction or in this case just
 			// 4 bytes ahead hence the +4.
-			size_t actual_pos = func_layout[p->func_id]
+			size_t actual_pos = func_layout[p->source]
 				+ x64_get_prologue_length(meta, stack_usage)
 				+ p->pos 
 				+ 4;
@@ -1487,6 +1528,8 @@ void x64_emit_call_patches(TB_Module* m, uint32_t func_layout[]) {
 }
 
 // I put it down here because i can :P
+_Pragma("warning (push)")
+_Pragma("warning (disable: 4028)")
 ICodeGen x64_fast_code_gen = {
 	.emit_call_patches = x64_emit_call_patches,
 	.get_prologue_length = x64_get_prologue_length,
@@ -1495,3 +1538,4 @@ ICodeGen x64_fast_code_gen = {
 	.emit_epilogue = x64_emit_epilogue,
 	.compile_function = x64_compile_function
 };
+_Pragma("warning (pop)")

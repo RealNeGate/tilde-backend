@@ -15,7 +15,17 @@
 #include "tb.h"
 #include <time.h>
 #include <limits.h>
-#include <stdatomic.h>
+
+#if __STDC_VERSION__ >= 201112L
+#error "C11+ compiler required"
+#endif
+
+#ifdef _MSC_VER
+#include <immintrin.h>
+#define thread_local __declspec(thread)
+#else
+#define thread_local _Thread_local
+#endif
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -27,11 +37,34 @@
 #include <sys/mman.h>
 #include <pthread.h>
 #include <fcntl.h>
-#include <semaphore.h>
 #endif
 
 #include "tb_platform.h"
 
+typedef uint32_t TB_CompiledFunctionID;
+
+// ***********************************
+// Atomics
+// ***********************************
+// since some modern C11 compilers don't support C11 atomics
+// we'll just write a stripped down layer that handles all
+// we really want from atomics.
+//
+// These return the old values.
+typedef int tb_atomic_int;
+typedef size_t tb_atomic_size_t;
+
+int tb_atomic_int_load(int* dst);
+int tb_atomic_int_add(int* dst, int src);
+int tb_atomic_int_store(int* dst, int src);
+
+size_t tb_atomic_size_load(size_t* dst);
+size_t tb_atomic_size_add(size_t* dst, size_t src);
+size_t tb_atomic_size_store(size_t* dst, size_t src);
+
+// ***********************************
+// STB Data structures
+// ***********************************
 #define STBDS_REALLOC(c,p,s) tb_platform_heap_realloc(p,s)
 #define STBDS_FREE(c,p) tb_platform_heap_free(p)
 #include "stb_ds.h"
@@ -39,13 +72,6 @@
 // cool part about stb_ds is that the dynamic arrays
 // look and act like normal arrays for access and types.
 #define dyn_array(T) T*
-
-#define safe_cast(T, src) ({ \
-typeof(src) val = (src); \
-T casted = (T)val; \
-if (val != casted) __builtin_trap(); \
-casted; \
-})
 
 #define MAX_JOBS_PER_JOB_SYSTEM 4096
 
@@ -225,10 +251,166 @@ typedef union TB_RegPayload {
 		TB_InitializerID id;
 	} init;
 } TB_RegPayload;
-_Static_assert(sizeof(TB_RegPayload) == 16, "TB_RegPayload shouldn't exceed 128bits for any option");
+static_assert(sizeof(TB_RegPayload) == 16, "TB_RegPayload shouldn't exceed 128bits for any option");
+
+#define FOR_EACH_REGISTER_IN_NODE(macro) \
+case TB_NULL: \
+case TB_SIGNED_CONST: \
+case TB_UNSIGNED_CONST: \
+case TB_FLOAT_CONST: \
+case TB_STRING_CONST: \
+case TB_LOCAL: \
+case TB_PARAM: \
+case TB_GOTO: \
+case TB_LINE_INFO: \
+case TB_FUNC_ADDRESS: \
+case TB_EFUNC_ADDRESS: \
+case TB_GLOBAL_ADDRESS: \
+case TB_DEBUGBREAK: \
+break; \
+case TB_LABEL: \
+macro(p->label.terminator); \
+break; \
+case TB_INITIALIZE: \
+macro(p->init.addr); \
+break; \
+case TB_KEEPALIVE: \
+macro(p->keepalive); \
+break; \
+case TB_RESTRICT: \
+macro(p->restrict_); \
+break; \
+case TB_ATOMIC_XCHG: \
+case TB_ATOMIC_ADD: \
+case TB_ATOMIC_SUB: \
+case TB_ATOMIC_AND: \
+case TB_ATOMIC_XOR: \
+case TB_ATOMIC_OR: \
+macro(p->atomic.addr); \
+macro(p->atomic.src); \
+break; \
+case TB_MEMCPY: \
+case TB_MEMSET: \
+macro(p->mem_op.dst); \
+macro(p->mem_op.src); \
+macro(p->mem_op.size); \
+break; \
+case TB_MEMBER_ACCESS: \
+macro(p->member_access.base); \
+break; \
+case TB_ARRAY_ACCESS: \
+macro(p->array_access.base); \
+macro(p->array_access.index); \
+break; \
+case TB_PARAM_ADDR: \
+macro(p->param_addr.param); \
+break; \
+case TB_PASS: \
+macro(p->pass); \
+break; \
+case TB_PHI1: \
+macro(p->phi1.a); \
+macro(p->phi1.a_label); \
+break; \
+case TB_PHI2: \
+macro(p->phi2.a); \
+macro(p->phi2.b); \
+macro(p->phi2.a_label); \
+macro(p->phi2.b_label); \
+break; \
+case TB_LOAD: \
+macro(p->load.address); \
+break; \
+case TB_STORE: \
+macro(p->store.address); \
+macro(p->store.value); \
+break; \
+case TB_ZERO_EXT: \
+case TB_SIGN_EXT: \
+case TB_FLOAT_EXT: \
+macro(p->ext); \
+break; \
+case TB_INT2PTR: \
+case TB_PTR2INT: \
+macro(p->ptrcast); \
+case TB_INT2FLOAT: \
+case TB_FLOAT2INT: \
+macro(p->cvt.src); \
+break; \
+case TB_TRUNCATE: \
+macro(p->trunc); \
+break; \
+case TB_AND: \
+case TB_OR: \
+case TB_XOR: \
+case TB_ADD: \
+case TB_SUB: \
+case TB_MUL: \
+case TB_UDIV: \
+case TB_SDIV: \
+case TB_UMOD: \
+case TB_SMOD: \
+case TB_SAR: \
+case TB_SHL: \
+case TB_SHR: \
+macro(p->i_arith.a); \
+macro(p->i_arith.b); \
+break; \
+case TB_NOT: \
+case TB_NEG: \
+case TB_X86INTRIN_SQRT: \
+case TB_X86INTRIN_RSQRT: \
+macro(p->unary.src); \
+break; \
+case TB_FADD: \
+case TB_FSUB: \
+case TB_FMUL: \
+case TB_FDIV: \
+macro(p->f_arith.a); \
+macro(p->f_arith.b); \
+break; \
+case TB_CMP_EQ: \
+case TB_CMP_NE: \
+case TB_CMP_SLT: \
+case TB_CMP_SLE: \
+case TB_CMP_ULT: \
+case TB_CMP_ULE: \
+case TB_CMP_FLT: \
+case TB_CMP_FLE: \
+macro(p->cmp.a); \
+macro(p->cmp.b); \
+break; \
+case TB_VCALL: \
+macro(p->vcall.target); \
+case TB_CALL: \
+case TB_ICALL: \
+case TB_ECALL: \
+for (size_t j = p->call.param_start; j < p->call.param_end; j++) { \
+macro(f->vla.data[j]); \
+} \
+break; \
+case TB_SWITCH: \
+macro(p->switch_.key); \
+break; \
+case TB_IF: \
+macro(p->if_.cond); \
+break; \
+case TB_RET: \
+macro(p->ret.value); \
+break
+
+#define FOR_EACH_REGISTER_IN_FUNC(macro) \
+for (size_t i = 1; i < f->nodes.count; i++) { \
+TB_RegType type = f->nodes.type[i]; \
+TB_RegPayload* p = &f->nodes.payload[i]; \
+switch (type) { \
+FOR_EACH_REGISTER_IN_NODE(macro); \
+default: tb_panic(false, "Unknown node type: %d", type); \
+} \
+}
 
 typedef struct TB_ConstPoolPatch {
-	uint32_t func_id;
+	TB_CompiledFunctionID source;
 	uint32_t pos; // relative to the start of the function
 	
 	size_t rdata_pos;
@@ -238,25 +420,26 @@ typedef struct TB_ConstPoolPatch {
 } TB_ConstPoolPatch;
 
 typedef struct TB_GlobalPatch {
-	uint32_t func_id;
+	TB_CompiledFunctionID source;
 	uint32_t pos; // relative to the start of the function
 	TB_GlobalID global;
 } TB_GlobalPatch;
 
 typedef struct TB_FunctionPatch {
-	uint32_t func_id;
+	TB_CompiledFunctionID source;
 	uint32_t target_id;
 	uint32_t pos; // relative to the start of the function
 } TB_FunctionPatch;
 
 typedef struct TB_ExternFunctionPatch {
-	uint32_t func_id;
+	TB_CompiledFunctionID source;
 	TB_ExternalID target_id;
 	uint32_t pos; // relative to the start of the function
 } TB_ExternFunctionPatch;
 
 typedef struct TB_FunctionOutput {
 	const char* name;
+	TB_FunctionID function;
 	TB_Linkage linkage;
 	
 	// NOTE(NeGate): This data is actually specific to the
@@ -302,7 +485,7 @@ typedef struct TB_InitObj {
 		
 		// relocations
 		TB_INIT_OBJ_RELOC_EXTERN,
-		TB_INIT_OBJ_RELOC_FUNC,
+		TB_INIT_OBJ_RELOC_FUNCTION,
 		TB_INIT_OBJ_RELOC_GLOBAL
 	} type;
 	TB_CharUnits offset;
@@ -313,7 +496,7 @@ typedef struct TB_InitObj {
 		} region;
 		
 		TB_ExternalID reloc_extern;
-		TB_Function* reloc_function;
+		TB_FunctionID reloc_function;
 		TB_GlobalID reloc_global;
 	};
 } TB_InitObj;
@@ -388,10 +571,10 @@ struct TB_Module {
 	// This number is calculated while the builders are running
 	// if the optimizations are run this number is set to SIZE_MAX
 	// which means it needs to be re-evaluated.
-	_Atomic size_t line_info_count;
+	tb_atomic_size_t line_info_count;
 	
 	// Convert this into a dynamic memory arena... maybe
-	_Atomic size_t prototypes_arena_size;
+	tb_atomic_size_t prototypes_arena_size;
 	uint64_t* prototypes_arena;
 	
 #if !TB_STRIP_LABELS
@@ -421,12 +604,12 @@ struct TB_Module {
 	} files;
     
 	struct {
-		_Atomic size_t count;
+		tb_atomic_size_t count;
 		TB_Function* data;
 	} functions;
 	
 	struct {
-		_Atomic size_t count;
+		tb_atomic_size_t count;
 		TB_FunctionOutput* data;
 	} compiled_functions;
 	
@@ -438,8 +621,8 @@ struct TB_Module {
 	void** compiled_function_pos;
 	
 	// we need to keep track of these for layout reasons
-	_Atomic size_t data_region_size;
-	_Atomic size_t rdata_region_size;
+	tb_atomic_size_t data_region_size;
+	tb_atomic_size_t rdata_region_size;
 	
 	// The code is stored into giant buffers
 	// there's on per code gen thread so that
@@ -458,46 +641,103 @@ typedef struct TB_TemporaryStorage {
 #define PROEPI_BUFFER 256
 
 typedef struct ICodeGen {
-	void(*emit_call_patches)(TB_Module* m, uint32_t func_layout[]);
+	void(*emit_call_patches)(TB_Module* m, uint32_t* func_layout);
 	
 	size_t(*get_prologue_length)(uint64_t saved, uint64_t stack_usage);
 	size_t(*get_epilogue_length)(uint64_t saved, uint64_t stack_usage);
-	size_t(*emit_prologue)(uint8_t out[], uint64_t saved, uint64_t stack_usage);
-	size_t(*emit_epilogue)(uint8_t out[], uint64_t saved, uint64_t stack_usage);
+	size_t(*emit_prologue)(uint8_t* out, uint64_t saved, uint64_t stack_usage);
+	size_t(*emit_epilogue)(uint8_t* out, uint64_t saved, uint64_t stack_usage);
 	
-	TB_FunctionOutput(*compile_function)(TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
+	TB_FunctionOutput(*compile_function)(TB_CompiledFunctionID id, TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
 } ICodeGen;
 
-// Used internally for some optimizations
-#define tb_swap(a, b) do { \
-typeof(a) temp = a; \
+#define tb_swap(type, a, b) do { \
+type temp = a; \
 a = b; \
 b = temp; \
 } while(0)
 
-#ifndef NDEBUG
-#define tb_todo() assert(0 && "TODO")
-#define tb_unreachable() __builtin_trap()
+#ifdef _MSC_VER
+#  define tb_todo() assert(0 && "TODO")
+#  define tb_unreachable() __assume(0)
 #else
-#define tb_todo() __builtin_unreachable()
-#define tb_unreachable() __builtin_unreachable()
+#  ifndef NDEBUG
+#    define tb_todo() assert(0 && "TODO")
+#    define tb_unreachable() __builtin_trap()
+#  else
+#    define tb_todo() __builtin_unreachable()
+#    define tb_unreachable() __builtin_unreachable()
+#  endif
 #endif
 
 #define tb_panic(condition, ...) do { if (!(condition)) { printf(__VA_ARGS__); abort(); } } while (0)
 #define tb_arrlen(a) (sizeof(a) / sizeof(a[0]))
 
 #define loop(iterator, count) \
-for (typeof(count) iterator = 0, end__ = (count); iterator < end__; ++iterator)
-
+for (size_t iterator = 0, end__ = (count); iterator < end__; ++iterator)
 #define loop_range(iterator, start, count) \
-for (typeof(count) iterator = (start), end__ = (count); iterator < end__; ++iterator)
-
+for (size_t iterator = (start), end__ = (count); iterator < end__; ++iterator)
 #define loop_reverse(iterator, count) \
-for (typeof(count) iterator = (count); iterator--;)
+for (size_t iterator = (count); iterator--;)
+
+#ifdef _MSC_VER
+inline static int tb_ffs(uint32_t x) {
+	unsigned long index;
+	
+	if (_BitScanForward(&index, x)) return 1+index;
+	else return 0;
+}
+
+inline static int tb_popcount(uint32_t x) {
+	return __popcnt(x);
+}
+
+inline static uint64_t tb_next_pow2(uint64_t x) {
+	return x == 1 ? 1 : 1 << (64 - _lzcnt_u64(x - 1));
+}
+
+inline static bool tb_add_overflow(uint64_t a, uint64_t b, uint64_t* result) {
+	uint64_t c = a + b;
+	*result = c;
+	return c < a;
+}
+
+inline static bool tb_sub_overflow(uint64_t a, uint64_t b, uint64_t* result) {
+	uint64_t c = a - b;
+	*result = c;
+	return c > a;
+}
+
+inline static bool tb_mul_overflow(uint64_t a, uint64_t b, uint64_t* result) {
+	uint64_t hi;
+	*result = _umul128(a, b, &hi);
+	return hi > 0;
+}
+#else
+inline static int tb_ffs(uint32_t x) {
+	return __builtin_ffs(x);
+}
+
+inline static int tb_popcount(uint32_t x) {
+	return __builtin_popcount(x);
+}
 
 inline static uint64_t tb_next_pow2(uint64_t x) {
 	return x == 1 ? 1 : 1 << (64 - __builtin_clzl(x - 1));
 }
+
+inline static bool tb_add_overflow(uint64_t a, uint64_t b, uint64_t* result) {
+	return __builtin_add_overflow(a, b, result);
+}
+
+inline static bool tb_sub_overflow(uint64_t a, uint64_t b, uint64_t* result) {
+	return __builtin_sub_overflow(a, b, result);
+}
+
+inline static bool tb_mul_overflow(uint64_t a, uint64_t b, uint64_t* result) {
+	return __builtin_mul_overflow(a, b, result);
+}
+#endif
 
 bool tb_validate(TB_Function* f);
 
@@ -550,11 +790,29 @@ inline static void tb_kill_op(TB_Function* f, TB_Register at) {
 	f->nodes.payload[at] = (TB_RegPayload){ 0 };
 }
 
+inline static int align_up(int a, int b) { return a + (b - (a % b)) % b; }
+
 ////////////////////////////////
 // HELPER FUNCTIONS
 ////////////////////////////////
+#ifdef _MSC_VER
+#define TB_LIKELY(x)      (!!(x))
+#define TB_UNLIKELY(x)    (!!(x))
+#else
 #define TB_LIKELY(x)      __builtin_expect(!!(x), 1)
 #define TB_UNLIKELY(x)    __builtin_expect(!!(x), 0)
+#endif
+
+// NOTE(NeGate): clean this up
+#if 0
+#define OPTIMIZER_LOG(at, ...)
+#else
+#define OPTIMIZER_LOG(at, ...) do { \
+printf("%s:r%zu: ", f->name, at); \
+printf(__VA_ARGS__); \
+printf(" (part of %s)\n", __FUNCTION__); \
+} while (0)
+#endif
 
 #define CALL_NODE_PARAM_COUNT(f, i) \
 ((f)->nodes.payload[i].call.param_end - (f)->nodes.payload[i].call.param_start)
@@ -600,10 +858,10 @@ void tb_find_live_intervals(const TB_Function* f, TB_Register intervals[]);
 void tb_find_use_count(const TB_Function* f, int use_count[]);
 TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count);
 
-uint32_t tb_emit_const_patch(TB_Module* m, uint32_t func_id, size_t pos, const void* ptr, size_t len, size_t local_thread_id);
-void tb_emit_global_patch(TB_Module* m, uint32_t func_id, size_t pos, TB_GlobalID global, size_t local_thread_id);
-void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size_t pos, size_t local_thread_id);
-void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id, size_t pos, size_t local_thread_id);
+uint32_t tb_emit_const_patch(TB_Module* m, TB_CompiledFunctionID source, size_t pos, const void* ptr, size_t len, size_t local_thread_id);
+void tb_emit_global_patch(TB_Module* m, TB_CompiledFunctionID source, size_t pos, TB_GlobalID global, size_t local_thread_id);
+void tb_emit_call_patch(TB_Module* m, TB_CompiledFunctionID source, uint32_t target_id, size_t pos, size_t local_thread_id);
+void tb_emit_ecall_patch(TB_Module* m, TB_CompiledFunctionID source, TB_ExternalID target_id, size_t pos, size_t local_thread_id);
 
 #if !TB_STRIP_LABELS
 void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, size_t pos);

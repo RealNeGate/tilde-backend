@@ -12,7 +12,7 @@ bool tb_opt_strength_reduction(TB_Function* f) {
 				f->nodes.type[b] == TB_UNSIGNED_CONST) {
 				uint64_t b_const = f->nodes.payload[b].u_const;
 				
-				int log2 = __builtin_ffs(b_const) - 1;
+				int log2 = tb_ffs(b_const) - 1;
 				if (b_const == (1 << log2)) {
 					// It's a power of two, swap in a left-shift
 					TB_Register new_op = i - 1;

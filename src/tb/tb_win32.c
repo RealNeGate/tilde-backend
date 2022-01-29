@@ -1,5 +1,4 @@
 #include "tb_internal.h"
-#include <stdalign.h>
 
 void* tb_platform_valloc(size_t size) {
 	return VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
@@ -27,7 +26,7 @@ void tb_platform_heap_free(void* ptr) {
 }
 
 static char* string_buffer;
-static _Atomic size_t string_head;
+static size_t string_head;
 
 char* tb_platform_string_alloc(const char* str) {
 	if (!string_buffer) {
@@ -35,7 +34,7 @@ char* tb_platform_string_alloc(const char* str) {
 	}
 	
 	size_t len = strlen(str);
-	size_t pos = atomic_fetch_add(&string_head, len + 1);
+	size_t pos = tb_atomic_size_add(&string_head, len + 1);
 	
 	char* new_str = &string_buffer[pos];
 	memcpy(new_str, str, len);
@@ -75,7 +74,7 @@ void tb_platform_arena_init() {
 
 void* tb_platform_arena_alloc(size_t size) {
 	// align to max_align
-	size_t align_mask = _Alignof(max_align_t)-1;
+	size_t align_mask = _Alignof(intmax_t)-1;
 	size = (size + align_mask) & ~align_mask;
 	
 	// If this ever happens... literally how...

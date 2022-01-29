@@ -23,7 +23,7 @@ inline static void emit_memory_operand(Ctx* ctx, uint8_t rx, const Val* restrict
 		// If it needs an index, it'll put RSP into the base slot
 		// and write the real base into the SIB
 		uint8_t mod = MOD_INDIRECT_DISP32;
-		if (disp == 0 && base != RBP) mod = MOD_INDIRECT;
+		if (disp == 0 && (base & 7) != RBP) mod = MOD_INDIRECT;
 		else if (disp == (int8_t)disp) mod = MOD_INDIRECT_DISP8;
 		
 		emit(mod_rx_rm(mod, rx, needs_index ? RSP : base));
@@ -78,6 +78,8 @@ inline static void inst1(Ctx* ctx, Inst1 op, const Val* r) {
 	} else if (r->type == VAL_GLOBAL) {
 		uint8_t rx = (op & 0xFF);
 		
+		emit(0x48); // rex.w
+		emit((op >> 8) & 0xFF);
 		emit(((rx & 7) << 3) | RBP);
 		emit4(0x0);
 		
@@ -92,7 +94,7 @@ inline static void inst2(Ctx* ctx, Inst2Type op, const Val* a, const Val* b, int
 	const Inst2* inst = &inst2_tbl[op];
 	
 	bool dir = b->type == VAL_MEM || b->type == VAL_GLOBAL;
-	if (dir || inst->op == 0xAF || inst->ext == EXT_DEF2) tb_swap(a, b);
+	if (dir || inst->op == 0xAF || inst->ext == EXT_DEF2) tb_swap(const Val*, a, b);
 	
 	// operand size
 	uint8_t sz = (dt_type != TB_I8);
@@ -124,7 +126,7 @@ inline static void inst2(Ctx* ctx, Inst2Type op, const Val* a, const Val* b, int
 		// RX
 		if (b->type == VAL_GPR) rx = b->gpr;
 		else if (b->type == VAL_IMM) rx = inst->rx_i;
-		else __builtin_unreachable();
+		else tb_unreachable();
 		
 		// RM & REX
 		bool is_64bit = (dt_type == TB_I64 || dt_type == TB_PTR);
@@ -145,7 +147,7 @@ inline static void inst2(Ctx* ctx, Inst2Type op, const Val* a, const Val* b, int
 		} else if (a->type == VAL_GLOBAL) {
 			base = RBP;
 			if (rx >= 8 || is_64bit) emit(rex(is_64bit, rx, base, 0));
-		} else __builtin_unreachable();
+		} else tb_unreachable();
 		
 		// Opcode
 		if (inst->ext == EXT_DEF || inst->ext == EXT_DEF2) {
@@ -173,12 +175,18 @@ inline static void inst2(Ctx* ctx, Inst2Type op, const Val* a, const Val* b, int
 	
 	if (b->type == VAL_IMM) {
 		if (dt_type == TB_I8 || short_imm) {
+			if (a->type == VAL_GLOBAL) patch4(code_pos() - 4, -1);
+			
 			if (short_imm) assert(b->imm == (int8_t)b->imm);
 			emit((int8_t)b->imm);
 		} else if (dt_type == TB_I16) {
+			if (a->type == VAL_GLOBAL) patch4(code_pos() - 4, -2);
+			
 			assert(b->imm == (int16_t)b->imm);
 			emit2((int16_t)b->imm);
 		} else {
+			if (a->type == VAL_GLOBAL) patch4(code_pos() - 4, -4);
+			
 			assert(dt_type == TB_I32 || dt_type == TB_I64 || dt_type == TB_PTR);
 			emit4((int32_t)b->imm);
 		}
@@ -206,7 +214,7 @@ inline static void inst2sse(Ctx* ctx, Inst2FPType op, const Val* a, const Val* b
 	bool supports_mem_dst = (op == FP_MOV);
 	bool dir = is_value_mem(a);
 	if (supports_mem_dst && dir) {
-		tb_swap(a, b);
+		tb_swap(const Val*, a, b);
 	}
 	
 	uint8_t rx = a->xmm;

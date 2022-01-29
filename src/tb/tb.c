@@ -3,13 +3,13 @@
 
 // Used for some optimizations
 #if TB_HOST_ARCH == TB_HOST_X86_64
-#include <x86intrin.h>
+#include <emmintrin.h>
 #endif
 
-static _Thread_local uint8_t tb_thread_storage[TB_TEMPORARY_STORAGE_SIZE];
+static thread_local uint8_t tb_thread_storage[TB_TEMPORARY_STORAGE_SIZE];
+static thread_local int tid;
 
-static _Atomic int total_tid;
-static _Thread_local int tid;
+static tb_atomic_int total_tid;
 
 static int get_local_thread_id() {
 	// the value it spits out is zero-based, but
@@ -31,7 +31,7 @@ static TB_CodeRegion* get_or_allocate_code_region(TB_Module* m, int tid) {
 }
 
 TB_API TB_Function* tb_function_clone(TB_Module* m, TB_Function* source_func, const char* name) {
-	size_t i = m->functions.count++;
+	size_t i = tb_atomic_size_add(&m->functions.count, 1);
 	assert(i < TB_MAX_FUNCTIONS);
 	
 	TB_Function* f = &m->functions.data[i];
@@ -72,7 +72,7 @@ TB_API void tb_function_free(TB_Function* f) {
 TB_API TB_DataType tb_vector_type(TB_DataTypeEnum type, int width) {
 	assert(tb_is_power_of_two(width));
 	
-	return (TB_DataType) { .type = type, .width = __builtin_ffs(width) - 1 };
+	return (TB_DataType) { .type = type, .width = tb_ffs(width) - 1 };
 }
 
 TB_API TB_Module* tb_module_create(TB_Arch target_arch,
@@ -88,12 +88,6 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 	
 	m->prototypes_arena = tb_platform_valloc(PROTOTYPES_ARENA_SIZE * sizeof(uint64_t));
 	
-#if !TB_STRIP_LABELS
-	m->label_symbols.count = 0;
-	m->label_symbols.capacity = 64;
-	m->label_symbols.data = tb_platform_heap_alloc(64 * sizeof(TB_LabelSymbol));
-#endif
-	
 	m->files.count = 1;
 	m->files.capacity = 64;
 	m->files.data = tb_platform_heap_alloc(64 * sizeof(TB_File));
@@ -105,6 +99,7 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 	m->compiled_functions.count = 0;
 	m->compiled_functions.data = tb_platform_heap_alloc(TB_MAX_FUNCTIONS * sizeof(TB_FunctionOutput));
     
+	m->rdata_region_size = 16;
 	m->line_info_count = 0;
 	
 #if defined(_WIN32)
@@ -133,17 +128,22 @@ TB_API void tb_function_optimize(TB_Function* f, TB_OptLevel opt) {
 	repeat_opt: {
 		// Passive optimizations
 		OPT(dead_expr_elim);
-		OPT(remove_pass_node);
 		OPT(canonicalize);
+		OPT(hoist_locals);
+		OPT(mem2reg);
+		OPT(compact_dead_regs);
+		
+		/*OPT(dead_expr_elim);
+		OPT(remove_pass_node);
 		OPT(fold);
 		OPT(load_elim);
 		OPT(strength_reduction);
-		OPT(hoist_locals);
 		OPT(copy_elision);
-		OPT(mem2reg);
+
+
 		OPT(dead_block_elim);
 		OPT(deshort_circuit);
-		OPT(compact_dead_regs);
+		OPT(compact_dead_regs);*/
 	}
 	
 	//printf("FINAL   ");
@@ -160,16 +160,12 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
 	int id = get_local_thread_id();
 	assert(id < TB_MAX_THREADS);
 	
-	int index = m->compiled_functions.count++;
-	TB_FunctionID index2 = f - m->functions.data;
-	
-	((void)index2);
-	assert(index == index2 && "Decouple compiled functions and IR functions");
+	int index = tb_atomic_size_add(&m->compiled_functions.count, 1);
 	
 	TB_CodeRegion* restrict region = get_or_allocate_code_region(m, id);
 	TB_FunctionOutput* func_out = m->compiled_functions.data;
 	
-	func_out[index] = gen->compile_function(f, &m->features, &region->data[region->size], id);
+	func_out[index] = gen->compile_function(index, f, &m->features, &region->data[region->size], id);
 	region->size += func_out[index].code_size;
 	
 	if (region->size > CODE_REGION_BUFFER_SIZE) {
@@ -218,10 +214,6 @@ TB_API void tb_module_destroy(TB_Module* m) {
 		m->jit_region = NULL;
 	}
 	
-	loop_range(i, 1, m->files.count) {
-		tb_platform_heap_free(m->files.data[i].path);
-	}
-	
 	loop(i, m->max_threads) arrfree(m->initializers[i]);
 	loop(i, m->max_threads) arrfree(m->call_patches[i]);
 	loop(i, m->max_threads) arrfree(m->ecall_patches[i]);
@@ -231,7 +223,7 @@ TB_API void tb_module_destroy(TB_Module* m) {
 	tb_platform_vfree(m->prototypes_arena, PROTOTYPES_ARENA_SIZE * sizeof(uint64_t));
 	
 #if !TB_STRIP_LABELS
-	tb_platform_heap_free(m->label_symbols.data);
+	arrfree(m->label_symbols);
 #endif
 	tb_platform_heap_free(m->files.data);
 	tb_platform_heap_free(m->functions.data);
@@ -240,6 +232,13 @@ TB_API void tb_module_destroy(TB_Module* m) {
 }
 
 TB_API TB_FileID tb_file_create(TB_Module* m, const char* path) {
+	// skip the NULL file entry
+	loop_range(i, 1, m->files.count) {
+		if (strcmp(m->files.data[i].path, path) == 0) {
+			return i;
+		}
+	}
+	
 	if (m->files.count + 1 >= m->files.capacity) {
 		m->files.capacity *= 2;
 		m->files.data = realloc(m->files.data, m->files.capacity * sizeof(TB_File));
@@ -288,10 +287,12 @@ void tb_resize_node_stream(TB_Function* f, size_t cap) {
 }
 
 TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv conv, TB_DataType return_dt, int num_params, bool has_varargs) {
+	assert(num_params == (uint32_t) num_params);
+	
 	size_t space_needed = (sizeof(TB_FunctionPrototype) + (sizeof(uint64_t)-1)) / sizeof(uint64_t);
 	space_needed += ((num_params * sizeof(TB_DataType)) + (sizeof(uint64_t)-1)) / sizeof(uint64_t);
 	
-	size_t len = atomic_fetch_add(&m->prototypes_arena_size, space_needed);
+	size_t len = tb_atomic_size_add(&m->prototypes_arena_size, space_needed);
 	if (len+space_needed >= PROTOTYPES_ARENA_SIZE) {
 		printf("Prototype arena: out of memory!\n");
 		abort();
@@ -299,7 +300,7 @@ TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv co
 	
 	TB_FunctionPrototype* p = (TB_FunctionPrototype*)&m->prototypes_arena[len];
 	p->call_conv = conv;
-	p->param_capacity = safe_cast(short, num_params);
+	p->param_capacity = num_params;
 	p->param_count = 0;
 	p->return_dt = return_dt;
 	p->has_varargs = has_varargs;
@@ -382,6 +383,9 @@ TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, co
 }
 
 TB_API TB_InitializerID tb_initializer_create(TB_Module* m, size_t size, size_t align, size_t max_objects) {
+	assert(size == (uint32_t)size);
+	assert(align == (uint32_t)align);
+	assert(max_objects == (uint32_t)max_objects);
 	int tid = get_local_thread_id();
 	
 	size_t space_needed = (sizeof(TB_Initializer) + (sizeof(uint64_t)-1)) / sizeof(uint64_t);
@@ -395,14 +399,17 @@ TB_API TB_InitializerID tb_initializer_create(TB_Module* m, size_t size, size_t 
 	arrsetlen(m->initializers[tid], len + space_needed);
 	
 	TB_Initializer* initializer = (TB_Initializer*)&m->initializers[tid][len];
-	initializer->size = safe_cast(uint32_t, size);
-	initializer->align = safe_cast(uint32_t, align);
-	initializer->obj_capacity = safe_cast(uint32_t, max_objects);
+	initializer->size = size;
+	initializer->align = align;
+	initializer->obj_capacity = max_objects;
 	initializer->obj_count = 0;
 	return i;
 }
 
 TB_API void* tb_initializer_add_region(TB_Module* m, TB_InitializerID id, size_t offset, size_t size) {
+	assert(offset == (uint32_t)offset);
+	assert(size == (uint32_t)size);
+	
 	TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 	TB_Initializer* i = (TB_Initializer*)&m->initializers[id / per_thread_stride][id % per_thread_stride];
 	
@@ -412,12 +419,56 @@ TB_API void* tb_initializer_add_region(TB_Module* m, TB_InitializerID id, size_t
 	void* ptr = malloc(size);
 	i->objects[i->obj_count++] = (TB_InitObj) {
 		.type = TB_INIT_OBJ_REGION,
-		.offset = safe_cast(uint32_t, offset),
-		.region.size = safe_cast(uint32_t, size),
-		.region.ptr = ptr
+		.offset = offset,
+		.region = {
+			.size = size,
+			.ptr = ptr
+		}
 	};
 	
 	return ptr;
+}
+
+TB_API void tb_initializer_add_global(TB_Module* m, TB_InitializerID id, size_t offset, TB_GlobalID global) {
+	assert(offset == (uint32_t)offset);
+	
+	TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
+	TB_Initializer* i = (TB_Initializer*)&m->initializers[id / per_thread_stride][id % per_thread_stride];
+	
+	assert(i->obj_count+1 <= i->obj_capacity);
+	i->objects[i->obj_count++] = (TB_InitObj) {
+		.type = TB_INIT_OBJ_RELOC_GLOBAL,
+		.offset = offset,
+		.reloc_global = global
+	};
+}
+
+TB_API void tb_initializer_add_function(TB_Module* m, TB_InitializerID id, size_t offset, TB_FunctionID func) {
+	assert(offset == (uint32_t)offset);
+	
+	TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
+	TB_Initializer* i = (TB_Initializer*)&m->initializers[id / per_thread_stride][id % per_thread_stride];
+	
+	assert(i->obj_count+1 <= i->obj_capacity);
+	i->objects[i->obj_count++] = (TB_InitObj) {
+		.type = TB_INIT_OBJ_RELOC_FUNCTION,
+		.offset = offset,
+		.reloc_function = func
+	};
+}
+
+TB_API void tb_initializer_add_extern(TB_Module* m, TB_InitializerID id, size_t offset, TB_ExternalID external) {
+	assert(offset == (uint32_t)offset);
+	
+	TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
+	TB_Initializer* i = (TB_Initializer*)&m->initializers[id / per_thread_stride][id % per_thread_stride];
+	
+	assert(i->obj_count+1 <= i->obj_capacity);
+	i->objects[i->obj_count++] = (TB_InitObj) {
+		.type = TB_INIT_OBJ_RELOC_EXTERN,
+		.offset = offset,
+		.reloc_extern = external
+	};
 }
 
 TB_API TB_GlobalID tb_global_create(TB_Module* m, TB_InitializerID initializer, const char* name, TB_Linkage linkage) {
@@ -432,7 +483,7 @@ TB_API TB_GlobalID tb_global_create(TB_Module* m, TB_InitializerID initializer, 
 		TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 		TB_Initializer* i = (TB_Initializer*)&m->initializers[initializer / per_thread_stride][initializer % per_thread_stride];
 		
-		pos = atomic_fetch_add(&m->data_region_size, i->size + i->align);
+		pos = tb_atomic_size_add(&m->data_region_size, i->size + i->align);
 		
 		// TODO(NeGate): Assert on non power of two alignment
 		size_t align_mask = i->align - 1;
@@ -553,44 +604,57 @@ void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance) {
 	return &store->data[store->used - distance];
 }
 
-void tb_emit_call_patch(TB_Module* m, uint32_t func_id, uint32_t target_id, size_t pos, size_t local_thread_id) {
-	assert(pos < UINT32_MAX);
+void tb_emit_call_patch(TB_Module* m, TB_CompiledFunctionID source, uint32_t target_id, size_t pos, size_t local_thread_id) {
+	assert(pos == (uint32_t) pos);
+	
 	TB_FunctionPatch p = {
-		.func_id = func_id,
+		.source = source,
 		.target_id = target_id,
-		.pos = safe_cast(uint32_t, pos)
+		.pos = pos
 	};
 	
 	arrput(m->call_patches[local_thread_id], p);
 }
 
-void tb_emit_ecall_patch(TB_Module* m, uint32_t func_id, TB_ExternalID target_id, size_t pos, size_t local_thread_id) {
+void tb_emit_ecall_patch(TB_Module* m, TB_CompiledFunctionID source, TB_ExternalID target_id, size_t pos, size_t local_thread_id) {
+	assert(pos == (uint32_t) pos);
+	
 	TB_ExternFunctionPatch p = {
-		.func_id = func_id,
+		.source = source,
 		.target_id = target_id,
-		.pos = safe_cast(uint32_t, pos)
+		.pos = pos
 	};
 	
 	arrput(m->ecall_patches[local_thread_id], p);
 }
 
-uint32_t tb_emit_const_patch(TB_Module* m, uint32_t func_id, size_t pos, const void* ptr, size_t len, size_t local_thread_id) {
-	size_t rdata_pos = atomic_fetch_add(&m->rdata_region_size, len);
+uint32_t tb_emit_const_patch(TB_Module* m, TB_CompiledFunctionID source, size_t pos, const void* ptr, size_t len, size_t local_thread_id) {
+	assert(pos == (uint32_t) pos);
+	assert(len == (uint32_t) len);
+	
+	size_t align = len > 8 ? 16 : 0;
+	size_t alloc_pos = tb_atomic_size_add(&m->rdata_region_size, len + align);
+	
+	size_t rdata_pos = len > 8 ? align_up(alloc_pos, 16) : alloc_pos;
 	TB_ConstPoolPatch p = {
-		.func_id = func_id,
-		.pos = safe_cast(uint32_t, pos),
+		.source = source,
+		.pos = pos,
 		.rdata_pos = rdata_pos,
 		.data = ptr,
 		.length = len
 	};
 	arrput(m->const_patches[local_thread_id], p);
-	return safe_cast(uint32_t, rdata_pos);
+	
+	assert(rdata_pos == (uint32_t) rdata_pos);
+	return rdata_pos;
 }
 
-void tb_emit_global_patch(TB_Module* m, uint32_t func_id, size_t pos, TB_GlobalID global, size_t local_thread_id) {
+void tb_emit_global_patch(TB_Module* m, TB_CompiledFunctionID source, size_t pos, TB_GlobalID global, size_t local_thread_id) {
+	assert(pos == (uint32_t) pos);
+	
 	TB_GlobalPatch p = {
-		.func_id = func_id,
-		.pos = safe_cast(uint32_t, pos),
+		.source = source,
+		.pos = pos,
 		.global = global
 	};
 	arrput(m->global_patches[local_thread_id], p);
@@ -637,6 +701,9 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
 			callback(user_data, "  r%u\t=\t", i);
 			callback(user_data, " NOP\n");
 			break;
+            case TB_DEBUGBREAK:
+			callback(user_data, " DEBUGBREAK\n");
+			break;
             case TB_SIGNED_CONST:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
@@ -651,7 +718,7 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
 			callback(user_data, "  r%u\t=\t\"%.*s\"\n", i, (int)f->nodes.payload[i].str_const.len, f->nodes.payload[i].str_const.data);
 			break;
 			case TB_LINE_INFO:
-			//callback(user_data, "  # LOC %s:%d\n", f->module->files.data[p.line_info.file].path, p.line_info.line);
+			callback(user_data, "  # LOC %s:%d\n", f->module->files.data[p.line_info.file].path, p.line_info.line);
 			break;
             case TB_FLOAT_CONST:
 			callback(user_data, "  r%u\t=\t", i);

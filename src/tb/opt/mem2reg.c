@@ -235,7 +235,7 @@ bool tb_opt_mem2reg(TB_Function* f) {
 	TB_Register* to_promote = tb_tls_push(tls, 0);
 	
 	TB_Register entry_terminator = f->nodes.payload[1].label.terminator;
-	loop_range(i, 1, entry_terminator) {
+	loop(i, entry_terminator) {
 		if (f->nodes.type[i] == TB_LOCAL || f->nodes.type[i] == TB_PARAM_ADDR) {
 			TB_DataType dt;
 			if (tb_is_stack_slot_coherent(f, i, &dt)) {
@@ -243,6 +243,8 @@ bool tb_opt_mem2reg(TB_Function* f) {
 				to_promote_count++;
 				
 				f->nodes.dt[i] = dt;
+				
+				OPTIMIZER_LOG(i, "promoting to IR register");
 			}
 		}
 	}
@@ -340,29 +342,44 @@ bool tb_opt_mem2reg(TB_Function* f) {
 }
 
 // NOTE(NeGate): a stack slot is coherent when all loads and stores share
-// the same type and properties.
+// the same type and alignment along with not needing any address usage.
+//
+// TODO(NeGate): This might get slow...
 static bool tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_DataType* out_dt) {
-	bool initialized = false;
-	TB_DataType dt;
+	// if there's a difference between the times we want the value and the
+	// times we want the address, then some address calculations are being done
+	// and thus we can't mem2reg
+	int use_count = 0;
+#define X(reg) if (reg == address) use_count += 1
+	FOR_EACH_REGISTER_IN_FUNC(X)
+#undef X
+	
+	int value_based_use_count = 0;
 	
 	// pick the first load/store and use that as the baseline
-	for (TB_Register i = address; i < f->nodes.count; i++) {
-		if (f->nodes.type[i] == TB_LOAD && f->nodes.payload[i].load.address == address) {
+	TB_DataType dt = TB_TYPE_VOID;
+	bool initialized = false;
+	loop_range(i, address, f->nodes.count) {
+		TB_RegType type = f->nodes.type[i];
+		TB_RegPayload* restrict p = &f->nodes.payload[i];
+		
+		if (f->nodes.type[i] == TB_LOAD && p->load.address == address) {
+			value_based_use_count += 1;
+			if (p->load.is_volatile) return false;
+			
 			if (!initialized) dt = f->nodes.dt[i];
 			else if (TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[i])) return false;
-			else if (f->nodes.payload[i].load.is_volatile) return false;
-		} else if (f->nodes.type[i] == TB_STORE && f->nodes.payload[i].store.address == address) {
+		} else if (f->nodes.type[i] == TB_STORE && p->store.address == address) {
+			value_based_use_count += 1;
+			
+			if (p->store.is_volatile) return false;
+			
 			if (!initialized) dt = f->nodes.dt[i];
 			else if (TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[i])) return false;
-			else if (f->nodes.payload[i].store.is_volatile) return false;
-		} else if (f->nodes.type[i] == TB_MEMSET && f->nodes.payload[i].mem_op.dst == address) {
-			return false;
-		} else if (f->nodes.type[i] == TB_ARRAY_ACCESS && f->nodes.payload[i].array_access.base == address) {
-			return false;
-		} else if (f->nodes.type[i] == TB_MEMBER_ACCESS && f->nodes.payload[i].member_access.base == address) {
-			return false;
 		}
 	}
+	
+	if (value_based_use_count != use_count) return false;
 	
 	*out_dt = dt;
 	return true;

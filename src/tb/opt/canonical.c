@@ -62,13 +62,17 @@ bool tb_opt_canonicalize(TB_Function* f) {
 			// VVV
 			// (cmp A (int B))
 			if (f->nodes.type[a] == TB_SIGN_EXT && f->nodes.type[b] == TB_SIGNED_CONST) {
-				TB_Register src = f->nodes.payload[a].ext;
+				OPTIMIZER_LOG(i, "removed unnecessary zero extension for compare against constants");
 				
+				TB_Register src = f->nodes.payload[a].ext;
 				f->nodes.payload[i].cmp.a = src;
+				changes++;
 			} else if (f->nodes.type[a] == TB_ZERO_EXT && f->nodes.type[b] == TB_UNSIGNED_CONST) {
-				TB_Register src = f->nodes.payload[a].ext;
+				OPTIMIZER_LOG(i, "removed unnecessary zero extension for compare against constants");
 				
+				TB_Register src = f->nodes.payload[a].ext;
 				f->nodes.payload[i].cmp.a = src;
+				changes++;
 			}
 		} else if (type == TB_ADD || type == TB_MUL) {
 			TB_Register a = f->nodes.payload[i].i_arith.a;
@@ -82,6 +86,8 @@ bool tb_opt_canonicalize(TB_Function* f) {
 							  f->nodes.type[b] == TB_UNSIGNED_CONST);
 			
 			if (is_aconst && !is_bconst) {
+				OPTIMIZER_LOG(i, "moved constants to right hand side.");
+				
 				f->nodes.payload[i].i_arith.a = b;
 				f->nodes.payload[i].i_arith.b = a;
 				changes++;
@@ -105,6 +111,8 @@ bool tb_opt_canonicalize(TB_Function* f) {
 			int32_t offset = f->nodes.payload[i].member_access.offset;
 			
 			if (offset == 0) {
+				OPTIMIZER_LOG(i, "elided member access to first element");
+				
 				f->nodes.type[i] = TB_PASS;
 				f->nodes.payload[i].pass = base;
 				changes++;
@@ -117,10 +125,41 @@ bool tb_opt_canonicalize(TB_Function* f) {
 				uint64_t index_imm = f->nodes.payload[index].u_const;
 				
 				if (index_imm == 0) {
+					OPTIMIZER_LOG(i, "elided array access to first element");
+					
 					f->nodes.type[i] = TB_PASS;
 					f->nodes.payload[i].pass = base;
 					changes++;
 				}
+			}
+		} else if (type == TB_INT2PTR) {
+			TB_Register src = f->nodes.payload[i].cvt.src;
+			
+			if (f->nodes.type[src] == TB_SIGNED_CONST || f->nodes.type[src] == TB_UNSIGNED_CONST) {
+				OPTIMIZER_LOG(i, "constant int2ptr removed.");
+				
+				uint64_t imm = f->nodes.payload[src].u_const;
+				
+				f->nodes.type[i] = TB_UNSIGNED_CONST;
+				f->nodes.dt[i] = TB_TYPE_PTR;
+				f->nodes.payload[i].u_const = imm;
+				changes++;
+			}
+		} else if (type == TB_TRUNCATE) {
+			TB_Register src = f->nodes.payload[i].cvt.src;
+			
+			if (f->nodes.type[src] == TB_SIGNED_CONST || f->nodes.type[src] == TB_UNSIGNED_CONST) {
+				OPTIMIZER_LOG(i, "constant truncate removed.");
+				
+				uint64_t imm = f->nodes.payload[src].u_const;
+				
+				uint64_t shift = 64 - (8 << (f->nodes.dt[src].type - TB_I8));
+				uint64_t mask = (~0ull) >> shift;
+				
+				f->nodes.type[i] = TB_UNSIGNED_CONST;
+				f->nodes.dt[i] = f->nodes.dt[src];
+				f->nodes.payload[i].u_const = imm & mask;
+				changes++;
 			}
 		} else if (type == TB_PHI2) {
 			// remove useless phi
@@ -129,19 +168,27 @@ bool tb_opt_canonicalize(TB_Function* f) {
 			
 			// trivial phi
 			if (a == b) {
+				OPTIMIZER_LOG(i, "removed trivial phi");
+				
 				f->nodes.type[i] = TB_PASS;
 				f->nodes.payload[i].pass = a;
 				changes++;
 			} else if (i == b) {
+				OPTIMIZER_LOG(i, "removed trivial phi");
+				
 				f->nodes.type[i] = TB_PASS;
 				f->nodes.payload[i].pass = a;
 				changes++;
 			} else if (i == a) {
+				OPTIMIZER_LOG(i, "removed trivial phi");
+				
 				f->nodes.type[i] = TB_PASS;
 				f->nodes.payload[i].pass = b;
 				changes++;
 			}
 		} else if (f->nodes.type[i] == TB_PHI1) {
+			OPTIMIZER_LOG(i, "removed trivial phi");
+			
 			// remove useless phi
 			TB_Register reg = f->nodes.payload[i].phi1.a;
 			
@@ -155,6 +202,8 @@ bool tb_opt_canonicalize(TB_Function* f) {
 			// NOTE(NeGate): We can read ahead because of the zeroed
 			// out padding space in the TB_NodeStream::type stream
 			if (f->nodes.type[i + 1] == TB_LABEL) {
+				OPTIMIZER_LOG(i, "combined subsequent labels");
+				
 				TB_Label after = f->nodes.payload[i].label.id;
 				TB_Label before = f->nodes.payload[i+1].label.id;
 				
@@ -182,8 +231,21 @@ bool tb_opt_canonicalize(TB_Function* f) {
 						break;
 					}
 					
-					// TODO(NeGate): implement switch statement
-					case TB_SWITCH: tb_todo();
+					case TB_SWITCH: {
+						size_t entry_count = (f->nodes.payload[j].switch_.entries_end - f->nodes.payload[j].switch_.entries_start) / 2;
+						loop(i, entry_count) {
+							TB_SwitchEntry* entry = (TB_SwitchEntry*) &f->vla.data[f->nodes.payload[j].switch_.entries_start + (i * 2)];
+							
+							if (entry->key == before) {
+								entry->key = after;
+							}
+						}
+						
+						if (f->nodes.payload[j].switch_.default_label == before) {
+							f->nodes.payload[j].switch_.default_label = after;
+						}
+						break;
+					}
 					
 					default: break;
 				}

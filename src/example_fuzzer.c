@@ -1,5 +1,5 @@
 #include "tb/tb.h"
-#include <x86intrin.h>
+#include <emmintrin.h>
 #include <windows.h>
 
 #define TRIAL_COUNT 349525 // for max power 349525 

@@ -80,158 +80,6 @@ TB_API bool tb_function_validate(TB_Function* restrict f) {
 #undef printf
 #endif
 
-#define FOR_EACH_REGISTER_IN_FUNC \
-for (size_t i = 1; i < f->nodes.count; i++) { \
-TB_RegType type = f->nodes.type[i]; \
-TB_RegPayload* p = &f->nodes.payload[i]; \
-switch (type) { \
-case TB_NULL: \
-case TB_SIGNED_CONST: \
-case TB_UNSIGNED_CONST: \
-case TB_FLOAT_CONST: \
-case TB_STRING_CONST: \
-case TB_LOCAL: \
-case TB_PARAM: \
-case TB_GOTO: \
-case TB_LINE_INFO: \
-case TB_FUNC_ADDRESS: \
-case TB_EFUNC_ADDRESS: \
-case TB_GLOBAL_ADDRESS: \
-break; \
-case TB_LABEL: \
-X(p->label.terminator); \
-break; \
-case TB_INITIALIZE: \
-X(p->init.addr); \
-break; \
-case TB_KEEPALIVE: \
-X(p->keepalive); \
-break; \
-case TB_RESTRICT: \
-X(p->restrict_); \
-break; \
-case TB_ATOMIC_XCHG: \
-case TB_ATOMIC_ADD: \
-case TB_ATOMIC_SUB: \
-case TB_ATOMIC_AND: \
-case TB_ATOMIC_XOR: \
-case TB_ATOMIC_OR: \
-X(p->atomic.addr); \
-X(p->atomic.src); \
-break; \
-case TB_MEMCPY: \
-case TB_MEMSET: \
-X(p->mem_op.dst); \
-X(p->mem_op.src); \
-X(p->mem_op.size); \
-break; \
-case TB_MEMBER_ACCESS: \
-X(p->member_access.base); \
-break; \
-case TB_ARRAY_ACCESS: \
-X(p->array_access.base); \
-X(p->array_access.index); \
-break; \
-case TB_PARAM_ADDR: \
-X(p->param_addr.param); \
-break; \
-case TB_PASS: \
-X(p->pass); \
-break; \
-case TB_PHI1: \
-X(p->phi1.a); \
-X(p->phi1.a_label); \
-break; \
-case TB_PHI2: \
-X(p->phi2.a); \
-X(p->phi2.b); \
-X(p->phi2.a_label); \
-X(p->phi2.b_label); \
-break; \
-case TB_LOAD: \
-X(p->load.address); \
-break; \
-case TB_STORE: \
-X(p->store.address); \
-X(p->store.value); \
-break; \
-case TB_ZERO_EXT: \
-case TB_SIGN_EXT: \
-case TB_FLOAT_EXT: \
-X(p->ext); \
-break; \
-case TB_INT2PTR: \
-case TB_PTR2INT: \
-X(p->ptrcast); \
-case TB_INT2FLOAT: \
-case TB_FLOAT2INT: \
-X(p->cvt.src); \
-break; \
-case TB_TRUNCATE: \
-X(p->trunc); \
-break; \
-case TB_AND: \
-case TB_OR: \
-case TB_XOR: \
-case TB_ADD: \
-case TB_SUB: \
-case TB_MUL: \
-case TB_UDIV: \
-case TB_SDIV: \
-case TB_UMOD: \
-case TB_SMOD: \
-case TB_SAR: \
-case TB_SHL: \
-case TB_SHR: \
-X(p->i_arith.a); \
-X(p->i_arith.b); \
-break; \
-case TB_NOT: \
-case TB_NEG: \
-case TB_X86INTRIN_SQRT: \
-case TB_X86INTRIN_RSQRT: \
-X(p->unary.src); \
-break; \
-case TB_FADD: \
-case TB_FSUB: \
-case TB_FMUL: \
-case TB_FDIV: \
-X(p->f_arith.a); \
-X(p->f_arith.b); \
-break; \
-case TB_CMP_EQ: \
-case TB_CMP_NE: \
-case TB_CMP_SLT: \
-case TB_CMP_SLE: \
-case TB_CMP_ULT: \
-case TB_CMP_ULE: \
-case TB_CMP_FLT: \
-case TB_CMP_FLE: \
-X(p->cmp.a); \
-X(p->cmp.b); \
-break; \
-case TB_VCALL: \
-X(p->vcall.target); \
-case TB_CALL: \
-case TB_ICALL: \
-case TB_ECALL: \
-for (size_t j = p->call.param_start; j < p->call.param_end; j++) { \
-X(f->vla.data[j]); \
-} \
-break; \
-case TB_SWITCH: \
-X(p->switch_.key); \
-break; \
-case TB_IF: \
-X(p->if_.cond); \
-break; \
-case TB_RET: \
-X(p->ret.value); \
-break; \
-default: tb_panic(false, "Unknown node type: %d", type); \
-} \
-}
-
 //
 // IR ANALYSIS
 //
@@ -239,7 +87,7 @@ void tb_find_live_intervals(const TB_Function* f, TB_Register intervals[]) {
 	for (size_t i = 0; i < f->nodes.count; i++) intervals[i] = TB_NULL_REG;
     
 #define X(reg) intervals[reg] = i
-	FOR_EACH_REGISTER_IN_FUNC
+	FOR_EACH_REGISTER_IN_FUNC(X)
 #undef X
 }
 
@@ -247,7 +95,7 @@ void tb_find_use_count(const TB_Function* f, int use_count[]) {
 	for (size_t i = 0; i < f->nodes.count; i++) use_count[i] = 0;
 	
 #define X(reg) use_count[reg] += 1
-	FOR_EACH_REGISTER_IN_FUNC
+	FOR_EACH_REGISTER_IN_FUNC(X)
 #undef X
 }
 
@@ -255,7 +103,7 @@ size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_
 	size_t count = 0;
 	
 #define X(reg) count += (reg == find)
-	FOR_EACH_REGISTER_IN_FUNC
+	FOR_EACH_REGISTER_IN_FUNC(X)
 #undef X
 	
 	return count;
@@ -263,7 +111,7 @@ size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_
 
 TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t start, size_t end) {
 #define X(reg) if (reg == find) return i
-	FOR_EACH_REGISTER_IN_FUNC
+	FOR_EACH_REGISTER_IN_FUNC(X)
 #undef X
 	
 	return 0;
@@ -271,7 +119,7 @@ TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t sta
 
 void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Register replace) {
 #define X(reg) if (reg == find) { reg = replace; }
-	FOR_EACH_REGISTER_IN_FUNC
+	FOR_EACH_REGISTER_IN_FUNC(X)
 #undef X
 }
 
@@ -471,7 +319,6 @@ TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStora
 				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
 				count++;
 			}
-			label = terminator;
 		} else if (f->nodes.type[terminator] == TB_IF) {
 			if (l == f->nodes.payload[terminator].if_.if_true) {
 				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
@@ -482,16 +329,34 @@ TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStora
 				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
 				count++;
 			}
-			label = terminator + 1;
 		} else if (f->nodes.type[terminator] == TB_GOTO) {
 			if (l == f->nodes.payload[terminator].goto_.label) {
 				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
 				count++;
 			}
-			label = terminator + 1;
 		} else if (f->nodes.type[terminator] == TB_RET) {
-			label = terminator + 1;
+			/* blank */
+		} else if (f->nodes.type[terminator] == TB_SWITCH) {
+			TB_RegPayload* restrict p = &f->nodes.payload[terminator];
+			
+			size_t entry_count = (p->switch_.entries_end - p->switch_.entries_start) / 2;
+			loop(i, entry_count) {
+				TB_SwitchEntry* entry = (TB_SwitchEntry*) &f->vla.data[p->switch_.entries_start + (i * 2)];
+				
+				if (l == entry->key) {
+					*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
+					count++;
+				}
+			}
+			
+			if (l == p->switch_.default_label) {
+				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
+				count++;
+			}
 		} else tb_todo();
+		
+		// go to the next label
+		label = terminator + (f->nodes.type[terminator] == TB_LABEL ? 0 : 1);
 	} while (label < f->nodes.count);
 	
 	*dst_count = count;

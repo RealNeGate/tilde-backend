@@ -1,8 +1,16 @@
+@echo off
+setlocal enabledelayedexpansion
 call vcvars64
 
-set clang_settings=-march=nehalem -O2 -DNDEBUG -Werror -Wall -Wno-unused-function -g -gcodeview -D_CRT_SECURE_NO_WARNINGS
+if "%VSCMD_ARG_TGT_ARCH%" neq "x64" (
+  echo ERROR: please run this from MSVC x64 native tools command prompt, 32-bit target is not supported!
+  exit /b 1
+)
+
+set cl_settings=/arch:AVX /MTd /WX /Od /Zi /D_DEBUG /RTC1 /D_CRT_SECURE_NO_WARNINGS
 
 set tb_source_files=src/tb/tb.c ^
+	src/tb/tb_atomic.c ^
 	src/tb/tb_builder.c ^
 	src/tb/x64/x64.c ^
 	src/tb/opt/*.c ^
@@ -14,4 +22,7 @@ set tb_source_files=src/tb/tb.c ^
 	src/tb/stb_ds.c
 
 IF NOT exist build (mkdir build)
-clang %clang_settings% src/example_fuzzer.c %tb_source_files% -o build/example.exe
+
+cl /MP src/example_main.c %tb_source_files% %cl_settings% /Fo:build\ /Fe:build\example.exe /link /INCREMENTAL:NO /SUBSYSTEM:CONSOLE
+
+del build\*.obj

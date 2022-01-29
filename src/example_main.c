@@ -16,17 +16,17 @@ TB_Function* test_atomics(TB_Module* m) {
 		params[i] = tb_inst_param_addr(func, i);
 	}
 	
-	static const TB_DataType dt[] = { TB_TYPE_I8, TB_TYPE_I16, TB_TYPE_I32, TB_TYPE_I64 };
 	for (int i = 0; i < 4; i++) {
 		// try all the atomics
+		TB_DataType dt = { .type = TB_I8 + i };
 		TB_Register addr = tb_inst_load(func, TB_TYPE_PTR, params[i], 8);
 		
-		tb_inst_atomic_xchg(func, addr, tb_inst_sint(func, dt[i], 16), TB_MEM_ORDER_SEQ_CST);
-		tb_inst_atomic_add(func, addr, tb_inst_sint(func, dt[i], 32), TB_MEM_ORDER_SEQ_CST);
-		tb_inst_atomic_sub(func, addr, tb_inst_sint(func, dt[i], 64), TB_MEM_ORDER_SEQ_CST);
-		tb_inst_atomic_and(func, addr, tb_inst_sint(func, dt[i], 24), TB_MEM_ORDER_SEQ_CST);
-		tb_inst_atomic_xor(func, addr, tb_inst_sint(func, dt[i], 48), TB_MEM_ORDER_SEQ_CST);
-		tb_inst_atomic_or(func, addr, tb_inst_sint(func, dt[i], 56), TB_MEM_ORDER_SEQ_CST);
+		tb_inst_atomic_xchg(func, addr, tb_inst_sint(func, dt, 16), TB_MEM_ORDER_SEQ_CST);
+		tb_inst_atomic_add(func, addr, tb_inst_sint(func, dt, 32), TB_MEM_ORDER_SEQ_CST);
+		tb_inst_atomic_sub(func, addr, tb_inst_sint(func, dt, 64), TB_MEM_ORDER_SEQ_CST);
+		tb_inst_atomic_and(func, addr, tb_inst_sint(func, dt, 24), TB_MEM_ORDER_SEQ_CST);
+		tb_inst_atomic_xor(func, addr, tb_inst_sint(func, dt, 48), TB_MEM_ORDER_SEQ_CST);
+		tb_inst_atomic_or(func, addr, tb_inst_sint(func, dt, 56), TB_MEM_ORDER_SEQ_CST);
 	}
     
 	tb_inst_ret(func, TB_NULL_REG);
@@ -43,17 +43,17 @@ TB_Function* test_cvt_int_and_floats(TB_Module* m) {
 		params[i] = tb_inst_param_addr(func, i);
 	}
 	
-	static const TB_DataType dt[] = { TB_TYPE_I8, TB_TYPE_I16, TB_TYPE_I32, TB_TYPE_I64 };
 	static const int sizes[] = { 1, 2, 4, 8 };
 	for (int i = 0; i < 4; i++) {
-		TB_Register r = tb_inst_load(func, dt[i], params[i], sizes[i]);
+		TB_DataType dt = { .type = TB_I8 + i };
+		TB_Register r = tb_inst_load(func, dt, params[i], sizes[i]);
 		
 		r = tb_inst_int2float(func, r, TB_TYPE_F32);
-		r = tb_inst_float2int(func, r, dt[i]);
+		r = tb_inst_float2int(func, r, dt);
 		r = tb_inst_int2float(func, r, TB_TYPE_F64);
-		r = tb_inst_float2int(func, r, dt[i]);
+		r = tb_inst_float2int(func, r, dt);
 		
-		tb_inst_store(func, dt[i], params[i], r, sizes[i]);
+		tb_inst_store(func, dt, params[i], r, sizes[i]);
 	}
     
 	tb_inst_ret(func, TB_NULL_REG);

@@ -3,11 +3,11 @@
 
 #if TB_HOST_ARCH == TB_HOST_X86_64
 // Needed for some of the fancier 
-#include <x86intrin.h>
+#include <emmintrin.h>
 #endif
 
-_Static_assert(sizeof(float) == sizeof(uint32_t), "Float needs to be a 32-bit float!");
-_Static_assert(sizeof(double) == sizeof(uint64_t), "Double needs to be a 64-bit float!");
+static_assert(sizeof(float) == sizeof(uint32_t), "Float needs to be a 32-bit float!");
+static_assert(sizeof(double) == sizeof(uint64_t), "Double needs to be a 64-bit float!");
 
 // can be cleared after the side effect that originally created it
 //#define TB_REG_TEMP (((TB_Register)INT32_MAX) - 1)
@@ -107,11 +107,11 @@ typedef struct Val {
 	};
 } Val;
 
-_Static_assert(offsetof(Val, gpr) == offsetof(Val, xmm),
-			   "Val::gpr and Val::xmm must alias!");
+static_assert(offsetof(Val, gpr) == offsetof(Val, xmm),
+			  "Val::gpr and Val::xmm must alias!");
 
-_Static_assert(offsetof(Val, global.is_rvalue) == offsetof(Val, mem.is_rvalue),
-			   "Val::mem.is_rvalue and Val::global.is_rvalue must alias!");
+static_assert(offsetof(Val, global.is_rvalue) == offsetof(Val, mem.is_rvalue),
+			  "Val::mem.is_rvalue and Val::global.is_rvalue must alias!");
 
 // We really only need the position where to patch
 // it since it's all internal and the target is implicit.
@@ -189,8 +189,9 @@ typedef struct Ctx {
 	// Some analysis crap
 	dyn_array(StackSlot) locals;
 	
-	TB_Register* use_count;
 	TB_Register* intervals;
+	TB_Register* use_count;
+	uint8_t* should_share;
 	PhiValue* phis;
 	ReturnPatch* ret_patches;
 	
@@ -311,13 +312,10 @@ static const Inst2 inst2_tbl[] = {
 
 // NOTE(NeGate): This is for Win64, we can handle SysV later
 static const uint16_t WIN64_ABI_CALLER_SAVED = (1u << RAX) | (1u << RCX) | (1u << RDX) | (1u << R8) | (1u << R9) | (1u << R10) | (1u << R11);
-static const uint16_t WIN64_ABI_CALLEE_SAVED = ~WIN64_ABI_CALLER_SAVED;
+#define WIN64_ABI_CALLEE_SAVED ~WIN64_ABI_CALLER_SAVED
 
 static const uint16_t SYSV_ABI_CALLER_SAVED = (1u << RAX) | (1u << RDI) | (1u << RSI) | (1u << RCX) | (1u << RDX) | (1u << R8) | (1u << R9) | (1u << R10) | (1u << R11);
-static const uint16_t SYSV_ABI_CALLEE_SAVED = ~SYSV_ABI_CALLER_SAVED;
-
-// TODO(NeGate): Maybe move this out, other things might like it
-inline static int align_up(int a, int b) { return a + (b - (a % b)) % b; }
+#define SYSV_ABI_CALLEE_SAVED ~SYSV_ABI_CALLER_SAVED
 
 // GPRs can only ever be scalar
 inline static Val val_gpr(int dt_type, GPR g) {
@@ -465,4 +463,5 @@ static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register s
 static int get_data_type_size(const TB_DataType dt);
 
 // used to add patches since there's separate arrays per thread
-static _Thread_local size_t s_local_thread_id;
+static thread_local size_t s_local_thread_id;
+static thread_local TB_CompiledFunctionID s_compiled_func_id;

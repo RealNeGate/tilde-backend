@@ -5,7 +5,7 @@
 #include <string.h>
 
 #include "tb/tb.h"
-#include <x86intrin.h>
+#include <emmintrin.h>
 
 enum {
     TOKEN_ACCESSOR = '.',

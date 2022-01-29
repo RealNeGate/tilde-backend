@@ -76,12 +76,12 @@ void tb_module_export_jit(TB_Module* m) {
 	loop(i, m->max_threads) {
 		loop(j, arrlen(m->ecall_patches[i])) {
 			TB_ExternFunctionPatch* p = &m->ecall_patches[i][j];
-			TB_FunctionOutput* out_f = &m->compiled_functions.data[p->func_id];
+			TB_FunctionOutput* out_f = &m->compiled_functions.data[p->source];
 			
 			uint64_t meta = out_f->prologue_epilogue_metadata;
 			uint64_t stack_usage = out_f->stack_usage;
 			
-			uintptr_t actual_pos = func_layout[p->func_id] 
+			uintptr_t actual_pos = func_layout[p->source] 
 				+ code_gen->get_prologue_length(meta, stack_usage)
 				+ p->pos;
 			
@@ -90,7 +90,8 @@ void tb_module_export_jit(TB_Module* m) {
 			
 			// TODO(NeGate): Implement something smarter... this will break 
 			// if you somehow compile an external that's like 2GB away
-			int32_t displacement = safe_cast(int32_t, ((uintptr_t)e->address) - actual_pos);
+			intptr_t displacement = ((uintptr_t)e->address) - actual_pos;
+			assert(displacement == (int32_t)displacement);
 			*((int32_t*) &text_section[actual_pos]) = displacement;
 		}
 	}

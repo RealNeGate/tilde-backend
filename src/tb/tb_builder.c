@@ -6,13 +6,10 @@
 // the machine code output or later analysis stages.
 #include "tb_internal.h"
 
-// Used for some optimizations
-#if TB_HOST_ARCH == TB_HOST_X86_64
-#include <x86intrin.h>
-#endif
-
 TB_API TB_FunctionID tb_function_get_id(TB_Module* m, TB_Function* f) {
-	return safe_cast(TB_FunctionID, f - m->functions.data);
+	intptr_t id = f - m->functions.data;
+	assert(id == (TB_FunctionID) id);
+	return id;
 }
 
 TB_API TB_Function* tb_function_from_id(TB_Module* m, TB_FunctionID id) {
@@ -66,8 +63,8 @@ TB_API TB_Register tb_node_arith_get_left(TB_Function* f, TB_Register r) {
 	assert(f->nodes.type[r] >= TB_AND && f->nodes.type[r] <= TB_CMP_FLE);
 	
 	// TODO(NeGate): They share position in the union
-	_Static_assert(offsetof(TB_RegPayload, cmp.a) == offsetof(TB_RegPayload, i_arith.a), "TB_RegPayload::cmp.a should alias TB_RegPayload::i_arith.a");
-	_Static_assert(offsetof(TB_RegPayload, f_arith.a) == offsetof(TB_RegPayload, i_arith.a), "TB_RegPayload::f_arith.a should alias TB_RegPayload::i_arith.a");
+	static_assert(offsetof(TB_RegPayload, cmp.a) == offsetof(TB_RegPayload, i_arith.a), "TB_RegPayload::cmp.a should alias TB_RegPayload::i_arith.a");
+	static_assert(offsetof(TB_RegPayload, f_arith.a) == offsetof(TB_RegPayload, i_arith.a), "TB_RegPayload::f_arith.a should alias TB_RegPayload::i_arith.a");
 	
 	return f->nodes.payload[r].i_arith.a;
 }
@@ -76,13 +73,11 @@ TB_API TB_Register tb_node_arith_get_right(TB_Function* f, TB_Register r) {
 	assert(f->nodes.type[r] >= TB_AND && f->nodes.type[r] <= TB_CMP_FLE);
 	
 	// TODO(NeGate): They share position in the union
-	_Static_assert(offsetof(TB_RegPayload, cmp.b) == offsetof(TB_RegPayload, i_arith.b), "TB_RegPayload::cmp.b should alias TB_RegPayload::i_arith.b");
-	_Static_assert(offsetof(TB_RegPayload, f_arith.b) == offsetof(TB_RegPayload, i_arith.b), "TB_RegPayload::f_arith.b should alias TB_RegPayload::i_arith.b");
+	static_assert(offsetof(TB_RegPayload, cmp.b) == offsetof(TB_RegPayload, i_arith.b), "TB_RegPayload::cmp.b should alias TB_RegPayload::i_arith.b");
+	static_assert(offsetof(TB_RegPayload, f_arith.b) == offsetof(TB_RegPayload, i_arith.b), "TB_RegPayload::f_arith.b should alias TB_RegPayload::i_arith.b");
 	
 	return f->nodes.payload[r].i_arith.b;
 }
-
-
 
 static TB_Register tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
 	// Cannot add registers to terminated basic blocks, except labels
@@ -110,7 +105,7 @@ uint64_t tb_fold_add(TB_ArithmaticBehavior ab, TB_DataType dt, uint64_t a, uint6
 	uint64_t mask = (~0ull) >> shift;
 	
 	uint64_t sum;
-	if (__builtin_add_overflow(a << shift, b << shift, &sum)) {
+	if (tb_add_overflow(a << shift, b << shift, &sum)) {
 		sum >>= shift;
 		
 		if (ab == TB_CAN_WRAP) sum &= mask;
@@ -127,7 +122,7 @@ uint64_t tb_fold_sub(TB_ArithmaticBehavior ab, TB_DataType dt, uint64_t a, uint6
 	uint64_t mask = (~0ull) >> shift;
 	
 	uint64_t sum;
-	if (__builtin_sub_overflow(a << shift, b << shift, &sum)) {
+	if (tb_sub_overflow(a << shift, b << shift, &sum)) {
 		sum = (sum >> shift) & mask;
 		
 		if (ab == TB_CAN_WRAP) sum &= mask;
@@ -145,7 +140,7 @@ uint64_t tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, uint64_t a, uint6
 	uint64_t mask = (~0ull) >> shift;
 	
 	uint64_t sum;
-	if (__builtin_mul_overflow(a << shift, b << shift, &sum)) {
+	if (tb_mul_overflow(a << shift, b << shift, &sum)) {
 		sum = (sum >> shift) & mask;
 		
 		if (ab == TB_CAN_WRAP) sum &= mask;
@@ -162,7 +157,7 @@ uint64_t tb_fold_div(TB_DataType dt, uint64_t a, uint64_t b) {
 	uint64_t shift = 64 - (8 << (dt.type - TB_I8));
 	uint64_t mask = (~0ull) >> shift;
 	
-	if (b == 0) return (uint64_t) { 0 };
+	if (b == 0) return 0;
 	uint64_t q = (a << shift) / (b << shift);
 	
 	return (q >> shift) & mask; 
@@ -218,6 +213,12 @@ TB_API TB_Register tb_inst_ptr2int(TB_Function* f, TB_Register src, TB_DataType 
 
 TB_API TB_Register tb_inst_int2float(TB_Function* f, TB_Register src, TB_DataType dt) {
 	assert(f->nodes.dt[src].width == dt.width);
+	
+	if (f->nodes.type[src] == TB_SIGNED_CONST) {
+		return tb_inst_float(f, dt, f->nodes.payload[src].s_const);
+	} else if (f->nodes.type[src] == TB_UNSIGNED_CONST) {
+		return tb_inst_float(f, dt, f->nodes.payload[src].u_const);
+	}
 	
 	TB_Register r = tb_make_reg(f, TB_INT2FLOAT, dt);
 	f->nodes.payload[r].cvt.src = src;
@@ -281,8 +282,15 @@ TB_API TB_Register tb_inst_param_addr(TB_Function* f, int param_id) {
 	return r;
 }
 
+TB_API void tb_inst_debugbreak(TB_Function* f) {
+	tb_make_reg(f, TB_DEBUGBREAK, TB_TYPE_VOID);
+}
+
 TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line) {
 	assert(line >= 0);
+	if (f->nodes.type[f->nodes.count - 1] == TB_LINE_INFO) {
+		return;
+	}
 	
 	TB_Register r = tb_make_reg(f, TB_LINE_INFO, TB_TYPE_VOID);
 	f->nodes.payload[r].line_info.file = file;
@@ -318,6 +326,9 @@ TB_API TB_Register tb_inst_load(TB_Function* f, TB_DataType dt, TB_Register addr
 }
 
 TB_API void tb_inst_store(TB_Function* f, TB_DataType dt, TB_Register addr, TB_Register val, uint32_t alignment) {
+	assert(addr);
+	assert(val);
+	
 	TB_Register r = tb_make_reg(f, TB_STORE, dt);
 	f->nodes.payload[r].store.address = addr;
 	f->nodes.payload[r].store.value = val;
@@ -396,12 +407,11 @@ TB_API TB_Register tb_inst_cstring(TB_Function* f, const char* str) {
 }
 
 TB_API TB_Register tb_inst_string(TB_Function* f, size_t len, const char* str) {
-	char* newstr = tb_platform_arena_alloc(len + 1);
+	char* newstr = tb_platform_arena_alloc(len);
 	memcpy(newstr, str, len);
-	newstr[len] = '\0';
 	
 	TB_Register r = tb_make_reg(f, TB_STRING_CONST, TB_TYPE_PTR);
-	f->nodes.payload[r].str_const.len = len + 1;
+	f->nodes.payload[r].str_const.len = len;
 	f->nodes.payload[r].str_const.data = newstr;
 	return r;
 }
@@ -534,7 +544,14 @@ TB_API TB_Register tb_inst_and(TB_Function* f, TB_Register a, TB_Register b) {
 }
 
 TB_API TB_Register tb_inst_or(TB_Function* f, TB_Register a, TB_Register b) {
-	// bitwise operators can't wrap
+	assert(TB_DATA_TYPE_EQUALS(f->nodes.dt[a], f->nodes.dt[b]));
+	TB_DataType dt = f->nodes.dt[a];
+	
+	if ((f->nodes.type[a] == TB_SIGNED_CONST || f->nodes.type[a] == TB_UNSIGNED_CONST) && 
+		(f->nodes.type[b] == TB_SIGNED_CONST || f->nodes.type[b] == TB_UNSIGNED_CONST)) {
+		return tb_inst_sint(f, dt, f->nodes.payload[a].u_const | f->nodes.payload[b].u_const);
+	}
+	
 	return tb_bin_arith(f, TB_OR, TB_ASSUME_NUW, a, b);
 }
 
@@ -565,6 +582,12 @@ TB_API TB_Register tb_inst_mul(TB_Function* f, TB_Register a, TB_Register b, TB_
 }
 
 TB_API TB_Register tb_inst_div(TB_Function* f, TB_Register a, TB_Register b, bool signedness) {
+	if (f->nodes.type[b] == TB_SIGNED_CONST && f->nodes.payload[b].s_const == 1) {
+		return a;
+	} else if (f->nodes.type[b] == TB_UNSIGNED_CONST && f->nodes.payload[b].u_const == 1) {
+		return a;
+	}
+	
 	// division can't wrap or overflow
 	return tb_bin_arith(f, signedness ? TB_SDIV : TB_UDIV, TB_ASSUME_NUW, a, b);
 }
@@ -946,16 +969,12 @@ TB_API void tb_inst_ret(TB_Function* f, TB_Register value) {
 #if !TB_STRIP_LABELS
 void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, size_t pos) {
 	assert(pos < UINT32_MAX);
-	if (m->label_symbols.count + 1 >= m->label_symbols.capacity) {
-		m->label_symbols.capacity *= 2;
-		m->label_symbols.data = tb_platform_heap_realloc(m->label_symbols.data, m->label_symbols.capacity * sizeof(TB_ConstPool32Patch));
-	}
-	
-	size_t r = m->label_symbols.count++;
-	m->label_symbols.data[r] = (TB_LabelSymbol){
+	TB_LabelSymbol sym = {
 		.func_id = func_id,
 		.label_id = label_id,
 		.pos = pos
 	};
+	
+	arrput(m->label_symbols, sym);
 }
 #endif

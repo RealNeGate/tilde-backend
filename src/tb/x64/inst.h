@@ -182,8 +182,11 @@ inline static void inst2(Ctx* ctx, Inst2Type op, const Val* a, const Val* b, int
 		} else if (dt_type == TB_I16) {
 			if (a->type == VAL_GLOBAL) patch4(code_pos() - 4, -2);
 			
-			assert(b->imm == (int16_t)b->imm);
-			emit2((int16_t)b->imm);
+			uint32_t imm = b->imm;
+			uint32_t imm_hi = imm & 0xFFFF0000;
+			assert(imm_hi == 0xFFFF0000 || imm_hi == 0);
+			
+			emit2(b->imm);
 		} else {
 			if (a->type == VAL_GLOBAL) patch4(code_pos() - 4, -4);
 			
@@ -209,10 +212,6 @@ inline static void inst2sse(Ctx* ctx, Inst2FPType op, const Val* a, const Val* b
 		[FP_OR] = 0x56,
 		[FP_XOR] = 0x57,
 	};
-	
-	if (op == FP_MOV && a->type == VAL_XMM && b->type == VAL_XMM) {
-		if (a->xmm == b->xmm) __debugbreak();
-	}
 	
 	// most SSE instructions (that aren't mov__) are mem src only
 	bool supports_mem_dst = (op == FP_MOV);

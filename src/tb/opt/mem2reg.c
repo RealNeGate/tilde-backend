@@ -12,6 +12,7 @@ typedef enum {
 } StackSlotCoherency;
 
 typedef struct Mem2Reg_Ctx {
+	TB_TemporaryStorage* tls;
 	TB_Function* f;
 	size_t label_count;
 	
@@ -85,6 +86,8 @@ static TB_Register new_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Label blo
 	TB_Register label_reg = tb_find_reg_from_label(f, block);
 	
 	TB_Register new_phi_reg = label_reg + 1;
+	OPTIMIZER_LOG(new_phi_reg, "Insert new PHI node");
+	
 	tb_insert_op(f, new_phi_reg);
 	f->nodes.dt[new_phi_reg] = dt;
 	
@@ -177,12 +180,76 @@ static TB_Register add_phi_operands(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_
 
 // Algorithm 3: Detect and recursively remove a trivial phi function
 static TB_Register try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register phi_reg) {
-	//TB_Register same = TB_NULL_REG;
-	return phi_reg;
+	int op_count;
+	TB_Register operands[2];
+	
+	// Walk past any pass nodes
+	while (f->nodes.type[phi_reg] == TB_PASS) {
+		phi_reg = f->nodes.payload[phi_reg].pass;
+	}
+	
+	// Get operands
+	if (f->nodes.type[phi_reg] == TB_NULL) {
+		return phi_reg;
+	} else if (f->nodes.type[phi_reg] == TB_PHI1) {
+		TB_Register a = f->nodes.payload[phi_reg].phi1.a;
+		
+		op_count = 1;
+		operands[0] = f->nodes.payload[phi_reg].phi1.a;
+	} else if (f->nodes.type[phi_reg] == TB_PHI2) {
+		OPTIMIZER_LOG(phi_reg, "  removing PHI (no divergence)");
+		
+		op_count = 2;
+		operands[0] = f->nodes.payload[phi_reg].phi2.a;
+		operands[1] = f->nodes.payload[phi_reg].phi2.b;
+	} else tb_todo();
+	
+	TB_Register same = TB_NULL_REG;
+	loop(i, op_count) {
+		// Unique value or self−reference
+		if (operands[i] == phi_reg || operands[i] == same) continue;
+		
+		// The phi merges at least two values: not trivial
+		if (same != TB_NULL_REG) return phi_reg;
+		
+		same = operands[i];
+	}
+	
+	if (same == TB_NULL_REG) {
+		// The phi is unreachable or in the start block
+		return same;
+	}
+	
+	TB_Register* uses = tb_tls_push(c->tls, f->nodes.count * sizeof(TB_Register));
+	int use_count = tb_find_uses(f, phi_reg, uses);
+	
+	// trim the memory to avoid wasting too much
+	tb_tls_restore(c->tls, &uses[use_count]);
+	
+	// replace all references
+	f->nodes.type[phi_reg] = TB_PASS;
+	f->nodes.dt[phi_reg] = f->nodes.dt[same];
+	f->nodes.payload[phi_reg] = (TB_RegPayload){
+		.pass = same
+	};
+	
+	// Try to recursively remove all phi users, which might have become trivial
+	loop(i, use_count) if (uses[i] == phi_reg) {
+		try_remove_trivial_phi(c, f, uses[i]);
+	}
+	
+	return same;
 }
 
 static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register phi_reg, TB_Label label, TB_Register reg) {
+	assert(reg >= 1 && reg < f->nodes.count);
+	//assert(f->nodes.type[reg] != TB_NULL);
+	//assert(f->nodes.dt[reg].type != TB_VOID);
+	//assert(phi_reg != reg);
+	
 	// we're using NULL nodes as the baseline PHI0
+	OPTIMIZER_LOG(phi_reg, "  adding r%d to PHI", reg);
+	
 	if (f->nodes.type[phi_reg] == TB_NULL) {
 		f->nodes.type[phi_reg] = TB_PHI1;
 		f->nodes.dt[phi_reg] = f->nodes.dt[reg];
@@ -196,27 +263,18 @@ static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register
 		TB_Register a_label = f->nodes.payload[phi_reg].phi1.a_label;
 		TB_Register a = f->nodes.payload[phi_reg].phi1.a;
 		
-		if (a == reg) {
-			f->nodes.type[phi_reg] = TB_PASS;
-			f->nodes.dt[phi_reg] = f->nodes.dt[a];
-			f->nodes.payload[phi_reg] = (TB_RegPayload){
-				.pass = a
-			};
-		} else {
-			f->nodes.type[phi_reg] = TB_PHI2;
-			f->nodes.dt[phi_reg] = f->nodes.dt[a];
-			f->nodes.payload[phi_reg] = (TB_RegPayload){
-				.phi2 = {
-					.a_label = a_label,
-					.a = a,
-					.b_label = tb_find_reg_from_label(f, label),
-					.b = reg
-				}
-			};
-		}
+		f->nodes.type[phi_reg] = TB_PHI2;
+		f->nodes.dt[phi_reg] = f->nodes.dt[a];
+		f->nodes.payload[phi_reg] = (TB_RegPayload){
+			.phi2 = {
+				.a_label = a_label,
+				.a = a,
+				.b_label = tb_find_reg_from_label(f, label),
+				.b = reg
+			}
+		};
 	} else {
-		// TODO(NeGate): 
-		abort();
+		assert(0 && "Setup PHIN nodes");
 	}
 }
 
@@ -272,6 +330,7 @@ bool tb_opt_mem2reg(TB_Function* f) {
 	}
 	
 	Mem2Reg_Ctx c = { 0 };
+	c.tls = tls; 
 	c.f = f;
 	
 	c.to_promote_count = to_promote_count;
@@ -315,6 +374,8 @@ bool tb_opt_mem2reg(TB_Function* f) {
 		TB_RegPayload p = f->nodes.payload[j];
 		
 		if (reg_type == TB_LABEL) {
+			int preds_done = c.label_count;
+			
 			block = p.label.id;
 		} else if (reg_type == TB_LOCAL) {
 			int var = get_variable_id(&c, j);
@@ -351,7 +412,7 @@ bool tb_opt_mem2reg(TB_Function* f) {
 		j++;
 	}
 	
-	loop_range(j, 1, c.label_count) {
+	loop(j, c.label_count) {
 		seal_block(&c, j);
 	}
 	

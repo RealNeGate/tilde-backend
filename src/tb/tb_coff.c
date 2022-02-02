@@ -12,6 +12,10 @@
 #include <emmintrin.h>
 #endif
 
+// constant sized "hash map" which is used to
+// deduplicate types in the codeview
+#define MAX_TYPE_ENTRY_LOOKUP_SIZE 1024
+
 // IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_16BYTES
 #define COFF_CHARACTERISTICS_TEXT 0x60500020u
 // IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_READ
@@ -31,6 +35,8 @@
 #define IMAGE_FILE_LINE_NUMS_STRIPPED 0x0004
 
 #define IMAGE_REL_AMD64_ADDR64        0x0001
+#define IMAGE_REL_AMD64_ADDR32        0x0002
+#define IMAGE_REL_AMD64_ADDR32NB      0x0003
 #define IMAGE_REL_AMD64_REL32         0x0004
 #define IMAGE_REL_AMD64_SECTION       0x000A
 #define IMAGE_REL_AMD64_SECREL        0x000B
@@ -111,10 +117,39 @@ typedef struct {
 } LINENO;
 #pragma pack(pop)
 
+// represents a CodeView type entry, they start with 16bits for length field
+typedef struct CV_TypeEntry {
+	uint32_t key; // points to somewhere in the debug$T section, 0 is assumed as empty
+	uint16_t value; // type index
+} CV_TypeEntry;
+
 enum {
 	COFF_MACHINE_AMD64 = 0x8664,  // AMD64 (K8)
 	COFF_MACHINE_ARM64 = 0xAA64,  // ARM64 Little-Endian
 };
+
+enum {
+    S_LPROC32_ID     =  0x1146,
+    S_GPROC32_ID     =  0x1147,
+	
+    S_INLINESITE      = 0x114d, // inlined function callsite.
+    S_INLINESITE_END  = 0x114e,
+    S_PROC_ID_END     = 0x114f,
+	
+    S_FRAMEPROC       =  0x1012,  // extra frame and proc information
+};
+
+typedef enum {
+    UWOP_PUSH_NONVOL = 0, /* info == register number */
+    UWOP_ALLOC_LARGE,     /* no info, alloc size in next 2 slots */
+    UWOP_ALLOC_SMALL,     /* info == size of allocation / 8 - 1 */
+    UWOP_SET_FPREG,       /* no info, FP = RSP + UNWIND_INFO.FPRegOffset*16 */
+    UWOP_SAVE_NONVOL,     /* info == register number, offset in next slot */
+    UWOP_SAVE_NONVOL_FAR, /* info == register number, offset in next 2 slots */
+    UWOP_SAVE_XMM128 = 8, /* info == XMM reg number, offset in next slot */
+    UWOP_SAVE_XMM128_FAR, /* info == XMM reg number, offset in next 2 slots */
+    UWOP_PUSH_MACHFRAME   /* info == 0: no error-code, 1: error-code */
+} UNWIND_CODE_OPS;
 
 // leftrotate function definition
 #define LEFTROTATE(x, c) (((x) << (c)) | ((x) >> (32 - (c))))
@@ -287,7 +322,66 @@ static void md5sum_file(uint8_t* out_bytes, const char* filepath) {
 	fclose(file);
 }
 
-void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path) {
+static uint16_t get_codeview_type(TB_DataType dt) {
+	assert(dt.width == 0 && "TODO: implement vector types in CodeView output");
+	switch (dt.type) {
+		case TB_VOID: return 0x0003;   // T_VOID
+		case TB_I8:   return 0x0020; // T_UCHAR
+		case TB_I16:  return 0x0073; // T_UINT4
+		case TB_I32:  return 0x0075; // T_UINT4
+		case TB_I64:  return 0x0023; // T_UQUAD
+		case TB_F32:  return 0x0040; // T_REAL32
+		case TB_F64:  return 0x0041; // T_REAL64
+		case TB_PTR:  return 0x0023; // T_64PUCHAR
+		default: assert(0 && "TODO: missing type in CodeView output");
+	}
+	
+	return 0x0003; // T_VOID
+}
+
+static uint16_t find_or_make_cv_type(TB_Emitter* sect, 
+									 uint32_t* type_entry_count,
+									 CV_TypeEntry* lookup_table,
+									 size_t length, uint16_t* key) {
+	assert(length % 4 == 0);
+	uint32_t* key_as_u32 = (uint32_t*)key;
+	
+	// Hash it
+	uint32_t hash = 0;
+	loop(i, length) {
+		hash ^= key_as_u32[i];
+		hash = _rotl(hash, 3);
+	}
+	
+	// Search (if there's a collision replace the old one)
+	size_t index = hash % MAX_TYPE_ENTRY_LOOKUP_SIZE;
+	CV_TypeEntry lookup = lookup_table[index];
+	
+	//printf("Lookup %zu (%x hash, has match? %s)\n", index, hash, lookup.key ? "yea" : "naw");
+	if (lookup.key) {
+		// verify it even matches
+		size_t lookup_size = tb_get2b(sect, lookup.key) + 2;
+		
+		if (length == lookup_size && memcmp(key, &sect->data[lookup.key], length) == 0) {
+			//printf("Saved %zu bytes (%d)\n", length, lookup.value);
+			return lookup.value;
+		}
+	}
+	
+	uint16_t type_index = *type_entry_count;
+	*type_entry_count += 1;
+	
+	//printf("Used %zu bytes (%d)\n", length, type_index);
+	
+	lookup_table[index].key = sect->count;
+	lookup_table[index].value = type_index;
+	
+	tb_out_reserve(sect, length);
+	tb_outs_UNSAFE(sect, length, (const uint8_t*)key);
+	return type_index;
+}
+
+void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, bool emit_debug_info) {
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	
 	// The prologue and epilogue generators need some storage
@@ -336,10 +430,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	
 	char** string_table = malloc(string_table_cap * sizeof(const char*));
 	
-	// drops the debug sections if no line info exists
-	bool is_emitting_codeview = (m->line_info_count != 0);
-	
-	const int number_of_sections = is_emitting_codeview ? 5 : 3;
+	const int number_of_sections = 5 + (emit_debug_info ? 2 : 0);
 	COFF_FileHeader header = {
 		.num_sections = number_of_sections,
 		.timestamp = time(NULL),
@@ -363,6 +454,17 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 		.name = { ".data" }, // .data
 		.characteristics = COFF_CHARACTERISTICS_DATA,
 		.raw_data_size = m->data_region_size
+	};
+	
+	COFF_SectionHeader pdata_section = {
+		.name = { ".pdata" },
+		.characteristics = COFF_CHARACTERISTICS_RODATA,
+		.raw_data_size = m->compiled_functions.count * 12
+	};
+	
+	COFF_SectionHeader xdata_section = {
+		.name = { ".xdata" },
+		.characteristics = COFF_CHARACTERISTICS_RODATA
 	};
 	
 	COFF_SectionHeader debugt_section = {
@@ -401,204 +503,75 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	TB_Emitter debugs_out = { 0 };
 	TB_Emitter debugt_out = { 0 };
 	
-	// used for some relocations later
-	uint32_t cv_field_base = 0;
-	
 	// if the codeview stuff is never done, this is never actually needed so it's
 	// fine that it's NULL
 	uint32_t* file_table_offset = NULL;
 	
-	if (is_emitting_codeview) {
-		// This is actually going to alias various different values throught this debug 
-		// section generation pipeline and at the end stores an array of the procedure
-		// relocations
-		size_t file_table_size = m->compiled_functions.count;
-		if (file_table_size < m->files.count) file_table_size = m->files.count;
+	// Based on this, it's the only nice CodeView source out there:
+	// https://github.com/netwide-assembler/nasm/blob/master/output/codeview.c
+	if (emit_debug_info) {
+		file_table_offset = tb_tls_push(tls, m->compiled_functions.count * sizeof(uint32_t));
 		
-		// Based on this, it's the only nice CodeView source out there:
-		// https://github.com/netwide-assembler/nasm/blob/master/output/codeview.c
-		tb_out4b(&debugs_out, 0x00000004);
-		file_table_offset = tb_tls_push(tls, file_table_size * sizeof(uint32_t));
-		
-		//
-		// Write file name table
-		//
+		// Write type table
 		{
-			tb_out4b(&debugs_out, 0x000000F3);
+			tb_out4b(&debugt_out, 0x00000004);
 			
-			uint32_t patch = debugs_out.count;
-			tb_out4b(&debugs_out, 0x00);
-			tb_out1b(&debugs_out, 0x00);
+			CV_TypeEntry* lookup_table = tb_tls_push(tls, MAX_TYPE_ENTRY_LOOKUP_SIZE * sizeof(CV_TypeEntry));
+			memset(lookup_table, 0, MAX_TYPE_ENTRY_LOOKUP_SIZE * sizeof(CV_TypeEntry));
 			
-			size_t off = 1;
-			for (size_t i = 1; i < m->files.count; i++) {
-				const char* filename = m->files.data[i].path;
-				size_t filename_len = strlen(filename) + 1;
+			uint32_t type_entry_count = 0x1000;
+			loop(i, m->functions.count) {
+				const TB_FunctionPrototype* proto = m->functions.data[i].prototype;
 				
-				tb_out_reserve(&debugs_out, filename_len);
-				tb_outs_UNSAFE(&debugs_out, filename_len, (const uint8_t*)filename);
-				
-				file_table_offset[i] = off;
-				off += filename_len;
-			}
-			
-			// patch total filename space
-			*((uint32_t*)&debugs_out.data[patch]) = off;
-			
-			size_t pad = 4 - (debugs_out.count % 4);
-			if (pad == 4) pad = 0;
-			while (pad--) tb_out1b(&debugs_out, 0x00);
-		}
-		
-		//
-		// Write Source file table
-		//
-		{
-			size_t entry_size = (4 + 2 + MD5_HASHBYTES + 2);
-			
-			tb_out4b(&debugs_out, 0x000000F4);
-			tb_out4b(&debugs_out, entry_size * (m->files.count - 1));
-			
-			size_t off = 0;
-			for (size_t i = 1; i < m->files.count; i++) {
-				// TODO(NeGate): Implement a MD5 sum function
-				uint8_t md5sum[16];
-				md5sum_file(md5sum, m->files.data[i].path);
-				
-				tb_out4b(&debugs_out, file_table_offset[i]);
-				tb_out2b(&debugs_out, 0x0110);
-				tb_out_reserve(&debugs_out, MD5_HASHBYTES);
-				tb_outs_UNSAFE(&debugs_out, MD5_HASHBYTES, md5sum);
-				tb_out2b(&debugs_out, 0x0000);
-				
-				file_table_offset[i] = off;
-				off += entry_size;
-			}
-			
-			size_t pad = 4 - (debugs_out.count % 4);
-			if (pad == 4) pad = 0;
-			while (pad--) tb_out1b(&debugs_out, 0x00);
-		}
-		
-		//
-		// Write line number table
-		//
-		{
-			const uint32_t file_field_len = 12;
-			const uint32_t line_field_len = 8;
-			
-			size_t field_length = 12
-				+ ((m->files.count - 1) * file_field_len)
-				+ (m->line_info_count * line_field_len);
-			
-			tb_out4b(&debugs_out, 0x000000F2);
-			tb_out4b(&debugs_out, field_length);
-			
-			cv_field_base = debugs_out.count;
-			tb_out4b(&debugs_out, 0); /* SECREL, updated by relocation */
-			tb_out2b(&debugs_out, 0); /* SECTION, updated by relocation*/
-			tb_out2b(&debugs_out, 0); /* pad */
-			tb_out4b(&debugs_out, text_section.raw_data_size);
-			
-			for (size_t i = 1; i < m->files.count; i++) {
-				// source file mapping
-				tb_out4b(&debugs_out, file_table_offset[i]);
-				
-				uint32_t patch = debugs_out.count;
-				tb_out4b(&debugs_out, 0);
-				tb_out4b(&debugs_out, 0);
-				
-				size_t line_count_in_file = 0;
-				
-				// NOTE(NeGate): Holy shit i didn't think ahead but i'll make this
-				// work for now, essentially each file keeps track of it's own line
-				// table so i should have arranged it like that but i didn't so now
-				// i have to filter out from the possibly millions of nodes (well for
-				// now it shouldn't matter much)
-				// TODO(NeGate): Optimize this... please future me!
-				for (size_t j = 0; j < m->functions.count; j++) {
-					TB_Function* f = &m->functions.data[j];
+				uint16_t arg_list;
+				{
+					size_t length = 2 + 2 + 4 + (4 * proto->param_count);
+					uint16_t* data = tb_tls_push(tls, length);
 					
-#if TB_HOST_ARCH == TB_HOST_X86_64
-					__m128i pattern = _mm_set1_epi8(TB_LINE_INFO);
+					data[0] = length - 2;
+					data[1] = 0x1201; // ARGLIST type
+					*((uint32_t*)&data[2]) = proto->param_count;
 					
-					for (size_t k = 0; k < f->nodes.count; k += 16) {
-						__m128i bytes = _mm_load_si128((__m128i*)&f->nodes.type[k]);
-						unsigned int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(bytes, pattern));
-						if (mask == 0) continue;
-						
-						// this one is guarentee to not be zero so it's fine
-						// to not check that FFS.
-						size_t offset = tb_ffs(mask) - 1;
-						
-						size_t l = k + offset;
-						// skip over the mask bit for the next iteration
-						mask >>= (offset + 1);
-						
-						// We know it loops at least once by this point
-						do {
-							TB_RegPayload p = f->nodes.payload[l];
-							if (p.line_info.file == i) {
-								TB_FunctionOutput* out_f = &m->compiled_functions.data[j];
-								
-								// emit line entry
-								uint32_t actual_pos = func_layout[j] + p.line_info.pos;
-								if (p.line_info.pos) {
-									actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
-																				out_f->stack_usage);
-								}
-								
-								tb_out4b(&debugs_out, actual_pos);
-								tb_out4b(&debugs_out, 0x80000000 | p.line_info.line);
-								line_count_in_file++;
-							}
-							
-							size_t ffs = tb_ffs(mask);
-							if (ffs == 0) break;
-							
-							// skip over the mask bit for the next iteration
-							mask >>= ffs;
-							l += ffs;
-						} while (true);
+					uint32_t* param_data = (uint32_t*) &data[4];
+					loop(j, proto->param_count) {
+						uint16_t param_type_entry = get_codeview_type(proto->params[j]);
+						param_data[j] = proto->param_count;
 					}
-#else
-					for (size_t k = 2; k < f->nodes.count; k++) {
-						if (f->nodes.type[k] == TB_LINE_INFO
-							&& f->nodes.payload[k].line_info.file == i) {
-							TB_RegPayload p = f->nodes.payload[k];
-							
-							TB_FunctionOutput* out_f = &m->compiled_functions.data[j];
-							
-							// emit line entry
-							uint32_t actual_pos = func_layout[j] + p.line_info.pos;
-							if (p.line_info.pos) {
-								actual_pos += code_gen->get_prologue_length(out_f->prologue_epilogue_metadata,
-																			out_f->stack_usage);
-							}
-							
-							tb_out4b(&debugs_out, actual_pos);
-							tb_out4b(&debugs_out, 0x80000000 | p.line_info.line);
-							line_count_in_file++;
-						}
-					}
-#endif
+					
+					arg_list = find_or_make_cv_type(&debugt_out, &type_entry_count, lookup_table, length, data);
+					tb_tls_restore(tls, data);
 				}
 				
-				*((uint32_t*)&debugs_out.data[patch]) = line_count_in_file;
-				*((uint32_t*)&debugs_out.data[patch + 4]) = file_field_len + (line_count_in_file * line_field_len);
+				uint16_t proc_type;
+				{
+					size_t length = 2 + 2 + 4 + 1 + 1 + 2 + 4;
+					uint16_t* data = tb_tls_push(tls, length);
+					
+					uint16_t return_type = get_codeview_type(proto->return_dt);
+					
+					data[0] = length - 2;
+					data[1] = 0x1008; // PROC type
+					*((uint32_t*) &data[2])  = return_type;        // return type VOID
+					*((uint8_t*)  &data[6])  = 0;                  // calling convention (default)
+					*((uint8_t*)  &data[7])  = 0;                  // function attributes
+					*((uint8_t*)  &data[8])  = proto->param_count; // number of params
+					*((uint16_t*) &data[10]) = 0;                  // argument list type
+					
+					file_table_offset[i] = find_or_make_cv_type(&debugt_out, &type_entry_count, lookup_table, length, data);
+					tb_tls_restore(tls, data);
+				}
 			}
 			
-			size_t pad = 4 - (debugs_out.count % 4);
+			tb_tls_restore(tls, lookup_table);
+			
+			size_t pad = 4 - (debugt_out.count % 4);
 			if (pad == 4) pad = 0;
-			while (pad--) tb_out1b(&debugs_out, 0x00);
+			while (pad--) tb_out1b(&debugt_out, 0x00);
 		}
 		
-		//
 		// Write symbol info table
-		//
 		{
 			static const char creator_str[] = "Cuik";
-			static const char obj_file_name[] = "main";//"W:\\Workspace\\Cuik\\a.obj";
 			
 			uint32_t creator_length = 2 + 4 + 2 + (3 * 2) + (3 * 2) + sizeof(creator_str) + 2;
 			
@@ -609,29 +582,23 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 				+ (cv8_state.symbol_lengths);*/
 			
 			uint32_t sym_length = (m->compiled_functions.count * 7);
+			size_t path_len = strlen(path) + 1;
 			
-			for (size_t i = 0; i < m->compiled_functions.count; i++) {
-				TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
-				sym_length += strlen(out_f->name) + 1;
-			}
-			
-			uint32_t obj_length = 2 + 4 + sizeof(obj_file_name);
-			uint32_t field_length = (2 + obj_length) 
-				+ (2 + creator_length) 
-				+ (4 * m->compiled_functions.count)
-				+ sym_length;
-			
+			tb_out4b(&debugs_out, 0x00000004);
 			tb_out4b(&debugs_out, 0x000000F1);
-			tb_out4b(&debugs_out, field_length);
+			
+			size_t field_length_patch = debugs_out.count;
+			tb_out4b(&debugs_out, 0);
 			
 			// Symbol info object
 			{
+				uint32_t obj_length = 2 + 4 + path_len;
 				tb_out2b(&debugs_out, obj_length);
 				tb_out2b(&debugs_out, 0x1101);
 				tb_out4b(&debugs_out, 0); /* ASM language */
 				
-				tb_outstr_UNSAFE(&debugs_out, obj_file_name);
-				tb_out1b(&debugs_out, 0);
+				tb_out_reserve(&debugs_out, sizeof(creator_str));
+				tb_outs_UNSAFE(&debugs_out, path_len, path);
 			}
 			
 			// Symbol info properties
@@ -657,65 +624,122 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 			}
 			
 			// Symbols
-			for (size_t i = 0; i < m->compiled_functions.count; i++) {
+			loop(i, m->compiled_functions.count) {
 				TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
 				const char* name = out_f->name;
 				size_t name_len = strlen(out_f->name) + 1;
 				
-				tb_out2b(&debugs_out, 9 + name_len);
-				tb_out2b(&debugs_out, 0x1105);
+				size_t baseline = debugs_out.count;
+				tb_out2b(&debugs_out, 0);
+				tb_out2b(&debugs_out, S_GPROC32_ID);
 				
+				tb_out4b(&debugs_out, 0); // pointer to the parent
+				tb_out4b(&debugs_out, 0); // pointer to this blocks end (left as zero?)
+				tb_out4b(&debugs_out, 0); // pointer to the next symbol (left as zero?)
+				
+				// TODO(NeGate): correctly fill this
+				tb_out4b(&debugs_out, 1); // procedure length
+				tb_out4b(&debugs_out, 0); // debug start offset (?)
+				tb_out4b(&debugs_out, 0); // debug end offset (?)
+				tb_out4b(&debugs_out, file_table_offset[i]); // type index
+				
+				// we save this location because there's two relocations
+				// we'll put there:
+				//   type      target     size
+				//   SECREL    .text     4 bytes
+				//   SECTION   .text     2 bytes
 				file_table_offset[i] = debugs_out.count;
-				tb_out4b(&debugs_out, 0); /* SECREL */
-				tb_out2b(&debugs_out, 0); /* SECTION */
-				tb_out1b(&debugs_out, 0); /* FLAG */
+				tb_out4b(&debugs_out, 0); // offset
+				tb_out2b(&debugs_out, 0); // segment
+				
+				// the 1 means we have a frame pointer present
+				tb_out1b(&debugs_out, 1); // flags
 				
 				tb_out_reserve(&debugs_out, name_len);
 				tb_outs_UNSAFE(&debugs_out, name_len, (const uint8_t*)name);
+				
+				// patch field length
+				tb_patch2b(&debugs_out, baseline, (debugs_out.count - baseline) - 2);
+				
+				{
+					// frameproc
+					size_t frameproc_baseline = debugs_out.count;
+					
+					tb_out2b(&debugs_out, 0);
+					tb_out2b(&debugs_out, S_FRAMEPROC);
+					
+					size_t stack_usage = out_f->stack_usage == 8 ? 0 : out_f->stack_usage;
+					
+					tb_out4b(&debugs_out, stack_usage); // count of bytes of total frame of procedure
+					tb_out4b(&debugs_out, 0); // count of bytes of padding in the frame
+					tb_out4b(&debugs_out, 0); // offset (relative to frame poniter) to where padding starts
+					tb_out4b(&debugs_out, 0); // count of bytes of callee save registers
+					tb_out4b(&debugs_out, 0); // offset of exception handler
+					tb_out4b(&debugs_out, 0); // section id of exception handler
+					tb_out4b(&debugs_out, 0); // flags
+					
+					tb_patch2b(&debugs_out, frameproc_baseline, (debugs_out.count - frameproc_baseline) - 2);
+				}
+				
+				// end the block
+				tb_out2b(&debugs_out, 2);
+				tb_out2b(&debugs_out, S_PROC_ID_END);
 			}
+			tb_patch4b(&debugs_out, field_length_patch, (debugs_out.count - field_length_patch) - 4);
 			
 			size_t pad = 4 - (debugs_out.count % 4);
 			if (pad == 4) pad = 0;
 			while (pad--) tb_out1b(&debugs_out, 0x00);
 		}
 		
-		//
-		// Write type table
-		//
-		{
-			uint32_t field_len;
-			uint32_t typeindex = 0x1000;
-			uint32_t idx_arglist;
-			
-			tb_out4b(&debugt_out, 0x00000004);
-			
-			/* empty argument list type */
-			field_len = 2 + 4;
-			tb_out2b(&debugt_out, field_len);
-			tb_out2b(&debugt_out, 0x1201); /* ARGLIST */
-			tb_out4b(&debugt_out, 0); /* num params */
-			idx_arglist = typeindex++;
-			
-			/* procedure type: void proc(void) */
-			field_len = 2 + 4 + 1 + 1 + 2 + 4;
-			tb_out2b(&debugt_out, field_len);
-			tb_out2b(&debugt_out, 0x1008); /* PROC type */
-			
-			tb_out4b(&debugt_out, 0x00000003); /* return type VOID */
-			tb_out1b(&debugt_out, 0);  /* calling convention (default) */
-			tb_out1b(&debugt_out, 0);  /* function attributes */
-			tb_out2b(&debugt_out, 0); /* # params */
-			tb_out4b(&debugt_out, idx_arglist); /* argument list type */
-			/* idx_voidfunc = typeindex++; */
-			
-			size_t pad = 4 - (debugt_out.count % 4);
-			if (pad == 4) pad = 0;
-			while (pad--) tb_out1b(&debugt_out, 0x00);
-		}
-		
 		debugs_section.raw_data_size = debugs_out.count;
 		debugt_section.raw_data_size = debugt_out.count;
 	}
+	
+	uint32_t* xdata_function_info = tb_tls_push(tls, m->compiled_functions.count * sizeof(uint32_t));
+	
+	TB_Emitter xdata_out = { 0 };
+	loop(i, m->compiled_functions.count) {
+		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
+		
+		uint64_t saved = out_f->prologue_epilogue_metadata;
+		uint64_t stack_usage = out_f->stack_usage;
+		
+		assert(xdata_out.count == (uint32_t)xdata_out.count);
+		xdata_function_info[i] = xdata_out.count;
+		
+		// version (bottom 3bits), flags (top 5bits)
+		tb_out1b(&xdata_out, 1);
+		
+		// size of prologue
+		size_t prolog_len = code_gen->get_prologue_length(saved, stack_usage);
+		assert(prolog_len == (uint8_t)prolog_len);
+		tb_out1b(&xdata_out, prolog_len);
+		
+		// unwind code count
+		size_t unwind_code_count = stack_usage > 8 ? tb_popcount(saved & 0xFFFF) : 0;
+		assert(unwind_code_count == (uint8_t)unwind_code_count);
+		tb_out1b(&xdata_out, unwind_code_count);
+		
+		// frame register (bottom 4bit), frame register offset (top 4bits)
+		tb_out1b(&xdata_out, 5);
+		
+		if (stack_usage > 8) {
+			// push rbp ; mov rbp, rsp
+			size_t offset = 1 + 3;
+			
+			if ((tb_popcount(saved) & 1) == 0) offset++;
+			
+			loop(j, 16) if (saved & (1ull << j)) {
+				assert(offset == (uint8_t)offset);
+				tb_out1b(&xdata_out, offset);
+				tb_out1b(&xdata_out, (j << 4) | UWOP_SAVE_NONVOL);
+				
+				offset += (i < 8) ? 1 : 2;
+			}
+		}
+	}
+	xdata_section.raw_data_size = xdata_out.count;
 	
 	// Target specific: resolve internal call patches
 	code_gen->emit_call_patches(m, func_layout);
@@ -723,9 +747,11 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	text_section.raw_data_pos = sizeof(COFF_FileHeader) + (number_of_sections * sizeof(COFF_SectionHeader));
 	rdata_section.raw_data_pos = text_section.raw_data_pos + text_section.raw_data_size;
 	data_section.raw_data_pos = rdata_section.raw_data_pos + rdata_section.raw_data_size;
+	pdata_section.raw_data_pos = data_section.raw_data_pos + data_section.raw_data_size;
+	xdata_section.raw_data_pos = pdata_section.raw_data_pos + pdata_section.raw_data_size;
 	
-	if (is_emitting_codeview) {
-		debugt_section.raw_data_pos = data_section.raw_data_pos + data_section.raw_data_size;
+	if (emit_debug_info) {
+		debugt_section.raw_data_pos = xdata_section.raw_data_pos + xdata_section.raw_data_size;
 		debugs_section.raw_data_pos = debugt_section.raw_data_pos + debugt_section.raw_data_size;
 	}
 	
@@ -737,25 +763,29 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	}
 	
 	data_section.num_reloc = data_relocation_count;
+	pdata_section.num_reloc = 3 * m->compiled_functions.count;
 	
 	// A bunch of relocations are made by the CodeView sections, if there's no
 	// debug info then these are ignored/non-existent.
-	if (is_emitting_codeview) {
-		debugs_section.num_reloc = 0;
-		debugs_section.num_reloc = 2 + (2 * m->compiled_functions.count);
+	if (emit_debug_info) {
+		debugt_section.num_reloc = 0;
+		debugs_section.num_reloc = 2 * m->compiled_functions.count;
 		
 		text_section.pointer_to_reloc = debugs_section.raw_data_pos
 			+ debugs_section.raw_data_size;
 	} else {
-		text_section.pointer_to_reloc = data_section.raw_data_pos 
-			+ data_section.raw_data_size;
+		text_section.pointer_to_reloc = xdata_section.raw_data_pos 
+			+ xdata_section.raw_data_size;
 	}
 	
 	data_section.pointer_to_reloc = text_section.pointer_to_reloc 
 		+ (text_section.num_reloc * sizeof(COFF_ImageReloc));
 	
-	debugs_section.pointer_to_reloc = data_section.pointer_to_reloc 
+	pdata_section.pointer_to_reloc = data_section.pointer_to_reloc 
 		+ (data_section.num_reloc * sizeof(COFF_ImageReloc));
+	
+	debugs_section.pointer_to_reloc = pdata_section.pointer_to_reloc 
+		+ (pdata_section.num_reloc * sizeof(COFF_ImageReloc));
 	
 	header.symbol_count = (number_of_sections * 2)
 		+ m->compiled_functions.count;
@@ -787,8 +817,10 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	fwrite(&text_section, sizeof(text_section), 1, f);
 	fwrite(&rdata_section, sizeof(rdata_section), 1, f);
 	fwrite(&data_section, sizeof(data_section), 1, f);
+	fwrite(&pdata_section, sizeof(pdata_section), 1, f);
+	fwrite(&xdata_section, sizeof(xdata_section), 1, f);
 	
-	if (is_emitting_codeview) {
+	if (emit_debug_info) {
 		fwrite(&debugt_section, sizeof(debugt_section), 1, f);
 		fwrite(&debugs_section, sizeof(debugs_section), 1, f);
 	}
@@ -860,8 +892,23 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 		tb_platform_heap_free(data);
 	}
 	
+	assert(ftell(f) == pdata_section.raw_data_pos);
+	loop(i, m->compiled_functions.count) {
+		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
+		
+		uint32_t payload[3];
+		payload[0] = 0;
+		payload[1] = out_f->code_size;
+		payload[2] = xdata_function_info[i];
+		
+		fwrite(payload, sizeof(uint32_t), 3, f);
+	}
+	
+	assert(ftell(f) == xdata_section.raw_data_pos);
+	fwrite(xdata_out.data, xdata_out.count, 1, f);
+	
 	// Emit debug info
-	if (is_emitting_codeview) {
+	if (emit_debug_info) {
 		assert(ftell(f) == debugt_section.raw_data_pos);
 		fwrite(debugt_out.data, debugt_out.count, 1, f);
 		
@@ -999,37 +1046,44 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 		}
 	}
 	
-	// Field base relocations in .debug$S
-	if (is_emitting_codeview) {
+	assert(ftell(f) == pdata_section.pointer_to_reloc);
+	loop(i, m->compiled_functions.count) {
+		fwrite(&(COFF_ImageReloc) {
+				   .Type = IMAGE_REL_AMD64_ADDR32NB,
+				   .SymbolTableIndex = function_sym_start + i,
+				   .VirtualAddress = (i * 12)
+			   }, sizeof(COFF_ImageReloc), 1, f);
+		
+		fwrite(&(COFF_ImageReloc) {
+				   .Type = IMAGE_REL_AMD64_ADDR32NB,
+				   .SymbolTableIndex = function_sym_start + i,
+				   .VirtualAddress = (i * 12) + 4
+			   }, sizeof(COFF_ImageReloc), 1, f);
+		
+		fwrite(&(COFF_ImageReloc) {
+				   .Type = IMAGE_REL_AMD64_ADDR32NB,
+				   .SymbolTableIndex = 8, // pdata section
+				   .VirtualAddress = (i * 12) + 8
+			   }, sizeof(COFF_ImageReloc), 1, f);
+	}
+	
+	if (emit_debug_info) {
 		assert(ftell(f) == debugs_section.pointer_to_reloc);
-		if (m->line_info_count != 0) {
+		
+		loop(i, m->compiled_functions.count) {
+			uint32_t off = file_table_offset[i];
+			
 			fwrite(&(COFF_ImageReloc) {
 					   .Type = IMAGE_REL_AMD64_SECREL,
-					   .SymbolTableIndex = 0, // text section
-					   .VirtualAddress = cv_field_base
+					   .SymbolTableIndex = function_sym_start + i, // text section
+					   .VirtualAddress = off
 				   }, sizeof(COFF_ImageReloc), 1, f);
 			
 			fwrite(&(COFF_ImageReloc) {
 					   .Type = IMAGE_REL_AMD64_SECTION,
-					   .SymbolTableIndex = 0, // text section
-					   .VirtualAddress = cv_field_base + 4
+					   .SymbolTableIndex = function_sym_start + i, // text section
+					   .VirtualAddress = off + 4
 				   }, sizeof(COFF_ImageReloc), 1, f);
-			
-			for (size_t i = 0; i < m->compiled_functions.count; i++) {
-				uint32_t off = file_table_offset[i];
-				
-				fwrite(&(COFF_ImageReloc) {
-						   .Type = IMAGE_REL_AMD64_SECREL,
-						   .SymbolTableIndex = 8 + i, // text section
-						   .VirtualAddress = off
-					   }, sizeof(COFF_ImageReloc), 1, f);
-				
-				fwrite(&(COFF_ImageReloc) {
-						   .Type = IMAGE_REL_AMD64_SECTION,
-						   .SymbolTableIndex = 8 + i, // text section
-						   .VirtualAddress = off + 4
-					   }, sizeof(COFF_ImageReloc), 1, f);
-			}
 		}
 	}
 	
@@ -1072,22 +1126,48 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 			   .number = 3
 		   }, sizeof(COFF_AuxSectionSymbol), 1, f);
 	
-	if (is_emitting_codeview) {
+	fwrite(&(COFF_Symbol) {
+			   .short_name = { ".pdata" },
+			   .section_number = 4,
+			   .storage_class = IMAGE_SYM_CLASS_STATIC,
+			   .aux_symbols_count = 1
+		   }, sizeof(COFF_Symbol), 1, f);
+	
+	fwrite(&(COFF_AuxSectionSymbol) {
+			   .length = pdata_section.raw_data_size,
+			   .reloc_count = pdata_section.num_reloc,
+			   .number = 4
+		   }, sizeof(COFF_AuxSectionSymbol), 1, f);
+	
+	fwrite(&(COFF_Symbol) {
+			   .short_name = { ".xdata" },
+			   .section_number = 5,
+			   .storage_class = IMAGE_SYM_CLASS_STATIC,
+			   .aux_symbols_count = 1
+		   }, sizeof(COFF_Symbol), 1, f);
+	
+	fwrite(&(COFF_AuxSectionSymbol) {
+			   .length = xdata_section.raw_data_size,
+			   .reloc_count = xdata_section.num_reloc,
+			   .number = 5
+		   }, sizeof(COFF_AuxSectionSymbol), 1, f);
+	
+	if (emit_debug_info) {
 		fwrite(&(COFF_Symbol) {
 				   .short_name = { ".debug$T" },
-				   .section_number = 4,
+				   .section_number = 6,
 				   .storage_class = IMAGE_SYM_CLASS_STATIC,
 				   .aux_symbols_count = 1
 			   }, sizeof(COFF_Symbol), 1, f);
 		
 		fwrite(&(COFF_AuxSectionSymbol) {
 				   .length = debugt_section.raw_data_size,
-				   .number = 4
+				   .number = 6
 			   }, sizeof(COFF_AuxSectionSymbol), 1, f);
 		
 		fwrite(&(COFF_Symbol) {
 				   .short_name = { ".debug$S" },
-				   .section_number = 5,
+				   .section_number = 7,
 				   .storage_class = IMAGE_SYM_CLASS_STATIC,
 				   .aux_symbols_count = 1
 			   }, sizeof(COFF_Symbol), 1, f);
@@ -1095,11 +1175,11 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 		fwrite(&(COFF_AuxSectionSymbol) {
 				   .length = debugs_section.raw_data_size,
 				   .reloc_count = debugs_section.num_reloc,
-				   .number = 5
+				   .number = 7
 			   }, sizeof(COFF_AuxSectionSymbol), 1, f);
 	}
 	
-	for (size_t i = 0; i < m->compiled_functions.count; i++) {
+	loop(i, m->compiled_functions.count) {
 		bool is_extern = m->compiled_functions.data[i].linkage == TB_LINKAGE_PUBLIC;
 		
 		COFF_Symbol sym = {
@@ -1117,8 +1197,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 			
 			string_table[string_table_length++] = (char*)m->compiled_functions.data[i].name;
 			string_table_mark += name_len + 1;
-		}
-		else {
+		} else {
 			memcpy(sym.short_name, m->compiled_functions.data[i].name, name_len + 1);
 		}
 		
@@ -1216,6 +1295,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	}
 	fclose(f);
 	
+	free(xdata_out.data);
 	free(debugs_out.data);
 	free(debugt_out.data);
 	free(string_table);

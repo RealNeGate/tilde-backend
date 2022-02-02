@@ -99,8 +99,8 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 	m->compiled_functions.count = 0;
 	m->compiled_functions.data = tb_platform_heap_alloc(TB_MAX_FUNCTIONS * sizeof(TB_FunctionOutput));
     
+	// we start a little off the start just because
 	m->rdata_region_size = 16;
-	m->line_info_count = 0;
 	
 #if defined(_WIN32)
 	InitializeCriticalSection(&m->mutex);
@@ -125,6 +125,9 @@ TB_API void tb_function_optimize(TB_Function* f, TB_OptLevel opt) {
 	tb_function_print(f, tb_default_print_callback, stdout);
 	printf("\n\n\n");*/
 	
+	// only needs to run once
+	tb_opt_hoist_locals(f);
+	
 	repeat_opt: {
 		// Passive optimizations
 		OPT(dead_expr_elim);
@@ -133,14 +136,10 @@ TB_API void tb_function_optimize(TB_Function* f, TB_OptLevel opt) {
 		OPT(load_elim);
 		OPT(strength_reduction);
 		OPT(copy_elision);
-		OPT(dead_expr_elim);
 		OPT(canonicalize);
-		OPT(hoist_locals);
 		OPT(mem2reg);
-		OPT(compact_dead_regs);
 		OPT(dead_block_elim);
 		OPT(deshort_circuit);
-		OPT(compact_dead_regs);
 	}
 	
 	//printf("FINAL   ");
@@ -157,11 +156,14 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
 	int id = get_local_thread_id();
 	assert(id < TB_MAX_THREADS);
 	
-	int index = tb_atomic_size_add(&m->compiled_functions.count, 1);
+	// NOTE(NeGate): imma not use this counter as an index and just directly map
+	// each function to their compiled variants
+	tb_atomic_size_add(&m->compiled_functions.count, 1);
 	
 	TB_CodeRegion* restrict region = get_or_allocate_code_region(m, id);
 	TB_FunctionOutput* func_out = m->compiled_functions.data;
 	
+	TB_FunctionID index = tb_function_get_id(m, f);
 	func_out[index] = gen->compile_function(index, f, &m->features, &region->data[region->size], id);
 	region->size += func_out[index].code_size;
 	
@@ -250,7 +252,7 @@ TB_API TB_FileID tb_file_create(TB_Module* m, const char* path) {
 	return r;
 }
 
-TB_API bool tb_module_export(TB_Module* m, const char* path) {
+TB_API bool tb_module_export(TB_Module* m, const char* path, bool emit_debug_info) {
 	const ICodeGen* restrict code_gen = NULL;
 	switch (m->target_arch) {
 		case TB_ARCH_X86_64: code_gen = &x64_fast_code_gen; break;
@@ -259,10 +261,10 @@ TB_API bool tb_module_export(TB_Module* m, const char* path) {
 	
 	switch (m->target_system) {
         case TB_SYSTEM_WINDOWS:
-		tb_export_coff(m, code_gen, path);
+		tb_export_coff(m, code_gen, path, emit_debug_info);
 		break;
         case TB_SYSTEM_LINUX:
-		tb_export_elf64(m, code_gen, path);
+		tb_export_elf64(m, code_gen, path, emit_debug_info);
 		break;
         default:
 		printf("TinyBackend error: Unknown system!\n");
@@ -601,6 +603,13 @@ void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance) {
 	return &store->data[store->used - distance];
 }
 
+void tb_tls_restore(TB_TemporaryStorage* store, void* ptr) {
+	size_t i = ((uint8_t*)ptr) - store->data;
+	assert(i <= store->used);
+	
+	store->used = i;
+}
+
 void tb_emit_call_patch(TB_Module* m, TB_CompiledFunctionID source, uint32_t target_id, size_t pos, size_t local_thread_id) {
 	assert(pos == (uint32_t) pos);
 	
@@ -695,8 +704,8 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
         
 		switch (type) {
             case TB_NULL:
-			callback(user_data, "  r%u\t=\t", i);
-			callback(user_data, " NOP\n");
+			//callback(user_data, "  r%u\t=\t", i);
+			//callback(user_data, " NOP\n");
 			break;
             case TB_DEBUGBREAK:
 			callback(user_data, " DEBUGBREAK\n");
@@ -1040,7 +1049,7 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
             case TB_RET:
 			callback(user_data, "  ret\t\t");
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " r%u\n", p.i_arith.a);
+			callback(user_data, " r%u", p.i_arith.a);
 			break;
             default: tb_todo();
 		}
@@ -1056,8 +1065,7 @@ uint8_t* tb_out_reserve(TB_Emitter* o, size_t count) {
 	if (o->count + count >= o->capacity) {
 		if (o->capacity == 0) {
 			o->capacity = 64;
-		}
-		else {
+		} else {
 			o->capacity += count;
 			o->capacity *= 2;
 		}
@@ -1107,6 +1115,26 @@ void tb_out4b(TB_Emitter* o, uint32_t i) {
     
 	*((uint32_t*)&o->data[o->count]) = i;
 	o->count += 4;
+}
+
+void tb_patch2b(TB_Emitter* o, uint32_t pos, uint16_t i) {
+	*((uint16_t*)&o->data[pos]) = i;
+}
+
+void tb_patch4b(TB_Emitter* o, uint32_t pos, uint32_t i) {
+	*((uint32_t*)&o->data[pos]) = i;
+}
+
+uint8_t tb_get1b(TB_Emitter* o, uint32_t pos) {
+	return *((uint8_t*)&o->data[pos]);
+}
+
+uint16_t tb_get2b(TB_Emitter* o, uint32_t pos) {
+	return *((uint16_t*)&o->data[pos]);
+}
+
+uint32_t tb_get4b(TB_Emitter* o, uint32_t pos) {
+	return *((uint32_t*)&o->data[pos]);
 }
 
 void tb_out8b(TB_Emitter* o, uint64_t i) {

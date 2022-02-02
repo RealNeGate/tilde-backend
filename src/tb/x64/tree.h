@@ -6,13 +6,13 @@
 // store i      i0       kill i
 
 #define done_with(r) if (ctx->use_count[r] == 0) { \
-Val v = ctx->values[r]; \
-if (v.type == VAL_GPR) { \
-ctx->gpr_allocator &= ~(1u << v.gpr); \
-ctx->values[r] = (Val){ 0 }; \
-} else if (v.type == VAL_XMM) { \
-ctx->xmm_allocator &= ~(1u << v.xmm); \
-ctx->values[r] = (Val){ 0 }; \
+Val* restrict v = &ctx->values[r]; \
+if (v->type == VAL_GPR) { \
+ctx->gpr_allocator &= ~(1u << v->gpr); \
+*v = (Val){ 0 }; \
+} else if (v->type == VAL_XMM) { \
+ctx->xmm_allocator &= ~(1u << v->xmm); \
+*v = (Val){ 0 }; \
 } \
 }
 
@@ -250,10 +250,15 @@ static Val gen_float_const(Ctx* ctx, TB_Function* f, double float_value, TB_Data
 	return v;
 }
 
-static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register r) {
+static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register r, bool root) {
 	if (ctx->values[r].type != VAL_NONE) {
-		assert(ctx->use_count[r] > 0);
-		ctx->use_count[r] -= 1;
+		if (ctx->is_tallying) {
+			if (ctx->use_count[r] == 0) {
+				assert(should_rematerialize(f->nodes.type[r]));
+			}
+			ctx->use_count[r] -= 1;
+		}
+		
 		return ctx->values[r];
 	}
 	
@@ -331,7 +336,7 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register r) {
 		}
 		case TB_PARAM_ADDR: {
 			TB_Register param = p->param_addr.param;
-			val = eval_rvalue(ctx, f, param);
+			val = eval(ctx, f, param, false);
 			
 			done_with(param);
 			break;
@@ -346,11 +351,21 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register r) {
 			
 			uint32_t stride = p->array_access.stride;
 			
+			if (base.type == VAL_GLOBAL) {
+				Val new_base = alloc_gpr(ctx, f, TB_PTR);
+				
+				inst2(ctx, LEA, &new_base, &base, TB_PTR);
+				free_val(ctx, f, base);
+				
+				base = val_base_disp(dt, new_base.gpr, 0);
+				base.is_temp = true;
+			}
+			
 			// move into a GPR to make life easier
 			bool can_recycle_index = ctx->use_count[p->array_access.index] == 0;
 			if (is_value_mem(&index)) {
-				Val new_index = alloc_gpr(ctx, f, dt.type);
-				inst2(ctx, MOV, &new_index, &index, index.dt.type);
+				Val new_index = alloc_gpr(ctx, f, TB_PTR);
+				inst2(ctx, MOV, &new_index, &index, TB_PTR);
 				free_val(ctx, f, index);
 				
 				index = new_index;
@@ -360,6 +375,7 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register r) {
 			// TODO(NeGate): Redo this code, it's scary levels of branchy
 			if (index.type == VAL_IMM) {
 				base.mem.disp += index.imm * stride;
+				
 				val = base;
 			} else if (index.type == VAL_GPR) {
 				GPR base_reg = base.mem.base;
@@ -431,6 +447,9 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register r) {
 					emit(mod_rx_rm(MOD_DIRECT, base_reg, val.gpr));
 				}
 			}
+			
+			free_val(ctx, f, base);
+			free_val(ctx, f, index);
 			
 			done_with(p->array_access.base);
 			done_with(p->array_access.index);
@@ -843,7 +862,7 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register r) {
 			Val a = eval_rvalue(ctx, f, p->cmp.a);
 			Val b = eval_rvalue(ctx, f, p->cmp.b);
 			
-			bool convert_to_reg = true;//!(n == (ctx->tree_len-1) && f->nodes.type[ctx->next_reg] == TB_IF);
+			bool convert_to_reg = !(root && ctx->is_if_statement_next);
 			if (convert_to_reg) {
 				val = alloc_gpr(ctx, f, TB_I8);
 				
@@ -869,6 +888,8 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register r) {
 				} else {
 					inst2sse(ctx, FP_UCOMI, &a, &b, flags);
 				}
+				free_val(ctx, f, a);
+				free_val(ctx, f, b);
 				
 				switch (reg_type) {
 					case TB_CMP_EQ: cc = E; break;
@@ -892,6 +913,8 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register r) {
 					if (invert) inst2(ctx, CMP, &b, &a, cmp_dt.type);
 					else inst2(ctx, CMP, &a, &b, cmp_dt.type);
 				}
+				free_val(ctx, f, a);
+				free_val(ctx, f, b);
 				
 				switch (reg_type) {
 					case TB_CMP_EQ: cc = E; break;
@@ -1181,8 +1204,12 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register r) {
 		break;
 	}
 	
-	assert(ctx->use_count[r] > 0);
-	ctx->use_count[r] -= 1;
+	if (ctx->is_tallying) {
+		if (ctx->use_count[r] == 0) {
+			assert(should_rematerialize(f->nodes.type[r]));
+		}
+		ctx->use_count[r] -= 1;
+	}
 	
 	// it's no longer a temporary if it's here
 	if (val.is_temp) {
@@ -1196,7 +1223,7 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Register r) {
 }
 
 static Val eval_addressof(Ctx* ctx, TB_Function* f, TB_Register r) {
-	Val v = eval(ctx, f, r);
+	Val v = eval(ctx, f, r, false);
 	if (v.dt.type == TB_BOOL) v.dt.type = TB_I8;
 	
 	if (is_value_mem(&v)) {
@@ -1237,7 +1264,7 @@ static Val eval_addressof(Ctx* ctx, TB_Function* f, TB_Register r) {
 }
 
 static Val eval_rvalue(Ctx* restrict ctx, TB_Function* f, TB_Register r) {
-	Val v = eval(ctx, f, r);
+	Val v = eval(ctx, f, r, false);
 	if (v.dt.type == TB_BOOL) v.dt.type = TB_I8;
 	
 	if (is_value_mem(&v)) {

@@ -8,7 +8,7 @@ if "%VSCMD_ARG_TGT_ARCH%" neq "x64" (
 if "%1" equ "debug" (
   set cl_settings=/arch:AVX /MTd /Od /WX /Zi /D_DEBUG /RTC1 /D_CRT_SECURE_NO_WARNINGS
 ) else (
-  set cl_settings=/arch:AVX /GL /Ox /WX /DNDEBUG /GS- /D_CRT_SECURE_NO_WARNINGS
+  set cl_settings=/arch:AVX /GL /Ox /WX /GS- /DNDEBUG /D_CRT_SECURE_NO_WARNINGS
 )
 
 set tb_source_files=src/tb/tb.c ^

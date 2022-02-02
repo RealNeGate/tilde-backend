@@ -750,7 +750,7 @@ void do_tests(const char* output_path, TB_Arch arch, TB_System system, const TB_
 	}
 	
 	if (!tb_module_compile(m)) abort();
-	if (!tb_module_export(m, output_path)) abort();
+	if (!tb_module_export(m, output_path, false)) abort();
 	
 	tb_module_destroy(m);
 }

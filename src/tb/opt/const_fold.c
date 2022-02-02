@@ -190,7 +190,7 @@ bool tb_opt_fold(TB_Function* f) {
 				
 				uint64_t num = (f->nodes.payload[src].u_const & mask) | (sign_bit ? ~mask : 0);
 				
-				printf("%lld -> %llu\n", f->nodes.payload[src].s_const, num);
+				//printf("%lld -> %llu\n", f->nodes.payload[src].s_const, num);
 				
 				f->nodes.type[i] = TB_SIGNED_CONST;
 				f->nodes.payload[i].u_const = num;

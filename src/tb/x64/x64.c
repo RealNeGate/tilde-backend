@@ -34,6 +34,7 @@ typedef struct FunctionTally {
 	size_t phi_count;
 	size_t locals_count;
 	size_t return_count;
+	size_t line_info_count;
 	size_t label_patch_count;
 } FunctionTally;
 
@@ -42,6 +43,7 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 	size_t locals_count = 0;
 	size_t return_count = 0;
 	size_t label_patch_count = 0;
+	size_t line_info_count = 0;
 	
 #if TB_HOST_ARCH == TB_HOST_X86_64
 #define COUNT_OF_TYPE_IN_M128(t) tb_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
@@ -58,6 +60,8 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 		
 		label_patch_count += COUNT_OF_TYPE_IN_M128(TB_GOTO);
 		label_patch_count += COUNT_OF_TYPE_IN_M128(TB_IF) * 2;
+		
+		line_info_count += COUNT_OF_TYPE_IN_M128(TB_LINE_INFO);
 	}
 #undef COUNT_OF_TYPE_IN_M128
 #else
@@ -69,6 +73,7 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 		else if (t == TB_LOCAL) locals_count++;
 		else if (t == TB_IF) label_patch_count += 2;
 		else if (t == TB_GOTO) label_patch_count++;
+		else if (t == TB_LINE_INFO) line_info_count++;
 	}
 #endif
 	
@@ -120,6 +125,7 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 		.memory_usage = tally,
 		
 		.phi_count = phi_count,
+		.line_info_count = line_info_count,
 		.locals_count = locals_count,
 		.return_count = return_count,
 		.label_patch_count = label_patch_count
@@ -180,6 +186,9 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 		
 		ctx->is_sysv = (f->module->target_system == TB_SYSTEM_LINUX ||
 						f->module->target_system == TB_SYSTEM_MACOS);
+		
+		f->line_count = 0;
+		f->lines = tb_platform_arena_alloc(tally.line_info_count * sizeof(TB_Line));
 	}
 	
 	////////////////////////////////
@@ -292,7 +301,7 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 			uint32_t align = f->nodes.payload[i].local.alignment;
 			
 			ctx->stack_usage = align_up(ctx->stack_usage + size, align);
-			ctx->values[i] = val_stack(TB_TYPE_VOID, -ctx->stack_usage);
+			ctx->values[i] = val_stack(TB_TYPE_PTR, -ctx->stack_usage);
 		}
 	}
 	
@@ -392,7 +401,10 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 				eval_terminator_phis(ctx, f, bb, bb_end, if_false_reg, if_false_reg_end);
 			}
 			
-			Val cond = eval(ctx, f, p.if_.cond);
+			ctx->is_if_statement_next = true;
+			Val cond = eval(ctx, f, p.if_.cond, true);
+			ctx->is_if_statement_next = false;
+			
 			if (cond.type == VAL_IMM) {
 				TB_Label dst = (cond.imm ? if_true : if_false);
 				
@@ -460,7 +472,7 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 		} else if (reg_type == TB_SWITCH) {
 			static_assert(_Alignof(TB_SwitchEntry) == _Alignof(TB_Register), "We don't want any unaligned accesses");
 			
-			Val key = eval(ctx, f, p.switch_.key);
+			Val key = eval(ctx, f, p.switch_.key, true);
 			if (key.type == VAL_IMM) {
 				size_t entry_count = (p.switch_.entries_end - p.switch_.entries_start) / 2;
 				
@@ -523,7 +535,7 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 		
 		if (next_label < f->nodes.count) {
 			loop_range(i, bb, bb_end) {
-				if (ctx->use_count[i] == 0 && ctx->values[i].type != VAL_NONE) {
+				if (ctx->use_count[i] == 0 && ctx->values[i].type != VAL_NONE) { 
 					done_with(i);
 				}
 			}
@@ -606,48 +618,43 @@ static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register s
 	loop_range(r, start, end) {
 		TB_RegTypeEnum reg_type = f->nodes.type[r];
 		
-		bool should_rematerialize = (reg_type == TB_PARAM ||
-									 reg_type == TB_PARAM_ADDR ||
-									 reg_type == TB_LOCAL ||
-									 reg_type == TB_LABEL ||
-									 reg_type == TB_GLOBAL_ADDRESS ||
-									 reg_type == TB_SIGNED_CONST ||
-									 reg_type == TB_UNSIGNED_CONST ||
-									 reg_type == TB_MEMBER_ACCESS);
-		
-		if (ctx->use_count[r] && !should_rematerialize) {
+		if (ctx->use_count[r] && !should_rematerialize(reg_type)) {
 			// dummy eval to cache the results before the fence
 			// it gets it's use count tick undone to avoid issues
 			Val val;
 			
+			ctx->is_tallying = false;
 			if (is_address_node(reg_type) ||
 				(reg_type == TB_LOAD && f->nodes.dt[r].type == TB_PTR)) {
-				ctx->use_count[r] += 1;
-				val = eval(ctx, f, r);
+				val = eval(ctx, f, r, true);
 			} else {
-				ctx->use_count[r] += 1;
 				val = eval_rvalue(ctx, f, r);
+			}
+			ctx->is_tallying = true;
+			
+			if (val.is_temp) {
+				val.is_temp = false;
+			} else if (val.dt.width || TB_IS_FLOAT_TYPE(val.dt.type)) {
+				Val dst = alloc_xmm(ctx, f, val.dt);
 				
-				if (val.is_temp) {
-					val.is_temp = false;
-				} else if (val.dt.width || TB_IS_FLOAT_TYPE(val.dt.type)) {
-					Val dst = alloc_xmm(ctx, f, val.dt);
-					
-					uint8_t flags = 0;
-					flags |= (val.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
-					flags |= (val.dt.width) ? INST2FP_PACKED : 0;
-					
-					if (!is_value_xmm(&val, dst.xmm)) {
-						inst2sse(ctx, FP_MOV, &dst, &val, flags);
-					}
-					ctx->values[r] = dst;
-				} else {
-					Val dst = alloc_gpr(ctx, f, val.dt.type);
-					if (!is_value_gpr(&val, dst.gpr)) {
-						inst2(ctx, MOV, &dst, &val, val.dt.type);
-					}
-					ctx->values[r] = dst;
+				uint8_t flags = 0;
+				flags |= (val.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+				flags |= (val.dt.width) ? INST2FP_PACKED : 0;
+				
+				if (!is_value_xmm(&val, dst.xmm)) {
+					inst2sse(ctx, FP_MOV, &dst, &val, flags);
 				}
+				ctx->values[r] = dst;
+			} else if (is_value_mem(&val) && is_address_node(reg_type)) {
+				Val dst = alloc_gpr(ctx, f, val.dt.type);
+				inst2(ctx, LEA, &dst, &val, val.dt.type);
+				ctx->values[r] = dst;
+			} else {
+				Val dst = alloc_gpr(ctx, f, val.dt.type);
+				if (!is_value_gpr(&val, dst.gpr)) {
+					inst2(ctx, MOV, &dst, &val, val.dt.type);
+				}
+				ctx->values[r] = dst;
 			}
 		}
 	}
@@ -668,7 +675,11 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 		TB_RegPayload* restrict p = &f->nodes.payload[r];
 		switch (reg_type) {
 			case TB_LINE_INFO: {
-				p->line_info.pos = code_pos();
+				f->lines[f->line_count++] = (TB_Line){
+					.file = p->line_info.file,
+					.line = p->line_info.line,
+					.pos = code_pos()
+				};
 				break;
 			}
 			
@@ -1229,6 +1240,22 @@ static bool is_address_node(TB_RegType t) {
 		case TB_ARRAY_ACCESS:
 		case TB_MEMBER_ACCESS:
 		case TB_INT2PTR:
+		return true;
+		default: 
+		return false;
+	}
+}
+
+static bool should_rematerialize(TB_RegType t) {
+	switch (t) {
+		case TB_PARAM:
+		case TB_PARAM_ADDR:
+		case TB_LOCAL:
+		case TB_LABEL:
+		case TB_GLOBAL_ADDRESS:
+		case TB_SIGNED_CONST:
+		case TB_UNSIGNED_CONST:
+		case TB_MEMBER_ACCESS:
 		return true;
 		default: 
 		return false;

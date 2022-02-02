@@ -8,7 +8,9 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
 	tb_find_live_intervals(f, intervals);
     
 	loop(i, f->nodes.count) if (intervals[i] == 0) {
-		switch (f->nodes.type[i]) {
+		TB_RegTypeEnum reg_type = f->nodes.type[i];
+		
+		switch (reg_type) {
 			// keep
 			case TB_NULL:
 			case TB_LABEL:
@@ -37,23 +39,42 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
 			case TB_ATOMIC_XOR:
 			case TB_ATOMIC_OR:
 			break;
+			// don't delete volatile loads
+			case TB_LOAD: {
+				if (f->nodes.payload[i].load.is_volatile) {
+					OPTIMIZER_LOG(i, "could not remove volatile load");
+				} else {
+					OPTIMIZER_LOG(i, "removed unused expression node");
+					
+					tb_kill_op(f, i);
+					changes++;
+				}
+				break;
+			}
 			// delete:
-			case TB_LOAD:
+			case TB_GLOBAL_ADDRESS:
+			case TB_FUNC_ADDRESS:
+			case TB_EFUNC_ADDRESS:
 			case TB_UNSIGNED_CONST:
+			case TB_ARRAY_ACCESS:
+			case TB_MEMBER_ACCESS:
 			case TB_SIGNED_CONST:
+			case TB_STRING_CONST:
 			case TB_FLOAT_CONST:
 			case TB_INT2PTR:
 			case TB_PTR2INT:
 			case TB_INT2FLOAT:
 			case TB_FLOAT2INT:
+			case TB_SIGN_EXT:
+			case TB_ZERO_EXT:
+			case TB_TRUNCATE:
 			case TB_LOCAL:
 			case TB_PASS:
 			case TB_NOT:
 			case TB_NEG:
-			case TB_SIGN_EXT:
-			case TB_ZERO_EXT:
 			case TB_AND:
 			case TB_OR:
+			case TB_XOR:
 			case TB_ADD:
 			case TB_SUB:
 			case TB_MUL:

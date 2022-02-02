@@ -80,9 +80,7 @@ TB_API bool tb_function_validate(TB_Function* restrict f) {
 #undef printf
 #endif
 
-//
 // IR ANALYSIS
-//
 void tb_find_live_intervals(const TB_Function* f, TB_Register intervals[]) {
 	for (size_t i = 0; i < f->nodes.count; i++) intervals[i] = TB_NULL_REG;
     
@@ -97,6 +95,16 @@ void tb_find_use_count(const TB_Function* f, int use_count[]) {
 #define X(reg) use_count[reg] += 1
 	FOR_EACH_REGISTER_IN_FUNC(X)
 #undef X
+}
+
+int tb_find_uses(const TB_Function* f, TB_Register def, TB_Register uses[]) {
+	size_t count = 0;
+	
+#define X(reg) if (reg == def) { uses[count++] = reg; }
+	FOR_EACH_REGISTER_IN_FUNC(X)
+#undef X
+	
+	return count;
 }
 
 size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_t end) {
@@ -118,8 +126,20 @@ TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t sta
 }
 
 void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Register replace) {
-#define X(reg) if (reg == find) { reg = replace; }
-	FOR_EACH_REGISTER_IN_FUNC(X)
+#define X(reg) reg = (reg == find) ? replace : reg;
+	loop(i, f->nodes.count) {
+		TB_RegType type = f->nodes.type[i];
+		TB_RegPayload* p = &f->nodes.payload[i];
+		
+		// most registers have to be infront of their definition in memory
+		// except for PHIs
+		if (i < find && (type != TB_PHI2 && type != TB_LABEL)) continue;
+		
+		switch (type) {
+			FOR_EACH_REGISTER_IN_NODE(X);
+			default: tb_panic(false, "Unknown node type: %d", type);
+		}
+	}
 #undef X
 }
 
@@ -127,7 +147,7 @@ TB_Register tb_find_reg_from_label(TB_Function* f, TB_Label id) {
 	for (size_t i = 0; i < f->nodes.count; i++) {
 		if (f->nodes.type[i] == TB_LABEL && f->nodes.payload[i].label.id == id) return i;
 	}
-    
+	
 	return TB_NULL_REG;
 }
 
@@ -151,6 +171,30 @@ void tb_insert_op(TB_Function* f, TB_Register at) {
 	// Shift all references over by 1
 	while (registers_beyond_end_point--) {
 		tb_function_find_replace_reg(f, at + registers_beyond_end_point, at + registers_beyond_end_point + 1);
+	}
+}
+
+void tb_insert_ops(TB_Function* f, TB_Register at, int count) {
+	// Reserve the space
+	if (f->nodes.count + count >= f->nodes.capacity) tb_resize_node_stream(f, tb_next_pow2(f->nodes.count + count));
+	
+	// Shift over registers
+	int registers_beyond_end_point = f->nodes.count - at;
+	memmove(&f->nodes.type[at + count], &f->nodes.type[at], registers_beyond_end_point * sizeof(TB_RegType));
+	memmove(&f->nodes.dt[at + count], &f->nodes.dt[at], registers_beyond_end_point * sizeof(TB_DataType));
+	memmove(&f->nodes.payload[at + count], &f->nodes.payload[at], registers_beyond_end_point * sizeof(TB_RegPayload));
+	f->nodes.count += count;
+	
+	// Clear out registers
+	// necessary for the find & replace not to screw up
+	for (size_t i = 0; i < count; i++) {
+		tb_kill_op(f, at + i);
+	}
+	
+	// Shift all references over by the amount inserted
+	size_t i = registers_beyond_end_point;
+	while (i--) {
+		tb_function_find_replace_reg(f, at + i, at + i + count);
 	}
 }
 
@@ -314,12 +358,13 @@ TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStora
 		TB_Register terminator = f->nodes.payload[label].label.terminator;
 		TB_Label id = f->nodes.payload[label].label.id;
 		
-		if (f->nodes.type[terminator] == TB_LABEL) {
+		TB_RegTypeEnum terminator_type = f->nodes.type[terminator];
+		if (terminator_type == TB_LABEL) {
 			if (l == f->nodes.payload[terminator].label.id) {
 				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
 				count++;
 			}
-		} else if (f->nodes.type[terminator] == TB_IF) {
+		} else if (terminator_type == TB_IF) {
 			if (l == f->nodes.payload[terminator].if_.if_true) {
 				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
 				count++;
@@ -329,14 +374,14 @@ TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStora
 				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
 				count++;
 			}
-		} else if (f->nodes.type[terminator] == TB_GOTO) {
+		} else if (terminator_type == TB_GOTO) {
 			if (l == f->nodes.payload[terminator].goto_.label) {
 				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = id;
 				count++;
 			}
-		} else if (f->nodes.type[terminator] == TB_RET) {
+		} else if (terminator_type == TB_RET) {
 			/* blank */
-		} else if (f->nodes.type[terminator] == TB_SWITCH) {
+		} else if (terminator_type == TB_SWITCH) {
 			TB_RegPayload* restrict p = &f->nodes.payload[terminator];
 			
 			size_t entry_count = (p->switch_.entries_end - p->switch_.entries_start) / 2;

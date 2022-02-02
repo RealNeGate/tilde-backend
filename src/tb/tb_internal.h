@@ -110,9 +110,6 @@ typedef union TB_RegPayload {
 	struct {
 		TB_FileID file;
 		int line;
-		
-		// NOTE(NeGate): Used by the object code generation
-		uint32_t pos;
 	} line_info;
 	struct {
 		TB_Register base;
@@ -519,6 +516,12 @@ typedef struct TB_Global {
 	size_t pos;
 } TB_Global;
 
+typedef struct TB_Line {
+	TB_FileID file;
+	int line;
+	uint32_t pos;
+} TB_Line;
+
 struct TB_Function {
 	// It's kinda a weird circular reference but yea
 	TB_Module* module;
@@ -549,6 +552,10 @@ struct TB_Function {
 		size_t count;
 		TB_Register* data;
 	} vla;
+	
+	// Part of the debug info
+	size_t line_count;
+	TB_Line* lines;
 };
 
 typedef struct TB_LabelSymbol {
@@ -568,11 +575,6 @@ struct TB_Module {
 	TB_Arch target_arch;
 	TB_System target_system;
 	TB_FeatureSet features;
-	
-	// This number is calculated while the builders are running
-	// if the optimizations are run this number is set to SIZE_MAX
-	// which means it needs to be re-evaluated.
-	tb_atomic_size_t line_info_count;
 	
 	// Convert this into a dynamic memory arena... maybe
 	tb_atomic_size_t prototypes_arena_size;
@@ -745,12 +747,13 @@ bool tb_validate(TB_Function* f);
 TB_TemporaryStorage* tb_tls_allocate();
 void* tb_tls_push(TB_TemporaryStorage* store, size_t size);
 void* tb_tls_try_push(TB_TemporaryStorage* store, size_t size);
+void tb_tls_restore(TB_TemporaryStorage* store, void* ptr);
 void* tb_tls_pop(TB_TemporaryStorage* store, size_t size);
 void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance);
 bool tb_tls_can_fit(TB_TemporaryStorage* store, size_t size);
 
-void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path);
-void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char* path);
+void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, bool emit_debug_info);
+void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, bool emit_debug_info);
 
 uint8_t* tb_out_reserve(TB_Emitter* o, size_t count);
 // The return value is the start of the empty region after
@@ -773,6 +776,12 @@ void tb_out1b(TB_Emitter* o, uint8_t i);
 void tb_out2b(TB_Emitter* o, uint16_t i);
 void tb_out4b(TB_Emitter* o, uint32_t i);
 void tb_out8b(TB_Emitter* o, uint64_t i);
+void tb_patch2b(TB_Emitter* o, uint32_t pos, uint16_t i);
+void tb_patch4b(TB_Emitter* o, uint32_t pos, uint32_t i);
+
+uint8_t tb_get1b(TB_Emitter* o, uint32_t pos);
+uint16_t tb_get2b(TB_Emitter* o, uint32_t pos);
+uint32_t tb_get4b(TB_Emitter* o, uint32_t pos);
 
 ////////////////////////////////
 // IR ANALYSIS
@@ -784,6 +793,7 @@ size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_
 void tb_insert_op(TB_Function* f, TB_Register at);
 void tb_resize_node_stream(TB_Function* f, size_t cap);
 TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params, TB_Register at, const TB_Function* src_func, TB_Register src_base, int count);
+void tb_insert_ops(TB_Function* f, TB_Register at, int count);
 
 inline static void tb_kill_op(TB_Function* f, TB_Register at) {
 	f->nodes.type[at] = TB_NULL;
@@ -805,11 +815,11 @@ inline static int align_up(int a, int b) { return a + (b - (a % b)) % b; }
 #endif
 
 // NOTE(NeGate): clean this up
-#if 1
+#if 0
 #define OPTIMIZER_LOG(at, ...)
 #else
 #define OPTIMIZER_LOG(at, ...) do { \
-printf("%s:r%zu: ", f->name, at); \
+printf("%s:r%zu: ", f->name, (size_t)at); \
 printf(__VA_ARGS__); \
 printf(" (part of %s)\n", __FUNCTION__); \
 } while (0)
@@ -857,6 +867,7 @@ uint64_t tb_fold_div(TB_DataType dt, uint64_t a, uint64_t b);
 ////////////////////////////////
 void tb_find_live_intervals(const TB_Function* f, TB_Register intervals[]);
 void tb_find_use_count(const TB_Function* f, int use_count[]);
+int tb_find_uses(const TB_Function* f, TB_Register def, TB_Register uses[]);
 TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count);
 
 uint32_t tb_emit_const_patch(TB_Module* m, TB_CompiledFunctionID source, size_t pos, const void* ptr, size_t len, size_t local_thread_id);

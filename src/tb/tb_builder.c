@@ -295,9 +295,6 @@ TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line) {
 	TB_Register r = tb_make_reg(f, TB_LINE_INFO, TB_TYPE_VOID);
 	f->nodes.payload[r].line_info.file = file;
 	f->nodes.payload[r].line_info.line = line;
-	f->nodes.payload[r].line_info.pos = 0;
-	
-	f->module->line_info_count++;
 }
 
 TB_API TB_Register tb_inst_local(TB_Function* f, uint32_t size, TB_CharUnits alignment) {
@@ -896,7 +893,7 @@ TB_API TB_Label tb_inst_new_label_id(TB_Function* f) {
 }
 
 TB_API TB_Register tb_inst_label(TB_Function* f, TB_Label id) {
-	assert(id >= 0 && id < f->label_count);
+	assert(id >= 1 && id < f->label_count);
 	
 	TB_Register r = tb_make_reg(f, TB_LABEL, TB_TYPE_PTR);
 	f->nodes.payload[r].label.id = id;

@@ -107,7 +107,7 @@ typedef struct {
 	Elf64_Xword     st_size;
 } Elf64_Sym;
 
-void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char* path) {
+void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, bool emit_debug_info) {
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	
 	// The prologue and epilogue generators need some storage

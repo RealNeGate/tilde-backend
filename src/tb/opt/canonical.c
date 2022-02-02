@@ -1,12 +1,16 @@
 #include "../tb_internal.h"
 
 bool tb_opt_compact_dead_regs(TB_Function* f) {
+	int changes = 0;
+	
 	// Shift the dead regs out
 	for (TB_Register i = 1; i < f->nodes.count; i++) if (f->nodes.type[i] == TB_NULL) {
 		// Check if there's repeated dead regs to remove them all at once
 		TB_Register j = i + 1;
-		while (j < f->nodes.count && f->nodes.type[j] == TB_NULL) j++; 
+		while (j < f->nodes.count && f->nodes.type[j] == TB_NULL) j++;
 		size_t regs_to_remove = j - i;
+		
+		OPTIMIZER_LOG(i, "deleted NOPs at r%d-r%d", i, j);
 		
 		// Shift everything back
 		size_t regs_beyond = f->nodes.count - j;
@@ -27,20 +31,40 @@ bool tb_opt_compact_dead_regs(TB_Function* f) {
 		
 		// Move the count back
 		f->nodes.count -= regs_to_remove;
-		return true;
+		changes++;
 	}
 	
-	return false;
+	return changes;
 }
 
 bool tb_opt_remove_pass_node(TB_Function* f) {
 	int changes = 0;
-	
-	for (TB_Register i = 1; i < f->nodes.count; i++) {
-		if (f->nodes.type[i] == TB_PASS) {
-			tb_function_find_replace_reg(f, i, f->nodes.payload[i].pass);
-			changes++;
+	TB_TemporaryStorage* tls = tb_tls_allocate();
+    
+	TB_Register* intervals = tb_tls_push(tls, f->nodes.count * sizeof(TB_Register));
+	tb_find_live_intervals(f, intervals);
+    
+	loop(i, f->nodes.count) if (intervals[i] > 0 && f->nodes.type[i] == TB_PASS) {
+		OPTIMIZER_LOG(i, "removing PASS node");
+		TB_Register replacement = f->nodes.payload[i].pass;
+		TB_Register endpoint = intervals[i]+1;
+		
+		if (endpoint > i) {
+#define X(reg) reg = (reg == i) ? replacement : reg;
+			loop_range(j, i, endpoint) {
+				TB_RegType type = f->nodes.type[j]; \
+				TB_RegPayload* p = &f->nodes.payload[j]; \
+				
+				switch (type) {
+					FOR_EACH_REGISTER_IN_NODE(X);
+					default: tb_panic(false, "Unknown node type: %d", type);
+				}
+			}
+#undef X
 		}
+		
+		tb_kill_op(f, i);
+		changes++;
 	}
 	
 	return changes;
@@ -132,6 +156,30 @@ bool tb_opt_canonicalize(TB_Function* f) {
 					changes++;
 				}
 			}
+		} else if (f->nodes.type[i] == TB_UNSIGNED_CONST) {
+			uint64_t data = f->nodes.payload[i].u_const;
+			
+			loop_range(j, i+1, f->nodes.count) {
+				if (f->nodes.type[j] == TB_UNSIGNED_CONST && f->nodes.payload[j].u_const == data) {
+					OPTIMIZER_LOG(i, "merged integer constants");
+					
+					f->nodes.type[j] = TB_PASS;
+					f->nodes.payload[j].pass = i;
+					changes++;
+				}
+			}
+		} else if (f->nodes.type[i] == TB_SIGNED_CONST) {
+			int64_t data = f->nodes.payload[i].s_const;
+			
+			loop_range(j, i+1, f->nodes.count) {
+				if (f->nodes.type[j] == TB_SIGNED_CONST && f->nodes.payload[j].s_const == data) {
+					OPTIMIZER_LOG(i, "merged integer constants");
+					
+					f->nodes.type[j] = TB_PASS;
+					f->nodes.payload[j].pass = i;
+					changes++;
+				}
+			}
 		} else if (type == TB_INT2PTR) {
 			TB_Register src = f->nodes.payload[i].cvt.src;
 			
@@ -201,7 +249,7 @@ bool tb_opt_canonicalize(TB_Function* f) {
 			
 			// NOTE(NeGate): We can read ahead because of the zeroed
 			// out padding space in the TB_NodeStream::type stream
-			if (f->nodes.type[i + 1] == TB_LABEL) {
+			if (false /* TODO(NeGate): f->nodes.type[i + 1] == TB_LABEL */) {
 				OPTIMIZER_LOG(i, "combined subsequent labels");
 				
 				TB_Label after = f->nodes.payload[i].label.id;
@@ -211,6 +259,10 @@ bool tb_opt_canonicalize(TB_Function* f) {
 				f->nodes.payload[i].label.terminator = f->nodes.payload[i+1].label.terminator;
 				
 				tb_kill_op(f, i + 1);
+				
+				// TODO(NeGate): We need a find & replace that's global instead
+				// of assuming that the definition is always in front of the uses.
+				tb_function_find_replace_reg(f, i + 1, i);
 				
 				// replace all references to the label
 				loop_range(j, 1, f->nodes.count) switch (f->nodes.type[j]) {

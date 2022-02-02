@@ -171,6 +171,11 @@ typedef struct Ctx {
 	
 	TB_Register last_fence;
 	
+	// allows for eval with compares to return FLAGS
+	bool is_if_statement_next;
+	// disables counting on the use_count
+	bool is_tallying;
+	
 	Val values[];
 } Ctx;
 
@@ -412,6 +417,7 @@ static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, TB_Register bound, TB_R
 static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register start, TB_Register end);
 
 static int get_data_type_size(const TB_DataType dt);
+static bool should_rematerialize(TB_RegType t);
 
 // used to add patches since there's separate arrays per thread
 static thread_local size_t s_local_thread_id;

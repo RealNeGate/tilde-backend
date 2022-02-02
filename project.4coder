@@ -33,7 +33,7 @@ command_list = {
 		.save_dirty_files = true,
 		.cursor_at_end = true,
 		.cmd = {
-			{ "build.bat", .os = "win" },
+			{ "build_windows.cmd debug cuik", .os = "win" },
 		},
 	},
 	
@@ -57,9 +57,21 @@ command_list = {
 		.cmd = {
 			{ "C:\remedybg\remedybg.exe tb.rdbg", .os = "win" },
 		},
+	},
+	
+	{
+		.name = "buildr",
+		.out = "*compilation*",
+		.footer_panel = true,
+		.save_dirty_files = true,
+		.cursor_at_end = true,
+		.cmd = {
+			{ "build_windows.cmd release cuik", .os = "win" },
+		},
 	}
 };
 
 fkey_command[1] = "build";
 fkey_command[2] = "run";
 fkey_command[3] = "debug";
+fkey_command[4] = "buildr";

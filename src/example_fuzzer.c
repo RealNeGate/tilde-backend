@@ -17,6 +17,15 @@ static uint32_t gen_random_bool();
 static TB_DataType gen_random_dt();
 static TB_DataType gen_random_int_dt();
 static TB_ArithmaticBehavior gen_random_arith();
+static int get_dt_size(TB_DataType dt) {
+	switch (dt.type) {
+		case TB_I8: return 1;
+		case TB_I16: return 2;
+		case TB_I32: return 4;
+		case TB_I64: return 8;
+		default: __assume(0);
+	}
+}
 
 static uint64_t get_timer_counter() {
     LARGE_INTEGER t;
@@ -128,7 +137,13 @@ static int ir_gen(FuzzerInfo* i) {
 				tb_get_function_get_local_info(f, addr, &size, &align);
 				
 				// just use the type of the allocation
-				dt = align == 8 ? TB_TYPE_I64 : TB_TYPE_I32;
+				switch (size) {
+					case 1: dt = TB_TYPE_I8; break;
+					case 2: dt = TB_TYPE_I16; break;
+					case 4: dt = TB_TYPE_I32; break;
+					case 8: dt = TB_TYPE_I64; break;
+					default: __assume(0);
+				}
 				
 				tb_inst_store(f, dt, addr, pool[gen_random(0, pool_size)], align);
 			} else if (rng == 3) {
@@ -254,7 +269,7 @@ static TB_DataType gen_random_dt() {
 
 static TB_DataType gen_random_int_dt() {
 	return (TB_DataType){
-		.type = (gen_random_any() & 1) ? TB_I64 : TB_I32, // ignores i128
+		.type = TB_I8 + (gen_random_any() % 4),
 		.width = 0
 	};
 }

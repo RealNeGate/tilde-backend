@@ -25,7 +25,7 @@ set tb_source_files=src/tb/tb.c ^
 
 IF NOT exist build (mkdir build)
 
-cl /c /MP src/example_main.c %tb_source_files% %cl_settings% /Fo:build\
+cl /c /MP %tb_source_files% %cl_settings% /Fo:build\
 if %errorlevel% neq 0 (
 	echo "TB failed to compile!"
 	exit 1

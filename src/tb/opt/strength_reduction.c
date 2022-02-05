@@ -2,34 +2,37 @@
 
 bool tb_opt_strength_reduction(TB_Function* f) {
 	int changes = 0;
-	for (TB_Register i = 1; i < f->nodes.count; i++) {
-		if (f->nodes.type[i] == TB_MUL) {
-			TB_Register a = f->nodes.payload[i].i_arith.a;
-			TB_Register b = f->nodes.payload[i].i_arith.b;
-			TB_DataType dt = f->nodes.dt[i];
+	
+	TB_Reg label = 1;
+	TB_FOR_EACH_NODE(n, f) {
+		TB_Reg i = n - f->nodes.data;
+		
+		if (n->type == TB_LABEL) {
+			label = i;
+		} else if (n->type == TB_MUL) {
+			TB_Node* a = &f->nodes.data[n->i_arith.a];
+			TB_Node* b = &f->nodes.data[n->i_arith.b];
+			TB_DataType dt = n->dt;
 			
-			if (f->nodes.type[b] == TB_SIGNED_CONST ||
-				f->nodes.type[b] == TB_UNSIGNED_CONST) {
-				uint64_t b_const = f->nodes.payload[b].u_const;
+			if (a->type == TB_SIGNED_CONST ||
+				b->type == TB_UNSIGNED_CONST) {
+				uint64_t b_const = b->uint.value;
 				
 				int log2 = tb_ffs(b_const) - 1;
 				if (b_const == (1 << log2)) {
 					// It's a power of two, swap in a left-shift
-					TB_Register new_op = i - 1;
-					tb_insert_op(f, new_op);
+					// just slap it right after the label
+					TB_Reg new_op = tb_function_insert_after(f, i);
 					
-					f->nodes.type[new_op] = TB_UNSIGNED_CONST;
-					f->nodes.dt[new_op] = dt;
-					f->nodes.payload[new_op] = (TB_RegPayload){
-						.u_const = log2
+					f->nodes.data[new_op].type = TB_UNSIGNED_CONST;
+					f->nodes.data[new_op].dt = dt;
+					f->nodes.data[new_op].uint = (struct TB_NodeUint){ log2 };
+					
+					n->type = TB_SHL;
+					n->i_arith = (struct TB_NodeIArith) {
+						.a = a - f->nodes.data,
+						.b = new_op
 					};
-					
-					// shift over `i` because it's infront of the insertion
-					i++;
-					
-					f->nodes.type[i] = TB_SHL;
-					f->nodes.payload[i].i_arith.a = a;
-					f->nodes.payload[i].i_arith.b = new_op;
 					changes++;
 				}
 			}

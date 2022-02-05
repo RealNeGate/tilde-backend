@@ -3,13 +3,13 @@
 #include "../tb_internal.h"
 
 typedef enum {
-	STACK_SLOT_COHERENCY_GOOD,
+	COHERENCY_GOOD,
 	
 	// failure states
-	STACK_SLOT_COHERENCY_USES_ADDRESS,
-	STACK_SLOT_COHERENCY_BAD_DATA_TYPE,
-	STACK_SLOT_COHERENCY_VOLATILE
-} StackSlotCoherency;
+	COHERENCY_USES_ADDRESS,
+	COHERENCY_BAD_DATA_TYPE,
+	COHERENCY_VOLATILE
+} Coherency;
 
 typedef struct Mem2Reg_Ctx {
 	TB_TemporaryStorage* tls;
@@ -19,13 +19,13 @@ typedef struct Mem2Reg_Ctx {
 	// Stack slots we're going to convert into
 	// SSA form
 	size_t to_promote_count;
-	TB_Register* to_promote;
+	TB_Reg* to_promote;
 	
 	// [to_promote_count][label_count]
-	TB_Register* current_def;
+	TB_Reg* current_def;
 	
 	// [to_promote_count][label_count]
-	TB_Register* incomplete_phis;
+	TB_Reg* incomplete_phis;
 	
 	// [label_count]
 	bool* sealed_blocks;
@@ -34,40 +34,11 @@ typedef struct Mem2Reg_Ctx {
 	int* pred_count;
 	// [label_count][pred_count[i]]
 	TB_Label** preds;
-	
-	// NOTE(NeGate): This is a system used to bind registers
-	// to another value so that if new registers are inserted
-	// you have a consistent lookup
-	int name_capacity, name_count;
-	TB_Register* names;
 } Mem2Reg_Ctx;
 
-static StackSlotCoherency tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_DataType* dt);
+static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_DataType* dt);
 
-static int bind_name(Mem2Reg_Ctx* restrict c, TB_Register r) {
-	assert(c->name_count+1 < c->name_capacity && "Ran out of names");
-	
-	int name = c->name_count++;
-	c->names[name] = r;
-	return name;
-}
-
-static TB_Register read_name(Mem2Reg_Ctx* restrict c, int name) {
-	assert(name < c->name_count);
-	return c->names[name];
-}
-
-static void unbind_name(Mem2Reg_Ctx* restrict c, int name) {
-	assert(name < c->name_count);
-	
-	// remove swap
-	c->name_count--;
-	if (c->name_count > 0) {
-		c->names[name] = c->names[c->name_count - 1];
-	}
-}
-
-static int get_variable_id(Mem2Reg_Ctx* restrict c, TB_Register r) {
+static int get_variable_id(Mem2Reg_Ctx* restrict c, TB_Reg r) {
 	// TODO(NeGate): Maybe we speed this up... maybe it doesn't matter :P
 	loop(i, c->to_promote_count) {
 		if (c->to_promote[i] == r) return (int)i;
@@ -82,51 +53,29 @@ static int get_variable_id(Mem2Reg_Ctx* restrict c, TB_Register r) {
 //
 // This doesn't really generate a PHI node, it just produces a NULL node which will
 // be mutated into a PHI node by the rest of the code.
-static TB_Register new_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Label block, TB_DataType dt) {
-	TB_Register label_reg = tb_find_reg_from_label(f, block);
+static TB_Reg new_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Label block, TB_DataType dt) {
+	TB_Reg label_reg = tb_find_reg_from_label(f, block);
 	
-	TB_Register new_phi_reg = label_reg + 1;
+	TB_Reg new_phi_reg = tb_function_insert_after(f, label_reg);
 	OPTIMIZER_LOG(new_phi_reg, "Insert new PHI node");
-	
-	tb_insert_op(f, new_phi_reg);
-	f->nodes.dt[new_phi_reg] = dt;
-	
-	// Update the register references
-	//
-	// TODO(NeGate): We don't update the to_promote list because it's hoisted to the entry label
-	// so they should always be infront of it.
-	loop(i, c->to_promote_count) {
-		if (c->to_promote[i] + 1 >= new_phi_reg) c->to_promote[i]++;
-	}
-	
-	loop(i, c->label_count * c->to_promote_count) {
-		if (c->current_def[i] + 1 >= new_phi_reg) c->current_def[i]++;
-	}
-	
-	loop(i, c->label_count * c->to_promote_count) {
-		if (c->incomplete_phis[i] + 1 >= new_phi_reg) c->incomplete_phis[i]++;
-	}
-	
-	loop(i, c->name_count) {
-		if (c->names[i] + 1 >= new_phi_reg) c->names[i]++;
-	}
+	f->nodes.data[new_phi_reg].dt = dt;
 	
 	return new_phi_reg;
 }
 
-static TB_Register read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_Label block);
-static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register phi_reg, TB_Label label, TB_Register reg);
-static TB_Register try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register phi_reg);
-static TB_Register add_phi_operands(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register phi_reg, TB_Label label, int var);
+static TB_Reg read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_Label block);
+static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg, TB_Label label, TB_Reg reg);
+static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg);
+static TB_Reg add_phi_operands(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg, TB_Label label, int var);
 
 ////////////////////////////////
 // Algorithm 1: Implementation of local value numbering
 ////////////////////////////////
-static void write_variable(Mem2Reg_Ctx* c, int var, TB_Label block, TB_Register value) {
+static void write_variable(Mem2Reg_Ctx* c, int var, TB_Label block, TB_Reg value) {
 	c->current_def[(var * c->label_count) + block] = value;
 }
 
-static TB_Register read_variable(Mem2Reg_Ctx* restrict c, int var, TB_Label block) {
+static TB_Reg read_variable(Mem2Reg_Ctx* restrict c, int var, TB_Label block) {
 	if (c->current_def[(var * c->label_count) + block] != 0) {
 		return c->current_def[(var * c->label_count) + block];
 	}
@@ -137,12 +86,12 @@ static TB_Register read_variable(Mem2Reg_Ctx* restrict c, int var, TB_Label bloc
 ////////////////////////////////
 // Algorithm 2: Implementation of global value numbering
 ////////////////////////////////
-static TB_Register read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_Label block) {
-	TB_Register val = 0;
+static TB_Reg read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_Label block) {
+	TB_Reg val = 0;
 	
 	if (!c->sealed_blocks[block]) {
 		// incomplete CFG
-		val = new_phi(c, c->f, block, c->f->nodes.dt[c->to_promote[var]]);
+		val = new_phi(c, c->f, block, c->f->nodes.data[c->to_promote[var]].dt);
 		c->incomplete_phis[(block * c->to_promote_count) + var] = val;
 	} else if (c->pred_count[block] == 0) {
 		// TODO(NeGate): Idk how to handle this ngl, i
@@ -153,7 +102,7 @@ static TB_Register read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_
 		val = read_variable(c, var, c->preds[block][0]);
 	} else {
 		// Break potential cycles with operandless phi
-		val = new_phi(c, c->f, block, c->f->nodes.dt[c->to_promote[var]]);
+		val = new_phi(c, c->f, block, c->f->nodes.data[c->to_promote[var]].dt);
 		write_variable(c, var, block, val);
 		val = add_phi_operands(c, c->f, val, block, var);
 	}
@@ -162,49 +111,45 @@ static TB_Register read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_
 	return val;
 }
 
-static TB_Register add_phi_operands(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register phi_reg, TB_Label block, int var) {
+static TB_Reg add_phi_operands(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg, TB_Label block, int var) {
 	// Determine operands from predecessors
-	int name = bind_name(c, phi_reg);
-	
 	loop(i, c->pred_count[block]) {
-		TB_Register val = read_variable(c, var, c->preds[block][i]);
+		TB_Reg val = read_variable(c, var, c->preds[block][i]);
 		
-		add_phi_operand(c, c->f, read_name(c, name), c->preds[block][i], val);
+		add_phi_operand(c, c->f, phi_reg, c->preds[block][i], val);
 	}
 	
-	TB_Register reg = try_remove_trivial_phi(c, c->f, read_name(c, name));
-	unbind_name(c, name);
-	
-	return reg;
+	return try_remove_trivial_phi(c, c->f, phi_reg);
 }
 
 // Algorithm 3: Detect and recursively remove a trivial phi function
-static TB_Register try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register phi_reg) {
+static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg) {
 	int op_count;
-	TB_Register operands[2];
+	TB_Reg operands[2];
 	
 	// Walk past any pass nodes
-	while (f->nodes.type[phi_reg] == TB_PASS) {
-		phi_reg = f->nodes.payload[phi_reg].pass;
+	TB_Node* phi_node = &f->nodes.data[phi_reg];
+	while (f->nodes.data[phi_reg].type == TB_PASS) {
+		phi_node = &f->nodes.data[phi_node->pass.value];
 	}
 	
 	// Get operands
-	if (f->nodes.type[phi_reg] == TB_NULL) {
+	if (phi_node->type == TB_NULL) {
 		return phi_reg;
-	} else if (f->nodes.type[phi_reg] == TB_PHI1) {
-		TB_Register a = f->nodes.payload[phi_reg].phi1.a;
+	} else if (phi_node->type == TB_PHI1) {
+		TB_Reg a = phi_node->phi1.a;
 		
 		op_count = 1;
-		operands[0] = f->nodes.payload[phi_reg].phi1.a;
-	} else if (f->nodes.type[phi_reg] == TB_PHI2) {
+		operands[0] = phi_node->phi1.a;
+	} else if (phi_node->type == TB_PHI2) {
 		OPTIMIZER_LOG(phi_reg, "  removing PHI (no divergence)");
 		
 		op_count = 2;
-		operands[0] = f->nodes.payload[phi_reg].phi2.a;
-		operands[1] = f->nodes.payload[phi_reg].phi2.b;
+		operands[0] = phi_node->phi2.a;
+		operands[1] = phi_node->phi2.b;
 	} else tb_todo();
 	
-	TB_Register same = TB_NULL_REG;
+	TB_Reg same = TB_NULL_REG;
 	loop(i, op_count) {
 		// Unique value or self−reference
 		if (operands[i] == phi_reg || operands[i] == same) continue;
@@ -220,18 +165,15 @@ static TB_Register try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* 
 		return same;
 	}
 	
-	TB_Register* uses = tb_tls_push(c->tls, f->nodes.count * sizeof(TB_Register));
-	int use_count = tb_find_uses(f, phi_reg, uses);
+	TB_Reg* uses = tb_tls_push(c->tls, f->nodes.count * sizeof(TB_Reg));
+	int use_count = tb_function_find_uses_of_node(f, phi_reg, uses);
 	
 	// trim the memory to avoid wasting too much
 	tb_tls_restore(c->tls, &uses[use_count]);
 	
 	// replace all references
-	f->nodes.type[phi_reg] = TB_PASS;
-	f->nodes.dt[phi_reg] = f->nodes.dt[same];
-	f->nodes.payload[phi_reg] = (TB_RegPayload){
-		.pass = same
-	};
+	phi_node->type = TB_PASS;
+	phi_node->pass.value = same;
 	
 	// Try to recursively remove all phi users, which might have become trivial
 	loop(i, use_count) if (uses[i] == phi_reg) {
@@ -241,7 +183,7 @@ static TB_Register try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* 
 	return same;
 }
 
-static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register phi_reg, TB_Label label, TB_Register reg) {
+static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg, TB_Label label, TB_Reg reg) {
 	assert(reg >= 1 && reg < f->nodes.count);
 	//assert(f->nodes.type[reg] != TB_NULL);
 	//assert(f->nodes.dt[reg].type != TB_VOID);
@@ -249,39 +191,36 @@ static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Register
 	
 	// we're using NULL nodes as the baseline PHI0
 	OPTIMIZER_LOG(phi_reg, "  adding r%d to PHI", reg);
+	TB_Node* phi_node = &f->nodes.data[phi_reg];
 	
-	if (f->nodes.type[phi_reg] == TB_NULL) {
-		f->nodes.type[phi_reg] = TB_PHI1;
-		f->nodes.dt[phi_reg] = f->nodes.dt[reg];
-		f->nodes.payload[phi_reg] = (TB_RegPayload){
-			.phi1 = {
-				.a_label = tb_find_reg_from_label(f, label),
-				.a = reg
-			}
+	if (phi_node->type == TB_NULL) {
+		phi_node->type = TB_PHI1;
+		phi_node->dt = f->nodes.data[reg].dt;
+		phi_node->phi1 = (struct TB_NodePhi1){
+			.a_label = tb_find_reg_from_label(f, label),
+			.a = reg
 		};
-	} else if (f->nodes.type[phi_reg] == TB_PHI1) {
-		TB_Register a_label = f->nodes.payload[phi_reg].phi1.a_label;
-		TB_Register a = f->nodes.payload[phi_reg].phi1.a;
+	} else if (phi_node->type == TB_PHI1) {
+		TB_Reg a_label = phi_node->phi1.a_label;
+		TB_Reg a = phi_node->phi1.a;
 		
-		f->nodes.type[phi_reg] = TB_PHI2;
-		f->nodes.dt[phi_reg] = f->nodes.dt[a];
-		f->nodes.payload[phi_reg] = (TB_RegPayload){
-			.phi2 = {
-				.a_label = a_label,
-				.a = a,
-				.b_label = tb_find_reg_from_label(f, label),
-				.b = reg
-			}
+		phi_node->type = TB_PHI2;
+		phi_node->dt = f->nodes.data[a].dt;
+		phi_node->phi2 = (struct TB_NodePhi2){
+			.a_label = a_label,
+			.a = a,
+			.b_label = tb_find_reg_from_label(f, label),
+			.b = reg
 		};
 	} else {
-		assert(0 && "Setup PHIN nodes");
+		tb_panic("Setup PHIN nodes");
 	}
 }
 
 // Algorithm 4: Handling incomplete CFGs
 static void seal_block(Mem2Reg_Ctx* restrict c, TB_Label block) {
 	loop(i, c->to_promote_count) {
-		TB_Register phi_reg = c->incomplete_phis[(block * c->to_promote_count) + i];
+		TB_Reg phi_reg = c->incomplete_phis[(block * c->to_promote_count) + i];
 		if (phi_reg) add_phi_operands(c, c->f, phi_reg, block, i);
 	}
 	
@@ -297,29 +236,39 @@ bool tb_opt_mem2reg(TB_Function* f) {
 	// Decide which stack slots to promote
 	////////////////////////////////
 	size_t to_promote_count = 0;
-	TB_Register* to_promote = tb_tls_push(tls, 0);
+	TB_Reg* to_promote = tb_tls_push(tls, 0);
 	
-	TB_Register entry_terminator = f->nodes.payload[1].label.terminator;
-	loop(i, entry_terminator) {
-		if (f->nodes.type[i] == TB_LOCAL || f->nodes.type[i] == TB_PARAM_ADDR) {
+	TB_Node* entry_terminator = &f->nodes.data[f->nodes.data[1].label.terminator];
+	for (TB_Node* n = &f->nodes.data[1]; n != entry_terminator; n = &f->nodes.data[n->next]) {
+		TB_Reg i = n - f->nodes.data;
+		
+		if (n->type == TB_LOCAL || n->type == TB_PARAM_ADDR) {
 			TB_DataType dt;
-			StackSlotCoherency coherence = tb_is_stack_slot_coherent(f, i, &dt);
+			Coherency coherence = tb_get_stack_slot_coherency(f, i, &dt);
 			
-			if (coherence == STACK_SLOT_COHERENCY_GOOD) {
-				*((TB_Register*)tb_tls_push(tls, sizeof(TB_Register))) = i;
-				to_promote_count++;
-				
-				f->nodes.dt[i] = dt;
-				
-				OPTIMIZER_LOG(i, "promoting to IR register");
-			} else if (coherence == STACK_SLOT_COHERENCY_VOLATILE) {
-				OPTIMIZER_LOG(i, "could not mem2reg a stack slot (volatile load/store)");
-			} else if (coherence == STACK_SLOT_COHERENCY_USES_ADDRESS) {
-				OPTIMIZER_LOG(i, "could not mem2reg a stack slot (uses pointer arithmatic)");
-			} else if (coherence == STACK_SLOT_COHERENCY_BAD_DATA_TYPE) {
-				OPTIMIZER_LOG(i, "could not mem2reg a stack slot (data type is too inconsistent)");
-			} else {
-				assert(0 && "unknown stack coherence mode");
+			switch (coherence) {
+				case COHERENCY_GOOD: {
+					*((TB_Reg*)tb_tls_push(tls, sizeof(TB_Reg))) = i;
+					to_promote_count++;
+					
+					n->dt = dt;
+					
+					OPTIMIZER_LOG(i, "promoting to IR register");
+					break;
+				}
+				case COHERENCY_VOLATILE: {
+					OPTIMIZER_LOG(i, "could not mem2reg a stack slot (volatile load/store)");
+					break;
+				}
+				case COHERENCY_USES_ADDRESS: {
+					OPTIMIZER_LOG(i, "could not mem2reg a stack slot (uses pointer arithmatic)");
+					break;
+				}
+				case COHERENCY_BAD_DATA_TYPE: {
+					OPTIMIZER_LOG(i, "could not mem2reg a stack slot (data type is too inconsistent)");
+					break;
+				}
+				default: tb_todo();
 			}
 		}
 	}
@@ -337,19 +286,15 @@ bool tb_opt_mem2reg(TB_Function* f) {
 	c.to_promote = to_promote;
 	
 	c.label_count = f->label_count;
-	c.current_def = tb_tls_push(tls, to_promote_count * c.label_count * sizeof(TB_Register));
-	memset(c.current_def, 0, to_promote_count * c.label_count * sizeof(TB_Register));
+	c.current_def = tb_tls_push(tls, to_promote_count * c.label_count * sizeof(TB_Reg));
+	memset(c.current_def, 0, to_promote_count * c.label_count * sizeof(TB_Reg));
 	
-	c.incomplete_phis = tb_tls_push(tls, to_promote_count * c.label_count * sizeof(TB_Register));
-	memset(c.incomplete_phis, 0, to_promote_count * c.label_count * sizeof(TB_Register));
+	c.incomplete_phis = tb_tls_push(tls, to_promote_count * c.label_count * sizeof(TB_Reg));
+	memset(c.incomplete_phis, 0, to_promote_count * c.label_count * sizeof(TB_Reg));
 	
 	// TODO(NeGate): Maybe we should bitpack this?
 	c.sealed_blocks = tb_tls_push(tls, c.label_count * sizeof(bool));
 	memset(c.sealed_blocks, 0, c.label_count * sizeof(bool));
-	
-	c.name_count = 0;
-	c.name_capacity = 1024;
-	c.names = tb_tls_push(tls, 1024 * sizeof(TB_Register));
 	
 	// Calculate all the immediate predecessors
 	// First BB has no predecessors
@@ -368,48 +313,49 @@ bool tb_opt_mem2reg(TB_Function* f) {
 	}
 	
 	TB_Label block = 0;
-	TB_Register j = 1;
-	while (j < f->nodes.count) {
-		TB_RegType reg_type = f->nodes.type[j];
-		TB_RegPayload p = f->nodes.payload[j];
+	TB_FOR_EACH_NODE(n, f) {
+		TB_Reg i = n - f->nodes.data;
 		
-		if (reg_type == TB_LABEL) {
-			int preds_done = c.label_count;
-			
-			block = p.label.id;
-		} else if (reg_type == TB_LOCAL) {
-			int var = get_variable_id(&c, j);
-			if (var >= 0) tb_kill_op(f, j);
-		} else if (reg_type == TB_PARAM_ADDR) {
-			// Parameter stack slots map to parameter registers
-			// so we need to tell mem2reg about that.
-			int var = get_variable_id(&c, j);
-			if (var >= 0) {
-				write_variable(&c, var, block, f->nodes.payload[j].param_addr.param);
-				tb_kill_op(f, j);
+		switch (n->type) {
+			case TB_LABEL: {
+				block = n->label.id;
+				break;
 			}
-		} else if (reg_type == TB_LOAD) {
-			int var = get_variable_id(&c, p.load.address);
-			if (var >= 0) {
-				int name = bind_name(&c, j);
-				
-				TB_Register value = read_variable(&c, var, block);
-				assert(value);
-				
-				TB_Register k = read_name(&c, name);
-				f->nodes.type[k] = TB_PASS;
-				f->nodes.payload[k].pass = value;
-				unbind_name(&c, name);
+			case TB_LOCAL: {
+				int var = get_variable_id(&c, i);
+				if (var >= 0) tb_kill_op(f, i);
+				break;
 			}
-		} else if (reg_type == TB_STORE) {
-			int var = get_variable_id(&c, p.store.address);
-			if (var >= 0) {
-				tb_kill_op(f, j);
-				write_variable(&c, var, block, p.store.value);
+			case TB_PARAM_ADDR: {
+				// Parameter stack slots map to parameter registers
+				// so we need to tell mem2reg about that.
+				int var = get_variable_id(&c, i);
+				if (var >= 0) {
+					write_variable(&c, var, block, n->param_addr.param);
+					tb_kill_op(f, i);
+				}
+				break;
+			}
+			case TB_LOAD: {
+				int var = get_variable_id(&c, n->load.address);
+				if (var >= 0) {
+					TB_Reg value = read_variable(&c, var, block);
+					assert(value);
+					
+					n->type = TB_PASS;
+					n->pass.value = value;
+				}
+				break;
+			}
+			case TB_STORE: {
+				int var = get_variable_id(&c, n->store.address);
+				if (var >= 0) {
+					tb_kill_op(f, i);
+					write_variable(&c, var, block, n->store.value);
+				}
+				break;
 			}
 		}
-		
-		j++;
 	}
 	
 	loop(j, c.label_count) {
@@ -423,13 +369,20 @@ bool tb_opt_mem2reg(TB_Function* f) {
 // the same type and alignment along with not needing any address usage.
 //
 // TODO(NeGate): This might get slow...
-static StackSlotCoherency tb_is_stack_slot_coherent(TB_Function* f, TB_Register address, TB_DataType* out_dt) {
+static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_DataType* out_dt) {
 	// if there's a difference between the times we want the value and the
 	// times we want the address, then some address calculations are being done
 	// and thus we can't mem2reg
 	int use_count = 0;
-#define X(reg) if (reg == address) use_count += 1
-	FOR_EACH_REGISTER_IN_FUNC(X)
+	
+#define X(reg) if (reg == address) use_count += 1;
+	TB_FOR_EACH_NODE(n, f) {
+		TB_Reg i = (n - f->nodes.data);
+		switch (n->type) {
+			TB_FOR_EACH_REG_IN_NODE(X);
+			default: tb_todo();
+		}
+	}
 #undef X
 	
 	int value_based_use_count = 0;
@@ -437,28 +390,26 @@ static StackSlotCoherency tb_is_stack_slot_coherent(TB_Function* f, TB_Register 
 	// pick the first load/store and use that as the baseline
 	TB_DataType dt = TB_TYPE_VOID;
 	bool initialized = false;
-	loop_range(i, address, f->nodes.count) {
-		TB_RegType type = f->nodes.type[i];
-		TB_RegPayload* restrict p = &f->nodes.payload[i];
+	for (TB_Node* n = &f->nodes.data[address]; n != &f->nodes.data[0]; n = &f->nodes.data[n->next]) {
+		static_assert(offsetof(TB_Node, load.address) == offsetof(TB_Node, store.address),
+					  "TB_Node::load.address == TB_Node::store.address");
 		
-		if (f->nodes.type[i] == TB_LOAD && p->load.address == address) {
-			value_based_use_count += 1;
-			if (p->load.is_volatile) return STACK_SLOT_COHERENCY_VOLATILE;
-			
-			if (!initialized) dt = f->nodes.dt[i];
-			else if (!TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[i])) return STACK_SLOT_COHERENCY_BAD_DATA_TYPE;
-		} else if (f->nodes.type[i] == TB_STORE && p->store.address == address) {
+		if ((n->type == TB_LOAD || n->type == TB_STORE) && n->load.address == address) {
 			value_based_use_count += 1;
 			
-			if (p->store.is_volatile) return STACK_SLOT_COHERENCY_VOLATILE;
-			
-			if (!initialized) dt = f->nodes.dt[i];
-			else if (!TB_DATA_TYPE_EQUALS(dt, f->nodes.dt[i])) return STACK_SLOT_COHERENCY_BAD_DATA_TYPE;
+			if (n->load.is_volatile) {
+				return COHERENCY_VOLATILE;
+			} else {
+				if (!initialized) dt = n->dt;
+				else if (!TB_DATA_TYPE_EQUALS(dt, n->dt)) return COHERENCY_BAD_DATA_TYPE;
+			}
+		}
+		
+		if (value_based_use_count != use_count) {
+			return COHERENCY_USES_ADDRESS;
 		}
 	}
 	
-	if (value_based_use_count != use_count) return STACK_SLOT_COHERENCY_USES_ADDRESS;
-	
 	*out_dt = dt;
-	return STACK_SLOT_COHERENCY_GOOD;
+	return COHERENCY_GOOD;
 }

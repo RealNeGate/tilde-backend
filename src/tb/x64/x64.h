@@ -110,8 +110,8 @@ typedef struct LabelPatch {
 } LabelPatch;
 
 typedef struct PhiValue {
-	TB_Register reg;
-	TB_Register storage_a, storage_b;
+	TB_Reg reg;
+	TB_Reg storage_a, storage_b;
 	
 	// if it's not 0, then at termination, we need 
 	// to reload into the 'value'
@@ -120,7 +120,7 @@ typedef struct PhiValue {
 } PhiValue;
 
 typedef struct StackSlot {
-	TB_Register reg;
+	TB_Reg reg;
 	int32_t pos;
 	GPR gpr : 8;
 	XMM xmm : 8;
@@ -135,13 +135,13 @@ typedef struct Ctx {
 	size_t function_id;
 	TB_Function* f;
 	
-	TB_Register current_bb;
-	TB_Register current_bb_end;
+	TB_Reg current_bb;
+	TB_Reg current_bb_end;
 	
 	// used to schedule phi nodes in cases where some phi nodes
 	// depend on each other
 	size_t phi_queue_count;
-	TB_Register* phi_queue;
+	TB_Node** phi_queue;
 	
 	// Patch info
 	uint32_t label_patch_count;
@@ -149,7 +149,7 @@ typedef struct Ctx {
 	uint32_t* labels;
 	LabelPatch* label_patches;
 	
-	TB_Register* use_count;
+	TB_Reg* use_count;
 	uint8_t* should_share;
 	PhiValue* phis;
 	ReturnPatch* ret_patches;
@@ -169,7 +169,7 @@ typedef struct Ctx {
 	// XMM is the top 32bit
 	uint64_t regs_to_save;
 	
-	TB_Register last_fence;
+	TB_Reg last_fence;
 	
 	// allows for eval with compares to return FLAGS
 	bool is_if_statement_next;
@@ -401,23 +401,23 @@ inline static bool is_value_match(const Val* a, const Val* b) {
 
 #define patch4(p, b) (*((uint32_t*) &ctx->start_out[p]) = (b))
 
-static bool is_address_node(TB_RegType t);
+static bool is_address_node(TB_NodeTypeEnum t);
 
-static Val eval_addressof(Ctx* ctx, TB_Function* f, TB_Register r);
-static Val eval_rvalue(Ctx* ctx, TB_Function* f, TB_Register r);
+static Val eval_addressof(Ctx* ctx, TB_Function* f, TB_Reg r);
+static Val eval_rvalue(Ctx* ctx, TB_Function* f, TB_Reg r);
 
 // returns true if we have the register is free now
 static bool evict_gpr(Ctx* restrict ctx, TB_Function* f, GPR g);
 static bool evict_xmm(Ctx* restrict ctx, TB_Function* f, XMM x);
 
-static PhiValue* find_phi(Ctx* ctx, TB_Register r);
-static bool is_phi_that_contains(TB_Function* f, TB_Register phi, TB_Register reg);
+static PhiValue* find_phi(Ctx* ctx, TB_Reg r);
+static bool is_phi_that_contains(TB_Function* f, TB_Reg phi, TB_Reg reg);
 
-static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, TB_Register bound, TB_Register bb, TB_Register bb_end);
-static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register start, TB_Register end);
+static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, TB_Reg bound, TB_Reg bb, TB_Reg bb_end);
+static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Reg start, TB_Reg end, bool dont_handle_last_node);
 
 static int get_data_type_size(const TB_DataType dt);
-static bool should_rematerialize(TB_RegType t);
+static bool should_rematerialize(TB_NodeTypeEnum t);
 
 // used to add patches since there's separate arrays per thread
 static thread_local size_t s_local_thread_id;

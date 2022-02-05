@@ -1,6 +1,9 @@
 #include "../tb_internal.h"
 
 bool tb_opt_deshort_circuit(TB_Function* f) {
+	return false;
+	
+#if 0
 	TB_TemporaryStorage* tls = tb_tls_allocate();
     
 	// Calculate all the immediate predecessors
@@ -27,11 +30,11 @@ bool tb_opt_deshort_circuit(TB_Function* f) {
 	loop_range(i, 1, f->label_count) if (pred_count[i] == 1) {
 		// TODO(NeGate): We're paying a hefty performance cost by calling
 		// tb_find_reg_from_label so much... ish
-		TB_Register self = tb_find_reg_from_label(f, i);
-		TB_Register self_terminator = f->nodes.payload[self].label.terminator;
+		TB_Reg self = tb_find_reg_from_label(f, i);
+		TB_Reg self_terminator = f->nodes.payload[self].label.terminator;
 		
-		TB_Register parent = tb_find_reg_from_label(f, preds[i][0]);
-		TB_Register parent_terminator = f->nodes.payload[parent].label.terminator;
+		TB_Reg parent = tb_find_reg_from_label(f, preds[i][0]);
+		TB_Reg parent_terminator = f->nodes.payload[parent].label.terminator;
 		
 		// we want simple IFs
 		if (f->nodes.type[self_terminator] != TB_IF) continue;
@@ -51,8 +54,8 @@ bool tb_opt_deshort_circuit(TB_Function* f) {
 		if (has_side_effects) continue;
 		
 		// We're ready to join the conditions
-		TB_Register cond1 = f->nodes.payload[self_terminator].if_.cond;
-		TB_Register cond2 = f->nodes.payload[parent_terminator].if_.cond;
+		TB_Reg cond1 = f->nodes.payload[self_terminator].if_.cond;
+		TB_Reg cond2 = f->nodes.payload[parent_terminator].if_.cond;
 		
 		// NOTE(NeGate): These actually don't change i still store them
 		// because the terminator might be shifted around.
@@ -65,7 +68,7 @@ bool tb_opt_deshort_circuit(TB_Function* f) {
 		f->nodes.payload[parent_terminator].goto_.label = i;
 		
 		// insert register for new AND
-		TB_Register join_reg = self_terminator;
+		TB_Reg join_reg = self_terminator;
 		tb_insert_op(f, join_reg);
 		
 		// We update the register references we're still using
@@ -91,4 +94,5 @@ bool tb_opt_deshort_circuit(TB_Function* f) {
 	}
 	
 	return 0;
+#endif
 }

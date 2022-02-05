@@ -22,11 +22,11 @@ static const char* GPR_NAMES[] = {
 #endif
 
 static int get_data_type_size(const TB_DataType dt);
-static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, TB_Register bb_end);
-static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const Val* dst, TB_Register r, TB_Register dst_reg, TB_Register val_reg);
+static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Reg bb_end);
+static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const Val* dst, TB_Reg r, TB_Reg dst_reg, TB_Reg val_reg);
 
 // Just handles the PHI nodes that we'll encounter when leaving `from` into `to`
-static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_Register from_terminator, TB_Register to, TB_Register to_terminator);
+static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Reg from, TB_Reg from_terminator, TB_Reg to, TB_Reg to_terminator);
 
 typedef struct FunctionTally {
 	size_t memory_usage;
@@ -45,28 +45,8 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 	size_t label_patch_count = 0;
 	size_t line_info_count = 0;
 	
-#if TB_HOST_ARCH == TB_HOST_X86_64
-#define COUNT_OF_TYPE_IN_M128(t) tb_popcount(_mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(t))))
-	
-	// the node types are aligned to a cache line so we could in theory
-	// grab up to 64bytes aligned without UB
-	for (size_t i = 0; i < f->nodes.count; i += 16) {
-		__m128i bytes = _mm_load_si128((__m128i*)&f->nodes.type[i]);
-		
-		phi_count += COUNT_OF_TYPE_IN_M128(TB_PHI2);
-		locals_count += COUNT_OF_TYPE_IN_M128(TB_LOCAL);
-		
-		return_count += COUNT_OF_TYPE_IN_M128(TB_RET);
-		
-		label_patch_count += COUNT_OF_TYPE_IN_M128(TB_GOTO);
-		label_patch_count += COUNT_OF_TYPE_IN_M128(TB_IF) * 2;
-		
-		line_info_count += COUNT_OF_TYPE_IN_M128(TB_LINE_INFO);
-	}
-#undef COUNT_OF_TYPE_IN_M128
-#else
-	loop(i, f->nodes.count) {
-		TB_RegType t = f->nodes.type[i];
+	TB_FOR_EACH_NODE(n, f) {
+		TB_NodeTypeEnum t = n->type;
 		
 		if (t == TB_PHI2) phi_count++;
 		else if (t == TB_RET) return_count++;
@@ -74,13 +54,9 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 		else if (t == TB_IF) label_patch_count += 2;
 		else if (t == TB_GOTO) label_patch_count++;
 		else if (t == TB_LINE_INFO) line_info_count++;
-	}
-#endif
-	
-	loop(i, f->nodes.count) if (f->nodes.type[i] == TB_SWITCH) {
-		const TB_RegPayload* p = &f->nodes.payload[i];
-		
-		label_patch_count += 1 + ((p->switch_.entries_end - p->switch_.entries_start) / 2);
+		else if (t == TB_SWITCH) {
+			label_patch_count += 1 + ((n->switch_.entries_end - n->switch_.entries_start) / 2);
+		}
 	}
 	
 	// parameters are locals too... ish
@@ -94,11 +70,11 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 	tally = (tally + align_mask) & ~align_mask;
 	
 	// use_count
-	tally += f->nodes.count * sizeof(TB_Register);
+	tally += f->nodes.count * sizeof(TB_Reg);
 	tally = (tally + align_mask) & ~align_mask;
 	
 	// intervals
-	tally += f->nodes.count * sizeof(TB_Register);
+	tally += f->nodes.count * sizeof(TB_Reg);
 	tally = (tally + align_mask) & ~align_mask;
 	
 	// phis
@@ -106,7 +82,7 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 	tally = (tally + align_mask) & ~align_mask;
 	
 	// phi_queue
-	tally += phi_count * sizeof(TB_Register);
+	tally += phi_count * sizeof(TB_Reg);
 	tally = (tally + align_mask) & ~align_mask;
 	
 	// labels
@@ -154,10 +130,10 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 			
 			ctx = calloc(1, ctx_size);
 			
-			ctx->use_count = malloc(f->nodes.count * sizeof(TB_Register));
+			ctx->use_count = malloc(f->nodes.count * sizeof(TB_Reg));
 			ctx->phis = malloc(tally.phi_count * sizeof(PhiValue));
 			
-			ctx->phi_queue = malloc(tally.phi_count * sizeof(TB_Register));
+			ctx->phi_queue = malloc(tally.phi_count * sizeof(TB_Node*));
 			
 			ctx->labels = malloc(f->label_count * sizeof(uint32_t));
 			ctx->label_patches = malloc(tally.label_patch_count * sizeof(LabelPatch));
@@ -169,10 +145,10 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 			// data, not the tree nodes
 			memset(ctx, 0, sizeof(Ctx));
 			
-			ctx->use_count = tb_tls_push(tls, f->nodes.count * sizeof(TB_Register));
+			ctx->use_count = tb_tls_push(tls, f->nodes.count * sizeof(TB_Reg));
 			ctx->phis = tb_tls_push(tls, tally.phi_count * sizeof(PhiValue));
 			
-			ctx->phi_queue = tb_tls_push(tls, tally.phi_count * sizeof(TB_Register));
+			ctx->phi_queue = tb_tls_push(tls, tally.phi_count * sizeof(TB_Node*));
 			
 			ctx->labels = tb_tls_push(tls, f->label_count * sizeof(uint32_t));
 			ctx->label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch));
@@ -194,34 +170,33 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 	////////////////////////////////
 	// Analyze function for stack, live intervals and phi nodes
 	////////////////////////////////
-	// calculate the maximum parameter usage for a call
+	ctx->regs_to_save = 0;
+	
+	tb_function_calculate_use_count(f, ctx->use_count);
+	
+	// Create phi lookup table for later evaluation stages
+	// and calculate the maximum parameter usage for a call
 	size_t caller_usage = 0;
-	loop(i, f->nodes.count) {
-		if (f->nodes.type[i] == TB_CALL ||
-			f->nodes.type[i] == TB_ECALL ||
-			f->nodes.type[i] == TB_VCALL) {
-			int param_usage = CALL_NODE_PARAM_COUNT(f, i);
+	TB_FOR_EACH_NODE(n, f) {
+		if (n->type == TB_PHI2) {
+			ctx->phis[ctx->phi_count++] = (PhiValue){
+				.reg = n - f->nodes.data,
+				.storage_a = n->phi2.a,
+				.storage_b = n->phi2.b
+			};
+		} else if (n->type == TB_CALL ||
+				   n->type == TB_ECALL ||
+				   n->type == TB_VCALL) {
+			int param_usage = CALL_NODE_PARAM_COUNT(n);
 			if (caller_usage < param_usage) {
 				caller_usage = param_usage;
 			}
 		}
 	}
-	ctx->regs_to_save = 0;
 	
 	// On Win64 if we have at least one parameter in any of it's calls, the
 	// caller must reserve 32bytes called the shadow space.
 	if (!ctx->is_sysv && caller_usage > 0 && caller_usage < 4) caller_usage = 4;
-	
-	tb_find_use_count(f, ctx->use_count);
-	
-	// Create phi lookup table for later evaluation stages
-	FOR_EACH_NODE(i, f, TB_PHI2, {
-					  ctx->phis[ctx->phi_count++] = (PhiValue){
-						  .reg = i,
-						  .storage_a = f->nodes.payload[i].phi2.a,
-						  .storage_b = f->nodes.payload[i].phi2.b
-					  };
-				  });
 	
 	// Reserve stack and base pointer
 	ctx->gpr_allocator |= 1u << RSP;
@@ -289,16 +264,18 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 	bool saves_parameters = false;
 	bool spills_params = false;
 	
-	loop(i, f->nodes.count) {
-		if (f->nodes.type[i] == TB_PARAM_ADDR) {
+	TB_FOR_EACH_NODE(n, f) {
+		TB_Reg i = n - f->nodes.data;
+		
+		if (n->type == TB_PARAM_ADDR) {
 			// having a PARAM_ADDR forces the parameter to spill onto the stack
-			TB_Register param = f->nodes.payload[i].param_addr.param;
+			TB_Reg param = n->param_addr.param;
 			
 			spill_reg(ctx, f, param);
 			spills_params = true;
-		} else if (f->nodes.type[i] == TB_LOCAL) {
-			uint32_t size = f->nodes.payload[i].local.size;
-			uint32_t align = f->nodes.payload[i].local.alignment;
+		} else if (n->type == TB_LOCAL) {
+			uint32_t size = n->local.size;
+			uint32_t align = n->local.alignment;
 			
 			ctx->stack_usage = align_up(ctx->stack_usage + size, align);
 			ctx->values[i] = val_stack(TB_TYPE_PTR, -ctx->stack_usage);
@@ -308,12 +285,16 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 	////////////////////////////////
 	// Evaluate each basic block
 	////////////////////////////////
-	TB_Register bb = 1;
+	TB_Reg bb = 1;
 	do {
-		assert(f->nodes.type[bb] == TB_LABEL);
-		TB_Label label_id = f->nodes.payload[bb].label.id;
-		TB_Register bb_end = f->nodes.payload[bb].label.terminator;
+		assert(f->nodes.data[bb].type == TB_LABEL);
+		TB_Node* start = &f->nodes.data[bb];
 		
+		TB_Reg bb_end = start->label.terminator;
+		TB_Node* end = &f->nodes.data[bb_end];
+		
+		// Define label position
+		TB_Label label_id = start->label.id;
 		ctx->labels[label_id] = code_pos();
 		
 #if !TB_STRIP_LABELS
@@ -325,24 +306,25 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 		
 		// Generate instructions from the side-effect nodes using
 		// all the other nodes and then terminate the basic block
-		if (bb < bb_end) eval_basic_block(ctx, f, bb, bb_end);
-		
-		// Evaluate the terminator
-		const TB_RegType reg_type = f->nodes.type[bb_end];
-		const TB_DataType dt = f->nodes.dt[bb_end];
-		const TB_RegPayload p = f->nodes.payload[bb_end];
+		eval_basic_block(ctx, f, bb, bb_end);
 		
 		// Resolve any leftover expressions which are used later
-		TB_Register next_label = bb_end + (reg_type == TB_LABEL ? 0 : 1);
-		if (ctx->last_fence != next_label) {
-			eval_compiler_fence(ctx, f, ctx->last_fence, next_label - 1);
-			ctx->last_fence = next_label;
+		TB_Node* next_bb = end;
+		if (end->type != TB_LABEL) next_bb = &f->nodes.data[next_bb->next];
+		
+		TB_Reg next_bb_reg = next_bb - f->nodes.data;
+		if (next_bb_reg && ctx->last_fence != next_bb_reg) {
+			eval_compiler_fence(ctx, f, ctx->last_fence, next_bb_reg, true);
+			ctx->last_fence = next_bb_reg;
 		}
 		
-		if (reg_type == TB_RET) {
+		// Evaluate the terminator
+		if (end->type == TB_RET) {
+			TB_DataType dt = end->dt;
+			
 			// Evaluate return value
-			if (p.ret.value) {
-				Val value = eval_rvalue(ctx, f, p.ret.value);
+			if (end->ret.value) {
+				Val value = eval_rvalue(ctx, f, end->ret.value);
 				
 				if (TB_IS_FLOAT_TYPE(dt.type) || dt.width) {
 					// Float results use XMM0
@@ -379,36 +361,36 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 			}
 			
 			// Only jump if we aren't literally about to end the function
-			if (bb_end + 1 != f->nodes.count) {
+			if (next_bb != &f->nodes.data[0]) {
 				ctx->ret_patches[ctx->ret_patch_count++] = code_pos() + 1;
 				
 				emit(0xE9);
 				emit4(0x0);
 			}
-		} else if (reg_type == TB_IF) {
-			TB_Label if_true = p.if_.if_true;
-			TB_Label if_false = p.if_.if_false;
+		} else if (end->type == TB_IF) {
+			TB_Label if_true = end->if_.if_true;
+			TB_Label if_false = end->if_.if_false;
 			
 			// Save out PHI nodes
 			{
-				TB_Register if_true_reg = tb_find_reg_from_label(f, if_true);
-				TB_Register if_false_reg = tb_find_reg_from_label(f, if_false);
+				TB_Reg if_true_reg = tb_find_reg_from_label(f, if_true);
+				TB_Reg if_false_reg = tb_find_reg_from_label(f, if_false);
 				
-				TB_Register if_true_reg_end = f->nodes.payload[if_true_reg].label.terminator;
-				TB_Register if_false_reg_end = f->nodes.payload[if_false_reg].label.terminator;
+				TB_Reg if_true_reg_end = f->nodes.data[if_true_reg].label.terminator;
+				TB_Reg if_false_reg_end = f->nodes.data[if_false_reg].label.terminator;
 				
 				eval_terminator_phis(ctx, f, bb, bb_end, if_true_reg, if_true_reg_end);
 				eval_terminator_phis(ctx, f, bb, bb_end, if_false_reg, if_false_reg_end);
 			}
 			
 			ctx->is_if_statement_next = true;
-			Val cond = eval(ctx, f, p.if_.cond, true);
+			Val cond = eval(ctx, f, end->if_.cond, true);
 			ctx->is_if_statement_next = false;
 			
 			if (cond.type == VAL_IMM) {
 				TB_Label dst = (cond.imm ? if_true : if_false);
 				
-				if (dst != f->nodes.payload[bb_end + 1].label.id) jmp(ctx, dst);
+				if (dst != next_bb->label.id) jmp(ctx, dst);
 			} else {
 				// Implicit convert into FLAGS
 				if (cond.dt.type == TB_BOOL) cond.dt.type = TB_I8;
@@ -426,8 +408,8 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 				
 				// Reorder the targets to avoid an extra JMP
 				TB_Label fallthrough_label = 0;
-				if (bb_end + 1 < f->nodes.count) {
-					fallthrough_label = f->nodes.payload[bb_end + 1].label.id;
+				if (next_bb != &f->nodes.data[0]) {
+					fallthrough_label = next_bb->label.id;
 				}
 				bool has_fallthrough = fallthrough_label == if_false;
 				
@@ -447,38 +429,39 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 				jcc(ctx, cc, if_true);
 				if (!has_fallthrough) jmp(ctx, if_false);
 			}
-		} else if (reg_type == TB_GOTO) {
+		} else if (end->type == TB_GOTO) {
 			// TODO(NeGate): save out any phi nodes
-			assert(f->nodes.type[bb_end + 1] == TB_LABEL);
+			assert(next_bb->type == TB_LABEL);
 			
-			TB_Label target_label = f->nodes.payload[bb_end].goto_.label;
-			TB_Register target = tb_find_reg_from_label(f, target_label);
-			TB_Register target_end = f->nodes.payload[target].label.terminator;
+			TB_Label target_label = end->goto_.label;
+			
+			TB_Reg target = tb_find_reg_from_label(f, target_label);
+			TB_Reg target_end = f->nodes.data[target].label.terminator;
 			
 			eval_terminator_phis(ctx, f, bb, bb_end, target, target_end);
 			
-			TB_Label fallthrough_label = f->nodes.payload[bb_end + 1].label.id;
-			if (fallthrough_label != p.goto_.label) jmp(ctx, p.goto_.label);
-		} else if (reg_type == TB_LABEL) {
+			TB_Label fallthrough_label = next_bb->label.id;
+			if (fallthrough_label != end->goto_.label) jmp(ctx, end->goto_.label);
+		} else if (end->type == TB_LABEL) {
 			// simple fallthrough
 			// TODO(NeGate): save out any phi nodes
-			TB_Register next_terminator = f->nodes.payload[bb_end].label.terminator;
+			TB_Reg next_terminator = end->label.terminator;
 			
 			eval_terminator_phis(ctx, f, bb, bb_end, bb_end, next_terminator);
-		} else if (reg_type == TB_TRAP) {
+		} else if (end->type == TB_TRAP) {
 			// ud2
 			emit(0x0F); 
 			emit(0x0B);
-		} else if (reg_type == TB_SWITCH) {
-			static_assert(_Alignof(TB_SwitchEntry) == _Alignof(TB_Register), "We don't want any unaligned accesses");
+		} else if (end->type == TB_SWITCH) {
+			static_assert(_Alignof(TB_SwitchEntry) == _Alignof(TB_Reg), "We don't want any unaligned accesses");
 			
-			Val key = eval(ctx, f, p.switch_.key, true);
+			Val key = eval(ctx, f, end->switch_.key, true);
 			if (key.type == VAL_IMM) {
-				size_t entry_count = (p.switch_.entries_end - p.switch_.entries_start) / 2;
+				size_t entry_count = (end->switch_.entries_end - end->switch_.entries_start) / 2;
 				
-				TB_Label target_label = p.switch_.default_label;
+				TB_Label target_label = end->switch_.default_label;
 				loop(i, entry_count) {
-					TB_SwitchEntry* entry = (TB_SwitchEntry*) &f->vla.data[p.switch_.entries_start + (i * 2)];
+					TB_SwitchEntry* entry = (TB_SwitchEntry*) &f->vla.data[end->switch_.entries_start + (i * 2)];
 					
 					if (entry->key == key.imm) {
 						target_label = entry->value;
@@ -486,11 +469,11 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 					}
 				}
 				
-				TB_Register target = tb_find_reg_from_label(f, target_label);
-				TB_Register target_end = f->nodes.payload[target].label.terminator;
+				TB_Reg target = tb_find_reg_from_label(f, target_label);
+				TB_Reg target_end = f->nodes.data[target].label.terminator;
 				eval_terminator_phis(ctx, f, bb, bb_end, target, target_end);
 				
-				TB_Label fallthrough_label = f->nodes.payload[bb_end + 1].label.id;
+				TB_Label fallthrough_label = next_bb->label.id;
 				if (fallthrough_label != target) {
 					jmp(ctx, target_label);
 				}
@@ -512,9 +495,9 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 				// CMP key, 10
 				// JE .case10
 				// JMP .default
-				size_t entry_count = (p.switch_.entries_end - p.switch_.entries_start) / 2;
+				size_t entry_count = (end->switch_.entries_end - end->switch_.entries_start) / 2;
 				loop(i, entry_count) {
-					TB_SwitchEntry* entry = (TB_SwitchEntry*) &f->vla.data[p.switch_.entries_start + (i * 2)];
+					TB_SwitchEntry* entry = (TB_SwitchEntry*) &f->vla.data[end->switch_.entries_start + (i * 2)];
 					
 					Val operand = val_imm(dt, entry->key);
 					inst2(ctx, CMP, &key, &operand, dt.type);
@@ -522,39 +505,39 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 					jcc(ctx, E, entry->value);
 				}
 				
-				jmp(ctx, p.switch_.default_label);
+				jmp(ctx, end->switch_.default_label);
 				free_val(ctx, f, key);
 			}
 			
-			done_with(p.switch_.key);
-		} else if (reg_type == TB_UNREACHABLE) {
+			done_with(end->switch_.key);
+		} else if (end->type == TB_UNREACHABLE) {
 			// doesn't need to do anything because it's all UB from here
 		} else {
 			tb_todo();
 		}
 		
-		if (next_label < f->nodes.count) {
-			loop_range(i, bb, bb_end) {
-				if (ctx->use_count[i] == 0 && ctx->values[i].type != VAL_NONE) { 
-					done_with(i);
-				}
+		// kill any values, unless it's the last basic block then it doesn't matter :p
+		if (next_bb_reg) loop_range(i, bb, bb_end) {
+			if (ctx->use_count[i] == 0 && ctx->values[i].type != VAL_NONE) { 
+				done_with(i);
 			}
 		}
 		
 		// Next Basic block
-		bb = next_label;
-	} while (bb < f->nodes.count);
+		bb = next_bb_reg;
+	} while (bb != TB_NULL_REG);
 	
 	// Tally up any saved XMM registers
 	ctx->stack_usage += tb_popcount((ctx->regs_to_save >> 16) & 0xFFFF) * 16;
 	
 	if (!spills_params) {
-		FOR_EACH_NODE(i, f, TB_PARAM_ADDR, {
-						  if (ctx->values[i].type == VAL_MEM) {
-							  spills_params = true;
-							  break;
-						  }
-					  });
+		TB_FOR_EACH_NODE(n, f) {
+			TB_Reg i = n - f->nodes.data;
+			if (n->type == TB_PARAM_ADDR && ctx->values[i].type == VAL_MEM) {
+				spills_params = true;
+				break;
+			}
+		}
 	}
 	
 	// if we spilled any parameters just bias it so
@@ -574,12 +557,12 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 	////////////////////////////////
 	// Evaluate internal relocations (return and labels)
 	////////////////////////////////
-	for (size_t i = 0, cc = ctx->ret_patch_count; i < cc; i++) {
+	loop(i, ctx->ret_patch_count) {
 		uint32_t pos = ctx->ret_patches[i];
 		patch4(pos, code_pos() - (pos + 4));
 	}
 	
-	for (size_t i = 0, cc = ctx->label_patch_count; i < cc; i++) {
+	loop(i, ctx->label_patch_count) {
 		uint32_t pos = ctx->label_patches[i].pos;
 		uint32_t target_lbl = ctx->label_patches[i].target_lbl;
 		
@@ -614,9 +597,12 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 // If there's any non-side effect instructions which happen before a 
 // fence/side-effect instruction but are used afterwards, they're evaluated
 // before the fence.
-static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register start, TB_Register end) {
-	loop_range(r, start, end) {
-		TB_RegTypeEnum reg_type = f->nodes.type[r];
+static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Reg start, TB_Reg end, bool dont_handle_last_node) {
+	TB_FOR_EACH_NODE_RANGE(n, f, start, end) {
+		if (dont_handle_last_node && n->next == end) break;
+		
+		TB_Reg r = n - f->nodes.data;
+		TB_NodeTypeEnum reg_type = n->type;
 		
 		if (ctx->use_count[r] && !should_rematerialize(reg_type)) {
 			// dummy eval to cache the results before the fence
@@ -625,7 +611,7 @@ static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register s
 			
 			ctx->is_tallying = false;
 			if (is_address_node(reg_type) ||
-				(reg_type == TB_LOAD && f->nodes.dt[r].type == TB_PTR)) {
+				(reg_type == TB_LOAD && n->dt.type == TB_PTR)) {
 				val = eval(ctx, f, r, true);
 			} else {
 				val = eval_rvalue(ctx, f, r);
@@ -660,24 +646,28 @@ static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Register s
 	}
 }
 
-static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, TB_Register bb_end) {
+static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Reg bb_end) {
 	ctx->current_bb = bb;
 	ctx->current_bb_end = bb_end;
 	
+	// first node in the basic block
+	bb = f->nodes.data[bb].next;
+	if (bb == bb_end) return;
+	
 	// Evaluate all side effect instructions
-	for (size_t r = bb + 1; r < bb_end; r++) {
-		TB_RegTypeEnum reg_type = f->nodes.type[r];
+	TB_FOR_EACH_NODE_RANGE(n, f, bb, bb_end) {
+		TB_Reg r = n - f->nodes.data;
+		TB_NodeTypeEnum reg_type = n->type;
 		if (!TB_IS_NODE_SIDE_EFFECT(reg_type)) continue;
 		
-		eval_compiler_fence(ctx, f, ctx->last_fence, r);
+		eval_compiler_fence(ctx, f, ctx->last_fence, r, true);
 		
-		TB_DataType dt = f->nodes.dt[r];
-		TB_RegPayload* restrict p = &f->nodes.payload[r];
+		TB_DataType dt = n->dt;
 		switch (reg_type) {
 			case TB_LINE_INFO: {
 				f->lines[f->line_count++] = (TB_Line){
-					.file = p->line_info.file,
-					.line = p->line_info.line,
+					.file = n->line_info.file,
+					.line = n->line_info.line,
 					.pos = code_pos()
 				};
 				break;
@@ -689,8 +679,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 			}
 			
 			case TB_STORE: {
-				TB_Register addr_reg = p->store.address;
-				TB_Register val_reg = p->store.value;
+				TB_Reg addr_reg = n->store.address;
+				TB_Reg val_reg = n->store.value;
 				
 				// Eval address and cast to the correct type for the store
 				Val address = eval_addressof(ctx, f, addr_reg);
@@ -704,8 +694,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 			case TB_CALL:
 			case TB_ECALL:
 			case TB_VCALL: {
-				int param_start = p->call.param_start;
-				int param_count = p->call.param_end - p->call.param_start;
+				int param_start = n->call.param_start;
+				int param_count = n->call.param_end - n->call.param_start;
 				
 				// Evict the GPRs that are caller saved
 				uint16_t caller_saved = (ctx->is_sysv ? SYSV_ABI_CALLER_SAVED : WIN64_ABI_CALLER_SAVED);
@@ -717,7 +707,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 				
 				// Evict the XMMs that are caller saved
 				for (size_t j = 0; j < param_count; j++) {
-					TB_DataType param_dt = f->nodes.dt[param_start + j];
+					TB_Reg param_reg = f->vla.data[param_start + j];
+					TB_DataType param_dt = f->nodes.data[param_reg].dt;
 					
 					if (j < 4 && (param_dt.width || TB_IS_FLOAT_TYPE(param_dt.type))) {
 						evict_xmm(ctx, f, j);
@@ -737,7 +728,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 				// evaluate parameters
 				const GPR* parameter_gprs = ctx->is_sysv ? SYSV_GPR_PARAMETERS : WIN64_GPR_PARAMETERS;
 				for (size_t j = 0; j < param_count; j++) {
-					TB_Register param_reg = f->vla.data[param_start + j];
+					TB_Reg param_reg = f->vla.data[param_start + j];
 					Val param = eval_rvalue(ctx, f, param_reg);
 					
 					bool is_xmm = TB_IS_FLOAT_TYPE(param.dt.type) || param.dt.width;
@@ -808,7 +799,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 				
 				// CALL instruction and patch
 				if (reg_type == TB_CALL) {
-					TB_FunctionID target = p->call.target - f->module->functions.data;
+					TB_FunctionID target = n->call.target - f->module->functions.data;
 					
 					tb_emit_call_patch(f->module,
 									   s_compiled_func_id,
@@ -820,7 +811,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					emit(0xE8);
 					emit4(0x0);
 				} else if (reg_type == TB_ECALL) {
-					TB_ExternalID target = p->ecall.target;
+					TB_ExternalID target = n->ecall.target;
 					
 					tb_emit_ecall_patch(f->module,
 										s_compiled_func_id,
@@ -832,7 +823,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					emit(0xE8);
 					emit4(0x0);
 				} else if (reg_type == TB_VCALL) {
-					Val target = eval_rvalue(ctx, f, p->vcall.target);
+					Val target = eval_rvalue(ctx, f, n->vcall.target);
 					
 					// call r/m64
 					inst1(ctx, CALL_RM, &target);
@@ -857,11 +848,11 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 			}
 			
 			case TB_INITIALIZE: {
-				TB_Register addr = p->mem_op.dst;
+				TB_Reg addr = n->mem_op.dst;
 				
 				TB_Module* m = f->module;
 				TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-				TB_Initializer* i = (TB_Initializer*)&m->initializers[p->init.id / per_thread_stride][p->init.id % per_thread_stride];
+				TB_Initializer* i = (TB_Initializer*)&m->initializers[n->init.id / per_thread_stride][n->init.id % per_thread_stride];
 				
 				// rep stosb, ol' reliable
 				evict_gpr(ctx, f, RAX);
@@ -895,9 +886,9 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 				break;
 			}
 			case TB_MEMSET: {
-				TB_Register dst_reg = p->mem_op.dst;
-				TB_Register val_reg = p->mem_op.src;
-				TB_Register size_reg = p->mem_op.size;
+				TB_Reg dst_reg = n->mem_op.dst;
+				TB_Reg val_reg = n->mem_op.src;
+				TB_Reg size_reg = n->mem_op.size;
 				
 				// TODO(NeGate): Implement vector memset
 				// rep stosb, ol' reliable
@@ -950,9 +941,9 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 			}
 			
 			case TB_MEMCPY: {
-				TB_Register dst_reg = p->mem_op.dst;
-				TB_Register src_reg = p->mem_op.src;
-				TB_Register size_reg = p->mem_op.size;
+				TB_Reg dst_reg = n->mem_op.dst;
+				TB_Reg src_reg = n->mem_op.src;
+				TB_Reg size_reg = n->mem_op.size;
 				
 				// TODO(NeGate): Implement vector memset
 				// rep movsb, ol' reliable
@@ -1020,8 +1011,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 			case TB_ATOMIC_OR: {
 				const static int tbl[] = { MOV, ADD, SUB, AND, XOR, OR };
 				
-				Val src = eval_rvalue(ctx, f, p->atomic.src);
-				Val addr = eval_addressof(ctx, f, p->atomic.addr);
+				Val src = eval_rvalue(ctx, f, n->atomic.src);
+				Val addr = eval_addressof(ctx, f, n->atomic.addr);
 				
 				// sometimes we only need to do the operation atomic without
 				// a fetch, then things get... fancy
@@ -1048,12 +1039,11 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 					}
 				}
 				
-				done_with(p->atomic.src);
-				done_with(p->atomic.addr);
+				done_with(n->atomic.src);
+				done_with(n->atomic.addr);
 				break;
 			}
 			case TB_ATOMIC_CMPXCHG: {
-				//TB_RegPayload* restrict p2 = &f->nodes.payload[r + 1];
 				assert(0 && "Atomic cmpxchg not supported yet.");
 				break;
 			}
@@ -1068,7 +1058,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Register bb, 
 	}
 }
 
-static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const Val* dst, TB_Register r, TB_Register dst_reg, TB_Register val_reg) {
+static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const Val* dst, TB_Reg r, TB_Reg dst_reg, TB_Reg val_reg) {
 	if (dt.type == TB_BOOL) dt.type = TB_I8;
 	
 	if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
@@ -1101,23 +1091,27 @@ static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const 
 		
 		// Peephole folded operation:
 		// OP dst, src
-		if (f->nodes.type[val_reg] >= TB_AND && f->nodes.type[val_reg] <= TB_MUL) {
-			TB_Register a = f->nodes.payload[val_reg].i_arith.a;
-			TB_Register b = f->nodes.payload[val_reg].i_arith.b;
+		TB_Node* val = &f->nodes.data[val_reg];
+		
+		// TB_AND TB_OR TB_XOR TB_ADD TB_SUB TB_MUL
+		if (val->type >= TB_AND && val->type <= TB_MUL) {
+			TB_Node* a = &f->nodes.data[val->i_arith.a];
+			TB_Node* b = &f->nodes.data[val->i_arith.b];
 			
-			bool is_phi = f->nodes.type[r] == TB_PHI2;
+			bool is_phi = f->nodes.data[r].type == TB_PHI2;
 			bool folded = false;
 			if (is_phi) {
 				folded = is_phi_that_contains(f, r, val_reg);
-				folded |= (f->nodes.type[val_reg] == TB_MUL && dst->type == VAL_GPR);
+				folded |= (val->type == TB_MUL &&
+						   dst->type == VAL_GPR);
 			} else {
-				folded = f->nodes.type[val_reg] != TB_MUL &&
-					f->nodes.type[a] == TB_LOAD && 
-					f->nodes.payload[a].load.address == dst_reg;
+				folded = (val->type != TB_MUL &&
+						  a->type == TB_LOAD && 
+						  a->load.address == dst_reg);
 			}
 			
 			if (folded) {
-				switch (f->nodes.type[val_reg]) {
+				switch (val->type) {
 					case TB_AND: op = AND; break;
 					case TB_OR: op = OR; break;
 					case TB_XOR: op = XOR; break;
@@ -1127,7 +1121,7 @@ static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const 
 					default: tb_unreachable();
 				}
 				
-				val_reg = b;
+				val_reg = val->i_arith.b;
 			}
 		}
 		
@@ -1169,7 +1163,7 @@ static bool evict_gpr(Ctx* restrict ctx, TB_Function* f, GPR g) {
 	loop(i, ctx->phi_count) {
 		PhiValue* restrict phi = &ctx->phis[i];
 		if (phi->value.type == VAL_GPR && phi->value.gpr == g) {
-			TB_DataType dt = f->nodes.dt[phi->reg];
+			TB_DataType dt = f->nodes.data[phi->reg].dt;
 			if (dt.type == TB_BOOL) dt.type = TB_I8;
 			
 			ctx->gpr_allocator &= ~(1u << phi->value.gpr);
@@ -1205,8 +1199,7 @@ static bool evict_xmm(Ctx* restrict ctx, TB_Function* f, XMM x) {
 		PhiValue* restrict phi = &ctx->phis[i];
 		
 		if (phi->value.type == VAL_XMM && phi->value.xmm == x) {
-			TB_DataType dt = f->nodes.dt[phi->reg];
-			
+			TB_DataType dt = f->nodes.data[phi->reg].dt;
 			ctx->xmm_allocator &= ~(1u << phi->value.xmm);
 			
 			if (phi->spill == 0) {
@@ -1230,12 +1223,12 @@ static bool evict_xmm(Ctx* restrict ctx, TB_Function* f, XMM x) {
 	return false;
 }
 
-static bool is_address_node(TB_RegType t) {
+static bool is_address_node(TB_NodeTypeEnum t) {
 	switch (t) {
 		case TB_LOCAL:
 		case TB_RESTRICT:
 		case TB_PARAM_ADDR:
-		case TB_EFUNC_ADDRESS:
+		case TB_EXTERN_ADDRESS:
 		case TB_GLOBAL_ADDRESS:
 		case TB_ARRAY_ACCESS:
 		case TB_MEMBER_ACCESS:
@@ -1246,7 +1239,7 @@ static bool is_address_node(TB_RegType t) {
 	}
 }
 
-static bool should_rematerialize(TB_RegType t) {
+static bool should_rematerialize(TB_NodeTypeEnum t) {
 	switch (t) {
 		case TB_PARAM:
 		case TB_PARAM_ADDR:
@@ -1283,60 +1276,24 @@ static int get_data_type_size(const TB_DataType dt) {
 	}
 }
 
-static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_Register from_terminator, TB_Register to, TB_Register to_terminator) {
+static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Reg from, TB_Reg from_terminator, TB_Reg to, TB_Reg to_terminator) {
 	ctx->phi_queue_count = 0;
 	
-	loop_range(i, to, to_terminator) if (f->nodes.type[i] == TB_PHI2) {
-		TB_RegPayload p = f->nodes.payload[i];
-		assert(p.phi2.a_label != p.phi2.b_label);
-		
-		TB_Register src;
-		if (p.phi2.a_label == from) src = p.phi2.a;
-		else if (p.phi2.b_label == from) src = p.phi2.b;
-		else tb_unreachable();
-		
-		if (src >= to && src <= to_terminator) {
-			// reschedule it's dependency to happen first
-			//
-			// if it's already been placed then it's fine, but if not
-			// placed it first then place this node.
-			bool found = false;
-			loop(j, ctx->phi_queue_count) if (ctx->phi_queue[j] == src) {
-				ctx->phi_queue[ctx->phi_queue_count++] = i;
-				found = true;
-				break;
-			}
-			
-			if (!found) {
-				assert(f->nodes.type[src] == TB_PHI2);
-				ctx->phi_queue[ctx->phi_queue_count++] = src;
-				ctx->phi_queue[ctx->phi_queue_count++] = i;
-			}
-		} else {
-			// If it's already been scheduled don't worry about it
-			bool found = false;
-			loop(j, ctx->phi_queue_count) if (ctx->phi_queue[j] == i) {
-				found = true;
-				break;
-			}
-			
-			if (!found) {
-				ctx->phi_queue[ctx->phi_queue_count++] = i;
-			}
-		}
+	TB_Node* end = &f->nodes.data[to_terminator];
+	TB_FOR_EACH_NODE_RANGE(n, f, to, to_terminator) {
+		if (n->type == TB_PHI2) ctx->phi_queue[ctx->phi_queue_count++] = n;
 	}
 	
 	loop(i, ctx->phi_queue_count) {
-		TB_Register r = ctx->phi_queue[i];
-		
-		TB_RegPayload* restrict p = &f->nodes.payload[r];
-		TB_DataType dt = f->nodes.dt[r];
+		TB_Node* n = ctx->phi_queue[i];
+		TB_Reg r = n - f->nodes.data;
+		TB_DataType dt = n->dt;
 		
 		if (dt.type == TB_BOOL) dt.type = TB_I8;
 		
-		TB_Register src;
-		if (p->phi2.a_label == from) src = p->phi2.a;
-		else if (p->phi2.b_label == from) src = p->phi2.b;
+		TB_Reg src;
+		if (n->phi2.a_label == from) src = n->phi2.a;
+		else if (n->phi2.b_label == from) src = n->phi2.b;
 		else tb_unreachable();
 		
 		PhiValue* phi = find_phi(ctx, r);
@@ -1383,7 +1340,7 @@ static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_
 			done_with(src);
 		} else if (src >= to && src <= to_terminator) {
 			// this means we gotta do a swap
-			assert(f->nodes.type[src] == TB_PHI2);
+			assert(f->nodes.data[src].type == TB_PHI2);
 			PhiValue* other_phi = find_phi(ctx, src);
 			
 			inst2(ctx, XCHG, &phi->value, &other_phi->value, dt.type);
@@ -1396,11 +1353,11 @@ static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Register from, TB_
 	ctx->phi_queue_count = 0;
 }
 
-static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, TB_Register bound, TB_Register bb, TB_Register bb_end) {
-	return (bound >= bb && bound <= bb_end && f->nodes.type[bound] != TB_PHI2);
+static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, TB_Reg bound, TB_Reg bb, TB_Reg bb_end) {
+	return (bound >= bb && bound <= bb_end && f->nodes.data[bound].type != TB_PHI2);
 }
 
-static PhiValue* find_phi(Ctx* ctx, TB_Register r) {
+static PhiValue* find_phi(Ctx* ctx, TB_Reg r) {
 	for (size_t i = 0; i < ctx->phi_count; i++) {
 		if (ctx->phis[i].reg == r) return &ctx->phis[i];
 	}
@@ -1409,9 +1366,9 @@ static PhiValue* find_phi(Ctx* ctx, TB_Register r) {
 }
 
 // Is this a phi node? does it can the register `reg`?
-static bool is_phi_that_contains(TB_Function* f, TB_Register phi, TB_Register reg) {
-	if (f->nodes.type[phi] == TB_PHI2) {
-		return f->nodes.payload[phi].phi2.a == reg || f->nodes.payload[phi].phi2.b == reg;
+static bool is_phi_that_contains(TB_Function* f, TB_Reg phi, TB_Reg reg) {
+	if (f->nodes.data[phi].type == TB_PHI2) {
+		return f->nodes.data[phi].phi2.a == reg || f->nodes.data[phi].phi2.b == reg;
 	} else {
 		return false;
 	}

@@ -50,13 +50,13 @@ typedef struct FuzzerInfo {
 // https://www.pcg-random.org/download.html#minimal-c-implementation
 static thread_local struct { uint64_t state;  uint64_t inc; } rng;
 
-static thread_local TB_Register pool[512];
-static thread_local TB_Register var_pool[512];
+static thread_local TB_Reg pool[512];
+static thread_local TB_Reg var_pool[512];
 
 static TB_Module* m;
 
-static TB_Register cast_into(TB_Function* f, TB_Register in, TB_DataType to) {
-	TB_DataType dt = tb_node_get_data_type(f, in);
+static TB_Reg cast_into(TB_Function* f, TB_Reg in, TB_DataType to) {
+	TB_DataType dt = tb_function_get_node(f, in)->dt;
 	
 	if (dt.type < to.type) return tb_inst_zxt(f, in, to);
 	else if (dt.type > to.type) return tb_inst_trunc(f, in, to);
@@ -89,8 +89,8 @@ static int ir_gen(FuzzerInfo* i) {
 			TB_DataType dt = gen_random_int_dt();
 			
 			if (var_pool_size > 0) {
-				TB_Register a = pool[gen_random(0, pool_size)];
-				TB_Register b = pool[gen_random(0, pool_size)];
+				TB_Reg a = pool[gen_random(0, pool_size)];
+				TB_Reg b = pool[gen_random(0, pool_size)];
 				
 				a = cast_into(f, a, dt);
 				
@@ -99,7 +99,7 @@ static int ir_gen(FuzzerInfo* i) {
 					// only needed for 1-6
 					if (rng < 8) b = cast_into(f, b, dt);
 					
-					TB_Register dst = TB_NULL_REG;
+					TB_Reg dst = TB_NULL_REG;
 					if (rng == 1) {
 						dst = tb_inst_add(f, a, b, gen_random_arith());
 					} else if (rng == 2) {
@@ -131,7 +131,7 @@ static int ir_gen(FuzzerInfo* i) {
 			} else if (rng == 1 && var_pool_size > 0) {
 				pool[pool_size++] = tb_inst_load(f, dt, var_pool[gen_random(0, var_pool_size)], dt.type == TB_I32 ? 4 : 8);
 			} else if (rng == 2 && var_pool_size > 0) {
-				TB_Register addr = var_pool[gen_random(0, var_pool_size)];
+				TB_Reg addr = var_pool[gen_random(0, var_pool_size)];
 				
 				int size, align;
 				tb_get_function_get_local_info(f, addr, &size, &align);
@@ -147,7 +147,7 @@ static int ir_gen(FuzzerInfo* i) {
 				
 				tb_inst_store(f, dt, addr, pool[gen_random(0, pool_size)], align);
 			} else if (rng == 3) {
-				TB_Register addr = tb_inst_local(f, dt.type == TB_I64 ? 8 : 4, dt.type == TB_I64 ? 8 : 4);
+				TB_Reg addr = tb_inst_local(f, dt.type == TB_I64 ? 8 : 4, dt.type == TB_I64 ? 8 : 4);
 				var_pool[var_pool_size++] = addr;
 				
 				int size, align;
@@ -161,10 +161,10 @@ static int ir_gen(FuzzerInfo* i) {
 		}
 		
 		// try to use later values for return
-		TB_Register ret = pool[gen_random(pool_size / 2, pool_size)];
+		TB_Reg ret = pool[gen_random(pool_size / 2, pool_size)];
 		tb_inst_ret(f, cast_into(f, ret, return_dt));
 		
-		//tb_function_print(f, stdout);
+		//tb_function_print(f, tb_default_print_callback, stdout);
 		//printf("\n\n\n");
 		
 		tb_module_compile_func(m, f);
@@ -217,7 +217,7 @@ int main(int argc, char** argv) {
 	double ir_gen_time = (t2 - t1) * freq;
 	printf("IR generation took %f ms\n", ir_gen_time * 1000.0);
 	
-	if (!tb_module_export(m, "./test_x64.obj")) abort();
+	if (!tb_module_export(m, "./test_x64.obj", false)) abort();
 	
 	uint64_t t3 = get_timer_counter();
 	printf("Object file output took %f ms\n", ((t3 - t2) * freq) * 1000.0);

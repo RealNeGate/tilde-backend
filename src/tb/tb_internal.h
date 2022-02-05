@@ -1,16 +1,3 @@
-// Private header stuff
-//
-// The internal structure of a function's IR:
-// It's broken down into streams which are easy to scan through and 
-// they are:
-// 
-// TB_RegType      reg_types[reg_count]
-// TB_DataType     reg_data_types[reg_count]
-// TB_RegPayload   reg_payload[reg_count]
-//
-// the TB_Register is an index into these streams and each unique value
-// maps to a valid IR register except 0 which is reserved as the null register.
-// TODO(NeGate): Consider refactoring the internals of this... please
 #pragma once
 #include "tb.h"
 #include <time.h>
@@ -46,9 +33,9 @@ typedef uint32_t TB_CompiledFunctionID;
 // ***********************************
 // Atomics
 // ***********************************
-// since some modern C11 compilers don't support C11 atomics
-// we'll just write a stripped down layer that handles all
-// we really want from atomics.
+// since some modern C11 compilers (MSVC...) don't support
+// C11 atomics we'll just write a stripped down layer that
+// handles all we really want from atomics.
 //
 // These return the old values.
 typedef int tb_atomic_int;
@@ -81,177 +68,19 @@ typedef struct TB_Emitter {
 	uint8_t* data;
 } TB_Emitter;
 
-typedef uint8_t TB_RegType;
-
 #define TB_DATA_TYPE_EQUALS(a, b) tb_data_type_match(&(a), &(b))
 
 // first is the null register, then the entry
 // label, then parameters, then everything else
 #define TB_FIRST_PARAMETER_REG 2
 
-typedef union TB_RegPayload {
-	uint32_t raw[4];
-	
-	int64_t s_const;
-	uint64_t u_const;
-	double f_const;
-	struct {
-		size_t len;
-		const char* data;
-	} str_const;
-	TB_Register keepalive;
-	TB_Register ext;
-	TB_Register trunc;
-	TB_Register ptrcast;
-	TB_Register restrict_;
-	const TB_Function* func_addr;
-	TB_ExternalID efunc_addr;
-	TB_GlobalID global_addr;
-	struct {
-		TB_FileID file;
-		int line;
-	} line_info;
-	struct {
-		TB_Register base;
-		int32_t offset;
-	} member_access;
-	struct {
-		TB_Register base;
-		TB_Register index;
-		TB_CharUnits stride;
-	} array_access;
-	struct {
-		TB_Register a;
-		TB_Register b;
-		TB_CharUnits stride;
-	} ptrdiff;
-	struct {
-		uint32_t id;
-		TB_CharUnits size;
-	} param;
-	struct {
-		TB_Register param;
-		
-		TB_CharUnits size;
-		TB_CharUnits alignment;
-	} param_addr;
-	struct TB_NodeLocal {
-		TB_CharUnits size;
-		TB_CharUnits alignment;
-	} local;
-	struct TB_NodeUnary {
-		TB_Register src;
-	} unary;
-	struct TB_NodeIntBinary {
-		TB_Register a;
-		TB_Register b;
-		TB_ArithmaticBehavior arith_behavior;
-	} i_arith;
-	struct TB_NodeFloatBinary {
-		TB_Register a;
-		TB_Register b;
-	} f_arith;
-	struct TB_NodeCompare {
-		TB_Register a;
-		TB_Register b;
-		TB_DataType dt;
-	} cmp;
-	struct TB_NodeSelect {
-		TB_Register a;
-		TB_Register b;
-		TB_Register cond;
-	} select;
-	struct TB_NodeConvert {
-		TB_Register src;
-	} cvt;
-	struct TB_NodeLoad {
-		TB_Register address;
-		// this is only here to make load and store
-		// payloads match in data layout... just because
-		TB_Register _;
-		TB_CharUnits alignment;
-		bool is_volatile;
-	} load;
-	struct TB_NodeStore {
-		TB_Register address;
-		TB_Register value;
-		TB_CharUnits alignment;
-		bool is_volatile;
-	} store;
-	struct TB_NodeAtomicRMW {
-		TB_Register addr;
-		TB_Register src;
-		TB_MemoryOrder order : 8;
-		
-		// NOTE(NeGate): this is used for fail
-		TB_MemoryOrder order2 : 8;
-	} atomic;
-	struct TB_NodeReturn {
-		TB_Register value;
-	} ret;
-	TB_Register pass;
-	struct TB_NodePhi1 {
-		TB_Register a_label;
-		TB_Register a;
-	} phi1;
-	struct TB_NodePhi2 {
-		TB_Register a_label;
-		TB_Register a;
-		TB_Register b_label;
-		TB_Register b;
-	} phi2;
-	struct {
-		int param_start, param_end;
-	} phin;
-	struct TB_NodeLabel {
-		TB_Label id;
-		TB_Register terminator;
-		bool is_loop;
-	} label;
-	struct TB_NodeIf {
-		TB_Register cond;
-		TB_Label if_true;
-		TB_Label if_false;
-	} if_;
-	struct TB_NodeGoto {
-		TB_Label label;
-	} goto_;
-	struct TB_NodeExternCall {
-		int param_start, param_end;
-		TB_ExternalID target;
-	} ecall;
-	struct TB_NodeDynamicCall {
-		int param_start, param_end;
-		TB_Register target;
-	} vcall;
-	struct TB_NodeFunctionCall {
-		int param_start, param_end;
-		const TB_Function* target;
-	} call;
-	struct TB_NodeSwitch {
-		TB_Register key;
-		TB_Label default_label;
-		int entries_start, entries_end;
-	} switch_;
-	struct TB_NodeMemXXX {
-		TB_Register dst;
-		TB_Register src;
-		TB_Register size;
-		TB_CharUnits align;
-	} mem_op;
-	struct TB_NodeMemClear {
-		TB_Register dst;
-		TB_CharUnits size;
-		TB_CharUnits align;
-	} clear;
-	struct TB_NodeInitialize {
-		TB_Register addr;
-		TB_InitializerID id;
-	} init;
-} TB_RegPayload;
-static_assert(sizeof(TB_RegPayload) == 16, "TB_RegPayload shouldn't exceed 128bits for any option");
+#define TB_FOR_EACH_NODE(elem, f) \
+for (TB_Node* elem = &f->nodes.data[1]; elem != &f->nodes.data[0]; elem = &f->nodes.data[elem->next])
 
-#define FOR_EACH_REGISTER_IN_NODE(macro) \
+#define TB_FOR_EACH_NODE_RANGE(elem, f, start, end) \
+for (TB_Node* elem = &f->nodes.data[start], *end__ = &f->nodes.data[end]; elem != end__; elem = &f->nodes.data[elem->next])
+
+#define TB_FOR_EACH_REG_IN_NODE(macro) \
 case TB_NULL: \
 case TB_SIGNED_CONST: \
 case TB_UNSIGNED_CONST: \
@@ -262,21 +91,21 @@ case TB_PARAM: \
 case TB_GOTO: \
 case TB_LINE_INFO: \
 case TB_FUNC_ADDRESS: \
-case TB_EFUNC_ADDRESS: \
+case TB_EXTERN_ADDRESS: \
 case TB_GLOBAL_ADDRESS: \
 case TB_DEBUGBREAK: \
 break; \
 case TB_LABEL: \
-macro(p->label.terminator); \
+macro(n->label.terminator); \
 break; \
 case TB_INITIALIZE: \
-macro(p->init.addr); \
+macro(n->init.addr); \
 break; \
 case TB_KEEPALIVE: \
-macro(p->keepalive); \
+macro(n->unary.src); \
 break; \
 case TB_RESTRICT: \
-macro(p->restrict_); \
+macro(n->unary.src); \
 break; \
 case TB_ATOMIC_XCHG: \
 case TB_ATOMIC_ADD: \
@@ -284,59 +113,59 @@ case TB_ATOMIC_SUB: \
 case TB_ATOMIC_AND: \
 case TB_ATOMIC_XOR: \
 case TB_ATOMIC_OR: \
-macro(p->atomic.addr); \
-macro(p->atomic.src); \
+macro(n->atomic.addr); \
+macro(n->atomic.src); \
 break; \
 case TB_MEMCPY: \
 case TB_MEMSET: \
-macro(p->mem_op.dst); \
-macro(p->mem_op.src); \
-macro(p->mem_op.size); \
+macro(n->mem_op.dst); \
+macro(n->mem_op.src); \
+macro(n->mem_op.size); \
 break; \
 case TB_MEMBER_ACCESS: \
-macro(p->member_access.base); \
+macro(n->member_access.base); \
 break; \
 case TB_ARRAY_ACCESS: \
-macro(p->array_access.base); \
-macro(p->array_access.index); \
+macro(n->array_access.base); \
+macro(n->array_access.index); \
 break; \
 case TB_PARAM_ADDR: \
-macro(p->param_addr.param); \
+macro(n->param_addr.param); \
 break; \
 case TB_PASS: \
-macro(p->pass); \
+macro(n->pass.value); \
 break; \
 case TB_PHI1: \
-macro(p->phi1.a); \
-macro(p->phi1.a_label); \
+macro(n->phi1.a); \
+macro(n->phi1.a_label); \
 break; \
 case TB_PHI2: \
-macro(p->phi2.a); \
-macro(p->phi2.b); \
-macro(p->phi2.a_label); \
-macro(p->phi2.b_label); \
+macro(n->phi2.a); \
+macro(n->phi2.b); \
+macro(n->phi2.a_label); \
+macro(n->phi2.b_label); \
 break; \
 case TB_LOAD: \
-macro(p->load.address); \
+macro(n->load.address); \
 break; \
 case TB_STORE: \
-macro(p->store.address); \
-macro(p->store.value); \
+macro(n->store.address); \
+macro(n->store.value); \
 break; \
 case TB_ZERO_EXT: \
 case TB_SIGN_EXT: \
 case TB_FLOAT_EXT: \
-macro(p->ext); \
+macro(n->unary.src); \
 break; \
 case TB_INT2PTR: \
 case TB_PTR2INT: \
-macro(p->ptrcast); \
+macro(n->unary.src); \
 case TB_INT2FLOAT: \
 case TB_FLOAT2INT: \
-macro(p->cvt.src); \
+macro(n->unary.src); \
 break; \
 case TB_TRUNCATE: \
-macro(p->trunc); \
+macro(n->unary.src); \
 break; \
 case TB_AND: \
 case TB_OR: \
@@ -351,21 +180,21 @@ case TB_SMOD: \
 case TB_SAR: \
 case TB_SHL: \
 case TB_SHR: \
-macro(p->i_arith.a); \
-macro(p->i_arith.b); \
+macro(n->i_arith.a); \
+macro(n->i_arith.b); \
 break; \
 case TB_NOT: \
 case TB_NEG: \
 case TB_X86INTRIN_SQRT: \
 case TB_X86INTRIN_RSQRT: \
-macro(p->unary.src); \
+macro(n->unary.src); \
 break; \
 case TB_FADD: \
 case TB_FSUB: \
 case TB_FMUL: \
 case TB_FDIV: \
-macro(p->f_arith.a); \
-macro(p->f_arith.b); \
+macro(n->f_arith.a); \
+macro(n->f_arith.b); \
 break; \
 case TB_CMP_EQ: \
 case TB_CMP_NE: \
@@ -375,37 +204,31 @@ case TB_CMP_ULT: \
 case TB_CMP_ULE: \
 case TB_CMP_FLT: \
 case TB_CMP_FLE: \
-macro(p->cmp.a); \
-macro(p->cmp.b); \
+macro(n->cmp.a); \
+macro(n->cmp.b); \
 break; \
 case TB_VCALL: \
-macro(p->vcall.target); \
+macro(n->vcall.target); \
+for (size_t slot__ = n->call.param_start; slot__ < n->call.param_end; slot__++) { \
+macro(f->vla.data[slot__]); \
+} \
+break; \
 case TB_CALL: \
 case TB_ICALL: \
 case TB_ECALL: \
-for (size_t j = p->call.param_start; j < p->call.param_end; j++) { \
-macro(f->vla.data[j]); \
+for (size_t slot__ = n->call.param_start; slot__ < n->call.param_end; slot__++) { \
+macro(f->vla.data[slot__]); \
 } \
 break; \
 case TB_SWITCH: \
-macro(p->switch_.key); \
+macro(n->switch_.key); \
 break; \
 case TB_IF: \
-macro(p->if_.cond); \
+macro(n->if_.cond); \
 break; \
 case TB_RET: \
-macro(p->ret.value); \
+macro(n->ret.value); \
 break
-
-#define FOR_EACH_REGISTER_IN_FUNC(macro) \
-for (size_t i = 1; i < f->nodes.count; i++) { \
-TB_RegType type = f->nodes.type[i]; \
-TB_RegPayload* p = &f->nodes.payload[i]; \
-switch (type) { \
-FOR_EACH_REGISTER_IN_NODE(macro); \
-default: tb_panic(false, "Unknown node type: %d", type); \
-} \
-}
 
 typedef struct TB_ConstPoolPatch {
 	TB_CompiledFunctionID source;
@@ -523,24 +346,24 @@ typedef struct TB_Line {
 } TB_Line;
 
 struct TB_Function {
+	char* name;
+	
 	// It's kinda a weird circular reference but yea
 	TB_Module* module;
+	
+	const TB_FunctionPrototype* prototype;
 	TB_Linkage linkage;
 	
-	char* name;
-	const TB_FunctionPrototype* prototype;
-	
 	struct TB_NodeStream {
-		TB_Register    capacity;
-		TB_Register    count;
-		
-		TB_RegType*    type;
-		TB_DataType*   dt;
-		TB_RegPayload* payload;
+		TB_Reg    capacity;
+		TB_Reg    count;
+		TB_Reg    end;
+		TB_Node*  data;
 	} nodes;
 	
 	// Used by the IR building
-	TB_Register current_label;
+	TB_Reg last_reg;
+	TB_Reg current_label;
 	TB_Label label_count;
 	
 	// Used by nodes which have variable
@@ -550,7 +373,7 @@ struct TB_Function {
 	struct {
 		size_t capacity;
 		size_t count;
-		TB_Register* data;
+		TB_Reg* data;
 	} vla;
 	
 	// Part of the debug info
@@ -660,20 +483,36 @@ a = b; \
 b = temp; \
 } while(0)
 
-#ifdef _MSC_VER
-#  define tb_todo() assert(0 && "TODO")
-#  define tb_unreachable() __assume(0)
+#ifndef NDEBUG
+#define TB_DEBUG_BUILD 1
 #else
-#  ifndef NDEBUG
+#define TB_DEBUG_BUILD 0
+#endif
+
+#ifdef _MSC_VER
+#  if TB_DEBUG_BUILD
 #    define tb_todo() assert(0 && "TODO")
-#    define tb_unreachable() __builtin_trap()
+#    define tb_unreachable() __assume(0)
+#    define tb_assume(condition) assert(condition)
 #  else
-#    define tb_todo() __builtin_unreachable()
+#    define tb_todo() abort()
+#    define tb_unreachable() __assume(0)
+#    define tb_assume(condition) __assume(condition)
+#  endif
+#else
+#  if TB_DEBUG_BUILD
+#    define tb_todo() __builtin_trap()
 #    define tb_unreachable() __builtin_unreachable()
+#    define tb_assume(condition) assert(condition)
+#  else
+#    define tb_todo() __builtin_trap()
+#    define tb_unreachable() __builtin_unreachable()
+#    define tb_assume(condition) __builtin_unreachable()
 #  endif
 #endif
 
-#define tb_panic(condition, ...) do { if (!(condition)) { printf(__VA_ARGS__); abort(); } } while (0)
+#define tb_assert(condition, ...) do { if (!(condition)) { printf(__VA_ARGS__); abort(); } } while (0)
+#define tb_panic(...) do { printf(__VA_ARGS__); abort(); } while (0)
 #define tb_arrlen(a) (sizeof(a) / sizeof(a[0]))
 
 #define loop(iterator, count) \
@@ -786,19 +625,17 @@ uint32_t tb_get4b(TB_Emitter* o, uint32_t pos);
 ////////////////////////////////
 // IR ANALYSIS
 ////////////////////////////////
-TB_Register tb_find_reg_from_label(TB_Function* f, TB_Label id);
-TB_Register tb_find_first_use(const TB_Function* f, TB_Register find, size_t start, size_t end);
-void tb_function_find_replace_reg(TB_Function* f, TB_Register find, TB_Register replace);
-size_t tb_count_uses(const TB_Function* f, TB_Register find, size_t start, size_t end);
-void tb_insert_op(TB_Function* f, TB_Register at);
-void tb_resize_node_stream(TB_Function* f, size_t cap);
-TB_Register tb_insert_copy_ops(TB_Function* f, const TB_Register* params, TB_Register at, const TB_Function* src_func, TB_Register src_base, int count);
-void tb_insert_ops(TB_Function* f, TB_Register at, int count);
+TB_Reg tb_find_reg_from_label(TB_Function* f, TB_Label id);
+TB_Reg tb_find_first_use(const TB_Function* f, TB_Reg find, size_t start, size_t end);
+void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace);
+size_t tb_count_uses(const TB_Function* f, TB_Reg find, size_t start, size_t end);
+void tb_function_reserve_nodes(TB_Function* f, size_t extra);
+TB_Reg tb_insert_copy_ops(TB_Function* f, const TB_Reg* params, TB_Reg at, const TB_Function* src_func, TB_Reg src_base, int count);
 
-inline static void tb_kill_op(TB_Function* f, TB_Register at) {
-	f->nodes.type[at] = TB_NULL;
-	f->nodes.dt[at] = (TB_DataType){ 0 };
-	f->nodes.payload[at] = (TB_RegPayload){ 0 };
+TB_Reg tb_function_insert_after(TB_Function* f, TB_Reg at);
+
+inline static void tb_kill_op(TB_Function* f, TB_Reg at) {
+	f->nodes.data[at].type = TB_NULL;
 }
 
 inline static int align_up(int a, int b) { return a + (b - (a % b)) % b; }
@@ -825,29 +662,8 @@ printf(" (part of %s)\n", __FUNCTION__); \
 } while (0)
 #endif
 
-#define CALL_NODE_PARAM_COUNT(f, i) \
-((f)->nodes.payload[i].call.param_end - (f)->nodes.payload[i].call.param_start)
-
-#if TB_HOST_ARCH == TB_HOST_X86_64
-#define FOR_EACH_NODE(iterator, func, target, ...) \
-for (size_t __i = 0, cnt = (func)->nodes.count; __i < cnt; __i += 16) { \
-__m128i bytes = _mm_loadu_si128((__m128i*)&(func)->nodes.type[__i]); \
-unsigned int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(bytes, _mm_set1_epi8(target))); \
-if (mask == 0) continue; \
-/* We know it loops at least once by this point */ \
-for (size_t __j = 0; __j < 16; __j++) if (mask & (1u << __j)) { \
-size_t iterator = __i + __j; \
-__VA_ARGS__; \
-} \
-}
-#else
-#define FOR_EACH_NODE(iterator, func, target, ...) \
-for (size_t iterator = 0; iterator < (func)->nodes.count; iterator++) { \
-if ((func)->nodes.type[iterator] == (target)) { \
-__VA_ARGS__; \
-} \
-}
-#endif
+#define CALL_NODE_PARAM_COUNT(n) \
+(n->call.param_end - n->call.param_start)
 
 // NOTE(NeGate): Considers 0 as a power of two
 inline static bool tb_is_power_of_two(size_t x) {
@@ -865,9 +681,8 @@ uint64_t tb_fold_div(TB_DataType dt, uint64_t a, uint64_t b);
 ////////////////////////////////
 // ANALYSIS
 ////////////////////////////////
-void tb_find_live_intervals(const TB_Function* f, TB_Register intervals[]);
-void tb_find_use_count(const TB_Function* f, int use_count[]);
-int tb_find_uses(const TB_Function* f, TB_Register def, TB_Register uses[]);
+void tb_function_calculate_use_count(const TB_Function* f, int use_count[]);
+int tb_function_find_uses_of_node(const TB_Function* f, TB_Reg def, TB_Reg uses[]);
 TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count);
 
 uint32_t tb_emit_const_patch(TB_Module* m, TB_CompiledFunctionID source, size_t pos, const void* ptr, size_t len, size_t local_thread_id);
@@ -879,7 +694,7 @@ void tb_emit_ecall_patch(TB_Module* m, TB_CompiledFunctionID source, TB_External
 void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, size_t pos);
 #endif
 
-TB_Register* tb_vla_reserve(TB_Function* f, size_t count);
+TB_Reg* tb_vla_reserve(TB_Function* f, size_t count);
 
 inline static bool tb_data_type_match(const TB_DataType* a, const TB_DataType* b) {
 	return a->type == b->type && a->width == b->width;

@@ -44,28 +44,21 @@ TB_API TB_Function* tb_function_clone(TB_Module* m, TB_Function* source_func, co
 		.current_label = source_func->current_label
 	};
 	
-	// TODO(NeGate): The node stream can never be under 16 entries
-	// for the SIMD optimizations to work so we bias the initial size.
-	tb_resize_node_stream(f, f->nodes.count < 16 ? 16 : tb_next_pow2(f->nodes.count));
+	f->nodes.capacity = f->nodes.count < 16 ? 16 : tb_next_pow2(f->nodes.count);
+	f->nodes.data = malloc(f->nodes.capacity * sizeof(TB_Node));
 	
-	memcpy(f->nodes.type, source_func->nodes.type, f->nodes.count * sizeof(uint8_t));
-	memcpy(f->nodes.dt, source_func->nodes.dt, f->nodes.count * sizeof(TB_DataType));
-	memcpy(f->nodes.payload, source_func->nodes.payload, f->nodes.count * sizeof(TB_RegPayload));
+	memcpy(f->nodes.data, source_func->nodes.data, f->nodes.count * sizeof(uint8_t));
 	return f;
 }
 
 // TODO(NeGate): Doesn't free the name, it's kept forever
 TB_API void tb_function_free(TB_Function* f) {
-	if (f->nodes.type == NULL) return;
+	if (f->nodes.data == NULL) return;
 	
-	tb_platform_heap_free(f->nodes.type);
-	tb_platform_heap_free(f->nodes.dt);
-	tb_platform_heap_free(f->nodes.payload);
+	tb_platform_heap_free(f->nodes.data);
 	tb_platform_heap_free(f->vla.data);
 	
-	f->nodes.type = NULL;
-	f->nodes.dt = NULL;
-	f->nodes.payload = NULL;
+	f->nodes.data = NULL;
 	f->vla.data = NULL;
 }
 
@@ -246,9 +239,7 @@ TB_API TB_FileID tb_file_create(TB_Module* m, const char* path) {
 	char* str = tb_platform_string_alloc(path);
 	
 	size_t r = m->files.count++;
-	m->files.data[r] = (TB_File){
-		.path = str
-	};
+	m->files.data[r] = (TB_File){ .path = str };
 	return r;
 }
 
@@ -267,22 +258,20 @@ TB_API bool tb_module_export(TB_Module* m, const char* path, bool emit_debug_inf
 		tb_export_elf64(m, code_gen, path, emit_debug_info);
 		break;
         default:
-		printf("TinyBackend error: Unknown system!\n");
-		tb_todo();
+		tb_panic("TinyBackend error: Unknown system!\n");
 	}
 	
 	return true;
 }
 
-void tb_resize_node_stream(TB_Function* f, size_t cap) {
-	f->nodes.capacity = cap;
-	
-	f->nodes.type = tb_platform_heap_realloc(f->nodes.type, cap * sizeof(TB_RegType));
-	f->nodes.dt = tb_platform_heap_realloc(f->nodes.dt, cap * sizeof(TB_DataType));
-	f->nodes.payload = tb_platform_heap_realloc(f->nodes.payload, cap * sizeof(TB_RegPayload));
-	
-	// zero out the extra space
-	memset(&f->nodes.type[f->nodes.count], 0, (cap - f->nodes.count) * sizeof(TB_RegType));
+void tb_function_reserve_nodes(TB_Function* f, size_t extra) {
+    if (f->nodes.count + extra >= f->nodes.capacity) {
+        f->nodes.capacity = (f->nodes.count + extra) * 2;
+		
+        TB_Node* new_ptr = realloc(f->nodes.data, sizeof(TB_Node) * f->nodes.capacity);
+        if (!new_ptr) tb_panic("Out of memory");
+		f->nodes.data = new_ptr;
+    }
 }
 
 TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv conv, TB_DataType return_dt, int num_params, bool has_varargs) {
@@ -293,8 +282,7 @@ TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv co
 	
 	size_t len = tb_atomic_size_add(&m->prototypes_arena_size, space_needed);
 	if (len+space_needed >= PROTOTYPES_ARENA_SIZE) {
-		printf("Prototype arena: out of memory!\n");
-		abort();
+		tb_panic("Prototype arena: out of memory!\n");
 	}
 	
 	TB_FunctionPrototype* p = (TB_FunctionPrototype*)&m->prototypes_arena[len];
@@ -330,26 +318,18 @@ TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, co
 		.name = tb_platform_string_alloc(name)
 	};
 	
-	// TODO(NeGate): The node stream can never be under 16 entries
-	// for the SIMD optimizations to work so we bias the initial size.
-	tb_resize_node_stream(f, tb_next_pow2(16 + 2 + p->param_count));
+	f->nodes.capacity = 64;
+	f->nodes.count = 2 + p->param_count;
+	f->nodes.data = malloc(f->nodes.capacity * sizeof(TB_Node));
 	
 	// Null slot, Entry label & Parameters
-	f->nodes.count = 2 + p->param_count;
-	f->nodes.type[0] = TB_NULL;
-	f->nodes.type[1] = TB_LABEL;
-	loop(i, p->param_count) f->nodes.type[2+i] = TB_PARAM;
-	
-	f->nodes.dt[0] = (TB_DataType){ 0 };
-	f->nodes.dt[1] = TB_TYPE_PTR;
-	loop(i, p->param_count) f->nodes.dt[2+i] = p->params[i];
-	
-	f->nodes.payload[0] = (TB_RegPayload){ 0 };
-	f->nodes.payload[1] = (TB_RegPayload){ 
-		.label.id = 0,
-		.label.terminator = TB_NULL_REG,
-		.label.is_loop = false
+	f->nodes.data[0] = (TB_Node){ .next = 1 };
+	f->nodes.data[1] = (TB_Node){
+		.type = TB_LABEL,
+		.dt = TB_TYPE_PTR,
+		.label = { 0, 0 }
 	};
+	
 	loop(i, p->param_count) {
 		TB_DataType dt = p->params[i];
 		
@@ -370,21 +350,26 @@ TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, co
 		
 		assert(size);
 		assert(dt.width < 8 && "Vector width too big!");
-		f->nodes.payload[2+i] = (TB_RegPayload){
-			.param.id = i,
-			.param.size = size << dt.width
+		
+		f->nodes.data[1 + i].next = 2 + i;
+		f->nodes.data[2 + i] = (TB_Node){
+			.type = TB_PARAM,
+			.dt = dt,
+			.next = 2,
+			.param = { .id = i, .size = size << dt.width }
 		};
 	}
 	
+	f->nodes.end = 2 + (p->param_count - 1);
 	f->label_count = 1;
 	f->current_label = 1;
 	return f;
 }
 
 TB_API TB_InitializerID tb_initializer_create(TB_Module* m, size_t size, size_t align, size_t max_objects) {
-	assert(size == (uint32_t)size);
-	assert(align == (uint32_t)align);
-	assert(max_objects == (uint32_t)max_objects);
+	tb_assume(size == (uint32_t)size);
+	tb_assume(align == (uint32_t)align);
+	tb_assume(max_objects == (uint32_t)max_objects);
 	int tid = get_local_thread_id();
 	
 	size_t space_needed = (sizeof(TB_Initializer) + (sizeof(uint64_t)-1)) / sizeof(uint64_t);
@@ -552,7 +537,7 @@ TB_API void* tb_module_get_jit_func(TB_Module* m, TB_Function* f) {
 TB_API TB_Label tb_inst_get_current_label(TB_Function* f) {
 	if (!f->current_label) return 0;
 	
-	return f->nodes.payload[f->current_label].label.id;
+	return f->nodes.data[f->current_label].label.id;
 }
 
 //
@@ -697,15 +682,15 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
     TB_Module* m = f->module;
 	callback(user_data, "%s():\n", f->name);
     
-	for (TB_Register i = 1; i < f->nodes.count; i++) {
-		TB_RegTypeEnum type = f->nodes.type[i];
-		TB_DataType dt = f->nodes.dt[i];
-		TB_RegPayload p = f->nodes.payload[i];
-        
+	TB_FOR_EACH_NODE(n, f) {
+		TB_Reg i = n - f->nodes.data;
+        TB_NodeTypeEnum type = n->type;
+		TB_DataType dt = n->dt;
+		
 		switch (type) {
             case TB_NULL:
-			//callback(user_data, "  r%u\t=\t", i);
-			//callback(user_data, " NOP\n");
+			callback(user_data, "  r%u\t=\t", i);
+			callback(user_data, " NOP\n");
 			break;
             case TB_DEBUGBREAK:
 			callback(user_data, " DEBUGBREAK\n");
@@ -713,72 +698,72 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
             case TB_SIGNED_CONST:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " %" PRIi64 "\n", p.s_const);
+			callback(user_data, " %" PRIi64 "\n", n->sint.value);
 			break;
             case TB_UNSIGNED_CONST:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " %" PRIu64 "\n", p.u_const);
+			callback(user_data, " %" PRIu64 "\n", n->uint.value);
 			break;
 			case TB_STRING_CONST:
-			callback(user_data, "  r%u\t=\t\"%.*s\"\n", i, (int)f->nodes.payload[i].str_const.len, f->nodes.payload[i].str_const.data);
+			callback(user_data, "  r%u\t=\t\"%.*s\"\n", i, (int)n->string.length, n->string.data);
 			break;
 			case TB_LINE_INFO:
-			callback(user_data, "  # LOC %s:%d\n", f->module->files.data[p.line_info.file].path, p.line_info.line);
+			callback(user_data, "  # LOC %s:%d\n", f->module->files.data[n->line_info.file].path, n->line_info.line);
 			break;
             case TB_FLOAT_CONST:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-            callback(user_data, " %f\n", p.f_const);
+            callback(user_data, " %f\n", n->flt.value);
 			break;
             case TB_FLOAT_EXT:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " FPXT r%u\n", p.ext);
+			callback(user_data, " FPXT r%u\n", n->unary.src);
 			break;
             case TB_ZERO_EXT:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " ZXT r%u\n", p.ext);
+			callback(user_data, " ZXT r%u\n", n->unary.src);
 			break;
             case TB_SIGN_EXT:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " SXT r%u\n", p.ext);
+			callback(user_data, " SXT r%u\n", n->unary.src);
 			break;
             case TB_INT2PTR:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " INT2PTR r%u\n", p.ptrcast);
+			callback(user_data, " INT2PTR r%u\n", n->unary.src);
 			break;
             case TB_PTR2INT:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " PTR2INT r%u\n", p.ptrcast);
+			callback(user_data, " PTR2INT r%u\n", n->unary.src);
 			break;
             case TB_FLOAT2INT:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " FLT2INT r%u\n", p.cvt.src);
+			callback(user_data, " FLT2INT r%u\n", n->unary.src);
 			break;
             case TB_INT2FLOAT:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " INT2FLT r%u\n", p.cvt.src);
+			callback(user_data, " INT2FLT r%u\n", n->unary.src);
 			break;
             case TB_TRUNCATE:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " TRUNC r%u\n", p.trunc);
+			callback(user_data, " TRUNC r%u\n", n->unary.src);
 			break;
             case TB_RESTRICT:
-			callback(user_data, "  r%u\t=\tRESTRICT r%u\n", i, p.restrict_);
+			callback(user_data, "  r%u\t=\tRESTRICT r%u\n", i, n->unary.src);
 			break;
 			case TB_MEMSET:
-			callback(user_data, "  MEMSET\t(r%d, r%d, r%d)\n", p.mem_op.dst, p.mem_op.src, p.mem_op.size);
+			callback(user_data, "  MEMSET\t(r%d, r%d, r%d)\n", n->mem_op.dst, n->mem_op.src, n->mem_op.size);
 			break;
 			case TB_MEMCPY:
-			callback(user_data, "  MEMCPY\t(r%d, r%d, r%d)\n", p.mem_op.dst, p.mem_op.src, p.mem_op.size);
+			callback(user_data, "  MEMCPY\t(r%d, r%d, r%d)\n", n->mem_op.dst, n->mem_op.src, n->mem_op.size);
 			break;
 			case TB_INITIALIZE:
 			// TODO(NeGate): Make this more presentable
@@ -787,30 +772,30 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
 			case TB_MEMBER_ACCESS:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " r%u.data[%d]\n", p.member_access.base, p.member_access.offset);
+			callback(user_data, " r%u.data[%d]\n", n->member_access.base, n->member_access.offset);
 			break;
 			case TB_ARRAY_ACCESS:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " &r%u[r%u * %d]\n", p.array_access.base, p.array_access.index, p.array_access.stride);
+			callback(user_data, " &r%u[r%u * %d]\n", n->array_access.base, n->array_access.index, n->array_access.stride);
 			break;
 			case TB_ATOMIC_XCHG:
-			callback(user_data, "  r%u\t=\tATOMIC XCHG *r%u, r%u\n", i, p.atomic.addr, p.atomic.src);
+			callback(user_data, "  r%u\t=\tATOMIC XCHG *r%u, r%u\n", i, n->atomic.addr, n->atomic.src);
 			break;
 			case TB_ATOMIC_ADD:
-			callback(user_data, "  r%u\t=\tATOMIC ADD *r%u, r%u\n", i, p.atomic.addr, p.atomic.src);
+			callback(user_data, "  r%u\t=\tATOMIC ADD *r%u, r%u\n", i, n->atomic.addr, n->atomic.src);
 			break;
 			case TB_ATOMIC_SUB:
-			callback(user_data, "  r%u\t=\tATOMIC SUB *r%u, r%u\n", i, p.atomic.addr, p.atomic.src);
+			callback(user_data, "  r%u\t=\tATOMIC SUB *r%u, r%u\n", i, n->atomic.addr, n->atomic.src);
 			break;
 			case TB_ATOMIC_AND:
-			callback(user_data, "  r%u\t=\tATOMIC AND *r%u, r%u\n", i, p.atomic.addr, p.atomic.src);
+			callback(user_data, "  r%u\t=\tATOMIC AND *r%u, r%u\n", i, n->atomic.addr, n->atomic.src);
 			break;
 			case TB_ATOMIC_XOR:
-			callback(user_data, "  r%u\t=\tATOMIC XOR *r%u, r%u\n", i, p.atomic.addr, p.atomic.src);
+			callback(user_data, "  r%u\t=\tATOMIC XOR *r%u, r%u\n", i, n->atomic.addr, n->atomic.src);
 			break;
 			case TB_ATOMIC_OR: 
-			callback(user_data, "  r%u\t=\tATOMIC OR *r%u, r%u\n", i, p.atomic.addr, p.atomic.src);
+			callback(user_data, "  r%u\t=\tATOMIC OR *r%u, r%u\n", i, n->atomic.addr, n->atomic.src);
 			break;
 			case TB_AND:
             case TB_OR:
@@ -827,7 +812,7 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
             case TB_SAR:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " r%u ", p.i_arith.a);
+			callback(user_data, " r%u ", n->i_arith.a);
             
 			switch (type) {
                 case TB_AND: callback(user_data, "&"); break;
@@ -846,7 +831,7 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
                 default: tb_todo();
 			}
             
-			callback(user_data, " r%u\n", p.i_arith.b);
+			callback(user_data, " r%u\n", n->i_arith.b);
 			break;
             case TB_FADD:
             case TB_FSUB:
@@ -854,7 +839,7 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
             case TB_FDIV:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " r%u ", p.f_arith.a);
+			callback(user_data, " r%u ", n->f_arith.a);
             
 			switch (type) {
                 case TB_FADD: callback(user_data, "+"); break;
@@ -864,7 +849,7 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
                 default: tb_todo();
 			}
             
-			callback(user_data, " r%u\n", p.f_arith.b);
+			callback(user_data, " r%u\n", n->f_arith.b);
 			break;
             case TB_CMP_EQ:
             case TB_CMP_NE:
@@ -876,7 +861,7 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
             case TB_CMP_FLE:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " r%u ", p.cmp.a);
+			callback(user_data, " r%u ", n->cmp.a);
             
 			switch (type) {
                 case TB_CMP_NE: callback(user_data, "!="); break;
@@ -890,7 +875,7 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
                 default: tb_todo();
 			}
             
-			callback(user_data, " r%u", p.cmp.b);
+			callback(user_data, " r%u", n->cmp.b);
 			
 			if (type == TB_CMP_SLT || type == TB_CMP_SLE) callback(user_data, " # signed\n");
 			else if (type == TB_CMP_FLT || type == TB_CMP_FLE) callback(user_data, " # float\n");
@@ -899,32 +884,32 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
             case TB_NEG:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " NEG r%u\n", p.unary);
+			callback(user_data, " NEG r%u\n", n->unary);
 			break;
             case TB_NOT:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " NOT r%u\n", p.unary);
+			callback(user_data, " NOT r%u\n", n->unary);
 			break;
             case TB_X86INTRIN_SQRT:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " X86.SQRT r%u\n", p.unary);
+			callback(user_data, " X86.SQRT r%u\n", n->unary);
 			break;
             case TB_X86INTRIN_RSQRT:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " X86.RSQRT r%u\n", p.unary);
+			callback(user_data, " X86.RSQRT r%u\n", n->unary);
 			break;
             case TB_LOCAL:
-			callback(user_data, "  r%u\t=\tLOCAL %d (%d align)\n", i, p.local.size, p.local.alignment);
+			callback(user_data, "  r%u\t=\tLOCAL %d (%d align)\n", i, n->local.size, n->local.alignment);
 			break;
             case TB_ICALL: {
 				callback(user_data, "  r%u\t=\t", i);
 				tb_print_type(dt, callback, user_data);
-				callback(user_data, "INLINE CALL %s(", i, p.call.target->name);
-				for (size_t j = p.call.param_start; j < p.call.param_end; j++) {
-					if (j != p.call.param_start) callback(user_data, ", ");
+				callback(user_data, "INLINE CALL %s(", i, n->call.target->name);
+				for (size_t j = n->call.param_start; j < n->call.param_end; j++) {
+					if (j != n->call.param_start) callback(user_data, ", ");
 					
 					callback(user_data, "r%u", f->vla.data[j]);
 				}
@@ -933,13 +918,13 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
 			}
 			case TB_ECALL: {
 				TB_ExternalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-				TB_External* e = &m->externals[p.ecall.target / per_thread_stride][p.ecall.target % per_thread_stride];
+				TB_External* e = &m->externals[n->ecall.target / per_thread_stride][n->ecall.target % per_thread_stride];
 				
 				callback(user_data, "  r%u\t=\t", i);
 				tb_print_type(dt, callback, user_data);
 				callback(user_data, "ECALL %s(", e->name);
-				for (size_t j = p.ecall.param_start; j < p.ecall.param_end; j++) {
-					if (j != p.ecall.param_start) callback(user_data, ", ");
+				for (size_t j = n->ecall.param_start; j < n->ecall.param_end; j++) {
+					if (j != n->ecall.param_start) callback(user_data, ", ");
 					
 					callback(user_data, "r%u", f->vla.data[j]);
 				}
@@ -949,9 +934,9 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
             case TB_CALL: {
 				callback(user_data, "  r%u\t=\t", i);
 				tb_print_type(dt, callback, user_data);
-				callback(user_data, "CALL %s(", p.call.target->name);
-				for (size_t j = p.call.param_start; j < p.call.param_end; j++) {
-					if (j != p.call.param_start) callback(user_data, ", ");
+				callback(user_data, "CALL %s(", n->call.target->name);
+				for (size_t j = n->call.param_start; j < n->call.param_end; j++) {
+					if (j != n->call.param_start) callback(user_data, ", ");
 					
 					callback(user_data, "r%u", f->vla.data[j]);
 				}
@@ -961,9 +946,9 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
             case TB_VCALL: {
 				callback(user_data, "  r%u\t=\t", i);
 				tb_print_type(dt, callback, user_data);
-				callback(user_data, "VCALL r%u(", p.vcall.target);
-				for (size_t j = p.vcall.param_start; j < p.vcall.param_end; j++) {
-					if (j != p.vcall.param_start) callback(user_data, ", ");
+				callback(user_data, "VCALL r%u(", n->vcall.target);
+				for (size_t j = n->vcall.param_start; j < n->vcall.param_end; j++) {
+					if (j != n->vcall.param_start) callback(user_data, ", ");
 					
 					callback(user_data, "r%u", f->vla.data[j]);
 				}
@@ -973,32 +958,32 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
             case TB_SWITCH: {
 				callback(user_data, " SWITCH\t");
 				tb_print_type(dt, callback, user_data);
-				callback(user_data, "\tr%u (\n", p.switch_.key);
+				callback(user_data, "\tr%u (\n", n->switch_.key);
 				
-				size_t entry_start = p.switch_.entries_start;
-				size_t entry_count = (p.switch_.entries_end - p.switch_.entries_start) / 2;
+				size_t entry_start = n->switch_.entries_start;
+				size_t entry_count = (n->switch_.entries_end - n->switch_.entries_start) / 2;
 				
 				for (size_t j = 0; j < entry_count; j++) {
 					TB_SwitchEntry* e = (TB_SwitchEntry*)&f->vla.data[entry_start + (j * 2)];
 					
 					callback(user_data, "\t\t\t%u -> L%d,\n", e->key, e->value);
 				}
-				callback(user_data, "\t\t\tdefault -> L%d)\n", p.switch_.default_label);
+				callback(user_data, "\t\t\tdefault -> L%d)\n", n->switch_.default_label);
 				break;
 			}
 			case TB_FUNC_ADDRESS:
-			callback(user_data, "  r%u\t=\t &%s\n", i, p.func_addr->name);
+			callback(user_data, "  r%u\t=\t &%s\n", i, n->func.value);
 			break;
-			case TB_EFUNC_ADDRESS: {
+			case TB_EXTERN_ADDRESS: {
 				TB_ExternalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-				TB_External* e = &m->externals[p.efunc_addr / per_thread_stride][p.efunc_addr % per_thread_stride];
+				TB_External* e = &m->externals[n->external.value / per_thread_stride][n->external.value % per_thread_stride];
 				
 				callback(user_data, "  r%u\t=\t &%s\n", i, e->name);
 				break;
 			}
 			case TB_GLOBAL_ADDRESS: {
 				TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-				TB_Global* g = &m->globals[p.global_addr / per_thread_stride][p.global_addr % per_thread_stride];
+				TB_Global* g = &m->globals[n->global.value / per_thread_stride][n->global.value % per_thread_stride];
 				
 				callback(user_data, "  r%u\t=\t &%s\n", i, g->name);
 				break;
@@ -1006,50 +991,50 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
             case TB_PARAM:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, "  PARAM %u\n", p.param.id);
+			callback(user_data, "  PARAM %u\n", n->param.id);
 			break;
             case TB_PARAM_ADDR:
-			callback(user_data, "  r%u\t=\t&PARAM %u\n", i, f->nodes.payload[p.param_addr.param].param.id);
+			callback(user_data, "  r%u\t=\t&PARAM %u\n", i, f->nodes.data[n->param_addr.param].param.id);
 			break;
             case TB_LOAD:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " *r%u (%d align)\n", p.load.address, p.load.alignment);
+			callback(user_data, " *r%u (%d align)\n", n->load.address, n->load.alignment);
 			break;
             case TB_STORE:
-			callback(user_data, " *r%u \t=\t", p.store.address);
+			callback(user_data, " *r%u \t=\t", n->store.address);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " r%u (%d align)\n", p.store.value, p.store.alignment);
+			callback(user_data, " r%u (%d align)\n", n->store.value, n->store.alignment);
 			break;
             case TB_LABEL:
-			if (p.label.id > 0) callback(user_data, "\n"); 
-			callback(user_data, "L%d: # r%u terminates at r%u\n", p.label.id, i, p.label.terminator);
+			if (n->label.id > 0) callback(user_data, "\n"); 
+			callback(user_data, "L%d: # r%u terminates at r%u\n", n->label.id, i, n->label.terminator);
 			break;
             case TB_GOTO:
-			callback(user_data, "  goto L%d\n", p.goto_.label);
+			callback(user_data, "  goto L%d\n", n->goto_.label);
 			break;
             case TB_IF:
-			callback(user_data, "  if (r%u)\tL%d else L%d\n", p.if_.cond, p.if_.if_true, p.if_.if_false);
+			callback(user_data, "  if (r%u)\tL%d else L%d\n", n->if_.cond, n->if_.if_true, n->if_.if_false);
 			break;
             case TB_PASS:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " PASS r%u\n", p.pass);
+			callback(user_data, " PASS r%u\n", n->pass);
 			break;
             case TB_PHI1:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " PHI L%d:r%u\n", f->nodes.payload[p.phi1.a_label].label.id, p.phi1.a);
+			callback(user_data, " PHI L%d:r%u\n", f->nodes.data[n->phi1.a_label].label.id, n->phi1.a);
 			break;
             case TB_PHI2:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " PHI L%d:r%u, L%d:r%u\n", f->nodes.payload[p.phi2.a_label].label.id, p.phi2.a, f->nodes.payload[p.phi2.b_label].label.id, p.phi2.b);
+			callback(user_data, " PHI L%d:r%u, L%d:r%u\n", f->nodes.data[n->phi2.a_label].label.id, n->phi2.a, f->nodes.data[n->phi2.b_label].label.id, n->phi2.b);
 			break;
             case TB_RET:
 			callback(user_data, "  ret\t\t");
 			tb_print_type(dt, callback, user_data);
-			callback(user_data, " r%u", p.i_arith.a);
+			callback(user_data, " r%u", n->i_arith.a);
 			break;
             default: tb_todo();
 		}

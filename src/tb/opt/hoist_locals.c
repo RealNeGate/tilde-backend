@@ -2,36 +2,37 @@
 
 // We just move them up because it's slightly easier to think about them
 bool tb_opt_hoist_locals(TB_Function* f) {
-	int changes = 0;
-	TB_Register entry_terminator = f->nodes.payload[1].label.terminator;
+	size_t locals_to_move = 0;
 	
-	size_t locals_spotted = 0;
-	loop_range(i, entry_terminator, f->nodes.count) {
-		locals_spotted += f->nodes.type[i] == TB_LOCAL;
+	TB_Node* entry_terminator = &f->nodes.data[f->nodes.data[1].label.terminator];
+	for (TB_Node* n = entry_terminator; n != &f->nodes.data[0]; n = &f->nodes.data[n->next]) {
+		locals_to_move += (n->type == TB_LOCAL);
 	}
 	
-	if (locals_spotted == 0) return false;
+	if (locals_to_move == 0) {
+		return false;
+	}
 	
-	TB_Register baseline = entry_terminator;
-	tb_insert_ops(f, baseline, locals_spotted);
-	entry_terminator += baseline;
+	// place to start putting all the locals 
+	// must go after the parameters
+	TB_Reg local_basepoint = 1;
 	
-	for (TB_Register i = entry_terminator; i < f->nodes.count; i++) {
-		if (f->nodes.type[i] == TB_LOCAL) {
+	// keep moving locals until we run out
+	for (TB_Node* n = &f->nodes.data[1]; locals_to_move > 0; n = &f->nodes.data[n->next]) {
+		if (n->type == TB_LOCAL) {
 			// move to the entry block
-			// try replacing a NOP
-			assert(f->nodes.type[baseline] == TB_NULL);
+			TB_Reg new_reg = tb_function_insert_after(f, local_basepoint);
+			TB_Node* new_node = &f->nodes.data[new_reg];
 			
-			TB_Register new_reg = baseline++;
-			f->nodes.dt[new_reg] = f->nodes.dt[i];
-			f->nodes.type[new_reg] = f->nodes.type[i];
-			f->nodes.payload[new_reg] = f->nodes.payload[i];
+			*new_node = *n;
+			n->type = TB_NULL;
+			locals_to_move--;
 			
-			tb_kill_op(f, i);
-			tb_function_find_replace_reg(f, i, new_reg);
-			changes++;
+			tb_function_find_replace_reg(f, n - f->nodes.data, new_reg);
+		} else if (n->type != TB_PARAM && n->type != TB_PARAM_ADDR) {
+			local_basepoint = (n - f->nodes.data);
 		}
 	}
 	
-	return changes;
+	return true;
 }

@@ -34,7 +34,7 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace) {
 	TB_FOR_EACH_NODE(n, f) {
 		switch (n->type) {
 			TB_FOR_EACH_REG_IN_NODE(X);
-			default: tb_panic(false, "Unknown node type: %d", n->type);
+			default: tb_panic("Unknown node type: %d", n->type);
 		}
 	}
 #undef X

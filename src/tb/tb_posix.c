@@ -26,7 +26,7 @@ void tb_platform_heap_free(void* ptr) {
 }
 
 static char* string_buffer;
-static _Atomic size_t string_head;
+static tb_atomic_size_t string_head;
 
 char* tb_platform_string_alloc(const char* str) {
 	if (!string_buffer) {
@@ -34,7 +34,7 @@ char* tb_platform_string_alloc(const char* str) {
 	}
 	
 	size_t len = strlen(str) + 1;
-	size_t pos = atomic_fetch_add(&string_head, len);
+	size_t pos = tb_atomic_size_add(&string_head, len);
 	
 	char* new_str = &string_buffer[pos];
 	strcpy(new_str, str);
@@ -62,7 +62,7 @@ static Segment* arena_base;
 static Segment* arena_top;
 
 // weird bootleg mutex because i dont get threads.h on windows :(
-static atomic_int arena_lock = 0;
+static tb_atomic_int arena_lock = 0;
 
 void tb_platform_arena_init() {
 	Segment* s = (Segment*)mmap(NULL, ARENA_SEGMENT_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -81,7 +81,7 @@ void* tb_platform_arena_alloc(size_t size) {
 	
 	// lock
 	int expected = 0;
-	while (!atomic_compare_exchange_strong(&arena_lock, &expected, 1)) {}
+	while (!__atomic_compare_exchange_n(&arena_lock, &expected, 1, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {}
 	
 	void* ptr;
 	if (arena_top->used + size - sizeof(Segment) < ARENA_SEGMENT_SIZE) {
@@ -106,7 +106,7 @@ void* tb_platform_arena_alloc(size_t size) {
 	}
 	
 	// unlock
-	arena_lock = 0;
+	__atomic_exchange_n(&arena_lock, 0, __ATOMIC_SEQ_CST);
 	return ptr;
 }
 

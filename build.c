@@ -9,8 +9,19 @@
 #include <stdbool.h>
 
 #ifdef _WIN32
+#define WIN32_MEAN_AND_LEAN
+#include "windows.h"
+
 #define SLASH "\\"
+#define PATH_MAX MAX_PATH
 #else
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <dirent.h>
+#include <errno.h>
+
 #define SLASH "/"
 #endif
 
@@ -39,9 +50,6 @@ const char* str_no_ext(const char* path) {
 }
 
 #ifdef _WIN32
-#define WIN32_MEAN_AND_LEAN
-#include "windows.h"
-
 // https://bobobobo.wordpress.com/2009/02/02/getlasterror-and-getlasterrorasstring/
 LPSTR GetLastErrorAsString(void) {
 	LPSTR buf = NULL;
@@ -58,8 +66,8 @@ typedef struct FileIter {
 } FileIter;
 
 static FileIter file_iter_open(const char* directory) {
-    char buffer[MAX_PATH];
-    snprintf(buffer, MAX_PATH, "%s\\*", directory);
+    char buffer[PATH_MAX];
+    snprintf(buffer, PATH_MAX, "%s\\*", directory);
 	
 	FileIter iter = { 0 };
     iter.find_handle = FindFirstFile(buffer, &iter.find_data);
@@ -91,7 +99,22 @@ static void file_iter_close(FileIter* iter) {
 	}
 }
 #else
-#error "Implement file_iter_* functions"
+typedef struct FileIter {
+    DIR* dir;
+} FileIter;
+
+static FileIter file_iter_open(const char* directory) {
+    return (FileIter){ opendir(directory) };
+}
+
+static char* file_iter_next(FileIter* iter) {
+	struct dirent* dp = readdir(iter->dir);
+	return dp->d_name;
+}
+
+static void file_iter_close(FileIter* iter) {
+    closedir(iter->dir);
+}
 #endif
 
 static char command_buffer[4096];
@@ -106,7 +129,7 @@ static void cmd_append(const char* str) {
 }
 
 #ifdef _WIN32
-static void* cmd_run() {
+static void cmd_run() {
     STARTUPINFO siStartInfo = {
 		.cb = sizeof(STARTUPINFO),
 		.hStdError = GetStdHandle(STD_ERROR_HANDLE),
@@ -124,24 +147,15 @@ static void* cmd_run() {
 		abort();
     }
 	
-    CloseHandle(piProcInfo.hThread);
 	
-	command_buffer[0] = 0;
-	command_length = 0;
-	
-    return piProcInfo.hProcess;
-}
-
-static void cmd_wait(void* process) {
-    DWORD result = WaitForSingleObject(process, INFINITE);
-	
+    DWORD result = WaitForSingleObject(piProcInfo.hProcess, INFINITE);
     if (result == WAIT_FAILED) {
         printf("could not wait on child process: %s\n", GetLastErrorAsString());
 		abort();
     }
 	
     DWORD exit_status;
-    if (GetExitCodeProcess(process, &exit_status) == 0) {
+    if (GetExitCodeProcess(piProcInfo.hProcess, &exit_status) == 0) {
         printf("could not get process exit code: %s\n", GetLastErrorAsString());
 		abort();
     }
@@ -151,23 +165,27 @@ static void cmd_wait(void* process) {
 		abort();
 	}
 	
-    CloseHandle(process);
-}
-
-static void cmd_wait_multiple(size_t count, void** processes) {
-	DWORD result = WaitForMultipleObjects(count, processes, false, INFINITE);
+    CloseHandle(piProcInfo.hThread);
+    CloseHandle(piProcInfo.hProcess);
 	
-    if (result == WAIT_FAILED) {
-        printf("could not wait on child process: %s\n", GetLastErrorAsString());
-		abort();
-    }
+	command_buffer[0] = 0;
+	command_length = 0;
 }
 #else
-#error "Implement posix based cmd_run(...) & cmd_wait(...)"
+static void cmd_run() {
+	int exit_status = system(command_buffer);
+	if (exit_status != 0) {
+		printf("command exited with exit code %d\n", exit_status);
+		abort();
+	}
+	
+	command_buffer[0] = 0;
+	command_length = 0;
+}
 #endif
 
 static void delete_intermediates(const char* ext) {
-	char temp[MAX_PATH];
+	char temp[PATH_MAX];
 	
 	const char* path;
 	FileIter it = file_iter_open("build" SLASH);
@@ -209,23 +227,23 @@ static void compile_with_cl() {
 	cmd_append("/arch:AVX /GL /Ox /WX /GS- /DNDEBUG /D_CRT_SECURE_NO_WARNINGS");
 #endif
 	
-	cmd_wait(cmd_run());
+	cmd_run();
 	
 	////////////////////////////////
 	// Run Linker
 	////////////////////////////////
 	cmd_append("lib /out:build\\tildebackend.lib build\\*.obj");
-	cmd_wait(cmd_run());
+	cmd_run();
 	
 	delete_intermediates(".obj");
 }
 
 static void compile_file_with_cc(const char* cc_command, const char* input, const char* output) {
 	cmd_append(cc_command);
-	cmd_append(" -march=nehalem -Werror -Wall -Wno-unused-function -g -gcodeview -c ");
+	cmd_append(" -march=nehalem -Werror -Wall -Wno-unused-function -g -c ");
 	
 #if _WIN32
-	cmd_append("-D_CRT_SECURE_NO_WARNINGS ");
+	cmd_append("-D_CRT_SECURE_NO_WARNINGS -gcodeview ");
 #endif
 	
 #if defined(RELEASE_BUILD)
@@ -240,7 +258,7 @@ static void compile_file_with_cc(const char* cc_command, const char* input, cons
 	cmd_append(output ? output : str_no_ext(input));
 	cmd_append(".o");
 	
-	cmd_wait(cmd_run());
+	cmd_run();
 }
 
 static void compile_with_cc(const char* cc_command) {
@@ -251,8 +269,14 @@ static void compile_with_cc(const char* cc_command) {
 	
 	FileIter it = file_iter_open("src" SLASH "tb");
 	while ((path = file_iter_next(&it))) {
-		// ignore tb_posix on MSVC compiles
-		if (str_ends_with(path, ".c") && strcmp(path, "tb_posix.c")) {
+		bool ignore = false;
+#if _WIN32
+		ignore = (strcmp(path, "tb_posix.c") == 0);
+#else
+		ignore = (strcmp(path, "tb_win32.c") == 0);
+#endif
+		
+		if (str_ends_with(path, ".c") && !ignore) {
 			compile_file_with_cc(cc_command, path, NULL);
 		}
 	}
@@ -279,7 +303,7 @@ static void compile_with_cc(const char* cc_command) {
 		}
 	}
 	file_iter_close(&it);
-	cmd_wait(cmd_run());
+	cmd_run();
 	
 	delete_intermediates(".o");
 }

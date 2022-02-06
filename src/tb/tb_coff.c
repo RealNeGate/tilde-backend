@@ -350,7 +350,7 @@ static uint16_t find_or_make_cv_type(TB_Emitter* sect,
 	uint32_t hash = 0;
 	loop(i, length) {
 		hash ^= key_as_u32[i];
-		hash = _rotl(hash, 3);
+		hash = LEFTROTATE(hash, 3);
 	}
 	
 	// Search (if there's a collision replace the old one)
@@ -554,7 +554,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 					*((uint8_t*)  &data[6])  = 0;                  // calling convention (default)
 					*((uint8_t*)  &data[7])  = 0;                  // function attributes
 					*((uint8_t*)  &data[8])  = proto->param_count; // number of params
-					*((uint16_t*) &data[10]) = 0;                  // argument list type
+					*((uint16_t*) &data[10]) = arg_list;           // argument list type
 					
 					file_table_offset[i] = find_or_make_cv_type(&debugt_out, &type_entry_count, lookup_table, length, data);
 					tb_tls_restore(tls, data);

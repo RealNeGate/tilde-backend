@@ -21,6 +21,9 @@ Currently there's still a lot of work to be done before the backend reached it's
 - [ ] Optimized Aarch64 support
 - [ ] Optimized x64 support
 
-## Installing on Windows
+## Compiling
 
 Clone the repo with `git clone https://github.com/RealNeGate/tilde-backend.git`
+Then just compile & run the build.c with the C compiler of your choice
+You should now have either a tildebackend.lib or tildebackend.a depending on the platform
+Copy this and the `tb.h` file into your project and use it as you please

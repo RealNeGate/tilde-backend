@@ -3,16 +3,18 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+static_assert(sizeof(int) == sizeof(long), "expected LLP64");
+
 int tb_atomic_int_load(int* dst) {
-	return InterlockedOr(dst, 0);
+	return InterlockedOr((long*)dst, 0);
 }
 
 int tb_atomic_int_add(int* dst, int src) {
-	return InterlockedExchangeAdd(dst, src);
+	return InterlockedExchangeAdd((long*)dst, src);
 }
 
 int tb_atomic_int_store(int* dst, int src) {
-	return InterlockedExchange(dst, src);
+	return InterlockedExchange((long*)dst, src);
 }
 
 size_t tb_atomic_size_load(size_t* dst) {

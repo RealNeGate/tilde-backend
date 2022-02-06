@@ -183,10 +183,9 @@ inline static void inst2(Ctx* ctx, Inst2Type op, const Val* a, const Val* b, int
 			if (a->type == VAL_GLOBAL) patch4(code_pos() - 4, -2);
 			
 			uint32_t imm = b->imm;
-			uint32_t imm_hi = imm & 0xFFFF0000;
-			assert(imm_hi == 0xFFFF0000 || imm_hi == 0);
+			assert((imm & 0xFFFF0000) == 0xFFFF0000 || (imm & 0xFFFF0000) == 0);
 			
-			emit2(b->imm);
+			emit2(imm);
 		} else {
 			if (a->type == VAL_GLOBAL) patch4(code_pos() - 4, -4);
 			

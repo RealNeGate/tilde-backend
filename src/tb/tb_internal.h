@@ -3,11 +3,7 @@
 #include <time.h>
 #include <limits.h>
 
-#if __STDC_VERSION__ >= 201112L
-#error "C11+ compiler required"
-#endif
-
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && !defined(__clang__)
 #include <immintrin.h>
 #define thread_local __declspec(thread)
 #else
@@ -489,7 +485,7 @@ b = temp; \
 #define TB_DEBUG_BUILD 0
 #endif
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && !defined(__clang__)
 #  if TB_DEBUG_BUILD
 #    define tb_todo() assert(0 && "TODO")
 #    define tb_unreachable() __assume(0)
@@ -522,7 +518,7 @@ for (size_t iterator = (start), end__ = (count); iterator < end__; ++iterator)
 #define loop_reverse(iterator, count) \
 for (size_t iterator = (count); iterator--;)
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && !defined(__clang__)
 inline static int tb_ffs(uint32_t x) {
 	unsigned long index;
 	

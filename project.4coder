@@ -33,7 +33,7 @@ command_list = {
 		.save_dirty_files = true,
 		.cursor_at_end = true,
 		.cmd = {
-			{ "build_windows.cmd debug cuik", .os = "win" },
+			{ "cl /Fo:build /nologo build.c && build.exe", .os = "win" },
 		},
 	},
 	
@@ -66,7 +66,7 @@ command_list = {
 		.save_dirty_files = true,
 		.cursor_at_end = true,
 		.cmd = {
-			{ "build_windows.cmd release cuik", .os = "win" },
+			{ "cl /Fo:build /D:RELEASE_BUILD /nologo build.c && build.exe", .os = "win" },
 		},
 	}
 };

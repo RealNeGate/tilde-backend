@@ -1096,7 +1096,6 @@ static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const 
 		// TB_AND TB_OR TB_XOR TB_ADD TB_SUB TB_MUL
 		if (val->type >= TB_AND && val->type <= TB_MUL) {
 			TB_Node* a = &f->nodes.data[val->i_arith.a];
-			TB_Node* b = &f->nodes.data[val->i_arith.b];
 			
 			bool is_phi = f->nodes.data[r].type == TB_PHI2;
 			bool folded = false;
@@ -1279,7 +1278,6 @@ static int get_data_type_size(const TB_DataType dt) {
 static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Reg from, TB_Reg from_terminator, TB_Reg to, TB_Reg to_terminator) {
 	ctx->phi_queue_count = 0;
 	
-	TB_Node* end = &f->nodes.data[to_terminator];
 	TB_FOR_EACH_NODE_RANGE(n, f, to, to_terminator) {
 		if (n->type == TB_PHI2) ctx->phi_queue[ctx->phi_queue_count++] = n;
 	}

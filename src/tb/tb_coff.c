@@ -286,10 +286,10 @@ static void md5sum_file(uint8_t* out_bytes, const char* filepath) {
 	}
 	
 	size_t len = file_stats.st_size;
-	char* data = malloc(len + 17);
+	unsigned char* data = malloc(len + 17);
 	
 	fseek(file, 0, SEEK_SET);
-	size_t length_read = fread(data, 1, len, file);
+	fread(data, 1, len, file);
 	
 	md5(data, len);
 	
@@ -535,14 +535,13 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 					uint32_t* param_data = (uint32_t*) &data[4];
 					loop(j, proto->param_count) {
 						uint16_t param_type_entry = get_codeview_type(proto->params[j]);
-						param_data[j] = proto->param_count;
+						param_data[j] = param_type_entry;
 					}
 					
 					arg_list = find_or_make_cv_type(&debugt_out, &type_entry_count, lookup_table, length, data);
 					tb_tls_restore(tls, data);
 				}
 				
-				uint16_t proc_type;
 				{
 					size_t length = 2 + 2 + 4 + 1 + 1 + 2 + 4;
 					uint16_t* data = tb_tls_push(tls, length);
@@ -581,7 +580,6 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 				+ (cv8_state.num_syms[SYMTYPE_GDATA] * 10) 
 				+ (cv8_state.symbol_lengths);*/
 			
-			uint32_t sym_length = (m->compiled_functions.count * 7);
 			size_t path_len = strlen(path) + 1;
 			
 			tb_out4b(&debugs_out, 0x00000004);
@@ -598,7 +596,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 				tb_out4b(&debugs_out, 0); /* ASM language */
 				
 				tb_out_reserve(&debugs_out, sizeof(creator_str));
-				tb_outs_UNSAFE(&debugs_out, path_len, path);
+				tb_outs_UNSAFE(&debugs_out, path_len, (const uint8_t*)path);
 			}
 			
 			// Symbol info properties

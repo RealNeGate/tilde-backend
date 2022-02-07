@@ -3,6 +3,7 @@ build/
 
 *.o
 *.obj
+*.exe
 
 debug.bat
 run.bat

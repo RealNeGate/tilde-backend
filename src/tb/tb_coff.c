@@ -383,7 +383,7 @@ static uint16_t find_or_make_cv_type(TB_Emitter* sect,
 
 void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, bool emit_debug_info) {
 	TB_TemporaryStorage* tls = tb_tls_allocate();
-	const bool emit_unwind_info = false;
+	const bool emit_unwind_info = true;
 	
 	// The prologue and epilogue generators need some storage
 	uint8_t* proepi_buffer = tb_tls_push(tls, PROEPI_BUFFER);
@@ -1080,7 +1080,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 			
 			fwrite(&(COFF_ImageReloc) {
 					   .Type = IMAGE_REL_AMD64_ADDR32NB,
-					   .SymbolTableIndex = 8, // pdata section
+					   .SymbolTableIndex = 8, // xdata section
 					   .VirtualAddress = (i * 12) + 8
 				   }, sizeof(COFF_ImageReloc), 1, f);
 		}

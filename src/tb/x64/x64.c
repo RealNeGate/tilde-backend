@@ -5,18 +5,18 @@
 // the DAG that is my IR, essentially when a function requires a hard value it
 // will generate and evaluate a tree because then i can perform more optimizations
 // over it.
+static const char* GPR_NAMES[] = {
+	"RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI",
+	"R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"
+};
+
 #include "x64.h"
 #include "inst.h"
 #include "proepi.h"
 #include "tree.h"
 
-#if 0
+#if 1
 #define DEBUG_LOG(...) printf(__VA_ARGS__)
-
-static const char* GPR_NAMES[] = {
-	"RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI",
-	"R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"
-};
 #else
 #define DEBUG_LOG(...) ((void)0)
 #endif
@@ -699,6 +699,11 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				
 				// Evict the GPRs that are caller saved
 				uint16_t caller_saved = (ctx->is_sysv ? SYSV_ABI_CALLER_SAVED : WIN64_ABI_CALLER_SAVED);
+				
+				// we dont evict the parameter slots just yet
+				if (ctx->is_sysv) caller_saved &= ~(RSI | RDI | RCX | RDX | R8 | R9);
+				else caller_saved &= ~(RCX | RDX | R8 | R9);
+				
 				for (size_t j = 0; j < 16; j++) {
 					if (caller_saved & (1u << j)) {
 						evict_gpr(ctx, f, j);
@@ -725,9 +730,16 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 					ctx->gpr_allocator |= (1u << RAX);
 				}
 				
+				//printf("Call %s\n", f->name);
+				
 				// evaluate parameters
+				uint16_t expected_reserved_gprs = 0;
+				uint16_t expected_reserved_xmms = 0;
 				const GPR* parameter_gprs = ctx->is_sysv ? SYSV_GPR_PARAMETERS : WIN64_GPR_PARAMETERS;
 				for (size_t j = 0; j < param_count; j++) {
+					ctx->gpr_allocator |= expected_reserved_gprs;
+					ctx->xmm_allocator |= expected_reserved_xmms;
+					
 					TB_Reg param_reg = f->vla.data[param_start + j];
 					Val param = eval_rvalue(ctx, f, param_reg);
 					
@@ -749,6 +761,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 							
 							inst2sse(ctx, FP_MOV, &dst, &param, flags);
 						} else if (param.dt.type != TB_VOID) {
+							evict_gpr(ctx, f, parameter_gprs[j]);
+							
 							Val dst = val_gpr(param.dt.type, parameter_gprs[j]);
 							if (!is_value_gpr(&param, parameter_gprs[j])) {
 								inst2(ctx, MOV, &dst, &param, param.dt.type);
@@ -792,8 +806,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 					
 					if (j < register_params) {
 						// reserve for a bit
-						if (is_xmm) ctx->xmm_allocator |= (1u << j);
-						else ctx->gpr_allocator |= (1u << parameter_gprs[j]);
+						if (is_xmm) expected_reserved_xmms |= (1u << j);
+						else expected_reserved_gprs |= (1u << parameter_gprs[j]);
 					}
 				}
 				
@@ -830,6 +844,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 					
 					free_val(ctx, f, target);
 				}
+				
+				//printf("End\n\n");
 				
 				ctx->gpr_allocator = before_gpr_reserves;
 				ctx->xmm_allocator = before_xmm_reserves;

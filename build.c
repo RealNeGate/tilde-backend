@@ -184,6 +184,8 @@ static void cmd_run() {
 }
 #endif
 
+static const char* output_lib_path = NULL;
+
 static void delete_intermediates(const char* ext) {
 	char temp[PATH_MAX];
 	
@@ -217,14 +219,26 @@ static void compile_with_cl() {
 	}
 	file_iter_close(&it);
 	
+	// optimizer
+	it = file_iter_open("src" SLASH "tb" SLASH "opt" SLASH);
+	while ((path = file_iter_next(&it))) {
+		// ignore tb_posix on MSVC compiles
+		if (str_ends_with(path, ".c")) {
+			cmd_append("src" SLASH "tb" SLASH "opt" SLASH);
+			cmd_append(path);
+			cmd_append(" ");
+		}
+	}
+	file_iter_close(&it);
+	
 	// x64 target module
 	cmd_append("src\\tb\\x64\\x64.c ");
 	
 	// compiler settings
 #if defined(RELEASE_BUILD)
-	cmd_append("/arch:AVX /MTd /Od /WX /Zi /D_DEBUG /RTC1 /D_CRT_SECURE_NO_WARNINGS");
-#else
 	cmd_append("/arch:AVX /GL /Ox /WX /GS- /DNDEBUG /D_CRT_SECURE_NO_WARNINGS");
+#else
+	cmd_append("/arch:AVX /MTd /Od /WX /Zi /D_DEBUG /RTC1 /D_CRT_SECURE_NO_WARNINGS");
 #endif
 	
 	cmd_run();
@@ -232,13 +246,15 @@ static void compile_with_cl() {
 	////////////////////////////////
 	// Run Linker
 	////////////////////////////////
-	cmd_append("lib /out:build\\tildebackend.lib build\\*.obj");
+	cmd_append("lib /out:");
+	cmd_append(output_lib_path);
+	cmd_append(" build\\*.obj");
 	cmd_run();
 	
 	delete_intermediates(".obj");
 }
 
-static void compile_file_with_cc(const char* cc_command, const char* input, const char* output) {
+static void compile_file_with_cc(const char* cc_command, const char* directory, const char* input, const char* output) {
 	cmd_append(cc_command);
 	cmd_append(" -march=nehalem -Werror -Wall -Wno-unused-function -g -c ");
 	
@@ -252,7 +268,7 @@ static void compile_file_with_cc(const char* cc_command, const char* input, cons
 	cmd_append("-O0 -D_DEBUG ");
 #endif
 	
-	cmd_append("src" SLASH "tb" SLASH);
+	cmd_append(directory);
 	cmd_append(input);
 	cmd_append(" -c -o build" SLASH);
 	cmd_append(output ? output : str_no_ext(input));
@@ -277,22 +293,35 @@ static void compile_with_cc(const char* cc_command) {
 #endif
 		
 		if (str_ends_with(path, ".c") && !ignore) {
-			compile_file_with_cc(cc_command, path, NULL);
+			compile_file_with_cc(cc_command, "src" SLASH "tb" SLASH, path, NULL);
+		}
+	}
+	file_iter_close(&it);
+	
+	// optimizer
+	it = file_iter_open("src" SLASH "tb" SLASH "opt");
+	while ((path = file_iter_next(&it))) {
+		// ignore tb_posix on MSVC compiles
+		if (str_ends_with(path, ".c")) {
+			compile_file_with_cc(cc_command, "src" SLASH "tb" SLASH "opt" SLASH, path, NULL);
 		}
 	}
 	file_iter_close(&it);
 	
 	// x64 target module
-	compile_file_with_cc(cc_command, "x64" SLASH "x64.c", "x64");
+	compile_file_with_cc(cc_command, "src" SLASH "tb" SLASH, "x64" SLASH "x64.c", "x64");
 	
 	////////////////////////////////
 	// Run Linker
 	////////////////////////////////
 #if _WIN32
-	cmd_append("llvm-ar rc build\\tildebackend.lib ");
+	cmd_append("llvm-ar rc ");
 #else
-	cmd_append("ar -rcs build/tildebackend.a ");
+	cmd_append("ar -rcs ");
 #endif
+	
+	cmd_append(output_lib_path);
+	cmd_append(" ");
 	
 	it = file_iter_open("build" SLASH);
 	while ((path = file_iter_next(&it))) {
@@ -309,6 +338,16 @@ static void compile_with_cc(const char* cc_command) {
 }
 
 int main(int argc, char** argv) {
+	if (argc >= 2) {
+		output_lib_path = argv[1];
+	} else {
+#if _WIN32
+		output_lib_path = "build\\tildebackend.lib";
+#else
+		output_lib_path = "build/tildebackend.a";
+#endif
+	}
+	
 	// don't wanna buffer stdout
 	setvbuf(stdout, NULL, _IONBF, 0);
 	
@@ -331,5 +370,6 @@ int main(int argc, char** argv) {
 	compile_with_cc("cc");
 #endif
 	
+	printf("Outputting to: %s...\n", output_lib_path);
 	return 0;
 }

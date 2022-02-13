@@ -161,8 +161,7 @@ static void cmd_run() {
     }
 	
 	if (exit_status) {
-		printf("exited with code: %lu\n", exit_status);
-		abort();
+		exit(exit_status);
 	}
 	
     CloseHandle(piProcInfo.hThread);
@@ -201,10 +200,19 @@ static void delete_intermediates(const char* ext) {
 }
 
 static void compile_with_cl() {
-	////////////////////////////////
-	// Run Compiler
-	////////////////////////////////
-	cmd_append("cl /c /MP /Fo:build\\ ");
+	cmd_append("cl /Fo:build\\ /MP /arch:AVX /D_CRT_SECURE_NO_WARNINGS ");
+	
+#if defined(BUILD_FUZZER)
+	cmd_append("/Fe:build\\fuzzer.exe ");
+#else
+	cmd_append("/c ");
+#endif
+	
+#if defined(RELEASE_BUILD)
+	cmd_append("/GL /Ox /WX /GS- /DNDEBUG ");
+#else
+	cmd_append("/MTd /Od /WX /Zi /D_DEBUG /RTC1 ");
+#endif
 	
 	// all the source files
 	const char* path;
@@ -234,11 +242,9 @@ static void compile_with_cl() {
 	// x64 target module
 	cmd_append("src\\tb\\x64\\x64.c ");
 	
-	// compiler settings
-#if defined(RELEASE_BUILD)
-	cmd_append("/arch:AVX /GL /Ox /WX /GS- /DNDEBUG /D_CRT_SECURE_NO_WARNINGS");
-#else
-	cmd_append("/arch:AVX /MTd /Od /WX /Zi /D_DEBUG /RTC1 /D_CRT_SECURE_NO_WARNINGS");
+	// fuzzer.c
+#if defined(BUILD_FUZZER)
+	cmd_append("src\\fuzzer.c ");
 #endif
 	
 	cmd_run();
@@ -246,17 +252,23 @@ static void compile_with_cl() {
 	////////////////////////////////
 	// Run Linker
 	////////////////////////////////
+#if !defined(BUILD_FUZZER)
 	cmd_append("lib /out:");
 	cmd_append(output_lib_path);
 	cmd_append(" build\\*.obj");
 	cmd_run();
 	
 	delete_intermediates(".obj");
+#endif
 }
 
 static void compile_file_with_cc(const char* cc_command, const char* directory, const char* input, const char* output) {
 	cmd_append(cc_command);
-	cmd_append(" -march=nehalem -Werror -Wall -Wno-unused-function -g -c ");
+	cmd_append(" -march=nehalem -Werror -Wall -Wno-unused-function -g ");
+	
+#if !defined(BUILD_FUZZER)
+	cmd_append(" -c ");
+#endif
 	
 #if _WIN32
 	cmd_append("-D_CRT_SECURE_NO_WARNINGS -gcodeview ");
@@ -270,7 +282,8 @@ static void compile_file_with_cc(const char* cc_command, const char* directory, 
 	
 	cmd_append(directory);
 	cmd_append(input);
-	cmd_append(" -c -o build" SLASH);
+	
+	cmd_append("-o build" SLASH);
 	cmd_append(output ? output : str_no_ext(input));
 	cmd_append(".o");
 	
@@ -311,9 +324,18 @@ static void compile_with_cc(const char* cc_command) {
 	// x64 target module
 	compile_file_with_cc(cc_command, "src" SLASH "tb" SLASH, "x64" SLASH "x64.c", "x64");
 	
+	// fuzzer.c
+#if defined(BUILD_FUZZER)
+	compile_file_with_cc(cc_command, "src" SLASH, "src" SLASH "fuzzer.c", "fuzzer");
+#endif
+	
 	////////////////////////////////
 	// Run Linker
 	////////////////////////////////
+#if defined(BUILD_FUZZER)
+	printf("Figure it out, i can't think rn\n");
+	abort();
+#else
 #if _WIN32
 	cmd_append("llvm-ar rc ");
 #else
@@ -335,6 +357,7 @@ static void compile_with_cc(const char* cc_command) {
 	cmd_run();
 	
 	delete_intermediates(".o");
+#endif
 }
 
 int main(int argc, char** argv) {
@@ -370,6 +393,12 @@ int main(int argc, char** argv) {
 	compile_with_cc("cc");
 #endif
 	
+#if !defined(BUILD_FUZZER)
 	printf("Outputting to: %s...\n", output_lib_path);
+	system("cd W:/Workspace/Cuik/ && build.bat");
+#else
+	printf("Outputting fuzzer to: build/fuzzer.exe...\n");
+#endif
+	
 	return 0;
 }

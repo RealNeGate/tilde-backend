@@ -89,8 +89,10 @@ static int ir_gen(FuzzerInfo* i) {
 			TB_DataType dt = gen_random_int_dt();
 			
 			if (var_pool_size > 0) {
-				TB_Reg a = pool[gen_random(0, pool_size)];
-				TB_Reg b = pool[gen_random(0, pool_size)];
+				int start_search = pool_size > 5 ? pool_size - 5 : 0;
+				
+				TB_Reg a = pool[gen_random(start_search, pool_size)];
+				TB_Reg b = pool[gen_random(start_search, pool_size)];
 				
 				a = cast_into(f, a, dt);
 				
@@ -147,16 +149,19 @@ static int ir_gen(FuzzerInfo* i) {
 				
 				tb_inst_store(f, dt, addr, pool[gen_random(0, pool_size)], align);
 			} else if (rng == 3) {
-				TB_Reg addr = tb_inst_local(f, dt.type == TB_I64 ? 8 : 4, dt.type == TB_I64 ? 8 : 4);
+				int size;
+				switch (dt.type) {
+					case TB_I8: size = 1; break;
+					case TB_I16: size = 2;  break;
+					case TB_I32: size = 4; break;
+					case TB_I64: size = 8; break;
+					default: __assume(0);
+				}
+				
+				TB_Reg addr = tb_inst_local(f, size, size);
 				var_pool[var_pool_size++] = addr;
 				
-				int size, align;
-				tb_get_function_get_local_info(f, addr, &size, &align);
-				
-				// just use the type of the allocation
-				dt = align == 8 ? TB_TYPE_I64 : TB_TYPE_I32;
-				
-				tb_inst_store(f, dt, addr, pool[gen_random(0, pool_size)], align);
+				tb_inst_store(f, dt, addr, pool[gen_random(0, pool_size)], size);
 			}
 		}
 		

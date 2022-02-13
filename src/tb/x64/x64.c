@@ -1,10 +1,5 @@
 // This entire module is one translation unit so that it doesn't have to worry
 // about C's crappy support for public and private interfaces.
-//
-// my model for x64 code generation is just building small expression trees from
-// the DAG that is my IR, essentially when a function requires a hard value it
-// will generate and evaluate a tree because then i can perform more optimizations
-// over it.
 static const char* GPR_NAMES[] = {
 	"RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI",
 	"R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"
@@ -13,6 +8,7 @@ static const char* GPR_NAMES[] = {
 #include "x64.h"
 #include "inst.h"
 #include "proepi.h"
+#include "reg_alloc.h"
 #include "tree.h"
 
 #if 1
@@ -23,10 +19,11 @@ static const char* GPR_NAMES[] = {
 
 static int get_data_type_size(const TB_DataType dt);
 static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Reg bb_end);
-static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const Val* dst, TB_Reg r, TB_Reg dst_reg, TB_Reg val_reg);
+static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const Val* dst, TB_Reg r, TB_Reg dst_reg, TB_Reg val_reg, bool place_fence);
 
 // Just handles the PHI nodes that we'll encounter when leaving `from` into `to`
 static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Reg from, TB_Reg from_terminator, TB_Reg to, TB_Reg to_terminator);
+static bool does_compiler_fence_do_stuff(Ctx* restrict ctx, TB_Function* f, TB_Reg start, TB_Reg end, bool dont_handle_last_node);
 
 typedef struct FunctionTally {
 	size_t memory_usage;
@@ -141,9 +138,7 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 		} else {
 			ctx = tb_tls_push(tls, ctx_size);
 			
-			// we only care about clearing out the actual context
-			// data, not the tree nodes
-			memset(ctx, 0, sizeof(Ctx));
+			memset(ctx, 0, ctx_size);
 			
 			ctx->use_count = tb_tls_push(tls, f->nodes.count * sizeof(TB_Reg));
 			ctx->phis = tb_tls_push(tls, tally.phi_count * sizeof(PhiValue));
@@ -198,19 +193,13 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 	// caller must reserve 32bytes called the shadow space.
 	if (!ctx->is_sysv && caller_usage > 0 && caller_usage < 4) caller_usage = 4;
 	
-	// Reserve stack and base pointer
-	ctx->gpr_allocator |= 1u << RSP;
-	ctx->gpr_allocator |= 1u << RBP;
+	ctx->is_tallying = true;
 	
 	// Allocate local and parameter stack slots
 	//tb_function_print(f, tb_default_print_callback, stdout);
 	//printf("\n\n\n");
 	
 	const TB_FunctionPrototype* restrict proto = f->prototype;
-	
-	loop(i, f->nodes.count) {
-		ctx->values[i] = (Val){ 0 };
-	}
 	
 	loop(i, (size_t)proto->param_count) {
 		TB_DataType dt = proto->params[i];
@@ -223,7 +212,7 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 		if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
 			// xmm parameters
 			if (i < 4) {
-				ctx->xmm_allocator |= (1u << i);
+				ctx->xmm_allocator[i] = TB_FIRST_PARAMETER_REG + i;
 				ctx->values[TB_FIRST_PARAMETER_REG + i] = val_xmm(dt, i);
 			} else {
 				ctx->values[TB_FIRST_PARAMETER_REG + i] = val_stack(dt, 16 + (i * 8));
@@ -232,10 +221,10 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 			// gpr parameters
 			if (ctx->is_sysv && i < 6) { 
 				ctx->values[TB_FIRST_PARAMETER_REG + i] = val_gpr(dt.type, SYSV_GPR_PARAMETERS[i]);
-				ctx->gpr_allocator |= (1u << SYSV_GPR_PARAMETERS[i]);
+				ctx->gpr_allocator[SYSV_GPR_PARAMETERS[i]] = TB_FIRST_PARAMETER_REG + i;
 			} else if (i < 4) { 
 				ctx->values[TB_FIRST_PARAMETER_REG + i] = val_gpr(dt.type, WIN64_GPR_PARAMETERS[i]);
-				ctx->gpr_allocator |= (1u << WIN64_GPR_PARAMETERS[i]);
+				ctx->gpr_allocator[WIN64_GPR_PARAMETERS[i]] = TB_FIRST_PARAMETER_REG + i;
 			} else {
 				ctx->values[TB_FIRST_PARAMETER_REG + i] = val_stack(dt, 16 + (i * 8));
 			}
@@ -313,10 +302,7 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 		if (end->type != TB_LABEL) next_bb = &f->nodes.data[next_bb->next];
 		
 		TB_Reg next_bb_reg = next_bb - f->nodes.data;
-		if (next_bb_reg && ctx->last_fence != next_bb_reg) {
-			eval_compiler_fence(ctx, f, ctx->last_fence, next_bb_reg, true);
-			ctx->last_fence = next_bb_reg;
-		}
+		bool needs_to_execute_fence = (next_bb_reg && ctx->last_fence != next_bb_reg);
 		
 		// Evaluate the terminator
 		if (end->type == TB_RET) {
@@ -325,6 +311,10 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 			// Evaluate return value
 			if (end->ret.value) {
 				Val value = eval_rvalue(ctx, f, end->ret.value);
+				
+				if (needs_to_execute_fence) {
+					eval_compiler_fence(ctx, f, ctx->last_fence, next_bb_reg, true);
+				}
 				
 				if (TB_IS_FLOAT_TYPE(dt.type) || dt.width) {
 					// Float results use XMM0
@@ -387,6 +377,30 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 			Val cond = eval(ctx, f, end->if_.cond, true);
 			ctx->is_if_statement_next = false;
 			
+			bool cond_is_a_gpr_we_wanna_kill = false;
+			if (needs_to_execute_fence) {
+				if (cond.type == VAL_FLAGS && does_compiler_fence_do_stuff(ctx, f, ctx->last_fence, next_bb_reg, true)) {
+					// save out the flags we wanted
+					Val val = alloc_gpr(ctx, f, end->if_.cond, TB_I8);
+					val.is_temp = true;
+					
+					// mov v, 0
+					Val zero = val_imm(TB_TYPE_I8, 0);
+					inst2(ctx, MOV, &val, &zero, TB_I8);
+					
+					// setcc v
+					if (val.gpr >= 8) emit(rex(true, val.gpr, val.gpr, 0));
+					emit(0x0F);
+					emit(0x90 + cond.cond);
+					emit(mod_rx_rm(MOD_DIRECT, val.gpr, val.gpr));
+					
+					kill(ctx, f, end->if_.cond, cond);
+					cond = val;
+				}
+				
+				eval_compiler_fence(ctx, f, ctx->last_fence, next_bb_reg, true);
+			}
+			
 			if (cond.type == VAL_IMM) {
 				TB_Label dst = (cond.imm ? if_true : if_false);
 				
@@ -429,12 +443,17 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 				jcc(ctx, cc, if_true);
 				if (!has_fallthrough) jmp(ctx, if_false);
 			}
+			
+			kill(ctx, f, end->if_.cond, cond);
 		} else if (end->type == TB_GOTO) {
 			// TODO(NeGate): save out any phi nodes
 			assert(next_bb->type == TB_LABEL);
 			
-			TB_Label target_label = end->goto_.label;
+			if (needs_to_execute_fence) {
+				eval_compiler_fence(ctx, f, ctx->last_fence, next_bb_reg, true);
+			}
 			
+			TB_Label target_label = end->goto_.label;
 			TB_Reg target = tb_find_reg_from_label(f, target_label);
 			TB_Reg target_end = f->nodes.data[target].label.terminator;
 			
@@ -444,9 +463,12 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 			if (fallthrough_label != end->goto_.label) jmp(ctx, end->goto_.label);
 		} else if (end->type == TB_LABEL) {
 			// simple fallthrough
-			// TODO(NeGate): save out any phi nodes
-			TB_Reg next_terminator = end->label.terminator;
+			if (needs_to_execute_fence) {
+				eval_compiler_fence(ctx, f, ctx->last_fence, next_bb_reg, true);
+			}
 			
+			// save out any phi nodes
+			TB_Reg next_terminator = end->label.terminator;
 			eval_terminator_phis(ctx, f, bb, bb_end, bb_end, next_terminator);
 		} else if (end->type == TB_TRAP) {
 			// ud2
@@ -456,6 +478,11 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 			static_assert(_Alignof(TB_SwitchEntry) == _Alignof(TB_Reg), "We don't want any unaligned accesses");
 			
 			Val key = eval(ctx, f, end->switch_.key, true);
+			
+			if (needs_to_execute_fence) {
+				eval_compiler_fence(ctx, f, ctx->last_fence, next_bb_reg, true);
+			}
+			
 			if (key.type == VAL_IMM) {
 				size_t entry_count = (end->switch_.entries_end - end->switch_.entries_start) / 2;
 				
@@ -481,12 +508,14 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 				TB_DataType dt = key.dt;
 				if (dt.type == TB_BOOL) dt.type = TB_I8;
 				
-				if (key.type != VAL_GPR) {
-					Val new_val = alloc_gpr(ctx, f, TB_PTR);
-					inst2(ctx, CMP, &new_val, &key, dt.type);
-					free_val(ctx, f, key);
-					
+				if (key.type == VAL_GPR) {
+					kill(ctx, f, end->switch_.key, key);
+				} else {
+					Val new_val = alloc_gpr(ctx, f, TB_TEMP_REG, TB_PTR);
+					inst2(ctx, MOV, &new_val, &key, dt.type);
 					key = new_val;
+					
+					free_gpr(ctx, f, new_val.gpr);
 				}
 				
 				// Shitty if-chain
@@ -506,10 +535,7 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 				}
 				
 				jmp(ctx, end->switch_.default_label);
-				free_val(ctx, f, key);
 			}
-			
-			done_with(end->switch_.key);
 		} else if (end->type == TB_UNREACHABLE) {
 			// doesn't need to do anything because it's all UB from here
 		} else {
@@ -518,8 +544,9 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 		
 		// kill any values, unless it's the last basic block then it doesn't matter :p
 		if (next_bb_reg) loop_range(i, bb, bb_end) {
-			if (ctx->use_count[i] == 0 && ctx->values[i].type != VAL_NONE) { 
-				done_with(i);
+			if (ctx->use_count[i] == 0 && ctx->values[i].type != VAL_NONE) {
+				free_val(ctx, f, i, ctx->values[i]);
+				ctx->values[i] = (Val){ 0 };
 			}
 		}
 		
@@ -594,10 +621,7 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 	return func_out;
 }
 
-// If there's any non-side effect instructions which happen before a 
-// fence/side-effect instruction but are used afterwards, they're evaluated
-// before the fence.
-static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Reg start, TB_Reg end, bool dont_handle_last_node) {
+static bool does_compiler_fence_do_stuff(Ctx* restrict ctx, TB_Function* f, TB_Reg start, TB_Reg end, bool dont_handle_last_node) {
 	TB_FOR_EACH_NODE_RANGE(n, f, start, end) {
 		if (dont_handle_last_node && n->next == end) break;
 		
@@ -605,13 +629,41 @@ static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Reg start,
 		TB_NodeTypeEnum reg_type = n->type;
 		
 		if (ctx->use_count[r] && !should_rematerialize(reg_type)) {
+			return true;
+		}
+	}
+	
+	return false;
+}
+
+// If there's any non-side effect instructions which happen before a 
+// fence/side-effect instruction but are used afterwards, they're evaluated
+// before the fence.
+static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Reg start, TB_Reg end, bool dont_handle_last_node) {
+	// big stack allocs amirite...
+	size_t to_save_count = 0;
+	TB_Reg to_save[512];
+	
+	TB_FOR_EACH_NODE_RANGE(n, f, start, end) {
+		if (dont_handle_last_node && n->next == end) break;
+		
+		assert(to_save_count < tb_arrlen(to_save));
+		to_save[to_save_count++] = (n - f->nodes.data);
+	}
+	
+	loop_reverse(i, to_save_count) {
+		TB_Reg r = to_save[i];
+		TB_Node* n = &f->nodes.data[r];
+		
+		TB_NodeTypeEnum reg_type = n->type;
+		if (ctx->use_count[r] && !should_rematerialize(reg_type)) {
 			// dummy eval to cache the results before the fence
 			// it gets it's use count tick undone to avoid issues
 			Val val;
 			
 			ctx->is_tallying = false;
-			if (is_address_node(reg_type) ||
-				(reg_type == TB_LOAD && n->dt.type == TB_PTR)) {
+			bool is_rval = is_address_node(reg_type) || (reg_type == TB_LOAD && n->dt.type == TB_PTR);
+			if (is_rval) {
 				val = eval(ctx, f, r, true);
 			} else {
 				val = eval_rvalue(ctx, f, r);
@@ -621,7 +673,7 @@ static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Reg start,
 			if (val.is_temp) {
 				val.is_temp = false;
 			} else if (val.dt.width || TB_IS_FLOAT_TYPE(val.dt.type)) {
-				Val dst = alloc_xmm(ctx, f, val.dt);
+				Val dst = alloc_xmm(ctx, f, r, val.dt);
 				
 				uint8_t flags = 0;
 				flags |= (val.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
@@ -632,11 +684,11 @@ static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Reg start,
 				}
 				ctx->values[r] = dst;
 			} else if (is_value_mem(&val) && is_address_node(reg_type)) {
-				Val dst = alloc_gpr(ctx, f, val.dt.type);
+				Val dst = alloc_gpr(ctx, f, r, val.dt.type);
 				inst2(ctx, LEA, &dst, &val, val.dt.type);
 				ctx->values[r] = dst;
 			} else {
-				Val dst = alloc_gpr(ctx, f, val.dt.type);
+				Val dst = alloc_gpr(ctx, f, r, val.dt.type);
 				if (!is_value_gpr(&val, dst.gpr)) {
 					inst2(ctx, MOV, &dst, &val, val.dt.type);
 				}
@@ -644,6 +696,8 @@ static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Reg start,
 			}
 		}
 	}
+	
+	ctx->last_fence = end;
 }
 
 static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Reg bb_end) {
@@ -652,15 +706,16 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 	
 	// first node in the basic block
 	bb = f->nodes.data[bb].next;
-	if (bb == bb_end) return;
+	if (bb == bb_end) {
+		ctx->last_fence = bb;
+		return;
+	}
 	
 	// Evaluate all side effect instructions
 	TB_FOR_EACH_NODE_RANGE(n, f, bb, bb_end) {
 		TB_Reg r = n - f->nodes.data;
 		TB_NodeTypeEnum reg_type = n->type;
 		if (!TB_IS_NODE_SIDE_EFFECT(reg_type)) continue;
-		
-		eval_compiler_fence(ctx, f, ctx->last_fence, r, true);
 		
 		TB_DataType dt = n->dt;
 		switch (reg_type) {
@@ -674,6 +729,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 			}
 			
 			case TB_DEBUGBREAK: {
+				eval_compiler_fence(ctx, f, ctx->last_fence, r, true);
 				emit(0xCC);
 				break;
 			}
@@ -685,9 +741,9 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				// Eval address and cast to the correct type for the store
 				Val address = eval_addressof(ctx, f, addr_reg);
 				
-				store_into(ctx, f, dt, &address, r, addr_reg, val_reg);
+				store_into(ctx, f, dt, &address, r, addr_reg, val_reg, true);
 				
-				free_val(ctx, f, address);
+				free_val(ctx, f, addr_reg, address);
 				break;
 			}
 			
@@ -697,49 +753,37 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				int param_start = n->call.param_start;
 				int param_count = n->call.param_end - n->call.param_start;
 				
+				// TODO(NeGate): We can probably get more eager than
+				// this later this fence could be moved up...
+				eval_compiler_fence(ctx, f, ctx->last_fence, r, true);
+				
 				// Evict the GPRs that are caller saved
 				uint16_t caller_saved = (ctx->is_sysv ? SYSV_ABI_CALLER_SAVED : WIN64_ABI_CALLER_SAVED);
 				
-				// we dont evict the parameter slots just yet
-				if (ctx->is_sysv) caller_saved &= ~(RSI | RDI | RCX | RDX | R8 | R9);
-				else caller_saved &= ~(RCX | RDX | R8 | R9);
-				
-				for (size_t j = 0; j < 16; j++) {
-					if (caller_saved & (1u << j)) {
-						evict_gpr(ctx, f, j);
-					}
+				loop(j, 16) if (caller_saved & (1u << j)) {
+					evict_gpr(ctx, f, j);
 				}
 				
 				// Evict the XMMs that are caller saved
-				for (size_t j = 0; j < param_count; j++) {
-					TB_Reg param_reg = f->vla.data[param_start + j];
-					TB_DataType param_dt = f->nodes.data[param_reg].dt;
-					
-					if (j < 4 && (param_dt.width || TB_IS_FLOAT_TYPE(param_dt.type))) {
-						evict_xmm(ctx, f, j);
-					}
+				loop_range(j, ctx->is_sysv ? 0 : 5, 16) {
+					evict_xmm(ctx, f, j);
 				}
 				
-				uint16_t before_gpr_reserves = ctx->gpr_allocator;
-				uint16_t before_xmm_reserves = ctx->xmm_allocator;
+				TB_Reg before_gpr_reserves[tb_arrlen(ctx->gpr_allocator)];
+				TB_Reg before_xmm_reserves[tb_arrlen(ctx->xmm_allocator)];
+				memcpy(before_gpr_reserves, ctx->gpr_allocator, sizeof(before_gpr_reserves));
+				memcpy(before_xmm_reserves, ctx->xmm_allocator, sizeof(before_xmm_reserves));
 				
 				// evict & reserve return value
 				if (TB_IS_FLOAT_TYPE(dt.type) || dt.width) {
-					ctx->xmm_allocator |= (1u << XMM0);
+					ctx->xmm_allocator[XMM0] = TB_TEMP_REG;
 				} else if (dt.type != TB_VOID) {
-					ctx->gpr_allocator |= (1u << RAX);
+					ctx->gpr_allocator[RAX] = TB_TEMP_REG;
 				}
 				
-				//printf("Call %s\n", f->name);
-				
 				// evaluate parameters
-				uint16_t expected_reserved_gprs = 0;
-				uint16_t expected_reserved_xmms = 0;
 				const GPR* parameter_gprs = ctx->is_sysv ? SYSV_GPR_PARAMETERS : WIN64_GPR_PARAMETERS;
 				for (size_t j = 0; j < param_count; j++) {
-					ctx->gpr_allocator |= expected_reserved_gprs;
-					ctx->xmm_allocator |= expected_reserved_xmms;
-					
 					TB_Reg param_reg = f->vla.data[param_start + j];
 					Val param = eval_rvalue(ctx, f, param_reg);
 					
@@ -778,7 +822,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 							flags |= (param.dt.width) ? INST2FP_PACKED : 0;
 							
 							if (param.type == VAL_MEM) {
-								Val tmp = alloc_xmm(ctx, f, dt);
+								Val tmp = alloc_xmm(ctx, f, TB_TEMP_REG, dt);
 								
 								inst2sse(ctx, FP_MOV, &tmp, &param, flags);
 								inst2sse(ctx, FP_MOV, &dst, &tmp, flags);
@@ -789,7 +833,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 							}
 						} else {
 							if (param.type == VAL_MEM) {
-								Val tmp = alloc_gpr(ctx, f, dt.type);
+								Val tmp = alloc_gpr(ctx, f, TB_TEMP_REG, dt.type);
 								
 								inst2(ctx, MOV, &tmp, &param, param.dt.type);
 								inst2(ctx, MOV, &dst, &tmp, param.dt.type);
@@ -799,15 +843,6 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 								inst2(ctx, MOV, &dst, &param, param.dt.type);
 							}
 						}
-					}
-					
-					free_val(ctx, f, param);
-					done_with(param_reg);
-					
-					if (j < register_params) {
-						// reserve for a bit
-						if (is_xmm) expected_reserved_xmms |= (1u << j);
-						else expected_reserved_gprs |= (1u << parameter_gprs[j]);
 					}
 				}
 				
@@ -842,28 +877,28 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 					// call r/m64
 					inst1(ctx, CALL_RM, &target);
 					
-					free_val(ctx, f, target);
+					kill(ctx, f, n->vcall.target, target);
 				}
 				
-				//printf("End\n\n");
-				
-				ctx->gpr_allocator = before_gpr_reserves;
-				ctx->xmm_allocator = before_xmm_reserves;
+				memcpy(ctx->gpr_allocator, before_gpr_reserves, sizeof(before_gpr_reserves));
+				memcpy(ctx->xmm_allocator, before_xmm_reserves, sizeof(before_xmm_reserves));
 				
 				// the return value
 				if (dt.type == TB_VOID) {
 					/* none */
 				} else if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
-					ctx->xmm_allocator |= (1u << XMM0);
+					ctx->xmm_allocator[XMM0] = r;
 					ctx->values[r] = val_xmm(dt, XMM0);
 				} else {
-					ctx->gpr_allocator |= (1u << RAX);
+					ctx->gpr_allocator[RAX] = r;
 					ctx->values[r] = val_gpr(dt.type, RAX);
 				}
 				break;
 			}
 			
 			case TB_INITIALIZE: {
+				eval_compiler_fence(ctx, f, ctx->last_fence, r, true);
+				
 				TB_Reg addr = n->mem_op.dst;
 				
 				TB_Module* m = f->module;
@@ -881,8 +916,6 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 						Val dst = val_gpr(TB_PTR, RDI);
 						inst2(ctx, MOV, &dst, &param, TB_PTR);
 					}
-					free_val(ctx, f, param);
-					done_with(addr);
 				}
 				
 				{
@@ -918,9 +951,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 						Val dst = val_gpr(TB_PTR, RDI);
 						inst2(ctx, MOV, &dst, &param, TB_PTR);
 					}
-					free_val(ctx, f, param);
-					done_with(dst_reg);
-					ctx->gpr_allocator |= (1u << RDI);
+					kill(ctx, f, dst_reg, param);
+					ctx->gpr_allocator[RDI] = TB_TEMP_REG;
 				}
 				
 				{
@@ -929,9 +961,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 						Val dst = val_gpr(TB_PTR, RAX);
 						inst2(ctx, MOV, &dst, &param, TB_PTR);
 					}
-					free_val(ctx, f, param);
-					done_with(val_reg);
-					ctx->gpr_allocator |= (1u << RAX);
+					kill(ctx, f, dst_reg, param);
+					ctx->gpr_allocator[RAX] = TB_TEMP_REG;
 				}
 				
 				{
@@ -940,9 +971,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 						Val dst = val_gpr(TB_PTR, RCX);
 						inst2(ctx, MOV, &dst, &param, TB_PTR);
 					}
-					free_val(ctx, f, param);
-					done_with(size_reg);
-					ctx->gpr_allocator |= (1u << RCX);
+					kill(ctx, f, dst_reg, param);
+					ctx->gpr_allocator[RCX] = TB_TEMP_REG;
 				}
 				
 				// rep stosb
@@ -950,13 +980,15 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				emit(0xAA);
 				
 				// free up stuff
-				ctx->gpr_allocator &= ~(1u << RAX);
-				ctx->gpr_allocator &= ~(1u << RCX);
-				ctx->gpr_allocator &= ~(1u << RDI);
+				ctx->gpr_allocator[RAX] = TB_NULL_REG;
+				ctx->gpr_allocator[RCX] = TB_NULL_REG;
+				ctx->gpr_allocator[RDI] = TB_NULL_REG;
 				break;
 			}
 			
 			case TB_MEMCPY: {
+				eval_compiler_fence(ctx, f, ctx->last_fence, r, true);
+				
 				TB_Reg dst_reg = n->mem_op.dst;
 				TB_Reg src_reg = n->mem_op.src;
 				TB_Reg size_reg = n->mem_op.size;
@@ -973,9 +1005,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 						Val dst = val_gpr(TB_PTR, RDI);
 						inst2(ctx, MOV, &dst, &param, TB_PTR);
 					}
-					free_val(ctx, f, param);
-					done_with(dst_reg);
-					ctx->gpr_allocator |= (1u << RDI);
+					kill(ctx, f, dst_reg, param);
+					ctx->gpr_allocator[RDI] = TB_TEMP_REG;
 				}
 				
 				{
@@ -984,9 +1015,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 						Val dst = val_gpr(TB_PTR, RSI);
 						inst2(ctx, MOV, &dst, &param, TB_PTR);
 					}
-					free_val(ctx, f, param);
-					done_with(src_reg);
-					ctx->gpr_allocator |= (1u << RSI);
+					kill(ctx, f, src_reg, param);
+					ctx->gpr_allocator[RSI] = TB_TEMP_REG;
 				}
 				
 				{
@@ -995,9 +1025,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 						Val dst = val_gpr(TB_PTR, RCX);
 						inst2(ctx, MOV, &dst, &param, TB_PTR);
 					}
-					free_val(ctx, f, param);
-					done_with(size_reg);
-					ctx->gpr_allocator |= (1u << RCX);
+					kill(ctx, f, size_reg, param);
+					ctx->gpr_allocator[RCX] = TB_TEMP_REG;
 				}
 				
 				// rep movsb
@@ -1005,9 +1034,9 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				emit(0xA4);
 				
 				// free up stuff
-				ctx->gpr_allocator &= ~(1u << RSI);
-				ctx->gpr_allocator &= ~(1u << RDI);
-				ctx->gpr_allocator &= ~(1u << RCX);
+				ctx->gpr_allocator[RSI] = TB_NULL_REG;
+				ctx->gpr_allocator[RDI] = TB_NULL_REG;
+				ctx->gpr_allocator[RCX] = TB_NULL_REG;
 				break;
 			}
 			
@@ -1030,6 +1059,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				Val src = eval_rvalue(ctx, f, n->atomic.src);
 				Val addr = eval_addressof(ctx, f, n->atomic.addr);
 				
+				eval_compiler_fence(ctx, f, ctx->last_fence, r, true);
+				
 				// sometimes we only need to do the operation atomic without
 				// a fetch, then things get... fancy
 				if (ctx->use_count[r]) {
@@ -1041,7 +1072,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 					// it's actually a MOV which is naturally atomic
 					// when aligned.
 					if (is_value_mem(&src)) {
-						Val tmp = alloc_gpr(ctx, f, dt.type);
+						Val tmp = alloc_gpr(ctx, f, TB_TEMP_REG, dt.type);
 						inst2(ctx, MOV, &tmp, &src, dt.type);
 						
 						if (reg_type != TB_ATOMIC_XCHG) emit(0xF0);
@@ -1054,9 +1085,6 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 						inst2(ctx, op, &addr, &src, dt.type);
 					}
 				}
-				
-				done_with(n->atomic.src);
-				done_with(n->atomic.addr);
 				break;
 			}
 			case TB_ATOMIC_CMPXCHG: {
@@ -1069,20 +1097,21 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 			assert(0);
 			break;
 		}
-		
-		ctx->last_fence = r;
 	}
 }
 
-static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const Val* dst, TB_Reg r, TB_Reg dst_reg, TB_Reg val_reg) {
+static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const Val* dst, TB_Reg r, TB_Reg dst_reg, TB_Reg val_reg, bool place_fence) {
 	if (dt.type == TB_BOOL) dt.type = TB_I8;
 	
 	if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
 		Val value = eval_rvalue(ctx, f, val_reg);
 		
+		if (place_fence) {
+			eval_compiler_fence(ctx, f, ctx->last_fence, r, true);
+		}
+		
 		// if they match and it's just a MOV, don't do it
 		if (is_value_match(dst, &value)) {
-			done_with(val_reg);
 			return;
 		}
 		
@@ -1093,15 +1122,15 @@ static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const 
 		if (!is_value_mem(&value)) {
 			inst2sse(ctx, FP_MOV, dst, &value, flags);
 		} else {
-			Val tmp = alloc_xmm(ctx, f, dt);
+			Val tmp = alloc_xmm(ctx, f, TB_TEMP_REG, dt);
 			
 			inst2sse(ctx, FP_MOV, &tmp, &value, flags);
 			inst2sse(ctx, FP_MOV, dst, &tmp, flags);
 			
-			free_val(ctx, f, tmp);
+			free_xmm(ctx, f, tmp.xmm);
 		}
 		
-		free_val(ctx, f, value);
+		kill(ctx, f, val_reg, value);
 	} else {
 		int op = MOV;
 		
@@ -1125,7 +1154,7 @@ static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const 
 						  a->load.address == dst_reg);
 			}
 			
-			if (folded) {
+			if (folded && ctx->use_count[val->i_arith.b]) {
 				switch (val->type) {
 					case TB_AND: op = AND; break;
 					case TB_OR: op = OR; break;
@@ -1136,106 +1165,40 @@ static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const 
 					default: tb_unreachable();
 				}
 				
+				assert(ctx->use_count[val_reg] > 0);
+				ctx->use_count[val_reg]--;
+				
+				//assert(ctx->use_count[val->i_arith.a] > 0);
+				//ctx->use_count[val->i_arith.a]--;
+				
 				val_reg = val->i_arith.b;
 			}
 		}
 		
 		Val value = eval_rvalue(ctx, f, val_reg);
 		
+		if (place_fence) {
+			eval_compiler_fence(ctx, f, ctx->last_fence, r, true);
+		}
+		
 		// if they match and it's just a MOV, don't do it
 		if (op == MOV && is_value_match(dst, &value)) {
-			done_with(val_reg);
 			return;
 		}
 		
 		if (!is_value_mem(&value)) {
 			inst2(ctx, op, dst, &value, dt.type);
 		} else {
-			Val tmp = alloc_gpr(ctx, f, dt.type);
+			Val tmp = alloc_gpr(ctx, f, TB_TEMP_REG, dt.type);
 			
 			inst2(ctx, MOV, &tmp, &value, dt.type);
 			inst2(ctx, op, dst, &tmp, dt.type);
 			
-			free_val(ctx, f, tmp);
+			free_gpr(ctx, f, tmp.gpr);
 		}
 		
-		free_val(ctx, f, value);
+		kill(ctx, f, val_reg, value);
 	}
-	
-	done_with(val_reg);
-}
-
-static bool evict_gpr(Ctx* restrict ctx, TB_Function* f, GPR g) {
-	if ((ctx->gpr_allocator & (1u << g)) == 0) return true;
-	
-	loop(i, f->nodes.count) {
-		if (ctx->values[i].type == VAL_GPR && ctx->values[i].gpr == g) {
-			spill_reg(ctx, f, i);
-			return true;
-		}
-	}
-	
-	loop(i, ctx->phi_count) {
-		PhiValue* restrict phi = &ctx->phis[i];
-		if (phi->value.type == VAL_GPR && phi->value.gpr == g) {
-			TB_DataType dt = f->nodes.data[phi->reg].dt;
-			if (dt.type == TB_BOOL) dt.type = TB_I8;
-			
-			ctx->gpr_allocator &= ~(1u << phi->value.gpr);
-			
-			if (phi->spill == 0) {
-				int size = get_data_type_size(dt);
-				ctx->stack_usage = align_up(ctx->stack_usage + size, size);
-				
-				phi->spill = -ctx->stack_usage;
-			}
-			
-			Val dst = val_stack(dt, phi->spill);
-			Val src = val_gpr(dt.type, phi->value.gpr);
-			inst2(ctx, MOV, &dst, &src, dt.type);
-			return true;
-		}
-	}
-	
-	return false;
-}
-
-static bool evict_xmm(Ctx* restrict ctx, TB_Function* f, XMM x) {
-	if ((ctx->xmm_allocator & (1u << x)) == 0) return true;
-	
-	loop(i, f->nodes.count) {
-		if (ctx->values[i].type == VAL_XMM && ctx->values[i].xmm == x) {
-			spill_reg(ctx, f, i);
-			return true;
-		}
-	}
-	
-	loop(i, ctx->phi_count) {
-		PhiValue* restrict phi = &ctx->phis[i];
-		
-		if (phi->value.type == VAL_XMM && phi->value.xmm == x) {
-			TB_DataType dt = f->nodes.data[phi->reg].dt;
-			ctx->xmm_allocator &= ~(1u << phi->value.xmm);
-			
-			if (phi->spill == 0) {
-				int size = get_data_type_size(dt);
-				ctx->stack_usage = align_up(ctx->stack_usage + size, size);
-				
-				phi->spill = -ctx->stack_usage;
-			}
-			
-			uint8_t flags = 0;
-			flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
-			flags |= (dt.width) ? INST2FP_PACKED : 0;
-			
-			Val dst = val_stack(dt, phi->spill);
-			Val src = val_xmm(dt, phi->value.xmm);
-			inst2sse(ctx, FP_MOV, &dst, &src, flags);
-			return true;
-		}
-	}
-	
-	return false;
 }
 
 static bool is_address_node(TB_NodeTypeEnum t) {
@@ -1247,7 +1210,7 @@ static bool is_address_node(TB_NodeTypeEnum t) {
 		case TB_GLOBAL_ADDRESS:
 		case TB_ARRAY_ACCESS:
 		case TB_MEMBER_ACCESS:
-		case TB_INT2PTR:
+		//case TB_INT2PTR:
 		return true;
 		default: 
 		return false;
@@ -1277,14 +1240,19 @@ static int get_data_type_size(const TB_DataType dt) {
 		case TB_VOID:
 		case TB_BOOL:
 		return 1;
+		
 		case TB_I8: 
 		return 1 << dt.width;
+		
 		case TB_I16: 
 		return 2 << dt.width;
+		
 		case TB_I32: case TB_F32:
 		return 4 << dt.width;
+		
 		case TB_I64: case TB_F64:
 		return 8 << dt.width;
+		
 		case TB_PTR:
 		return 8;
 		default: tb_unreachable();
@@ -1323,6 +1291,7 @@ static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Reg from, TB_Reg f
 			} else {
 				inst2(ctx, MOV, &phi->value, &src, dt.type);
 			}
+			
 			phi->spill = 0;
 		}
 		
@@ -1335,7 +1304,7 @@ static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Reg from, TB_Reg f
 				phi->value = src_value;
 			} else {
 				// Create a new GPR and map it
-				phi->value = alloc_gpr(ctx, f, dt.type);
+				phi->value = alloc_gpr(ctx, f, r, dt.type);
 				
 				// TODO(NeGate): Handle vector and float types
 				if (!is_value_gpr(&src_value, phi->value.gpr)) {
@@ -1350,8 +1319,6 @@ static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Reg from, TB_Reg f
 					}
 				}
 			}
-			
-			done_with(src);
 		} else if (src >= to && src <= to_terminator) {
 			// this means we gotta do a swap
 			assert(f->nodes.data[src].type == TB_PHI2);
@@ -1360,7 +1327,7 @@ static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Reg from, TB_Reg f
 			inst2(ctx, XCHG, &phi->value, &other_phi->value, dt.type);
 		} else {
 			// Load value into existing phi node
-			store_into(ctx, f, dt, &phi->value, r, r, src);
+			store_into(ctx, f, dt, &phi->value, r, r, src, false);
 		}
 	}
 	

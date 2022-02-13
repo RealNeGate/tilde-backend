@@ -2,11 +2,11 @@
 size_t x64_get_prologue_length(uint64_t saved, uint64_t stack_usage) {
 	// If the stack usage is zero we don't need a prologue
 	if (stack_usage == 8) return 0;
+	if ((tb_popcount(saved & 0xFFFF) & 1) == 0) stack_usage += 8;
 	
 	bool is_stack_usage_imm8 = (stack_usage == (int8_t)stack_usage);
 	
 	return (is_stack_usage_imm8 ? 4 : 7) + 4
-		+ (tb_popcount(saved) & 1 ? 0 : 1)
 		+ (tb_popcount(saved & 0x000000FF) * 1)
 		+ (tb_popcount(saved & 0x0000FF00) * 2)
 		+ (tb_popcount(saved & 0x00FF0000) * 7) 
@@ -15,11 +15,11 @@ size_t x64_get_prologue_length(uint64_t saved, uint64_t stack_usage) {
 
 size_t x64_get_epilogue_length(uint64_t saved, uint64_t stack_usage) {
 	if (stack_usage == 8) return 1;
+	if ((tb_popcount(saved & 0xFFFF) & 1) == 0) stack_usage += 8;
 	
 	bool is_stack_usage_imm8 = (stack_usage == (int8_t)stack_usage);
 	
 	return (is_stack_usage_imm8 ? 5 : 8) + 1 
-		+ (tb_popcount(saved) & 1 ? 0 : 1)
 		+ (tb_popcount(saved & 0x000000FF) * 1)
 		+ (tb_popcount(saved & 0x0000FF00) * 2)
 		+ (tb_popcount(saved & 0x00FF0000) * 7) 
@@ -29,6 +29,7 @@ size_t x64_get_epilogue_length(uint64_t saved, uint64_t stack_usage) {
 size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
 	// If the stack usage is zero we don't need a prologue
 	if (stack_usage == 8) return 0;
+	if ((tb_popcount(saved & 0xFFFF) & 1) == 0) stack_usage += 8;
 	
 	size_t used = 0;
 	
@@ -38,12 +39,7 @@ size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
 	// mov rbp, rsp
 	out[used++] = rex(true, RSP, RBP, 0);
 	out[used++] = 0x89;
-	out[used++] = mod_rx_rm(MOD_DIRECT, RSP, RBP);
-	
-	// dummy push rcx
-	if ((tb_popcount(saved) & 1) == 0) {
-		out[used++] = 0x50 + RCX;
-	}
+	out[used++] = mod_rx_rm(MOD_DIRECT, RSP, RBP); 
 	
 	// push rXX
 	for (size_t i = 0; i < 16; i++) if (saved & (1ull << i)) {
@@ -69,7 +65,7 @@ size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
 	}
 	
 	// save XMMs
-	int tally = stack_usage - 8;
+	int tally = stack_usage & ~15u;
 	for (size_t i = 0; i < 16; i++) if (saved & (1ull << (i + 16))) {
 		if (i >= 8) {
 			out[used++] = rex(false, i, 0, 0);
@@ -95,11 +91,12 @@ size_t x64_emit_epilogue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
 		out[0] = 0xC3;
 		return 1;
 	}
+	if ((tb_popcount(saved & 0xFFFF) & 1) == 0) stack_usage += 8;
 	
 	size_t used = 0;
 	
 	// reload XMMs
-	int tally = stack_usage - 8;
+	int tally = stack_usage & ~15u;
 	for (size_t i = 0; i < 16; i++) if (saved & (1ull << (i + 16))) {
 		if (i >= 8) {
 			out[used++] = rex(false, i, 0, 0);
@@ -114,11 +111,6 @@ size_t x64_emit_epilogue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
 		used += 4;
 		
 		tally -= 16;
-	}
-	
-	// dummy pop rcx
-	if ((tb_popcount(saved) & 1) == 0) {
-		out[used++] = 0x58 + RCX;
 	}
 	
 	// add rsp, N

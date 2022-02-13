@@ -131,6 +131,10 @@ typedef struct Ctx {
 	uint8_t* start_out;
 	
 	bool is_sysv;
+	// allows for eval with compares to return FLAGS
+	bool is_if_statement_next;
+	// disables counting on the use_count
+	bool is_tallying;
 	
 	size_t function_id;
 	TB_Function* f;
@@ -138,8 +142,8 @@ typedef struct Ctx {
 	TB_Reg current_bb;
 	TB_Reg current_bb_end;
 	
-	// used to schedule phi nodes in cases where some phi nodes
-	// depend on each other
+	// used to schedule phi nodes in cases where some
+	// phi nodes depend on each other
 	size_t phi_queue_count;
 	TB_Node** phi_queue;
 	
@@ -161,20 +165,15 @@ typedef struct Ctx {
 	// Used to allocate spills
 	uint32_t stack_usage;
 	
-	// Register allocation:
-	uint16_t gpr_allocator;
-	uint16_t xmm_allocator;
-	
 	// GPRs are the bottom 32bit
 	// XMM is the top 32bit
 	uint64_t regs_to_save;
 	
-	TB_Reg last_fence;
+	// Register allocation:
+	TB_Reg gpr_allocator[16];
+	TB_Reg xmm_allocator[16];
 	
-	// allows for eval with compares to return FLAGS
-	bool is_if_statement_next;
-	// disables counting on the use_count
-	bool is_tallying;
+	TB_Reg last_fence;
 	
 	Val values[];
 } Ctx;
@@ -224,13 +223,6 @@ static const GPR WIN64_GPR_PARAMETERS[4] = {
 
 static const GPR SYSV_GPR_PARAMETERS[6] = {
 	RDI, RSI, RDX, RCX, R8, R9
-};
-
-static const GPR GPR_PRIORITY_LIST[] = {
-	RAX, RCX, RDX, R8,
-	R9,  R10, R11, RDI,
-	RSI, RBX, R12, R13,
-	R14, R15
 };
 
 typedef enum Inst1 {
@@ -405,10 +397,6 @@ static bool is_address_node(TB_NodeTypeEnum t);
 
 static Val eval_addressof(Ctx* ctx, TB_Function* f, TB_Reg r);
 static Val eval_rvalue(Ctx* ctx, TB_Function* f, TB_Reg r);
-
-// returns true if we have the register is free now
-static bool evict_gpr(Ctx* restrict ctx, TB_Function* f, GPR g);
-static bool evict_xmm(Ctx* restrict ctx, TB_Function* f, XMM x);
 
 static PhiValue* find_phi(Ctx* ctx, TB_Reg r);
 static bool is_phi_that_contains(TB_Function* f, TB_Reg phi, TB_Reg reg);

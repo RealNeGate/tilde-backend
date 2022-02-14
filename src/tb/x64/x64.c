@@ -499,10 +499,9 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 		
 		// kill any values, unless it's the last basic block then it
 		// doesn't matter :p
-		if (next_bb_reg) loop_range(i, bb, bb_end) {
+		/*if (next_bb_reg) loop_range(i, bb, bb_end) {
 			kill(ctx, f, i);
-			ctx->values[i] = (Val){ 0 };
-		}
+		}*/
 		
 		// Next Basic block
 		bb = next_bb_reg;
@@ -677,7 +676,13 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 			}
 			case TB_LOAD: {
 				Val src = eval(ctx, f, n->load.address);
+				if (src.type == VAL_GPR) {
+					src = val_base_disp(TB_TYPE_PTR, src.gpr, 0);
+				} else if (src.type == VAL_IMM) {
+					assert(0 && "Support load from constant address");
+				}
 				
+				kill(ctx, f, n->load.address);
 				if (TB_IS_FLOAT_TYPE(dt.type) || dt.width) {
 					Val val = alloc_xmm(ctx, f, r, dt);
 					
@@ -685,13 +690,21 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 					flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
 					flags |= (dt.width) ? INST2FP_PACKED : 0;
 					inst2sse(ctx, FP_MOV, &val, &src, flags);
+				} 
+				// sometimes the load is chained to a sign/zero extension
+				// sxt(load(p)) => movsx tmp, [addr]
+				// zxt(load(p)) => movzx tmp, [addr]
+				// load(p)      => mov   tmp, [addr]
+				else if ((f->nodes.data[n->next].type == TB_SIGN_EXT ||
+						  f->nodes.data[n->next].type == TB_ZERO_EXT) &&
+						 ctx->use_count[r] == 1 &&
+						 f->nodes.data[n->next].unary.src == r) {
+					src.dt = dt;
+					def(ctx, f, r, src);
 				} else {
 					Val val = alloc_gpr(ctx, f, r, dt.type);
-					
 					inst2(ctx, MOV, &val, &src, dt.type);
 				}
-				
-				kill(ctx, f, n->load.address);
 				break;
 			}
 			case TB_STORE: {
@@ -999,7 +1012,124 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				ctx->gpr_allocator[is_div ? RDX : RAX] = TB_NULL_REG;
 				break;
 			}
-			
+			case TB_CMP_EQ:
+			case TB_CMP_NE:
+			case TB_CMP_SLT:
+			case TB_CMP_SLE:
+			case TB_CMP_ULT:
+			case TB_CMP_ULE:
+			case TB_CMP_FLT:
+			case TB_CMP_FLE: {
+				TB_DataType cmp_dt = n->cmp.dt;
+				assert(cmp_dt.width == 0 && "TODO: Implement vector compares");
+				
+				if (cmp_dt.type == TB_BOOL) cmp_dt.type = TB_I8;
+				
+				Val a = eval(ctx, f, n->cmp.a);
+				Val b = eval(ctx, f, n->cmp.b);
+				if (a.type == VAL_IMM && b.type == VAL_IMM) {
+					bool result = false;
+					switch (reg_type) {
+						case TB_CMP_EQ:  result = (a.imm == b.imm); break;
+						case TB_CMP_NE:  result = (a.imm != b.imm); break;
+						case TB_CMP_SLT: result = (a.imm < b.imm); break;
+						case TB_CMP_SLE: result = (a.imm <= b.imm); break;
+						case TB_CMP_ULT: result = ((uint32_t)a.imm < (uint32_t)b.imm); break;
+						case TB_CMP_ULE: result = ((uint32_t)a.imm <= (uint32_t)b.imm); break;
+						default: tb_unreachable();
+					}
+					
+					def(ctx, f, r, val_imm(dt, result));
+					break;
+				}
+				
+				// if (cmp XX (a, b)) should return a FLAGS because the IF
+				// will handle it properly
+				bool returns_flags = ctx->use_count[r] == 1 && 
+					f->nodes.data[n->next].type == TB_IF &&
+					f->nodes.data[n->next].if_.cond == r;
+				
+				Val val = { 0 };
+				if (!returns_flags) {
+					val = alloc_gpr(ctx, f, r, TB_I8);
+					
+					// xor temp, temp
+					if (val.gpr >= 8) emit(rex(false, val.gpr, val.gpr, 0));
+					emit(0x31);
+					emit(mod_rx_rm(MOD_DIRECT, val.gpr, val.gpr));
+				}
+				
+				Cond cc;
+				if (TB_IS_FLOAT_TYPE(cmp_dt.type)) {
+					uint8_t flags = 0;
+					flags |= (cmp_dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+					flags |= (cmp_dt.width) ? INST2FP_PACKED : 0;
+					
+					if (is_value_mem(&a) && is_value_mem(&b)) {
+						Val tmp = alloc_xmm(ctx, f, r, cmp_dt);
+						
+						inst2sse(ctx, FP_MOV, &tmp, &a, flags);
+						inst2sse(ctx, FP_UCOMI, &tmp, &b, flags);
+						
+						free_xmm(ctx, f, tmp.xmm);
+					} else {
+						inst2sse(ctx, FP_UCOMI, &a, &b, flags);
+					}
+					
+					switch (reg_type) {
+						case TB_CMP_EQ: cc = E; break;
+						case TB_CMP_NE: cc = NE; break;
+						case TB_CMP_FLT: cc = L; break;
+						case TB_CMP_FLE: cc = LE; break;
+						default: tb_unreachable();
+					}
+				} else {
+					bool invert = false;
+					if (is_value_mem(&a) && is_value_mem(&b)) {
+						Val tmp = alloc_gpr(ctx, f, r, cmp_dt.type);
+						
+						inst2(ctx, MOV, &tmp, &a, cmp_dt.type);
+						inst2(ctx, CMP, &tmp, &b, cmp_dt.type);
+						
+						free_gpr(ctx, f, tmp.gpr);
+					} else {
+						invert = (a.type == VAL_IMM);
+						
+						if (invert) inst2(ctx, CMP, &b, &a, cmp_dt.type);
+						else inst2(ctx, CMP, &a, &b, cmp_dt.type);
+					}
+					
+					switch (reg_type) {
+						case TB_CMP_EQ: cc = E; break;
+						case TB_CMP_NE: cc = NE; break;
+						case TB_CMP_SLT: cc = L; break;
+						case TB_CMP_SLE: cc = LE; break;
+						case TB_CMP_ULT: cc = B; break;
+						case TB_CMP_ULE: cc = BE; break;
+						default: tb_unreachable();
+					}
+					
+					if (reg_type != TB_CMP_EQ && reg_type != TB_CMP_NE) {
+						cc ^= invert;
+					}
+				}
+				
+				if (!returns_flags) {
+					// setcc v
+					if (val.gpr >= 8) emit(rex(true, val.gpr, val.gpr, 0));
+					emit(0x0F);
+					emit(0x90 + cc);
+					emit(mod_rx_rm(MOD_DIRECT, val.gpr, val.gpr));
+				} else {
+					val = val_flags(cc);
+				}
+				
+				kill(ctx, f, n->cmp.a);
+				kill(ctx, f, n->cmp.b);
+				
+				def(ctx, f, r, val);
+				break;
+			}
 			case TB_FLOAT2INT: {
 				assert(dt.width == 0 && "TODO: Implement vector float2int");
 				
@@ -1209,7 +1339,6 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				break;
 			}
 			
-			
 			case TB_CALL:
 			case TB_ECALL:
 			case TB_VCALL: {
@@ -1218,6 +1347,10 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				
 				// Evict the GPRs that are caller saved
 				uint16_t caller_saved = (ctx->is_sysv ? SYSV_ABI_CALLER_SAVED : WIN64_ABI_CALLER_SAVED);
+				
+				// we dont evict the parameter slots just yet
+				if (ctx->is_sysv) caller_saved &= ~(RSI | RDI | RCX | RDX | R8 | R9);
+				else caller_saved &= ~(RCX | RDX | R8 | R9);
 				
 				loop(j, 16) if (caller_saved & (1u << j)) {
 					evict_gpr(ctx, f, j);
@@ -1264,10 +1397,10 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 							
 							inst2sse(ctx, FP_MOV, &dst, &param, flags);
 						} else if (param.dt.type != TB_VOID) {
-							evict_gpr(ctx, f, parameter_gprs[j]);
-							
 							Val dst = val_gpr(param.dt.type, parameter_gprs[j]);
 							if (!is_value_gpr(&param, parameter_gprs[j])) {
+								evict_gpr(ctx, f, parameter_gprs[j]);
+								
 								inst2(ctx, MOV, &dst, &param, param.dt.type);
 							}
 						}

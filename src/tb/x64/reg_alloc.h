@@ -197,9 +197,7 @@ static bool evict_gpr(Ctx* restrict ctx, TB_Function* f, GPR g) {
 			Val dst = val_stack(dt, phi->spill);
 			Val src = val_gpr(dt.type, phi->value.gpr);
 			inst2(ctx, MOV, &dst, &src, dt.type);
-		} else {
-			assert(ctx->values[r].type == VAL_GPR && ctx->values[r].gpr == g);
-			
+		} else if (ctx->values[r].type == VAL_GPR && ctx->values[r].gpr == g) {
 			int size = get_data_type_size(dt);
 			ctx->stack_usage = align_up(ctx->stack_usage + size, size);
 			
@@ -244,9 +242,7 @@ static bool evict_xmm(Ctx* restrict ctx, TB_Function* f, XMM x) {
 			Val dst = val_stack(dt, phi->spill);
 			Val src = val_xmm(dt, phi->value.xmm);
 			inst2sse(ctx, FP_MOV, &dst, &src, flags);
-		} else {
-			assert(ctx->values[r].type == VAL_XMM && ctx->values[r].xmm == x);
-			
+		} else if (ctx->values[r].type == VAL_XMM && ctx->values[r].xmm == x) {
 			int size = get_data_type_size(dt);
 			ctx->stack_usage = align_up(ctx->stack_usage + size, size);
 			

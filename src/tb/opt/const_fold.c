@@ -99,7 +99,7 @@ bool tb_opt_load_elim(TB_Function* f) {
 		
 		if (n->type == TB_STORE) {
 			TB_DataType dt = n->dt;
-			TB_Reg value = n->store.value;
+			//TB_Reg value = n->store.value;
 			TB_Reg addr = n->store.address;
 			uint32_t alignment = n->store.alignment;
 			

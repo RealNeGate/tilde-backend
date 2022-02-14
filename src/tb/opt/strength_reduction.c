@@ -3,12 +3,10 @@
 bool tb_opt_strength_reduction(TB_Function* f) {
 	int changes = 0;
 	
-	TB_Reg label = 1;
 	TB_FOR_EACH_NODE(n, f) {
 		TB_Reg i = n - f->nodes.data;
 		
 		if (n->type == TB_LABEL) {
-			label = i;
 		} else if (n->type == TB_MUL) {
 			TB_Node* a = &f->nodes.data[n->i_arith.a];
 			TB_Node* b = &f->nodes.data[n->i_arith.b];

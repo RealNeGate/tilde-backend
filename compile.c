@@ -33,7 +33,7 @@ bool str_ends_with(const char* cstr, const char* postfix) {
 }
 
 const char* str_no_ext(const char* path) {
-    size_t n = strlen(path);
+	size_t n = strlen(path);
     while (n > 0 && path[n - 1] != '.') {
         n -= 1;
     }
@@ -109,7 +109,7 @@ static FileIter file_iter_open(const char* directory) {
 
 static char* file_iter_next(FileIter* iter) {
 	struct dirent* dp = readdir(iter->dir);
-	return dp->d_name;
+	return dp ? dp->d_name : NULL;
 }
 
 static void file_iter_close(FileIter* iter) {
@@ -257,9 +257,9 @@ static void compile_with_cl() {
 	cmd_append(output_lib_path);
 	cmd_append(" build\\*.obj");
 	cmd_run();
+#endif
 	
 	delete_intermediates(".obj");
-#endif
 }
 
 static void compile_file_with_cc(const char* cc_command, const char* directory, const char* input, const char* output) {
@@ -267,7 +267,7 @@ static void compile_file_with_cc(const char* cc_command, const char* directory, 
 	cmd_append(" -march=nehalem -Werror -Wall -Wno-unused-function -g ");
 	
 #if !defined(BUILD_FUZZER)
-	cmd_append(" -c ");
+	cmd_append("-c ");
 #endif
 	
 #if _WIN32
@@ -280,10 +280,11 @@ static void compile_file_with_cc(const char* cc_command, const char* directory, 
 	cmd_append("-O0 -D_DEBUG ");
 #endif
 	
+	cmd_append("src" SLASH);
 	cmd_append(directory);
 	cmd_append(input);
 	
-	cmd_append("-o build" SLASH);
+	cmd_append(" -o build" SLASH);
 	cmd_append(output ? output : str_no_ext(input));
 	cmd_append(".o");
 	
@@ -306,7 +307,7 @@ static void compile_with_cc(const char* cc_command) {
 #endif
 		
 		if (str_ends_with(path, ".c") && !ignore) {
-			compile_file_with_cc(cc_command, "src" SLASH "tb" SLASH, path, NULL);
+			compile_file_with_cc(cc_command, "tb" SLASH, path, NULL);
 		}
 	}
 	file_iter_close(&it);
@@ -316,17 +317,17 @@ static void compile_with_cc(const char* cc_command) {
 	while ((path = file_iter_next(&it))) {
 		// ignore tb_posix on MSVC compiles
 		if (str_ends_with(path, ".c")) {
-			compile_file_with_cc(cc_command, "src" SLASH "tb" SLASH "opt" SLASH, path, NULL);
+			compile_file_with_cc(cc_command, "tb" SLASH "opt" SLASH, path, NULL);
 		}
 	}
 	file_iter_close(&it);
 	
 	// x64 target module
-	compile_file_with_cc(cc_command, "src" SLASH "tb" SLASH, "x64" SLASH "x64.c", "x64");
+	compile_file_with_cc(cc_command, "tb" SLASH, "x64" SLASH "x64.c", "x64");
 	
 	// fuzzer.c
 #if defined(BUILD_FUZZER)
-	compile_file_with_cc(cc_command, "src" SLASH, "src" SLASH "fuzzer.c", "fuzzer");
+	compile_file_with_cc(cc_command, "", "src" SLASH "fuzzer.c", "fuzzer");
 #endif
 	
 	////////////////////////////////
@@ -395,7 +396,11 @@ int main(int argc, char** argv) {
 	
 #if !defined(BUILD_FUZZER)
 	printf("Outputting to: %s...\n", output_lib_path);
+	
+#if defined(NEGATE)
 	system("cd W:/Workspace/Cuik/ && build.bat");
+#endif
+	
 #else
 	printf("Outputting fuzzer to: build/fuzzer.exe...\n");
 #endif

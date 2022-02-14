@@ -1,17 +1,17 @@
 // This entire module is one translation unit so that it doesn't have to worry
 // about C's crappy support for public and private interfaces.
-static const char* GPR_NAMES[] = {
-	"RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI",
-	"R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"
-};
-
 #include "x64.h"
 #include "inst.h"
 #include "proepi.h"
 #include "reg_alloc.h"
 #include "tree.h"
 
-#if 1
+#if 0
+static const char* GPR_NAMES[] = {
+	"RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI",
+	"R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"
+};
+
 #define DEBUG_LOG(...) printf(__VA_ARGS__)
 #else
 #define DEBUG_LOG(...) ((void)0)
@@ -938,7 +938,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 							break;
 						}
 						case TB_MUL: {
-							tb_panic(0, "Implement vector integer multiply");
+							tb_panic("Implement vector integer multiply");
 						}
 						default: tb_unreachable();
 					}
@@ -1766,8 +1766,11 @@ void x64_emit_call_patches(TB_Module* m, uint32_t* func_layout) {
 	}
 }
 
+#if _MSC_VER
 _Pragma("warning (push)")
 _Pragma("warning (disable: 4028)")
+#endif
+
 // I put it down here because i can :P
 ICodeGen x64_fast_code_gen = {
 	.emit_call_patches = x64_emit_call_patches,
@@ -1777,4 +1780,7 @@ ICodeGen x64_fast_code_gen = {
 	.emit_epilogue = x64_emit_epilogue,
 	.compile_function = x64_compile_function
 };
+
+#if _MSC_VER
 _Pragma("warning (pop)")
+#endif

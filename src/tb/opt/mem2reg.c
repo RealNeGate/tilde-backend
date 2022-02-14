@@ -137,8 +137,6 @@ static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB
 	if (phi_node->type == TB_NULL) {
 		return phi_reg;
 	} else if (phi_node->type == TB_PHI1) {
-		TB_Reg a = phi_node->phi1.a;
-		
 		op_count = 1;
 		operands[0] = phi_node->phi1.a;
 	} else if (phi_node->type == TB_PHI2) {
@@ -377,7 +375,6 @@ static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_
 	
 #define X(reg) if (reg == address) use_count += 1;
 	TB_FOR_EACH_NODE(n, f) {
-		TB_Reg i = (n - f->nodes.data);
 		switch (n->type) {
 			TB_FOR_EACH_REG_IN_NODE(X);
 			default: tb_todo();

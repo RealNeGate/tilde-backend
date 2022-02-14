@@ -4,6 +4,7 @@ build/
 *.o
 *.obj
 *.exe
+*.pdb
 
 debug.bat
 run.bat

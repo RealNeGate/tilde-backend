@@ -50,6 +50,7 @@ static Val alloc_gpr(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int dt_type) {
 		R14, R15
 	};
 	
+	assert(dt_type);
 	loop(i, tb_arrlen(PRIORITIES)) {
 		GPR gpr = PRIORITIES[i];
 		
@@ -138,24 +139,36 @@ static void free_xmm(Ctx* restrict ctx, TB_Function* f, XMM x) {
 	ctx->xmm_allocator[x] = TB_NULL_REG;
 }
 
-static void free_val(Ctx* restrict ctx, TB_Function* f, TB_Reg r, Val val) {
+static void def(Ctx* restrict ctx, TB_Function* f, TB_Reg r, Val val) {
+	assert(val.type);
+	
 	if (val.type == VAL_GPR) {
-		ctx->gpr_allocator[val.gpr] = TB_NULL_REG;
+		ctx->gpr_allocator[val.gpr] = r;
 	} else if (val.type == VAL_XMM) {
-		ctx->xmm_allocator[val.xmm] = TB_NULL_REG;
+		ctx->xmm_allocator[val.xmm] = r;
 	} else if (val.type == VAL_MEM) {
-		assert(val.mem.index == GPR_NONE);
-		ctx->gpr_allocator[val.mem.base] = TB_NULL_REG;
-	}
-}
-
-static void kill(Ctx* restrict ctx, TB_Function* f, TB_Reg r, Val val) {
-	if (val.is_temp) {
-		free_val(ctx, f, r, val);
+		if (val.mem.base != RSP && val.mem.base != RBP) {
+			assert(val.mem.index == GPR_NONE);
+			ctx->gpr_allocator[val.mem.base] = r;
+		}
 	}
 	
+	ctx->values[r] = val;
+}
+
+static void kill(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
 	if (ctx->use_count[r] == 0) {
-		free_val(ctx, f, r, ctx->values[r]);
+		Val val = ctx->values[r];
+		
+		if (val.type == VAL_GPR) {
+			ctx->gpr_allocator[val.gpr] = TB_NULL_REG;
+		} else if (val.type == VAL_XMM) {
+			ctx->xmm_allocator[val.xmm] = TB_NULL_REG;
+		} else if (val.type == VAL_MEM) {
+			assert(val.mem.index == GPR_NONE);
+			ctx->gpr_allocator[val.mem.base] = TB_NULL_REG;
+		}
+		
 		ctx->values[r] = (Val){ 0 };
 	}
 }

@@ -488,7 +488,7 @@ b = temp; \
 #if defined(_MSC_VER) && !defined(__clang__)
 #  if TB_DEBUG_BUILD
 #    define tb_todo() assert(0 && "TODO")
-#    define tb_unreachable() __assume(0)
+#    define tb_unreachable() assert(0)
 #    define tb_assume(condition) assert(condition)
 #  else
 #    define tb_todo() abort()
@@ -498,7 +498,7 @@ b = temp; \
 #else
 #  if TB_DEBUG_BUILD
 #    define tb_todo() __builtin_trap()
-#    define tb_unreachable() __builtin_unreachable()
+#    define tb_unreachable() assert(0)
 #    define tb_assume(condition) assert(condition)
 #  else
 #    define tb_todo() __builtin_trap()
@@ -648,7 +648,7 @@ inline static int align_up(int a, int b) { return a + (b - (a % b)) % b; }
 #endif
 
 // NOTE(NeGate): clean this up
-#if 0
+#if 1
 #define OPTIMIZER_LOG(at, ...)
 #else
 #define OPTIMIZER_LOG(at, ...) do { \

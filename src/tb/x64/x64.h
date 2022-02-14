@@ -139,9 +139,6 @@ typedef struct Ctx {
 	size_t function_id;
 	TB_Function* f;
 	
-	TB_Reg current_bb;
-	TB_Reg current_bb_end;
-	
 	// used to schedule phi nodes in cases where some
 	// phi nodes depend on each other
 	size_t phi_queue_count;
@@ -154,7 +151,6 @@ typedef struct Ctx {
 	LabelPatch* label_patches;
 	
 	TB_Reg* use_count;
-	uint8_t* should_share;
 	PhiValue* phis;
 	ReturnPatch* ret_patches;
 	
@@ -172,8 +168,6 @@ typedef struct Ctx {
 	// Register allocation:
 	TB_Reg gpr_allocator[16];
 	TB_Reg xmm_allocator[16];
-	
-	TB_Reg last_fence;
 	
 	Val values[];
 } Ctx;
@@ -395,9 +389,6 @@ inline static bool is_value_match(const Val* a, const Val* b) {
 
 static bool is_address_node(TB_NodeTypeEnum t);
 
-static Val eval_addressof(Ctx* ctx, TB_Function* f, TB_Reg r);
-static Val eval_rvalue(Ctx* ctx, TB_Function* f, TB_Reg r);
-
 static PhiValue* find_phi(Ctx* ctx, TB_Reg r);
 static bool is_phi_that_contains(TB_Function* f, TB_Reg phi, TB_Reg reg);
 
@@ -405,7 +396,6 @@ static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, TB_Reg bound, TB_Reg bb
 static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Reg start, TB_Reg end, bool dont_handle_last_node);
 
 static int get_data_type_size(const TB_DataType dt);
-static bool should_rematerialize(TB_NodeTypeEnum t);
 
 // used to add patches since there's separate arrays per thread
 static thread_local size_t s_local_thread_id;

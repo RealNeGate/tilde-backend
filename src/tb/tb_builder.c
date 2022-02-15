@@ -745,6 +745,14 @@ TB_API TB_Reg tb_inst_fdiv(TB_Function* f, TB_Reg a, TB_Reg b) {
 	return tb_bin_farith(f, TB_FDIV, a, b);
 }
 
+TB_API TB_Reg tb_inst_va_start(TB_Function* f, TB_Reg a) {
+	assert(f->nodes.data[a].type == TB_PARAM_ADDR);
+	
+	TB_Reg r = tb_make_reg(f, TB_VA_START, TB_TYPE_PTR);
+	f->nodes.data[r].unary = (struct TB_NodeUnary) { a };
+	return r;
+}
+
 TB_API TB_Reg tb_inst_x86_sqrt(TB_Function* f, TB_Reg a) {
 	TB_DataType dt = f->nodes.data[a].dt;
 	

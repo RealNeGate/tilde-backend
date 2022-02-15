@@ -98,9 +98,9 @@ case TB_INITIALIZE: \
 macro(n->init.addr); \
 break; \
 case TB_KEEPALIVE: \
-macro(n->unary.src); \
-break; \
 case TB_RESTRICT: \
+case TB_VA_START: \
+macro(n->unary.src); \
 macro(n->unary.src); \
 break; \
 case TB_ATOMIC_XCHG: \

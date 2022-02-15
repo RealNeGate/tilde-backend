@@ -674,6 +674,19 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				}
 				break;
 			}
+			case TB_VA_START: {
+				Val src = eval(ctx, f, n->unary.src);
+				assert(is_value_mem(&src));
+				assert(!ctx->is_sysv && "How does va_start even work on SysV?");
+				
+				src.mem.disp += 8;
+				
+				Val dst = alloc_gpr(ctx, f, r, TB_PTR);
+				inst2(ctx, LEA, &dst, &src, TB_PTR);
+				
+				kill(ctx, f, n->unary.src);
+				break;
+			}
 			case TB_MEMBER_ACCESS: {
 				Val base = eval(ctx, f, n->member_access.base);
 				

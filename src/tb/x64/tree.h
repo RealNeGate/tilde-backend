@@ -182,38 +182,6 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
 		}
 		
 		
-		// Float binary operators
-		case TB_FADD:
-		case TB_FSUB:
-		case TB_FMUL:
-		case TB_FDIV: {
-			// supported modes (for now)
-			assert(dt.width <= 2);
-			
-			const static Inst2FPType tbl[] = { FP_ADD, FP_SUB, FP_MUL, FP_DIV };
-			
-			Val a = eval_rvalue(ctx, f, n->f_arith.a);
-			Val b = eval_rvalue(ctx, f, n->f_arith.b);
-			
-			uint8_t flags = 0;
-			flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
-			flags |= (dt.width) ? INST2FP_PACKED : 0;
-			
-			bool recycled = ctx->use_count[n->i_arith.a] == 0 && a.type == VAL_XMM;
-			if (recycled) {
-				val = a;
-			} else {
-				val = alloc_xmm(ctx, f, r, dt);
-				inst2sse(ctx, FP_MOV, &val, &a, flags);
-			}
-			
-			Inst2FPType op = tbl[reg_type - TB_FADD];
-			inst2sse(ctx, op, &val, &b, flags);
-			
-			kill(ctx, f, n->f_arith.a, a);
-			kill(ctx, f, n->f_arith.a, b);
-			break;
-		}
 		
 		case TB_SHR:
 		case TB_SHL:

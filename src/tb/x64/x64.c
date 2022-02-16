@@ -107,6 +107,7 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
 	s_local_thread_id = local_thread_id;
 	s_compiled_func_id = id;
+	
 	TB_TemporaryStorage* tls = tb_tls_allocate();
 	
 	////////////////////////////////
@@ -499,9 +500,11 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 		
 		// kill any values, unless it's the last basic block then it
 		// doesn't matter :p
-		/*if (next_bb_reg) loop_range(i, bb, bb_end) {
-			kill(ctx, f, i);
-		}*/
+		loop_range(i, bb, bb_end) {
+			if (ctx->values[i].type == VAL_GPR || ctx->values[i].type == VAL_XMM) {
+				spill_reg(ctx, f, i);
+			}
+		}
 		
 		// Next Basic block
 		bb = next_bb_reg;

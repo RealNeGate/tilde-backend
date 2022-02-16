@@ -518,6 +518,11 @@ for (size_t iterator = (start), end__ = (count); iterator < end__; ++iterator)
 #define loop_reverse(iterator, count) \
 for (size_t iterator = (count); iterator--;)
 
+typedef struct TB_MultiplyResult {
+	uint64_t lo;
+	uint64_t hi;
+} TB_MultiplyResult;
+
 #if defined(_MSC_VER) && !defined(__clang__)
 inline static int tb_ffs(uint32_t x) {
 	unsigned long index;
@@ -546,10 +551,11 @@ inline static bool tb_sub_overflow(uint64_t a, uint64_t b, uint64_t* result) {
 	return c > a;
 }
 
-inline static bool tb_mul_overflow(uint64_t a, uint64_t b, uint64_t* result) {
+#pragma intrinsic(_umul128)
+inline static TB_MultiplyResult tb_mul64x128(uint64_t a, uint64_t b) {
 	uint64_t hi;
-	*result = _umul128(a, b, &hi);
-	return hi > 0;
+	uint64_t lo = _umul128(a, b, &hi);
+	return (TB_MultiplyResult){ lo, hi };
 }
 #else
 inline static int tb_ffs(uint32_t x) {
@@ -572,8 +578,13 @@ inline static bool tb_sub_overflow(uint64_t a, uint64_t b, uint64_t* result) {
 	return __builtin_sub_overflow(a, b, result);
 }
 
-inline static bool tb_mul_overflow(uint64_t a, uint64_t b, uint64_t* result) {
-	return __builtin_mul_overflow(a, b, result);
+inline static TB_MultiplyResult tb_mul64x128(uint64_t a, uint64_t b) {
+    __uint128_t product = (__uint128_t)lhs * (__uint128_t)rhs;
+    
+	return (TB_MultiplyResult){ 
+		(uint64_t)(product & 0xFFFFFFFFFFFFFFFF),
+		(uint64_t)(product >> 64)
+	};
 }
 #endif
 
@@ -652,7 +663,7 @@ inline static int align_up(int a, int b) { return a + (b - (a % b)) % b; }
 #define OPTIMIZER_LOG(at, ...)
 #else
 #define OPTIMIZER_LOG(at, ...) do { \
-printf("%s:r%zu: ", f->name, (size_t)at); \
+printf("%s:r%d: ", f->name, (TB_Reg)(at)); \
 printf(__VA_ARGS__); \
 printf(" (part of %s)\n", __FUNCTION__); \
 } while (0)

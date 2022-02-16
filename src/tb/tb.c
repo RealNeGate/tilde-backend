@@ -689,8 +689,8 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
 		
 		switch (type) {
             case TB_NULL:
-			callback(user_data, "  r%u\t=\t", i);
-			callback(user_data, " NOP\n");
+			//callback(user_data, "  r%u\t=\t", i);
+			//callback(user_data, " NOP\n");
 			break;
             case TB_DEBUGBREAK:
 			callback(user_data, " DEBUGBREAK\n");
@@ -972,7 +972,7 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
 				break;
 			}
 			case TB_FUNC_ADDRESS:
-			callback(user_data, "  r%u\t=\t &%s\n", i, n->func.value);
+			callback(user_data, "  r%u\t=\t &%s\n", i, n->func.value->name);
 			break;
 			case TB_EXTERN_ADDRESS: {
 				TB_ExternalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;

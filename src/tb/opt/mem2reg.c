@@ -128,12 +128,14 @@ static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB
 	TB_Reg operands[2];
 	
 	// Walk past any pass nodes
-	TB_Node* phi_node = &f->nodes.data[phi_reg];
 	while (f->nodes.data[phi_reg].type == TB_PASS) {
-		phi_node = &f->nodes.data[phi_node->pass.value];
+		if (f->nodes.data[phi_reg].pass.value == 0) __debugbreak();
+		
+		phi_reg = f->nodes.data[phi_reg].pass.value;
 	}
 	
 	// Get operands
+	TB_Node* phi_node = &f->nodes.data[phi_reg];
 	if (phi_node->type == TB_NULL) {
 		return phi_reg;
 	} else if (phi_node->type == TB_PHI1) {
@@ -145,7 +147,9 @@ static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB
 		op_count = 2;
 		operands[0] = phi_node->phi2.a;
 		operands[1] = phi_node->phi2.b;
-	} else tb_todo();
+	} else {
+		return phi_reg;
+	}
 	
 	TB_Reg same = TB_NULL_REG;
 	loop(i, op_count) {
@@ -170,6 +174,7 @@ static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB
 	tb_tls_restore(c->tls, &uses[use_count]);
 	
 	// replace all references
+	assert(same);
 	phi_node->type = TB_PASS;
 	phi_node->pass.value = same;
 	
@@ -365,8 +370,6 @@ bool tb_opt_mem2reg(TB_Function* f) {
 
 // NOTE(NeGate): a stack slot is coherent when all loads and stores share
 // the same type and alignment along with not needing any address usage.
-//
-// TODO(NeGate): This might get slow...
 static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_DataType* out_dt) {
 	// if there's a difference between the times we want the value and the
 	// times we want the address, then some address calculations are being done
@@ -401,10 +404,14 @@ static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_
 				else if (!TB_DATA_TYPE_EQUALS(dt, n->dt)) return COHERENCY_BAD_DATA_TYPE;
 			}
 		}
-		
-		if (value_based_use_count != use_count) {
-			return COHERENCY_USES_ADDRESS;
+	}
+	
+	if (value_based_use_count != use_count) {
+		if (address == 74) {
+			printf("Woah! %d != %d\n", value_based_use_count, use_count);
 		}
+		
+		return COHERENCY_USES_ADDRESS;
 	}
 	
 	*out_dt = dt;

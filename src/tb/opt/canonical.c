@@ -27,8 +27,19 @@ bool tb_opt_compact_dead_regs(TB_Function* f) {
 }
 
 bool tb_opt_remove_pass_node(TB_Function* f) {
-	tb_todo();
-	return false;
+	int changes = 0;
+	TB_FOR_EACH_NODE(n, f) {
+		TB_Reg i = (n - f->nodes.data);
+		
+		if (n->type == TB_PASS) {
+			tb_function_find_replace_reg(f, i, n->unary.src);
+			
+			n->type = TB_NULL;
+			changes++;
+		}
+	}
+	
+	return changes;
 }
 
 bool tb_opt_canonicalize(TB_Function* f) {

@@ -198,13 +198,18 @@ static bool evict_gpr(Ctx* restrict ctx, TB_Function* f, GPR g) {
 			Val src = val_gpr(dt.type, phi->value.gpr);
 			inst2(ctx, MOV, &dst, &src, dt.type);
 		} else if (ctx->values[r].type == VAL_GPR && ctx->values[r].gpr == g) {
-			int size = get_data_type_size(dt);
-			ctx->stack_usage = align_up(ctx->stack_usage + size, size);
+			Val dst;
+			if (r < TB_FIRST_PARAMETER_REG+f->prototype->param_count) {
+				dst = val_stack(dt, 16 + ((r - TB_FIRST_PARAMETER_REG) * 8));
+			} else {
+				int size = get_data_type_size(dt);
+				ctx->stack_usage = align_up(ctx->stack_usage + size, size);
+				
+				dst = val_stack(dt, -ctx->stack_usage);
+			}
 			
-			Val dst = val_stack(dt, -ctx->stack_usage);
 			Val src = val_gpr(dt.type, g);
 			inst2(ctx, MOV, &dst, &src, dt.type);
-			
 			ctx->values[r] = dst;
 		}
 	}

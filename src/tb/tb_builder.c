@@ -100,69 +100,6 @@ static TB_Reg tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
 	return r;
 }
 
-uint64_t tb_fold_add(TB_ArithmaticBehavior ab, TB_DataType dt, uint64_t a, uint64_t b) {
-	uint64_t shift = 64 - (8 << (dt.type - TB_I8));
-	uint64_t mask = (~0ull) >> shift;
-	
-	uint64_t sum;
-	if (tb_add_overflow(a << shift, b << shift, &sum)) {
-		sum >>= shift;
-		
-		if (ab == TB_CAN_WRAP) sum &= mask;
-		else if (ab == TB_SATURATED_UNSIGNED) sum = mask;
-		//else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
-	}
-	
-	sum = (sum >> shift) & mask;
-	return sum;
-}
-
-uint64_t tb_fold_sub(TB_ArithmaticBehavior ab, TB_DataType dt, uint64_t a, uint64_t b) {
-	uint64_t shift = 64 - (8 << (dt.type - TB_I8));
-	uint64_t mask = (~0ull) >> shift;
-	
-	uint64_t sum;
-	if (tb_sub_overflow(a << shift, b << shift, &sum)) {
-		sum = (sum >> shift) & mask;
-		
-		if (ab == TB_CAN_WRAP) sum &= mask;
-		else if (ab == TB_SATURATED_UNSIGNED) sum = 0;
-		//else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
-	} else {
-		sum = (sum >> shift) & mask;
-	}
-	
-	return sum;
-}
-
-uint64_t tb_fold_mul(TB_ArithmaticBehavior ab, TB_DataType dt, uint64_t a, uint64_t b) {
-	uint64_t shift = 64 - (8 << (dt.type - TB_I8));
-	uint64_t mask = (~0ull) >> shift;
-	
-	uint64_t sum;
-	if (tb_mul_overflow(a << shift, b << shift, &sum)) {
-		sum = (sum >> shift) & mask;
-		
-		if (ab == TB_CAN_WRAP) sum &= mask;
-		else if (ab == TB_SATURATED_UNSIGNED) sum = 0;
-		//else if (ab == TB_WRAP_CHECK) { printf("warp check!!!\n"); }
-	} else {
-		sum = (sum >> shift) & mask;
-	}
-	
-	return sum;
-}
-
-uint64_t tb_fold_div(TB_DataType dt, uint64_t a, uint64_t b) {
-	uint64_t shift = 64 - (8 << (dt.type - TB_I8));
-	uint64_t mask = (~0ull) >> shift;
-	
-	if (b == 0) return 0;
-	uint64_t q = (a << shift) / (b << shift);
-	
-	return (q >> shift) & mask; 
-}
-
 static TB_Reg tb_bin_arith(TB_Function* f, int type, TB_ArithmaticBehavior arith_behavior, TB_Reg a, TB_Reg b) {
 	//tb_assume(TB_DATA_TYPE_EQUALS(f->nodes.data[a].dt, f->nodes.data[b].dt));
 	if (!TB_DATA_TYPE_EQUALS(f->nodes.data[a].dt, f->nodes.data[b].dt)) {

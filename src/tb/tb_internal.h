@@ -579,7 +579,7 @@ inline static bool tb_sub_overflow(uint64_t a, uint64_t b, uint64_t* result) {
 }
 
 inline static TB_MultiplyResult tb_mul64x128(uint64_t a, uint64_t b) {
-    __uint128_t product = (__uint128_t)lhs * (__uint128_t)rhs;
+    __uint128_t product = (__uint128_t)a * (__uint128_t)b;
     
 	return (TB_MultiplyResult){ 
 		(uint64_t)(product & 0xFFFFFFFFFFFFFFFF),

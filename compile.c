@@ -219,7 +219,8 @@ int main(int argc, char** argv) {
 	printf("Outputting to: %s...\n", output_lib_path);
 	
 #if defined(NEGATE)
-	system("cd W:/Workspace/Cuik/ && build.bat");
+	// personal crap
+	system("cd W:/Workspace/Cuik/ && clang compile.c -o compile.exe && compile.exe");
 #endif
 	
 #else

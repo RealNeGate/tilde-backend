@@ -337,8 +337,9 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 						}
 					} else if (!is_value_gpr(&value, RAX)) {
 						Val dst = val_gpr(dt.type, RAX);
+						bool is_address = is_address_node(f->nodes.data[end->ret.value].type);
 						
-						inst2(ctx, MOV, &dst, &value, dt.type);
+						inst2(ctx, is_address ? LEA : MOV, &dst, &value, dt.type);
 					}
 				} else tb_todo();
 			}
@@ -467,8 +468,10 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 				kill(ctx, f, end->switch_.key);
 				
 				if (key.type != VAL_GPR) {
+					bool is_address = is_address_node(f->nodes.data[end->switch_.key].type);
+					
 					Val new_val = alloc_gpr(ctx, f, TB_TEMP_REG, TB_PTR);
-					inst2(ctx, MOV, &new_val, &key, dt.type);
+					inst2(ctx, is_address ? LEA : MOV, &new_val, &key, dt.type);
 					key = new_val;
 					
 					free_gpr(ctx, f, new_val.gpr);

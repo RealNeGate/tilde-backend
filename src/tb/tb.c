@@ -891,6 +891,11 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
 			tb_print_type(dt, callback, user_data);
 			callback(user_data, " NOT r%u\n", n->unary);
 			break;
+            case TB_VA_START:
+			callback(user_data, "  r%u\t=\t", i);
+			tb_print_type(dt, callback, user_data);
+			callback(user_data, " VA_START r%u\n", n->unary);
+			break;
             case TB_X86INTRIN_SQRT:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);

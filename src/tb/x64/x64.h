@@ -89,6 +89,7 @@ typedef struct Val {
 			// this should alias with mem.is_rvalue
 			bool is_rvalue;
 			TB_GlobalID id;
+			int16_t disp;
 		} global;
         int32_t imm;
 	};
@@ -386,6 +387,7 @@ inline static bool is_value_match(const Val* a, const Val* b) {
 #define emit8(b) (*((uint64_t*) ctx->out) = (b), ctx->out += 8)
 
 #define patch4(p, b) (*((uint32_t*) &ctx->start_out[p]) = (b))
+#define reloc4(p, b) (*((uint32_t*) &ctx->start_out[p]) += (b))
 
 static bool is_address_node(TB_NodeTypeEnum t);
 

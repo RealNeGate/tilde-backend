@@ -38,7 +38,7 @@ inline static void emit_memory_operand(Ctx* ctx, uint8_t rx, const Val* restrict
 		}
 	} else if (a->type == VAL_GLOBAL) {
 		emit(((rx & 7) << 3) | RBP);
-		emit4(0x0);
+		emit4(a->global.disp);
 		
 		tb_emit_global_patch(ctx->f->module, ctx->function_id,
 							 code_pos() - 4, a->global.id,
@@ -81,7 +81,7 @@ inline static void inst1(Ctx* ctx, Inst1 op, const Val* r) {
 		emit(0x48); // rex.w
 		emit((op >> 8) & 0xFF);
 		emit(((rx & 7) << 3) | RBP);
-		emit4(0x0);
+		emit4(r->global.disp);
 		
 		tb_emit_global_patch(ctx->f->module, ctx->function_id,
 							 code_pos() - 4, r->global.id,
@@ -175,19 +175,19 @@ inline static void inst2(Ctx* ctx, Inst2Type op, const Val* a, const Val* b, int
 	
 	if (b->type == VAL_IMM) {
 		if (dt_type == TB_I8 || short_imm) {
-			if (a->type == VAL_GLOBAL) patch4(code_pos() - 4, -1);
+			if (a->type == VAL_GLOBAL) reloc4(code_pos() - 4, -1);
 			
 			if (short_imm) assert(b->imm == (int8_t)b->imm);
 			emit((int8_t)b->imm);
 		} else if (dt_type == TB_I16) {
-			if (a->type == VAL_GLOBAL) patch4(code_pos() - 4, -2);
+			if (a->type == VAL_GLOBAL) reloc4(code_pos() - 4, -2);
 			
 			uint32_t imm = b->imm;
 			assert((imm & 0xFFFF0000) == 0xFFFF0000 || (imm & 0xFFFF0000) == 0);
 			
 			emit2(imm);
 		} else {
-			if (a->type == VAL_GLOBAL) patch4(code_pos() - 4, -4);
+			if (a->type == VAL_GLOBAL) reloc4(code_pos() - 4, -4);
 			
 			assert(dt_type == TB_I32 || dt_type == TB_I64 || dt_type == TB_PTR);
 			emit4((int32_t)b->imm);

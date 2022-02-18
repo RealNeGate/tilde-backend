@@ -693,11 +693,125 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				kill(ctx, f, n->unary.src);
 				break;
 			}
+			case TB_ARRAY_ACCESS: {
+				Val base = eval(ctx, f, n->array_access.base);
+				Val index = eval(ctx, f, n->array_access.index);
+				
+				uint32_t stride = n->array_access.stride;
+				
+				if (base.type == VAL_GLOBAL) {
+					Val new_base = alloc_gpr(ctx, f, r, TB_PTR);
+					
+					inst2(ctx, LEA, &new_base, &base, TB_PTR);
+					
+					base = val_base_disp(dt, new_base.gpr, 0);
+					base.is_temp = true;
+				}
+				
+				// move into a GPR to make life easier
+				bool can_recycle_index = ctx->use_count[n->array_access.index] == 0;
+				bool is_index_temporary = false;
+				if (is_value_mem(&index)) {
+					Val new_index = alloc_gpr(ctx, f, r, TB_PTR);
+					
+					inst2(ctx, MOV, &new_index, &index, TB_PTR);
+					
+					index = new_index;
+					can_recycle_index = true;
+				}
+				
+				// TODO(NeGate): Redo this code, it's scary levels of branchy
+				if (index.type == VAL_IMM) {
+					base.mem.disp += index.imm * stride;
+					
+					kill(ctx, f, n->array_access.base);
+					kill(ctx, f, n->array_access.index);
+					def(ctx, f, r, base);
+				} else if (index.type == VAL_GPR) {
+					GPR base_reg = base.mem.base;
+					int32_t disp = base.mem.disp;
+					
+					if (tb_is_power_of_two(stride)) {
+						uint8_t stride_as_shift = tb_ffs(stride) - 1;
+						
+						if (stride_as_shift <= 3) {
+							// it can use the shift in the memory operand
+							Val val;
+							if (base.mem.index != GPR_NONE) {
+								// nested indices a[x][y]
+								// lea dst, [base + index0 * scale0 + offset]
+								// lea dst, [dst + index1 * scale1] or add dst, index1
+								val = alloc_gpr(ctx, f, r, dt.type);
+								inst2(ctx, LEA, &val, &base, TB_PTR);
+								
+								if (stride_as_shift) {
+									Val addr = val_base_index(dt, val.gpr, index.gpr, stride_as_shift);
+									inst2(ctx, LEA, &val, &addr, TB_PTR);
+								} else {
+									Val idx = val_gpr(TB_PTR, index.gpr);
+									inst2(ctx, ADD, &val, &idx, TB_PTR);
+								}
+								
+								val = val_base_disp(dt, val.gpr, 0);
+							} else {
+								// single index a[x] with a small power of two
+								val = val_base_index_disp(dt, base_reg, index.gpr, stride_as_shift, disp);
+							}
+							
+							kill(ctx, f, n->array_access.base);
+							kill(ctx, f, n->array_access.index);
+							def(ctx, f, r, val);
+						} else {
+							// use index as dst
+							if (!can_recycle_index) {
+								Val new_index = alloc_gpr(ctx, f, r, dt.type);
+								inst2(ctx, MOV, &new_index, &index, index.dt.type);
+								
+								index = new_index;
+								index.is_temp = true;
+							}
+							assert(stride_as_shift < 64);
+							
+							// shl index, stride_as_shift
+							emit(rex(true, 0x04, index.gpr, 0));
+							emit(0xC1);
+							emit(mod_rx_rm(MOD_DIRECT, 0x04, index.gpr));
+							emit(stride_as_shift);
+							
+							// add dst, index
+							emit(rex(true, base_reg, index.gpr, 0));
+							emit(0x01);
+							emit(mod_rx_rm(MOD_DIRECT, base_reg, index.gpr));
+							
+							kill(ctx, f, n->array_access.base);
+							kill(ctx, f, n->array_access.index);
+							def(ctx, f, r, index);
+						}
+					} else {
+						Val val = alloc_gpr(ctx, f, r, dt.type);
+						
+						// imul dst, index, stride
+						emit(rex(true, val.gpr, index.gpr, 0));
+						emit(0x69);
+						emit(mod_rx_rm(MOD_DIRECT, val.gpr, index.gpr));
+						emit4(stride);
+						
+						// add dst, base
+						emit(rex(true, base_reg, val.gpr, 0));
+						emit(0x01);
+						emit(mod_rx_rm(MOD_DIRECT, base_reg, val.gpr));
+						
+						kill(ctx, f, n->array_access.base);
+						kill(ctx, f, n->array_access.index);
+					}
+				}
+				break;
+			}
 			case TB_MEMBER_ACCESS: {
 				Val base = eval(ctx, f, n->member_access.base);
 				
 				if (base.type == VAL_GLOBAL) {
-					assert(0 && "TODO");
+					base.global.disp += n->member_access.offset;
 				} else if (base.type == VAL_MEM) {
 					base.mem.disp += n->member_access.offset;
 				} else if (base.type == VAL_GPR) {

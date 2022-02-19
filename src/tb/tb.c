@@ -110,13 +110,14 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 #define OPT(x) if (tb_opt_ ## x (f)) { \
 /* printf("%s   ", #x); */ \
 /* tb_function_print(f, tb_default_print_callback, stdout); */ \
+/* printf("\n\n\n"); */ \
 goto repeat_opt; \
 }
 
 TB_API void tb_function_optimize(TB_Function* f, TB_OptLevel opt) {
-	/*printf("INITIAL   ");
-	tb_function_print(f, tb_default_print_callback, stdout);
-	printf("\n\n\n");*/
+	//printf("INITIAL   ");
+	//tb_function_print(f, tb_default_print_callback, stdout);
+	//printf("\n\n\n");
 	
 	// only needs to run once
 	tb_opt_hoist_locals(f);
@@ -133,6 +134,7 @@ TB_API void tb_function_optimize(TB_Function* f, TB_OptLevel opt) {
 		OPT(mem2reg);
 		OPT(dead_block_elim);
 		OPT(deshort_circuit);
+		OPT(compact_dead_regs);
 	}
 	
 	//printf("FINAL   ");
@@ -689,8 +691,8 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
 		
 		switch (type) {
             case TB_NULL:
-			//callback(user_data, "  r%u\t=\t", i);
-			//callback(user_data, " NOP\n");
+			callback(user_data, "  r%u\t=\t", i);
+			callback(user_data, " NOP\n");
 			break;
             case TB_DEBUGBREAK:
 			callback(user_data, " DEBUGBREAK\n");

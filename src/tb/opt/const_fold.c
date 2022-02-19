@@ -99,7 +99,7 @@ bool tb_opt_load_elim(TB_Function* f) {
 		
 		if (n->type == TB_STORE) {
 			TB_DataType dt = n->dt;
-			//TB_Reg value = n->store.value;
+			TB_Reg value = n->store.value;
 			TB_Reg addr = n->store.address;
 			uint32_t alignment = n->store.alignment;
 			
@@ -112,7 +112,7 @@ bool tb_opt_load_elim(TB_Function* f) {
 					other->load.address == addr &&
 					TB_DATA_TYPE_EQUALS(dt, other->dt)) {
 					other->type = TB_PASS;
-					other->pass.value = i;
+					other->pass.value = value;
 					changes++;
 				} else if (TB_IS_NODE_TERMINATOR(t) || TB_IS_NODE_SIDE_EFFECT(t)) {
 					// Can't read past side effects or terminators, don't

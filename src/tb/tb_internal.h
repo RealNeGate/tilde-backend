@@ -100,7 +100,15 @@ break; \
 case TB_KEEPALIVE: \
 case TB_RESTRICT: \
 case TB_VA_START: \
-macro(n->unary.src); \
+case TB_NOT: \
+case TB_NEG: \
+case TB_X86INTRIN_SQRT: \
+case TB_X86INTRIN_RSQRT: \
+case TB_INT2PTR: \
+case TB_PTR2INT: \
+case TB_INT2FLOAT: \
+case TB_FLOAT2INT: \
+case TB_TRUNCATE: \
 macro(n->unary.src); \
 break; \
 case TB_ATOMIC_XCHG: \
@@ -153,16 +161,6 @@ case TB_SIGN_EXT: \
 case TB_FLOAT_EXT: \
 macro(n->unary.src); \
 break; \
-case TB_INT2PTR: \
-case TB_PTR2INT: \
-macro(n->unary.src); \
-case TB_INT2FLOAT: \
-case TB_FLOAT2INT: \
-macro(n->unary.src); \
-break; \
-case TB_TRUNCATE: \
-macro(n->unary.src); \
-break; \
 case TB_AND: \
 case TB_OR: \
 case TB_XOR: \
@@ -178,12 +176,6 @@ case TB_SHL: \
 case TB_SHR: \
 macro(n->i_arith.a); \
 macro(n->i_arith.b); \
-break; \
-case TB_NOT: \
-case TB_NEG: \
-case TB_X86INTRIN_SQRT: \
-case TB_X86INTRIN_RSQRT: \
-macro(n->unary.src); \
 break; \
 case TB_FADD: \
 case TB_FSUB: \

@@ -13,7 +13,7 @@ bool tb_opt_compact_dead_regs(TB_Function* f) {
 			tb_assume(prev != n);
 			do {
 				n = &f->nodes.data[n->next];
-			} while (n != end);
+			} while (n->type == TB_NULL && n != end);
 			
 			prev->next = n - f->nodes.data;
 			changes++;
@@ -32,6 +32,7 @@ bool tb_opt_remove_pass_node(TB_Function* f) {
 		TB_Reg i = (n - f->nodes.data);
 		
 		if (n->type == TB_PASS) {
+			OPTIMIZER_LOG(i, "Replacing PASS with r%d", n->unary.src);
 			tb_function_find_replace_reg(f, i, n->unary.src);
 			
 			n->type = TB_NULL;

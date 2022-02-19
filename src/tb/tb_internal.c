@@ -30,7 +30,7 @@ int tb_function_find_uses_of_node(const TB_Function* f, TB_Reg def, TB_Reg uses[
 }
 
 void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace) {
-#define X(reg) reg = (reg == find) ? replace : reg
+#define X(reg) if (reg == find) reg = replace
 	TB_FOR_EACH_NODE(n, f) {
 		switch (n->type) {
 			TB_FOR_EACH_REG_IN_NODE(X);

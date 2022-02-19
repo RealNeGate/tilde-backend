@@ -367,8 +367,15 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 				eval_terminator_phis(ctx, f, bb, bb_end, if_false_reg, if_false_reg_end);
 			}
 			
-			ctx->is_if_statement_next = true;
 			Val cond = eval(ctx, f, end->if_.cond);
+			
+			// NOTE(NeGate): the FLAGS should be fine as long as spill_reg doesn't clobber
+			// registers... which it doesn't...
+			loop_range(i, bb, bb_end) {
+				if (ctx->values[i].type == VAL_GPR || ctx->values[i].type == VAL_XMM) {
+					spill_reg(ctx, f, i);
+				}
+			}
 			
 			if (cond.type == VAL_IMM) {
 				TB_Label dst = (cond.imm ? if_true : if_false);
@@ -424,6 +431,12 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 			
 			eval_terminator_phis(ctx, f, bb, bb_end, target, target_end);
 			
+			loop_range(i, bb, bb_end) {
+				if (ctx->values[i].type == VAL_GPR || ctx->values[i].type == VAL_XMM) {
+					spill_reg(ctx, f, i);
+				}
+			}
+			
 			TB_Label fallthrough_label = next_bb->label.id;
 			if (fallthrough_label != end->goto_.label) jmp(ctx, end->goto_.label);
 		} else if (end->type == TB_LABEL) {
@@ -431,7 +444,19 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 			// save out any phi nodes
 			TB_Reg next_terminator = end->label.terminator;
 			eval_terminator_phis(ctx, f, bb, bb_end, bb_end, next_terminator);
+			
+			loop_range(i, bb, bb_end) {
+				if (ctx->values[i].type == VAL_GPR || ctx->values[i].type == VAL_XMM) {
+					spill_reg(ctx, f, i);
+				}
+			}
 		} else if (end->type == TB_TRAP) {
+			loop_range(i, bb, bb_end) {
+				if (ctx->values[i].type == VAL_GPR || ctx->values[i].type == VAL_XMM) {
+					spill_reg(ctx, f, i);
+				}
+			}
+			
 			// ud2
 			emit(0x0F); 
 			emit(0x0B);
@@ -439,6 +464,13 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 			static_assert(_Alignof(TB_SwitchEntry) == _Alignof(TB_Reg), "We don't want any unaligned accesses");
 			
 			Val key = eval(ctx, f, end->switch_.key);
+			
+			// spill any leftover values
+			loop_range(i, bb, bb_end) {
+				if (ctx->values[i].type == VAL_GPR || ctx->values[i].type == VAL_XMM) {
+					spill_reg(ctx, f, i);
+				}
+			}
 			
 			if (key.type == VAL_IMM) {
 				size_t entry_count = (end->switch_.entries_end - end->switch_.entries_start) / 2;
@@ -499,14 +531,6 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 			// doesn't need to do anything because it's all UB from here
 		} else {
 			tb_todo();
-		}
-		
-		// kill any values, unless it's the last basic block then it
-		// doesn't matter :p
-		loop_range(i, bb, bb_end) {
-			if (ctx->values[i].type == VAL_GPR || ctx->values[i].type == VAL_XMM) {
-				spill_reg(ctx, f, i);
-			}
 		}
 		
 		// Next Basic block
@@ -868,6 +892,9 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				
 				// Eval address and cast to the correct type for the store
 				Val address = eval(ctx, f, addr_reg);
+				if (address.type == VAL_GPR) {
+					address = val_base_disp(address.dt, address.gpr, 0);
+				}
 				
 				store_into(ctx, f, dt, &address, r, addr_reg, val_reg, true);
 				
@@ -886,7 +913,6 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 			}
 			case TB_RESTRICT: {
 				Val val = eval(ctx, f, n->unary.src);
-				assert(is_value_mem(&val));
 				
 				kill(ctx, f, n->unary.src);
 				def(ctx, f, r, val);

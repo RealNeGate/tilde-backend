@@ -2,6 +2,10 @@
 #define TB_TEMP_REG INT_MAX
 
 static void spill_reg(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
+	if (ctx->use_count[r] == 0) {
+		ctx->values[r] = (Val){ 0 };
+	}
+	
 	TB_DataType dt = f->nodes.data[r].dt;
 	Val src = ctx->values[r];
 	
@@ -165,7 +169,10 @@ static void kill(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
 		} else if (val.type == VAL_XMM) {
 			ctx->xmm_allocator[val.xmm] = TB_NULL_REG;
 		} else if (val.type == VAL_MEM) {
-			assert(val.mem.index == GPR_NONE);
+			if (val.mem.index != GPR_NONE) {
+				ctx->gpr_allocator[val.mem.index] = TB_NULL_REG;
+			}
+			
 			ctx->gpr_allocator[val.mem.base] = TB_NULL_REG;
 		}
 		

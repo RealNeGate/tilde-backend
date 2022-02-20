@@ -93,6 +93,12 @@ inline static void inst2(Ctx* ctx, Inst2Type op, const Val* a, const Val* b, int
 	assert(op < (sizeof(inst2_tbl) / sizeof(inst2_tbl[0])));
 	const Inst2* inst = &inst2_tbl[op];
 	
+#ifndef NDEBUG
+	if (op == LEA) {
+		assert(a->type == VAL_GPR && is_value_mem(b) && "LEA with non-gpr destination");
+	}
+#endif
+	
 	bool dir = b->type == VAL_MEM || b->type == VAL_GLOBAL;
 	if (dir || inst->op == 0xAF || inst->ext == EXT_DEF2) tb_swap(const Val*, a, b);
 	

@@ -768,8 +768,7 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
 			callback(user_data, "  MEMCPY\t(r%d, r%d, r%d)\n", n->mem_op.dst, n->mem_op.src, n->mem_op.size);
 			break;
 			case TB_INITIALIZE:
-			// TODO(NeGate): Make this more presentable
-			callback(user_data, "  r%u = INITIALIZER ...\n", i);
+			callback(user_data, " *r%u = INITIALIZER ...\n", n->init.addr);
 			break;
 			case TB_MEMBER_ACCESS:
 			callback(user_data, "  r%u\t=\t", i);

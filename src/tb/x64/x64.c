@@ -304,6 +304,7 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 		// Evaluate the terminator
 		if (end->type == TB_RET) {
 			TB_DataType dt = end->dt;
+			if (dt.type == TB_BOOL) dt.type = TB_I8;
 			
 			// Evaluate return value
 			if (end->ret.value) {
@@ -335,11 +336,15 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 							emit(0xB8);
 							emit4(value.imm);
 						}
-					} else if (!is_value_gpr(&value, RAX)) {
-						Val dst = val_gpr(dt.type, RAX);
+					} else {
 						bool is_address = is_address_node(f->nodes.data[end->ret.value].type);
 						
-						inst2(ctx, is_address ? LEA : MOV, &dst, &value, dt.type);
+						Val dst = val_gpr(dt.type, RAX);
+						if (is_address && is_value_mem(&value)) {
+							inst2(ctx, LEA, &dst, &value, dt.type);
+						} else if (!is_value_gpr(&value, RAX)) {
+							inst2(ctx, MOV, &dst, &value, dt.type);
+						}
 					}
 				} else tb_todo();
 			}
@@ -720,113 +725,129 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 			case TB_ARRAY_ACCESS: {
 				Val base = eval(ctx, f, n->array_access.base);
 				Val index = eval(ctx, f, n->array_access.index);
-				
 				uint32_t stride = n->array_access.stride;
 				
-				if (base.type == VAL_GLOBAL) {
-					Val new_base = alloc_gpr(ctx, f, r, TB_PTR);
+				if (base.type == VAL_MEM &&
+					base.mem.index == GPR_NONE &&
+					index.type == VAL_IMM) {
+					kill(ctx, f, n->array_access.base);
+					kill(ctx, f, n->array_access.index);
 					
-					inst2(ctx, LEA, &new_base, &base, TB_PTR);
+					int64_t disp = base.mem.disp;
+					disp += ((int64_t)index.imm) * stride;
+					assert(disp == (int32_t)disp);
 					
-					base = val_base_disp(dt, new_base.gpr, 0);
-					base.is_temp = true;
+					def(ctx, f, r, val_base_disp(TB_TYPE_PTR, base.mem.base, disp));
+					break;
 				}
 				
-				// move into a GPR to make life easier
-				bool can_recycle_index = ctx->use_count[n->array_access.index] == 0;
-				bool is_index_temporary = false;
-				if (is_value_mem(&index)) {
-					Val new_index = alloc_gpr(ctx, f, r, TB_PTR);
-					
-					inst2(ctx, MOV, &new_index, &index, TB_PTR);
-					
-					index = new_index;
-					can_recycle_index = true;
-				}
+				// Try to recycle the index
+				bool recycled = ctx->use_count[n->array_access.index] == 0 &&
+					index.type == VAL_GPR;
 				
-				// TODO(NeGate): Redo this code, it's scary levels of branchy
-				if (index.type == VAL_IMM) {
-					base.mem.disp += index.imm * stride;
+				// We try to delay it for better codegen
+				bool has_filled_dst = false;
+				
+				Val val;
+				if (recycled) {
+					has_filled_dst = true;
+					
+					val = index;
 					
 					kill(ctx, f, n->array_access.base);
 					kill(ctx, f, n->array_access.index);
-					def(ctx, f, r, base);
-				} else if (index.type == VAL_GPR) {
-					GPR base_reg = base.mem.base;
-					int32_t disp = base.mem.disp;
+					def(ctx, f, r, val);
+				} else {
+					// we'll delay setting the dst_gpr here because
+					// it's possible to fold it into another operation
+					// like LEA
+					//   lea dst, [base + index * stride]
+					//  vs
+					//   mov dst, index
+					//   lea dst, [base + dst * stride]
+					val = alloc_gpr(ctx, f, r, TB_PTR);
+					if (index.type != VAL_GPR) {
+						inst2(ctx, MOV, &val, &index, TB_PTR);
+						
+						has_filled_dst = true;
+					}
 					
-					if (tb_is_power_of_two(stride)) {
-						uint8_t stride_as_shift = tb_ffs(stride) - 1;
-						
-						if (stride_as_shift <= 3) {
-							// it can use the shift in the memory operand
-							Val val;
-							if (base.mem.index != GPR_NONE) {
-								// nested indices a[x][y]
-								// lea dst, [base + index0 * scale0 + offset]
-								// lea dst, [dst + index1 * scale1] or add dst, index1
-								val = alloc_gpr(ctx, f, r, dt.type);
-								inst2(ctx, LEA, &val, &base, TB_PTR);
-								
-								if (stride_as_shift) {
-									Val addr = val_base_index(dt, val.gpr, index.gpr, stride_as_shift);
-									inst2(ctx, LEA, &val, &addr, TB_PTR);
-								} else {
-									Val idx = val_gpr(TB_PTR, index.gpr);
-									inst2(ctx, ADD, &val, &idx, TB_PTR);
-								}
-								
-								val = val_base_disp(dt, val.gpr, 0);
-							} else {
-								// single index a[x] with a small power of two
-								val = val_base_index_disp(dt, base_reg, index.gpr, stride_as_shift, disp);
-							}
-							
-							kill(ctx, f, n->array_access.base);
-							kill(ctx, f, n->array_access.index);
-							def(ctx, f, r, val);
-						} else {
-							// use index as dst
-							if (!can_recycle_index) {
-								Val new_index = alloc_gpr(ctx, f, r, dt.type);
-								inst2(ctx, MOV, &new_index, &index, index.dt.type);
-								
-								index = new_index;
-								index.is_temp = true;
-							}
-							assert(stride_as_shift < 64);
-							
-							// shl index, stride_as_shift
-							emit(rex(true, 0x04, index.gpr, 0));
-							emit(0xC1);
-							emit(mod_rx_rm(MOD_DIRECT, 0x04, index.gpr));
-							emit(stride_as_shift);
-							
-							// add dst, index
-							emit(rex(true, base_reg, index.gpr, 0));
-							emit(0x01);
-							emit(mod_rx_rm(MOD_DIRECT, base_reg, index.gpr));
-							
-							kill(ctx, f, n->array_access.base);
-							kill(ctx, f, n->array_access.index);
-							def(ctx, f, r, index);
-						}
+					kill(ctx, f, n->array_access.base);
+					kill(ctx, f, n->array_access.index);
+				}
+				
+				// if it's an LEA index*stride
+				// then stride > 0, if not it's free
+				// do think of it however
+				GPR index_reg = GPR_NONE;
+				uint8_t stride_as_shift = 0;
+				
+				if (tb_is_power_of_two(stride)) {
+					stride_as_shift = tb_ffs(stride) - 1;
+					
+					if (stride_as_shift <= 3) {
+						// it can use the shift in the memory operand
+						index_reg = has_filled_dst ? val.gpr : index.gpr;
 					} else {
-						Val val = alloc_gpr(ctx, f, r, dt.type);
+						assert(stride_as_shift < 64 && "Stride to big!!!");
 						
+						if (!has_filled_dst) {
+							inst2(ctx, MOV, &val, &index, TB_PTR);
+						}
+						
+						// shl index, stride_as_shift
+						emit(rex(true, 0x04, val.gpr, 0));
+						emit(0xC1);
+						emit(mod_rx_rm(MOD_DIRECT, 0x04, val.gpr));
+						emit(stride_as_shift);
+						
+						index_reg = val.gpr;
+						stride_as_shift = 0; // pre-multiplied, don't propagate
+					}
+				} else {
+					if (has_filled_dst) {
+						// imul dst, index, stride
+						emit(rex(true, val.gpr, val.gpr, 0));
+						emit(0x69);
+						emit(mod_rx_rm(MOD_DIRECT, val.gpr, val.gpr));
+						emit4(stride);
+					} else {
 						// imul dst, index, stride
 						emit(rex(true, val.gpr, index.gpr, 0));
 						emit(0x69);
 						emit(mod_rx_rm(MOD_DIRECT, val.gpr, index.gpr));
 						emit4(stride);
-						
-						// add dst, base
-						emit(rex(true, base_reg, val.gpr, 0));
-						emit(0x01);
-						emit(mod_rx_rm(MOD_DIRECT, base_reg, val.gpr));
-						
-						kill(ctx, f, n->array_access.base);
-						kill(ctx, f, n->array_access.index);
+					}
+					
+					index_reg = val.gpr;
+					stride_as_shift = 0; // pre-multiplied, don't propagate
+				}
+				
+				// post conditions :)
+				assert(index_reg != GPR_NONE);
+				assert(stride_as_shift >= 0 && stride_as_shift <= 3 && "stride_as_shift can't fit into an LEA");
+				
+				// Resolve base (if it's not already in a register)
+				if (base.type != VAL_GPR) {
+					bool is_base_an_address = is_address_node(f->nodes.data[n->array_access.base].type);
+					
+					Val temp = alloc_gpr(ctx, f, TB_TEMP_REG, TB_PTR);
+					inst2(ctx, is_base_an_address ? LEA : MOV, &temp, &base, TB_PTR);
+					
+					if (stride_as_shift) {
+						Val arith = val_base_index(TB_TYPE_PTR, temp.gpr, index_reg, stride_as_shift);
+						inst2(ctx, LEA, &val, &arith, TB_PTR);
+					} else {
+						inst2(ctx, ADD, &val, &temp, TB_PTR);
+					}
+					
+					free_gpr(ctx, f, temp.gpr);
+				} else {
+					if (stride_as_shift) {
+						Val arith = val_base_index(TB_TYPE_PTR, base.gpr, index_reg, stride_as_shift);
+						inst2(ctx, LEA, &val, &arith, TB_PTR);
+					} else {
+						inst2(ctx, ADD, &val, &base, TB_PTR);
 					}
 				}
 				break;
@@ -1196,6 +1217,86 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				ctx->gpr_allocator[is_div ? RDX : RAX] = TB_NULL_REG;
 				break;
 			}
+			case TB_SHR:
+			case TB_SHL:
+			case TB_SAR: {
+				Val a = eval(ctx, f, n->i_arith.a);
+				Val b = eval(ctx, f, n->i_arith.b);
+				
+				if (a.type == VAL_IMM && b.type == VAL_IMM) {
+					uint64_t result;
+					switch (reg_type) {
+						case TB_SHL: result = (uint64_t)a.imm << (uint64_t)b.imm; break;
+						case TB_SHR: result = (uint64_t)a.imm >> (uint64_t)b.imm; break;
+						case TB_SAR: result = (int64_t)a.imm >> (int64_t)b.imm; break;
+					}
+					
+					if (result == (int32_t)result) {
+						def(ctx, f, r, val_imm(dt, result));
+						break;
+					}
+				}
+				
+				bool recycled = ctx->use_count[n->i_arith.a] == 0 &&
+					a.type == VAL_GPR;
+				
+				Val val;
+				if (recycled) {
+					val = a;
+					
+					kill(ctx, f, n->i_arith.a);
+					kill(ctx, f, n->i_arith.b);
+					
+					def(ctx, f, r, val);
+				} else {
+					val = alloc_gpr(ctx, f, r, dt.type);
+					inst2(ctx, MOV, &val, &a, dt.type);
+					
+					kill(ctx, f, n->i_arith.a);
+					kill(ctx, f, n->i_arith.b);
+				}
+				
+				bool is_64bit = dt.type == TB_I64;
+				if (b.type == VAL_IMM) {
+					assert(b.imm < 64);
+					
+					// shl r/m, imm
+					if (dt.type == TB_I16) emit(0x66);
+					emit(rex(is_64bit, 0x00, val.gpr, 0x00));
+					emit(dt.type == TB_I8 ? 0xC0 : 0xC1);
+					emit(mod_rx_rm(MOD_DIRECT, 0x04, val.gpr));
+					emit(b.imm);
+					break;
+				}
+				
+				Val rcx = val_gpr(dt.type, RCX);
+				if (!is_value_gpr(&b, RCX)) {
+					evict_gpr(ctx, f, RCX);
+					inst2(ctx, MOV, &rcx, &b, dt.type);
+				}
+				
+				// D2 /4       shl r/m, cl
+				// D2 /5       shr r/m, cl
+				// D2 /7       sar r/m, cl
+				if (dt.type == TB_I16) emit(0x66);
+				emit(rex(is_64bit, 0x00, val.gpr, 0x00));
+				emit(dt.type == TB_I8 ? 0xD2 : 0xD3);
+				
+				switch (reg_type) {
+					case TB_SHL:
+					emit(mod_rx_rm(MOD_DIRECT, 0x04, val.gpr));
+					break;
+					case TB_SHR:
+					emit(mod_rx_rm(MOD_DIRECT, 0x05, val.gpr));
+					break;
+					case TB_SAR:
+					emit(mod_rx_rm(MOD_DIRECT, 0x07, val.gpr));
+					break;
+					default:
+					tb_unreachable();
+				}
+				break;
+			}
 			// Float binary operators
 			case TB_FADD:
 			case TB_FSUB:
@@ -1517,7 +1618,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				} else if (dt.type == TB_I8 || dt.type == TB_BOOL) {
 					inst2(ctx, MOVZXB, &val, &src, TB_I8);
 				} else {
-					inst2(ctx, MOV, &val, &src, src.dt.type);
+					if (!recycled) inst2(ctx, MOV, &val, &src, src.dt.type);
 				}
 				break;
 			}
@@ -1727,38 +1828,79 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 				TB_Initializer* i = (TB_Initializer*)&m->initializers[n->init.id / per_thread_stride][n->init.id % per_thread_stride];
 				
-				// rep stosb, ol' reliable
-				evict_gpr(ctx, f, RAX);
-				evict_gpr(ctx, f, RCX);
-				evict_gpr(ctx, f, RDI);
-				
-				{
-					Val param = eval(ctx, f, addr);
-					Val dst = val_gpr(TB_PTR, RDI);
+				if (i->size >= 16) {
+					// rep stosb, ol' reliable
+					evict_gpr(ctx, f, RAX);
+					evict_gpr(ctx, f, RCX);
+					evict_gpr(ctx, f, RDI);
 					
-					if (is_value_mem(&param) && !param.mem.is_rvalue) {
-						inst2(ctx, LEA, &dst, &param, TB_PTR);
-					} else {
-						if (!is_value_gpr(&param, RDI)) {
-							inst2(ctx, MOV, &dst, &param, TB_PTR);
+					{
+						Val param = eval(ctx, f, addr);
+						Val dst = val_gpr(TB_PTR, RDI);
+						
+						if (is_value_mem(&param) && is_address_node(f->nodes.data[addr].type)) {
+							inst2(ctx, LEA, &dst, &param, TB_PTR);
+						} else {
+							if (!is_value_gpr(&param, RDI)) {
+								inst2(ctx, MOV, &dst, &param, TB_PTR);
+							}
 						}
+					}
+					
+					{
+						Val dst = val_gpr(TB_PTR, RAX);
+						inst2(ctx, XOR, &dst, &dst, TB_I32);
+					}
+					
+					{
+						Val dst = val_gpr(TB_PTR, RCX);
+						Val src = val_imm(TB_TYPE_PTR, i->size);
+						inst2(ctx, MOV, &dst, &src, TB_PTR);
+					}
+					
+					// rep stosb
+					emit(0xF3);
+					emit(0xAA);
+				} else {
+					Val src = val_imm(TB_TYPE_I32, 0);
+					
+					Val dst = eval(ctx, f, addr);
+					bool is_dst_temp = false;
+					
+					bool is_address = is_address_node(f->nodes.data[addr].type);
+					if (dst.type == VAL_GPR) {
+						dst = val_base_disp(TB_TYPE_PTR, dst.gpr, 0);
+					} else if (dst.type == VAL_GLOBAL || !is_address) {
+						Val new_dst = alloc_gpr(ctx, f, TB_TEMP_REG, TB_PTR);
+						
+						inst2(ctx, is_address ? LEA : MOV, &new_dst, &dst, TB_PTR);
+						
+						free_gpr(ctx, f, new_dst.gpr);
+						dst = val_base_disp(TB_TYPE_PTR, new_dst.gpr, 0);
+					}
+					
+					assert(is_value_mem(&dst));
+					
+					size_t sz = i->size;
+					
+					for (; sz >= 8; sz -= 8, dst.mem.disp += 8) {
+						inst2(ctx, MOV, &dst, &src, TB_I64);
+					}
+					
+					for (; sz >= 4; sz -= 4, dst.mem.disp += 4) {
+						inst2(ctx, MOV, &dst, &src, TB_I32);
+					}
+					
+					for (; sz >= 2; sz -= 2, dst.mem.disp += 2) {
+						inst2(ctx, MOV, &dst, &src, TB_I16);
+					}
+					
+					for (; sz >= 1; sz -= 1, dst.mem.disp += 1) {
+						inst2(ctx, MOV, &dst, &src, TB_I8);
 					}
 				}
 				
-				{
-					Val dst = val_gpr(TB_PTR, RAX);
-					inst2(ctx, XOR, &dst, &dst, TB_I32);
-				}
-				
-				{
-					Val dst = val_gpr(TB_PTR, RCX);
-					Val src = val_imm(TB_TYPE_PTR, i->size);
-					inst2(ctx, MOV, &dst, &src, TB_PTR);
-				}
-				
-				// rep stosb
-				emit(0xF3);
-				emit(0xAA);
+				kill(ctx, f, addr);
 				break;
 			}
 			case TB_MEMSET: {
@@ -1766,7 +1908,65 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				TB_Reg val_reg = n->mem_op.src;
 				TB_Reg size_reg = n->mem_op.size;
 				
-				// TODO(NeGate): Implement vector memset
+				// memset on constant size
+				if (f->nodes.data[size_reg].type == TB_UNSIGNED_CONST &&
+					f->nodes.data[size_reg].type == TB_SIGNED_CONST) {
+					int64_t sz = f->nodes.data[size_reg].sint.value;
+					assert(sz <= 0 && "Cannot memset on negative numbers");
+					
+					ctx->use_count[size_reg]--;
+					assert(ctx->use_count[size_reg] >= 0);
+					
+					if (sz >= 512) {
+						/* too big, just rep stos */
+					} else if (sz >= 16) {
+						// SSE memset
+						/*do {
+							// TODO(NeGate): we should try to use movaps when possible
+							// movups 
+							
+							sz -= 16;
+						} while (sz >= 16);
+						break;*/
+					} else if (sz >= 1) {
+						if (f->nodes.data[val_reg].type == TB_UNSIGNED_CONST &&
+							f->nodes.data[val_reg].type == TB_SIGNED_CONST) {
+							assert(f->nodes.data[val_reg].uint.value == 0 && "TODO: Implement the fancy stuff soon");
+							
+							// tally down the value so it still counts like we used it
+							ctx->use_count[val_reg]--;
+							assert(ctx->use_count[val_reg] >= 0);
+							
+							Val src = val_imm(TB_TYPE_VOID, f->nodes.data[val_reg].uint.value);
+							Val dst = eval(ctx, f, dst_reg);
+							if (dst.type == VAL_GPR) {
+								dst = val_base_disp(TB_TYPE_PTR, dst.gpr, 0);
+							}
+							
+							for (; sz >= 8; sz -= 8, dst.mem.disp += 8) {
+								inst2(ctx, MOV, &dst, &src, TB_I64);
+							}
+							
+							for (; sz >= 4; sz -= 4, dst.mem.disp += 4) {
+								inst2(ctx, MOV, &dst, &src, TB_I32);
+							}
+							
+							for (; sz >= 2; sz -= 2, dst.mem.disp += 2) {
+								inst2(ctx, MOV, &dst, &src, TB_I16);
+							}
+							
+							for (; sz >= 1; sz -= 1, dst.mem.disp += 1) {
+								inst2(ctx, MOV, &dst, &src, TB_I8);
+							}
+							
+							kill(ctx, f, val_reg);
+							kill(ctx, f, size_reg);
+							kill(ctx, f, dst_reg);
+							break;
+						}
+					}
+				}
+				
 				// rep stosb, ol' reliable
 				evict_gpr(ctx, f, RAX);
 				evict_gpr(ctx, f, RCX);
@@ -1826,9 +2026,13 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				
 				{
 					Val param = eval(ctx, f, dst_reg);
-					if (!is_value_gpr(&param, RDI)) {
-						Val dst = val_gpr(TB_PTR, RDI);
-						inst2(ctx, MOV, &dst, &param, TB_PTR);
+					Val dst = val_gpr(TB_PTR, RDI);
+					if (is_value_mem(&param) && is_address_node(f->nodes.data[dst_reg].type)) {
+						inst2(ctx, LEA, &dst, &param, TB_PTR);
+					} else {
+						if (!is_value_gpr(&param, RDI)) {
+							inst2(ctx, MOV, &dst, &param, TB_PTR);
+						}
 					}
 					kill(ctx, f, dst_reg);
 					ctx->gpr_allocator[RDI] = TB_TEMP_REG;

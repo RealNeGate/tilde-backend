@@ -915,10 +915,17 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				Val address = eval(ctx, f, addr_reg);
 				if (address.type == VAL_GPR) {
 					address = val_base_disp(address.dt, address.gpr, 0);
+				} else if (address.is_spill) {
+					Val val = alloc_gpr(ctx, f, r, dt.type);
+					inst2(ctx, MOV, &val, &address, TB_PTR);
+					address = val_base_disp(TB_TYPE_PTR, val.gpr, 0);
 				}
 				
 				store_into(ctx, f, dt, &address, r, addr_reg, val_reg, true);
 				
+				if (address.is_spill) {
+					free_gpr(ctx, f, address.mem.base);
+				}
 				kill(ctx, f, addr_reg);
 				break;
 			}

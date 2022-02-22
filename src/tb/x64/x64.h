@@ -71,7 +71,7 @@ typedef enum Inst2FPFlags {
 
 typedef struct Val {
 	uint8_t type;
-	bool is_temp;
+	bool is_spill;
 	TB_DataType dt;
 	
 	union {

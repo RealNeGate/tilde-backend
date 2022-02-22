@@ -23,6 +23,7 @@ static void spill_reg(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
 		
 		inst2(ctx, MOV, &dst, &src, dt.type);
 		
+		dst.is_spill = true;
 		ctx->values[r] = dst;
 		ctx->gpr_allocator[src.gpr] = TB_NULL_REG;
 	} else if (src.type == VAL_XMM) {
@@ -41,6 +42,7 @@ static void spill_reg(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
 		
 		inst2sse(ctx, FP_MOV, &dst, &src, flags);
 		
+		dst.is_spill = true;
 		ctx->values[r] = dst;
 		ctx->xmm_allocator[src.xmm] = TB_NULL_REG;
 	}

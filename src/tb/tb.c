@@ -1000,7 +1000,9 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
 			callback(user_data, "  PARAM %u\n", n->param.id);
 			break;
             case TB_PARAM_ADDR:
-			callback(user_data, "  r%u\t=\t&PARAM %u\n", i, f->nodes.data[n->param_addr.param].param.id);
+			callback(user_data, "  r%u\t=\t", i);
+			tb_print_type(dt, callback, user_data);
+			callback(user_data, "  &PARAM %u\n", f->nodes.data[n->param_addr.param].param.id);
 			break;
             case TB_LOAD:
 			callback(user_data, "  r%u\t=\t", i);

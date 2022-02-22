@@ -926,6 +926,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				TB_Reg param = n->param_addr.param;
 				
 				Val val = eval(ctx, f, param);
+				val.dt = dt;
 				assert(is_value_mem(&val));
 				
 				kill(ctx, f, n->param_addr.param);
@@ -1402,8 +1403,8 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 					switch (reg_type) {
 						case TB_CMP_EQ: cc = E; break;
 						case TB_CMP_NE: cc = NE; break;
-						case TB_CMP_FLT: cc = L; break;
-						case TB_CMP_FLE: cc = LE; break;
+						case TB_CMP_FLT: cc = B; break;
+						case TB_CMP_FLE: cc = BE; break;
 						default: tb_unreachable();
 					}
 				} else {
@@ -1659,6 +1660,18 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				} else {
 					inst2(ctx, MOV, &val, &src, src.dt.type);
 				}
+				break;
+			}
+			case TB_FLOAT_EXT: {
+				Val src = eval(ctx, f, n->unary.src);
+				Val val = alloc_xmm(ctx, f, r, dt);
+				
+				uint8_t flags = 0;
+				flags |= (src.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+				flags |= (src.dt.width) ? INST2FP_PACKED : 0;
+				inst2sse(ctx, FP_CVT, &val, &src, flags);
+				
+				kill(ctx, f, n->unary.src);
 				break;
 			}
 			
@@ -2040,9 +2053,13 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				
 				{
 					Val param = eval(ctx, f, src_reg);
-					if (!is_value_gpr(&param, RSI)) {
-						Val dst = val_gpr(TB_PTR, RSI);
-						inst2(ctx, MOV, &dst, &param, TB_PTR);
+					Val dst = val_gpr(TB_PTR, RSI);
+					if (is_value_mem(&param) && is_address_node(f->nodes.data[src_reg].type)) {
+						inst2(ctx, LEA, &dst, &param, TB_PTR);
+					} else {
+						if (!is_value_gpr(&param, RSI)) {
+							inst2(ctx, MOV, &dst, &param, TB_PTR);
+						}
 					}
 					kill(ctx, f, src_reg);
 					ctx->gpr_allocator[RSI] = TB_TEMP_REG;
@@ -2156,8 +2173,9 @@ static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const 
 			inst2(ctx, MOV, dst, &value, dt.type);
 		} else {
 			Val tmp = alloc_gpr(ctx, f, TB_TEMP_REG, dt.type);
+			bool is_address = is_address_node(f->nodes.data[val_reg].type);
 			
-			inst2(ctx, MOV, &tmp, &value, dt.type);
+			inst2(ctx, is_address ? LEA : MOV, &tmp, &value, dt.type);
 			inst2(ctx, MOV, dst, &tmp, dt.type);
 			
 			free_gpr(ctx, f, tmp.gpr);

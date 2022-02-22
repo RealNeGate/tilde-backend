@@ -239,15 +239,15 @@ inline static void inst2sse(Ctx* ctx, Inst2FPType op, const Val* a, const Val* b
 		index = 0;
 	} else tb_todo();
 	
-	if (rx >= 8 || base >= 8 || index >= 8) {
-		emit(rex(false, rx, base, index));
-	}
-	
-	if ((flags & INST2FP_PACKED) == 0) {
+	if ((flags & INST2FP_PACKED) == 0 && op != FP_UCOMI) {
 		emit(flags & INST2FP_DOUBLE ? 0xF2 : 0xF3);
 	} else if (flags & INST2FP_DOUBLE) {
 		// packed double
 		emit(0x66);
+	}
+	
+	if (rx >= 8 || base >= 8 || index >= 8) {
+		emit(rex(false, rx, base, index));
 	}
 	
 	// extension prefix

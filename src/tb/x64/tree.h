@@ -107,19 +107,6 @@ static Val eval(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
 			break;
 		}
 		
-		case TB_FLOAT_EXT: {
-			Val src = eval_rvalue(ctx, f, n->unary.src);
-			val = alloc_xmm(ctx, f, r, dt);
-			
-			uint8_t flags = 0;
-			flags |= (src.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
-			flags |= (src.dt.width) ? INST2FP_PACKED : 0;
-			inst2sse(ctx, FP_CVT, &val, &src, flags);
-			
-			kill(ctx, f, n->unary.src, src);
-			break;
-		}
-		
 		default:
 		assert(0 && "TODO: Implement node eval");
 		break;

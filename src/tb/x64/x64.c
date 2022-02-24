@@ -1676,7 +1676,67 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				uint8_t flags = 0;
 				flags |= (src.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
 				flags |= (src.dt.width) ? INST2FP_PACKED : 0;
-				inst2sse(ctx, FP_CVT, &val, &src, flags);
+				
+				if (src.dt.type != dt.type || src.dt.width != dt.width) {
+					inst2sse(ctx, FP_CVT, &val, &src, flags);
+				} else {
+					inst2sse(ctx, FP_MOV, &val, &src, flags);
+				}
+				kill(ctx, f, n->unary.src); 
+				break;
+			}
+			case TB_BITCAST: {
+				assert(dt.width == 0 && "TODO: Implement vector bitcast");
+				
+				Val src = eval(ctx, f, n->unary.src);
+				assert(get_data_type_size(dt) == get_data_type_size(src.dt));
+				
+				// movd/q
+				emit(0x66);
+				
+				Val val;
+				if (src.dt.type == TB_I64 && dt.type == TB_F64) {
+					// movd dst:xmm, src:gpr
+					assert(src.type == VAL_GPR);
+					val = alloc_xmm(ctx, f, r, dt);
+					
+					emit(rex(true, src.gpr, val.xmm, 0));
+					emit(0x0F);
+					emit(0x6E);
+				} else if (src.dt.type == TB_I32 && dt.type == TB_F32) {
+					// movq dst:xmm, src:gpr
+					assert(src.type == VAL_GPR);
+					val = alloc_xmm(ctx, f, r, dt);
+					
+					if (val.xmm >= 8 || src.gpr >= 8) {
+						emit(rex(false, src.gpr, val.xmm, 0));
+					}
+					
+					emit(0x0F);
+					emit(0x6E);
+				} else if (src.dt.type == TB_F64 && dt.type == TB_I64) {
+					// movd dst:gpr, src:xmm
+					assert(src.type == VAL_XMM);
+					val = alloc_gpr(ctx, f, r, dt.type);
+					
+					emit(rex(true, src.xmm, val.gpr, 0));
+					emit(0x0F);
+					emit(0x7E);
+				} else if (src.dt.type == TB_F32 && dt.type == TB_I32) {
+					// movq dst:gpr, src:xmm
+					assert(src.type == VAL_XMM);
+					val = alloc_gpr(ctx, f, r, dt.type);
+					
+					if (val.gpr >= 8 || src.xmm >= 8) {
+						emit(rex(true, src.xmm, val.gpr, 0));
+					}
+					
+					emit(0x0F);
+					emit(0x7E);
+				} else tb_todo();
+				
+				// val.gpr and val.xmm alias so it's irrelevant which one we pick
+				emit_memory_operand(ctx, src.gpr, &val);
 				
 				kill(ctx, f, n->unary.src);
 				break;

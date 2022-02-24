@@ -882,6 +882,11 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
 			else if (type == TB_CMP_FLT || type == TB_CMP_FLE) callback(user_data, " # float\n");
 			else callback(user_data, "\n");
 			break;
+            case TB_BITCAST:
+			callback(user_data, "  r%u\t=\t", i);
+			tb_print_type(dt, callback, user_data);
+			callback(user_data, " BITCAST r%u\n", n->unary);
+			break;
             case TB_NEG:
 			callback(user_data, "  r%u\t=\t", i);
 			tb_print_type(dt, callback, user_data);

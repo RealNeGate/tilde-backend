@@ -215,7 +215,7 @@ inline static void inst2sse(Ctx* ctx, Inst2FPType op, const Val* a, const Val* b
 		[FP_RSQRT] = 0x52,
 		[FP_AND] = 0x54,
 		[FP_OR] = 0x56,
-		[FP_XOR] = 0x57,
+		[FP_XOR] = 0x57
 	};
 	
 	// most SSE instructions (that aren't mov__) are mem src only

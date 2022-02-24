@@ -109,6 +109,7 @@ case TB_PTR2INT: \
 case TB_INT2FLOAT: \
 case TB_FLOAT2INT: \
 case TB_TRUNCATE: \
+case TB_BITCAST: \
 macro(n->unary.src); \
 break; \
 case TB_ATOMIC_XCHG: \

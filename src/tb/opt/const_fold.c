@@ -106,7 +106,7 @@ bool tb_opt_fold(TB_Function* f) {
 		} else if (n->type == TB_SIGN_EXT) {
 			TB_Node* src = &f->nodes.data[n->unary.src];
 			
-			if (src->type == TB_SIGNED_CONST) {
+			if (src->type == TB_UNSIGNED_CONST || src->type == TB_SIGNED_CONST) {
 				// NOTE(NeGate): We're using unsigned numbers because we're operating
 				// on the raw bits but it's reinterpreted to signed integers.
 				uint64_t shift = 64 - (8 << (dt.type - TB_I8));
@@ -122,7 +122,7 @@ bool tb_opt_fold(TB_Function* f) {
 		} else if (n->type == TB_ZERO_EXT) {
 			TB_Node* src = &f->nodes.data[n->unary.src];
 			
-			if (src->type == TB_UNSIGNED_CONST) {
+			if (src->type == TB_UNSIGNED_CONST || src->type == TB_SIGNED_CONST) {
 				uint64_t shift = 64 - (8 << (dt.type - TB_I8));
 				uint64_t mask = (~0ull) >> shift;
 				uint64_t num = (src->uint.value & mask);

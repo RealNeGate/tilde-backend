@@ -446,7 +446,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	
 	// Buffer stores all the positions of each 
 	// function relative to the .text section start.
-	uint32_t* func_layout = malloc(m->compiled_functions.count * sizeof(uint32_t));
+	uint32_t* func_layout = malloc(m->functions.count * sizeof(uint32_t));
 	
 	// String table array, stores the strings which will be put 
 	// into the string table
@@ -539,9 +539,10 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 		default: tb_todo();
 	}
 	
-	for (size_t i = 0; i < m->compiled_functions.count; i++) {
+	for (size_t i = 0; i < m->functions.count; i++) {
 		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
 		func_layout[i] = text_section.raw_data_size;
+		if (!out_f->code) continue;
 		
 		uint64_t meta = out_f->prologue_epilogue_metadata;
 		uint64_t stack_usage = out_f->stack_usage;
@@ -566,7 +567,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	// Based on this, it's the only nice CodeView source out there:
 	// https://github.com/netwide-assembler/nasm/blob/master/output/codeview.c
 	if (emit_debug_info) {
-		file_table_offset = tb_tls_push(tls, m->compiled_functions.count * sizeof(uint32_t));
+		file_table_offset = tb_tls_push(tls, m->functions.count * sizeof(uint32_t));
 		
 		// Write type table
 		{
@@ -678,8 +679,10 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 			}
 			
 			// Symbols
-			loop(i, m->compiled_functions.count) {
+			loop(i, m->functions.count) {
 				TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
+				if (!out_f->code) continue;
+				
 				const char* name = out_f->name;
 				size_t name_len = strlen(out_f->name) + 1;
 				
@@ -761,8 +764,9 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 			is_xdata_function_info_heap = true;
 		}
 		
-		loop(i, m->compiled_functions.count) {
+		loop(i, m->functions.count) {
 			TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
+			if (!out_f->code) continue;
 			
 			uint64_t saved = out_f->prologue_epilogue_metadata;
 			uint64_t stack_usage = out_f->stack_usage;
@@ -897,8 +901,9 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	}
 	
 	assert(ftell(f) == text_section.raw_data_pos);
-	for (size_t i = 0; i < m->compiled_functions.count; i++) {
+	for (size_t i = 0; i < m->functions.count; i++) {
 		TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
+		if (!out_f->code) continue;
 		
 		uint64_t meta = out_f->prologue_epilogue_metadata;
 		uint64_t stack_usage = out_f->stack_usage;
@@ -965,8 +970,9 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	
 	if (emit_unwind_info) {
 		assert(ftell(f) == pdata_section.raw_data_pos);
-		loop(i, m->compiled_functions.count) {
+		loop(i, m->functions.count) {
 			TB_FunctionOutput* out_f = &m->compiled_functions.data[i];
+			if (!out_f->code) continue;
 			
 			uint32_t payload[3];
 			payload[0] = 0;
@@ -1256,7 +1262,8 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 			   }, sizeof(COFF_AuxSectionSymbol), 1, f);
 	}
 	
-	loop(i, m->compiled_functions.count) {
+	loop(i, m->functions.count) {
+		if (!m->compiled_functions.data[i].code) continue;
 		bool is_extern = m->compiled_functions.data[i].linkage == TB_LINKAGE_PUBLIC;
 		
 		COFF_Symbol sym = {

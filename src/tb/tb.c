@@ -98,7 +98,8 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
     
 	m->compiled_functions.count = 0;
 	m->compiled_functions.data = tb_platform_heap_alloc(TB_MAX_FUNCTIONS * sizeof(TB_FunctionOutput));
-    
+    loop(i, TB_MAX_FUNCTIONS) m->compiled_functions.data[i].code = NULL;
+	
 	// we start a little off the start just because
 	m->rdata_region_size = 16;
 	

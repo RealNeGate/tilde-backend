@@ -74,6 +74,14 @@ TB_API TB_Reg tb_node_arith_get_right(TB_Function* f, TB_Reg r) {
 	return f->nodes.data[r].i_arith.b;
 }
 
+TB_API bool tb_node_is_constant_int(TB_Function* f, TB_Reg r, uint64_t imm) {
+	if (f->nodes.data[r].type == TB_UNSIGNED_CONST || f->nodes.data[r].type == TB_SIGNED_CONST) {
+		return (f->nodes.data[r].uint.value == imm);
+	}
+	
+	return false;
+}
+
 static TB_Reg tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
 	// Cannot add registers to terminated basic blocks, except labels
 	// which start new basic blocks

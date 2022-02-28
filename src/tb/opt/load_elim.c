@@ -88,6 +88,28 @@ bool tb_opt_load_elim(TB_Function* f) {
 					break;
 				}
 			}
+		} else if (n->type == TB_ARRAY_ACCESS) {
+			TB_Reg base = n->array_access.base;
+			TB_Reg index = n->array_access.index;
+			int32_t stride = n->array_access.stride;
+			
+			// Find any duplicates
+			for (TB_Node* other = &f->nodes.data[n->next]; other != &f->nodes.data[0]; other = &f->nodes.data[other->next]) {
+				TB_NodeTypeEnum t = other->type;
+				
+				if (t == TB_ARRAY_ACCESS &&
+					other->array_access.base == base &&
+					other->array_access.index == index &&
+					other->array_access.stride == stride) {
+					other->type = TB_PASS;
+					other->pass.value = i;
+					changes++;
+				} else if (TB_IS_NODE_TERMINATOR(t)) {
+					// Can't read past terminators, don't
+					// know what might happen
+					break;
+				}
+			}
 		}
 	}
 	

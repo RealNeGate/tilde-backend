@@ -1,5 +1,6 @@
 #pragma once
 #include "../tb_internal.h"
+#include "../codegen/tree.h"
 
 #if TB_HOST_ARCH == TB_HOST_X86_64
 // Needed for some of the fancier 
@@ -20,7 +21,7 @@ typedef union Cvt_F64U64 {
 } Cvt_F64U64;
 
 typedef enum Cond {
-	O, NO, B, X64, E, NE, BE, A,
+	O, NO, B, NB, E, NE, BE, A,
 	S, NS, P, NP, L, GE, LE, G,
 } Cond;
 
@@ -110,14 +111,16 @@ typedef struct LabelPatch {
     TB_Label target_lbl;
 } LabelPatch;
 
-typedef struct PhiValue {
-	TB_Reg reg;
-	TB_Reg storage_a, storage_b;
-	
-	// if it's not 0, then at termination, we need 
-	// to reload into the 'value'
-	int spill;
-	Val value;
+typedef union {
+	struct {
+		TB_Reg reg;
+		int spill;
+		Val value;
+	} simple;
+	struct {
+		TB_Reg reg;
+		TreeVReg mapping;
+	} complex;
 } PhiValue;
 
 typedef struct StackSlot {
@@ -127,58 +130,12 @@ typedef struct StackSlot {
 	XMM xmm : 8;
 } StackSlot;
 
-typedef struct Ctx {
-	uint8_t* out;
-	uint8_t* start_out;
-	
-	bool is_sysv;
-	// allows for eval with compares to return FLAGS
-	bool is_if_statement_next;
-	// disables counting on the use_count
-	bool is_tallying;
-	
-	size_t function_id;
-	TB_Function* f;
-	
-	// used to schedule phi nodes in cases where some
-	// phi nodes depend on each other
-	size_t phi_queue_count;
-	TB_Node** phi_queue;
-	
-	// Patch info
-	uint32_t label_patch_count;
-	
-	uint32_t* labels;
-	LabelPatch* label_patches;
-	
-	TB_Reg* use_count;
-	PhiValue* phis;
-	ReturnPatch* ret_patches;
-	
-	uint32_t phi_count;
-	uint32_t ret_patch_count;
-	uint32_t caller_usage;
-	
-	// Used to allocate spills
-	uint32_t stack_usage;
-	
-	// GPRs are the bottom 32bit
-	// XMM is the top 32bit
-	uint64_t regs_to_save;
-	
-	// Register allocation:
-	TB_Reg gpr_allocator[16];
-	TB_Reg xmm_allocator[16];
-	
-	Val values[];
-} Ctx;
-
 typedef enum Inst2Type {
     // Integer data processing
 	ADD, AND, OR, SUB, XOR, CMP, MOV,
     TEST, LEA, IMUL, XCHG,
 	
-	MOVSXB, MOVSXW, MOVSXD, 
+	MOVSXB, MOVSXW, MOVSXD,
 	MOVZXB, MOVZXW
 } Inst2Type;
 
@@ -211,6 +168,181 @@ typedef struct Inst2 {
     
     ExtMode ext : 8;
 } Inst2;
+
+// there's an infinite number of virtual registers
+// which map to some finite number of actual values
+typedef enum {
+	VREG_FAMILY_GPR,
+	VREG_FAMILY_XMM,
+	VREG_FAMILY_FLAGS
+} VRegFamily;
+
+#define VREG_STACK_POINTER (TreeVReg){ 1, VREG_FAMILY_GPR }
+#define VREG_BASE_POINTER (TreeVReg){ 2, VREG_FAMILY_GPR }
+
+// slight abstraction over x64 instructions
+typedef enum {
+	INST_NULL,
+	
+	INST_LABEL,
+	INST_JUMP_IF,
+	INST_JUMP,
+	INST_RET,
+	
+	// rA = GPR rax 
+	INST_EXPLICIT_GPR,
+	INST_COPY_TO_GPR,
+	
+	// rA = rB
+	INST_COPY,
+	INST_IMMEDIATE,
+	
+	INST_COMPARE,
+	
+	// rA = rB OP rC
+	INST_BINARY_OP,
+	INST_BINARY_OP_IMM,
+	
+	// lea rA, [rB + (rC * scale) + disp]
+	INST_LEA,
+	
+	// rA = rB OP [rC + (rD * scale) + disp]
+	// OP [rA + (rB * scale) + disp], rC
+	// OP [rA + (rB * scale) + disp], imm
+	INST_FOLDED_LOAD,
+	INST_FOLDED_STORE,
+	INST_FOLDED_STORE_IMM,
+} MachineInstType;
+
+typedef struct {
+	Scale scale;
+	TreeVReg base;
+	TreeVReg index; // can be 0
+	int32_t disp;
+} MachineInstMem;
+
+typedef struct {
+	uint16_t type;
+	TB_DataType dt;
+	
+	union {
+		TB_Label label;
+		struct {
+			TB_Label target;
+		} jump;
+		struct {
+			TB_Label if_true, if_false;
+			Cond cond;
+		} jump_if;
+		struct {
+			TreeVReg src_vreg;
+			GPR gpr;
+		} copy_gpr;
+		struct {
+			TreeVReg dst_vreg;
+			GPR gpr;
+		} gpr;
+		struct {
+			TreeVReg dst_vreg;
+			TreeVReg src_vreg;
+		} copy;
+		struct {
+			TreeVReg dst_vreg;
+			uint64_t src;
+		} imm;
+		struct {
+			uint8_t op;
+			TreeVReg dst_vreg;
+			TreeVReg a_vreg, b_vreg;
+		} binary;
+		struct {
+			uint8_t op;
+			TreeVReg dst_vreg;
+			TreeVReg a_vreg;
+			uint64_t b_imm;
+		} binary_imm;
+		struct {
+			TreeVReg a_vreg, b_vreg;
+		} compare;
+		struct {
+			TreeVReg dst_vreg;
+			MachineInstMem src;
+		} lea;
+		struct {
+			uint8_t op;
+			
+			// src (destructured MachineInstMem for better layout)
+			Scale scale;
+			TreeVReg base;
+			TreeVReg index; // can be 0
+			int32_t disp;
+			
+			TreeVReg dst_vreg;
+		} folded_load;
+		struct {
+			uint8_t op;
+			
+			// dst (destructured MachineInstMem for better layout)
+			Scale scale;
+			TreeVReg base;
+			TreeVReg index; // can be 0
+			int32_t disp;
+			
+			// src
+			union {
+				TreeVReg src_vreg; 
+				int32_t src_i32;
+			};
+		} folded_store;
+	};
+} MachineInst;
+
+typedef struct Ctx {
+	uint8_t* out;
+	uint8_t* start_out;
+	
+	size_t function_id;
+	TB_Function* f;
+	Val* values;
+	
+	bool is_sysv;
+	
+	// Patch info
+	uint32_t label_patch_count;
+	
+	uint32_t* labels;
+	LabelPatch* label_patches;
+	
+	TB_Reg* use_count;
+	PhiValue* phis;
+	ReturnPatch* ret_patches;
+	
+	uint32_t phi_count;
+	uint32_t ret_patch_count;
+	uint32_t caller_usage;
+	
+	// Used to allocate spills
+	uint32_t stack_usage;
+	
+	// GPRs are the bottom 32bit
+	// XMM is the top 32bit
+	uint64_t regs_to_save;
+	
+	// Register allocation:
+	TB_Reg gpr_allocator[16];
+	TB_Reg xmm_allocator[16];
+	
+	////////////////////////////////
+	// Complex path only
+	////////////////////////////////
+	// virtual registers
+	uint32_t vgpr_count, vxmm_count;
+	uint32_t inst_count, inst_cap;
+	
+	MachineInst* insts;
+	
+	TreeVReg* parameters;
+} Ctx;
 
 static const GPR WIN64_GPR_PARAMETERS[4] = {
 	RCX, RDX, R8, R9
@@ -399,6 +531,15 @@ static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Reg start,
 
 static int get_data_type_size(const TB_DataType dt);
 
+static MachineInstMem compute_complex_address(Ctx* restrict ctx, TB_Function* f, TreeNode* tree_node);
+static void add_machine_inst(Ctx* restrict ctx, const MachineInst* inst);
+static TreeVReg isel(Ctx* restrict ctx, TB_Function* f, TreeNode* tree_node);
+
 // used to add patches since there's separate arrays per thread
 static thread_local size_t s_local_thread_id;
 static thread_local TB_CompiledFunctionID s_compiled_func_id;
+
+static const char* GPR_NAMES[] = {
+	"RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI",
+	"R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"
+};

@@ -4,9 +4,9 @@
 // it puts the rdata on the next 4KB page after the text section all within
 // the same memory mapping, this is actually very bad because it means that
 // read-only data is executable.
-void tb_module_export_jit(TB_Module* m) {
+void tb_module_export_jit(TB_Module* m, TB_ISelMode isel_mode) {
 #if TB_HOST_ARCH == TB_HOST_X86_64
-	const ICodeGen* restrict code_gen = &x64_fast_code_gen;
+	const ICodeGen* restrict codegen = &x64_codegen;
 #else
 #error "Cannot compile JIT for this target architecture!"
 #endif
@@ -26,11 +26,11 @@ void tb_module_export_jit(TB_Module* m) {
 		func_layout[i] = text_section_size;
 		
 		// TODO(NeGate): This data could be arranged better for streaming
-		size_t prologue = code_gen->get_prologue_length(m->compiled_functions.data[i].prologue_epilogue_metadata,
-														m->compiled_functions.data[i].stack_usage);
+		size_t prologue = codegen->get_prologue_length(m->compiled_functions.data[i].prologue_epilogue_metadata,
+													   m->compiled_functions.data[i].stack_usage);
 		
-		size_t epilogue = code_gen->get_epilogue_length(m->compiled_functions.data[i].prologue_epilogue_metadata,
-														m->compiled_functions.data[i].stack_usage);
+		size_t epilogue = codegen->get_epilogue_length(m->compiled_functions.data[i].prologue_epilogue_metadata,
+													   m->compiled_functions.data[i].stack_usage);
 		
 		text_section_size += prologue;
 		text_section_size += epilogue;
@@ -38,7 +38,7 @@ void tb_module_export_jit(TB_Module* m) {
 	}
 	
 	// Target specific: resolve internal call patches
-	code_gen->emit_call_patches(m, func_layout);
+	codegen->emit_call_patches(m, func_layout);
 	
 	// TODO(NeGate): Implement rdata
 	// Output function
@@ -56,10 +56,10 @@ void tb_module_export_jit(TB_Module* m) {
 		size_t code_size = out_f->code_size;
 		
 		uint8_t* prologue = proepi_buffer;
-		size_t prologue_len = code_gen->emit_prologue(prologue, meta, stack_usage);
+		size_t prologue_len = codegen->emit_prologue(prologue, meta, stack_usage);
 		
 		uint8_t* epilogue = proepi_buffer + prologue_len;
-		size_t epilogue_len = code_gen->emit_epilogue(epilogue, meta, stack_usage);
+		size_t epilogue_len = codegen->emit_epilogue(epilogue, meta, stack_usage);
 		
 		// Copy into JIT region
 		memcpy(text_section, prologue, prologue_len);
@@ -82,7 +82,7 @@ void tb_module_export_jit(TB_Module* m) {
 			uint64_t stack_usage = out_f->stack_usage;
 			
 			uintptr_t actual_pos = func_layout[p->source] 
-				+ code_gen->get_prologue_length(meta, stack_usage)
+				+ codegen->get_prologue_length(meta, stack_usage)
 				+ p->pos;
 			
 			TB_ExternalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;

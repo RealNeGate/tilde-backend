@@ -70,7 +70,14 @@ bool tb_opt_canonicalize(TB_Function* f) {
 				n->cmp.a = a->unary.src;
 				changes++;
 			}
-		} else if (type == TB_ADD || type == TB_MUL) {
+		} else if (type == TB_ADD ||
+				   type == TB_MUL ||
+				   type == TB_AND ||
+				   type == TB_XOR ||
+				   type == TB_CMP_NE ||
+				   type == TB_CMP_EQ) {
+			// NOTE(NeGate): compares alias the operands with i_arith so it's 
+			// alright to group them here.
 			TB_Node* a = &f->nodes.data[n->i_arith.a];
 			TB_Node* b = &f->nodes.data[n->i_arith.b];
 			
@@ -100,6 +107,31 @@ bool tb_opt_canonicalize(TB_Function* f) {
 				f->nodes.payload[a].i_arith.a = y;
 				f->nodes.payload[a].i_arith.b = z;
 				changes++;*/
+			}
+		} else if (type == TB_UMOD || type == TB_SMOD) {
+			TB_Node* a = &f->nodes.data[n->i_arith.a];
+			TB_Node* b = &f->nodes.data[n->i_arith.b];
+			
+			// (mod a N) => (and a N-1) where N is a power of two
+			if (b->type == TB_SIGNED_CONST ||
+				b->type == TB_UNSIGNED_CONST) {
+				uint64_t mask = b->uint.value;
+				
+				if (tb_is_power_of_two(mask)) {
+					OPTIMIZER_LOG(i, "converted modulo into AND with constant mask");
+					
+					// generate mask
+					TB_Reg extra_reg = tb_function_insert_after(f, n->i_arith.b);
+					TB_Node* extra = &f->nodes.data[extra_reg];
+					extra->type = TB_UNSIGNED_CONST;
+					extra->dt = n->dt;
+					extra->uint.value = mask - 1;
+					
+					// new AND operation to replace old MOD
+					n->type = TB_AND;
+					n->i_arith.b = extra_reg;
+					changes++;
+				}
 			}
 		} else if (type == TB_MEMBER_ACCESS) {
 			int32_t offset = n->member_access.offset;
@@ -167,6 +199,19 @@ bool tb_opt_canonicalize(TB_Function* f) {
 				n->type = TB_UNSIGNED_CONST;
 				n->dt = dt;
 				n->uint.value = imm & mask;
+				changes++;
+			}
+		} else if (type == TB_IF) {
+			TB_Node* cond = &f->nodes.data[n->if_.cond];
+			
+			// (if (cmpne A 0) B C) => (if A B C)
+			if (cond->type == TB_CMP_NE && tb_node_is_constant_int(f, cond->cmp.b, 0)) {
+				OPTIMIZER_LOG(i, "removed redundant compare-to-zero on if node");
+				
+				TB_DataType dt = f->nodes.data[cond->cmp.a].dt;
+				
+				n->dt = dt;
+				n->if_.cond = cond->cmp.a;
 				changes++;
 			}
 		} else if (type == TB_PHI2) {

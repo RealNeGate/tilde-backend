@@ -11,6 +11,13 @@ static thread_local int tid;
 
 static tb_atomic_int total_tid;
 
+static ICodeGen* tb_find_code_generator(TB_Module* m) {
+	switch (m->target_arch) {
+		case TB_ARCH_X86_64: return &x64_codegen;
+		default: return NULL;
+	}
+}
+
 static int get_local_thread_id() {
 	// the value it spits out is zero-based, but
 	// the TIDs consider zero as a NULL space.
@@ -143,9 +150,9 @@ TB_API void tb_function_optimize(TB_Function* f, TB_OptLevel opt) {
 }
 #undef OPT
 
-TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
+TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f, TB_ISelMode isel_mode) {
 	// TODO(NeGate): Properly detect this
-	ICodeGen* gen = &x64_fast_code_gen;
+	ICodeGen* restrict codegen = tb_find_code_generator(m);
 	
 	// Machine code gen
 	int id = get_local_thread_id();
@@ -159,11 +166,21 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f) {
 	TB_FunctionOutput* func_out = m->compiled_functions.data;
 	
 	TB_FunctionID index = tb_function_get_id(m, f);
-	func_out[index] = gen->compile_function(index, f, &m->features, &region->data[region->size], id);
+	if (isel_mode == TB_ISEL_COMPLEX && codegen->complex_path == NULL) {
+		// TODO(NeGate): we need better logging...
+		fprintf(stderr, "TB warning: complex path is missing, defaulting to fast path.\n");
+		isel_mode = TB_ISEL_FAST;
+	}
+	
+	if (isel_mode == TB_ISEL_COMPLEX) {
+		func_out[index] = codegen->complex_path(index, f, &m->features, &region->data[region->size], id);
+	} else {
+		func_out[index] = codegen->fast_path(index, f, &m->features, &region->data[region->size], id);
+	}
 	region->size += func_out[index].code_size;
 	
 	if (region->size > CODE_REGION_BUFFER_SIZE) {
-		printf("Code region buffer: out of memory!\n");
+		fprintf(stderr, "Code region buffer: out of memory!\n");
 		abort();
 	}
 	
@@ -246,11 +263,7 @@ TB_API TB_FileID tb_file_create(TB_Module* m, const char* path) {
 }
 
 TB_API bool tb_module_export(TB_Module* m, const char* path, bool emit_debug_info) {
-	const ICodeGen* restrict code_gen = NULL;
-	switch (m->target_arch) {
-		case TB_ARCH_X86_64: code_gen = &x64_fast_code_gen; break;
-		default: tb_todo();
-	}
+	const ICodeGen* restrict code_gen = tb_find_code_generator(m);
 	
 	switch (m->target_system) {
         case TB_SYSTEM_WINDOWS:

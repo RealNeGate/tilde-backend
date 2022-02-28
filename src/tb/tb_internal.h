@@ -463,7 +463,8 @@ typedef struct ICodeGen {
 	size_t(*emit_prologue)(uint8_t* out, uint64_t saved, uint64_t stack_usage);
 	size_t(*emit_epilogue)(uint8_t* out, uint64_t saved, uint64_t stack_usage);
 	
-	TB_FunctionOutput(*compile_function)(TB_CompiledFunctionID id, TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
+	TB_FunctionOutput(*fast_path)(TB_CompiledFunctionID id, TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
+	TB_FunctionOutput(*complex_path)(TB_CompiledFunctionID id, TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
 } ICodeGen;
 
 #define tb_swap(type, a, b) do { \
@@ -503,6 +504,10 @@ b = temp; \
 #define tb_assert(condition, ...) do { if (!(condition)) { printf(__VA_ARGS__); abort(); } } while (0)
 #define tb_panic(...) do { printf(__VA_ARGS__); abort(); } while (0)
 #define tb_arrlen(a) (sizeof(a) / sizeof(a[0]))
+
+#ifndef COUNTOF
+#define COUNTOF(a) (sizeof(a) / sizeof(a[0]))
+#endif
 
 #define loop(iterator, count) \
 for (size_t iterator = 0, end__ = (count); iterator < end__; ++iterator)
@@ -701,4 +706,4 @@ inline static bool tb_data_type_match(const TB_DataType* a, const TB_DataType* b
 }
 
 // NOTE(NeGate): Place all the codegen interfaces down here
-extern ICodeGen x64_fast_code_gen;
+extern ICodeGen x64_codegen;

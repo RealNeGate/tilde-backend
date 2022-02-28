@@ -1,17 +1,15 @@
 // This entire module is one translation unit so that it doesn't have to worry
 // about C's crappy support for public and private interfaces.
+#define USING_FAST_PATH (0)
+
 #include "x64.h"
 #include "inst.h"
 #include "proepi.h"
 #include "reg_alloc.h"
-#include "tree.h"
+#include "x64_simple.h"
+#include "x64_complex.h"
 
 #if 0
-static const char* GPR_NAMES[] = {
-	"RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI",
-	"R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"
-};
-
 #define DEBUG_LOG(...) printf(__VA_ARGS__)
 #else
 #define DEBUG_LOG(...) ((void)0)
@@ -24,7 +22,7 @@ static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const 
 // Just handles the PHI nodes that we'll encounter when leaving `from` into `to`
 static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Reg from, TB_Reg from_terminator, TB_Reg to, TB_Reg to_terminator);
 
-typedef struct FunctionTally {
+typedef struct {
 	size_t memory_usage;
 	
 	size_t phi_count;
@@ -32,9 +30,9 @@ typedef struct FunctionTally {
 	size_t return_count;
 	size_t line_info_count;
 	size_t label_patch_count;
-} FunctionTally;
+} FunctionTallySimple;
 
-static FunctionTally tally_memory_usage(TB_Function* restrict f) {
+static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
 	size_t phi_count = 0;
 	size_t locals_count = 0;
 	size_t return_count = 0;
@@ -77,10 +75,6 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 	tally += phi_count * sizeof(PhiValue);
 	tally = (tally + align_mask) & ~align_mask;
 	
-	// phi_queue
-	tally += phi_count * sizeof(TB_Reg);
-	tally = (tally + align_mask) & ~align_mask;
-	
 	// labels
 	tally += f->label_count * sizeof(uint32_t);
 	tally = (tally + align_mask) & ~align_mask;
@@ -93,7 +87,7 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 	tally += return_count * sizeof(ReturnPatch);
 	tally = (tally + align_mask) & ~align_mask;
 	
-	return (FunctionTally){
+	return (FunctionTallySimple){
 		.memory_usage = tally,
 		
 		.phi_count = phi_count,
@@ -104,7 +98,7 @@ static FunctionTally tally_memory_usage(TB_Function* restrict f) {
 	};
 }
 
-TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
+TB_FunctionOutput x64_fast_compile_function(TB_CompiledFunctionID id, TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
 	s_local_thread_id = local_thread_id;
 	s_compiled_func_id = id;
 	
@@ -118,10 +112,10 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 	
 	{
 		// if we can't fit our memory usage into memory, we fallback
-		FunctionTally tally = tally_memory_usage(f);
+		FunctionTallySimple tally = tally_memory_usage_simple(f);
 		is_ctx_heap_allocated = !tb_tls_can_fit(tls, tally.memory_usage);
 		
-		size_t ctx_size = sizeof(Ctx) + (f->nodes.count * sizeof(Val));
+		size_t ctx_size = sizeof(Ctx);
 		if (is_ctx_heap_allocated) {
 			//printf("Could not allocate x64 code gen context: using heap fallback. (%zu bytes)\n", tally.memory_usage);
 			
@@ -130,11 +124,11 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 			ctx->use_count = malloc(f->nodes.count * sizeof(TB_Reg));
 			ctx->phis = malloc(tally.phi_count * sizeof(PhiValue));
 			
-			ctx->phi_queue = malloc(tally.phi_count * sizeof(TB_Node*));
-			
 			ctx->labels = malloc(f->label_count * sizeof(uint32_t));
 			ctx->label_patches = malloc(tally.label_patch_count * sizeof(LabelPatch));
 			ctx->ret_patches = malloc(tally.return_count * sizeof(ReturnPatch));
+			
+			ctx->values = calloc(f->nodes.count, sizeof(Val));
 		} else {
 			ctx = tb_tls_push(tls, ctx_size);
 			memset(ctx, 0, ctx_size);
@@ -142,11 +136,12 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 			ctx->use_count = tb_tls_push(tls, f->nodes.count * sizeof(TB_Reg));
 			ctx->phis = tb_tls_push(tls, tally.phi_count * sizeof(PhiValue));
 			
-			ctx->phi_queue = tb_tls_push(tls, tally.phi_count * sizeof(TB_Node*));
-			
 			ctx->labels = tb_tls_push(tls, f->label_count * sizeof(uint32_t));
 			ctx->label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch));
 			ctx->ret_patches = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch));
+			
+			ctx->values = tb_tls_push(tls, f->nodes.count * sizeof(Val));
+			memset(ctx->values, 0, f->nodes.count * sizeof(Val));
 		}
 		
 		ctx->start_out = ctx->out = out;
@@ -172,11 +167,7 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 	size_t caller_usage = 0;
 	TB_FOR_EACH_NODE(n, f) {
 		if (n->type == TB_PHI2) {
-			ctx->phis[ctx->phi_count++] = (PhiValue){
-				.reg = n - f->nodes.data,
-				.storage_a = n->phi2.a,
-				.storage_b = n->phi2.b
-			};
+			ctx->phis[ctx->phi_count++] = (PhiValue){ .simple = { n - f->nodes.data } };
 		} else if (n->type == TB_CALL ||
 				   n->type == TB_ECALL ||
 				   n->type == TB_VCALL) {
@@ -190,8 +181,6 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 	// On Win64 if we have at least one parameter in any of it's calls, the
 	// caller must reserve 32bytes called the shadow space.
 	if (!ctx->is_sysv && caller_usage > 0 && caller_usage < 4) caller_usage = 4;
-	
-	ctx->is_tallying = true;
 	
 	// Allocate local and parameter stack slots
 	//tb_function_print(f, tb_default_print_callback, stdout);
@@ -217,10 +206,10 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 			}
 		} else {
 			// gpr parameters
-			if (ctx->is_sysv && i < 6) { 
+			if (ctx->is_sysv && i < 6) {
 				ctx->values[TB_FIRST_PARAMETER_REG + i] = val_gpr(dt.type, SYSV_GPR_PARAMETERS[i]);
 				ctx->gpr_allocator[SYSV_GPR_PARAMETERS[i]] = TB_FIRST_PARAMETER_REG + i;
-			} else if (i < 4) { 
+			} else if (i < 4) {
 				ctx->values[TB_FIRST_PARAMETER_REG + i] = val_gpr(dt.type, WIN64_GPR_PARAMETERS[i]);
 				ctx->gpr_allocator[WIN64_GPR_PARAMETERS[i]] = TB_FIRST_PARAMETER_REG + i;
 			} else {
@@ -599,8 +588,6 @@ TB_FunctionOutput x64_compile_function(TB_CompiledFunctionID id, TB_Function* re
 		free(ctx->use_count);
 		free(ctx->phis);
 		
-		free(ctx->phi_queue);
-		
 		free(ctx->labels);
 		free(ctx->label_patches);
 		free(ctx->ret_patches);
@@ -614,7 +601,6 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 	bb = f->nodes.data[bb].next;
 	if (bb == bb_end) return;
 	
-	// Evaluate all side effect instructions
 	TB_FOR_EACH_NODE_RANGE(n, f, bb, bb_end) {
 		TB_Reg r = n - f->nodes.data;
 		
@@ -633,7 +619,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				PhiValue* phi = find_phi(ctx, r);
 				assert(phi && "PHI node not initialized but used");
 				
-				def(ctx, f, r, phi->value);
+				def(ctx, f, r, phi->simple.value);
 				break;
 			}
 			
@@ -2268,6 +2254,72 @@ static bool is_address_node(TB_NodeTypeEnum t) {
 	}
 }
 
+static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Reg from, TB_Reg from_terminator, TB_Reg to, TB_Reg to_terminator) {
+	TB_FOR_EACH_NODE_RANGE(n, f, to, to_terminator) if (n->type == TB_PHI2) {
+		TB_Reg r = n - f->nodes.data;
+		TB_DataType dt = n->dt;
+		
+		if (dt.type == TB_BOOL) dt.type = TB_I8;
+		
+		TB_Reg src;
+		if (n->phi2.a_label == from) src = n->phi2.a;
+		else if (n->phi2.b_label == from) src = n->phi2.b;
+		else tb_unreachable();
+		
+		PhiValue* phi = find_phi(ctx, r);
+		if (phi->simple.spill) {
+			Val src = val_stack(dt, phi->simple.spill);
+			
+			if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
+				uint8_t flags = 0;
+				flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+				flags |= (dt.width) ? INST2FP_PACKED : 0;
+				
+				inst2sse(ctx, FP_MOV, &phi->simple.value, &src, flags);
+			} else {
+				inst2(ctx, MOV, &phi->simple.value, &src, dt.type);
+			}
+			
+			phi->simple.spill = 0;
+		}
+		
+		if (phi->simple.value.type == VAL_NONE) {
+			// Initialize it
+			Val src_value = eval(ctx, f, src);
+			
+			if (src_value.type == VAL_GPR && is_temporary_of_bb(ctx, f, src, from, from_terminator)) {
+				// Recycle old value
+				phi->simple.value = src_value;
+			} else {
+				// Create a new GPR and map it
+				phi->simple.value = alloc_gpr(ctx, f, r, dt.type);
+				
+				// TODO(NeGate): Handle vector and float types
+				if (!is_value_gpr(&src_value, phi->simple.value.gpr)) {
+					if (src_value.type == VAL_IMM && src_value.imm == 0) {
+						GPR gpr = phi->simple.value.gpr;
+						
+						if (gpr >= 8) emit(rex(true, gpr, gpr, 0));
+						emit(0x31);
+						emit(mod_rx_rm(MOD_DIRECT, gpr, gpr));
+					} else {
+						inst2(ctx, MOV, &phi->simple.value, &src_value, dt.type);
+					}
+				}
+			}
+		} else if (src >= to && src <= to_terminator) {
+			// this means we gotta do a swap
+			assert(f->nodes.data[src].type == TB_PHI2);
+			PhiValue* other_phi = find_phi(ctx, src);
+			
+			inst2(ctx, XCHG, &phi->simple.value, &other_phi->simple.value, dt.type);
+		} else {
+			// Load value into existing phi node
+			store_into(ctx, f, dt, &phi->simple.value, r, r, src, false);
+		}
+	}
+}
+
 static int get_data_type_size(const TB_DataType dt) {
 	assert(dt.width <= 2 && "Vector width too big!");
 	
@@ -2297,88 +2349,13 @@ static int get_data_type_size(const TB_DataType dt) {
 	}
 }
 
-static void eval_terminator_phis(Ctx* ctx, TB_Function* f, TB_Reg from, TB_Reg from_terminator, TB_Reg to, TB_Reg to_terminator) {
-	ctx->phi_queue_count = 0;
-	
-	TB_FOR_EACH_NODE_RANGE(n, f, to, to_terminator) {
-		if (n->type == TB_PHI2) ctx->phi_queue[ctx->phi_queue_count++] = n;
-	}
-	
-	loop(i, ctx->phi_queue_count) {
-		TB_Node* n = ctx->phi_queue[i];
-		TB_Reg r = n - f->nodes.data;
-		TB_DataType dt = n->dt;
-		
-		if (dt.type == TB_BOOL) dt.type = TB_I8;
-		
-		TB_Reg src;
-		if (n->phi2.a_label == from) src = n->phi2.a;
-		else if (n->phi2.b_label == from) src = n->phi2.b;
-		else tb_unreachable();
-		
-		PhiValue* phi = find_phi(ctx, r);
-		if (phi->spill) {
-			Val src = val_stack(dt, phi->spill);
-			
-			if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
-				uint8_t flags = 0;
-				flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
-				flags |= (dt.width) ? INST2FP_PACKED : 0;
-				
-				inst2sse(ctx, FP_MOV, &phi->value, &src, flags);
-			} else {
-				inst2(ctx, MOV, &phi->value, &src, dt.type);
-			}
-			
-			phi->spill = 0;
-		}
-		
-		if (phi->value.type == VAL_NONE) {
-			// Initialize it
-			Val src_value = eval(ctx, f, src);
-			
-			if (src_value.type == VAL_GPR && is_temporary_of_bb(ctx, f, src, from, from_terminator)) {
-				// Recycle old value
-				phi->value = src_value;
-			} else {
-				// Create a new GPR and map it
-				phi->value = alloc_gpr(ctx, f, r, dt.type);
-				
-				// TODO(NeGate): Handle vector and float types
-				if (!is_value_gpr(&src_value, phi->value.gpr)) {
-					if (src_value.type == VAL_IMM && src_value.imm == 0) {
-						GPR gpr = phi->value.gpr;
-						
-						if (gpr >= 8) emit(rex(true, gpr, gpr, 0));
-						emit(0x31);
-						emit(mod_rx_rm(MOD_DIRECT, gpr, gpr));
-					} else {
-						inst2(ctx, MOV, &phi->value, &src_value, dt.type);
-					}
-				}
-			}
-		} else if (src >= to && src <= to_terminator) {
-			// this means we gotta do a swap
-			assert(f->nodes.data[src].type == TB_PHI2);
-			PhiValue* other_phi = find_phi(ctx, src);
-			
-			inst2(ctx, XCHG, &phi->value, &other_phi->value, dt.type);
-		} else {
-			// Load value into existing phi node
-			store_into(ctx, f, dt, &phi->value, r, r, src, false);
-		}
-	}
-	
-	ctx->phi_queue_count = 0;
-}
-
 static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, TB_Reg bound, TB_Reg bb, TB_Reg bb_end) {
 	return (bound >= bb && bound <= bb_end && f->nodes.data[bound].type != TB_PHI2);
 }
 
 static PhiValue* find_phi(Ctx* ctx, TB_Reg r) {
 	for (size_t i = 0; i < ctx->phi_count; i++) {
-		if (ctx->phis[i].reg == r) return &ctx->phis[i];
+		if (ctx->phis[i].simple.reg == r) return &ctx->phis[i];
 	}
 	
 	return NULL;
@@ -2423,14 +2400,15 @@ _Pragma("warning (push)")
 _Pragma("warning (disable: 4028)")
 #endif
 
-// I put it down here because i can :P
-ICodeGen x64_fast_code_gen = {
-	.emit_call_patches = x64_emit_call_patches,
-	.get_prologue_length = x64_get_prologue_length,
-	.get_epilogue_length = x64_get_epilogue_length,
-	.emit_prologue = x64_emit_prologue,
-	.emit_epilogue = x64_emit_epilogue,
-	.compile_function = x64_compile_function
+ICodeGen x64_codegen = {
+    .emit_call_patches = x64_emit_call_patches,
+    .get_prologue_length = x64_get_prologue_length,
+    .get_epilogue_length = x64_get_epilogue_length,
+    .emit_prologue = x64_emit_prologue,
+    .emit_epilogue = x64_emit_epilogue,
+	
+	.fast_path = x64_fast_compile_function,
+    .complex_path = x64_complex_compile_function
 };
 
 #if _MSC_VER

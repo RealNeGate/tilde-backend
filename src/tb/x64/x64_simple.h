@@ -4,7 +4,6 @@
 // j = i + 1    i1 j1
 // store j      i1 j0    kill j
 // store i      i0       kill i
-
 static Val gen_float_const(Ctx* ctx, TB_Function* f, TB_Reg r, double float_value, TB_DataType dt) {
 	// Unlike integers, there's no float immediates
 	Val v = alloc_xmm(ctx, f, r, dt);

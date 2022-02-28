@@ -60,6 +60,9 @@ static void compile_with_cl() {
 	}
 	file_iter_close(&it);
 	
+	// codegen module
+	cmd_append("src\\tb\\codegen\\tree.c ");
+	
 	// x64 target module
 	cmd_append("src\\tb\\x64\\x64.c ");
 	

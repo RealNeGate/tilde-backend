@@ -195,16 +195,16 @@ static bool evict_gpr(Ctx* restrict ctx, TB_Function* f, GPR g) {
 		if (f->nodes.data[r].type == TB_PHI2) {
 			// spill into designated space
 			PhiValue* phi = find_phi(ctx, r);
-			if (phi->spill == 0) {
+			if (phi->simple.spill == 0) {
 				int size = get_data_type_size(dt);
 				ctx->stack_usage = align_up(ctx->stack_usage + size, size);
 				
-				phi->spill = -ctx->stack_usage;
+				phi->simple.spill = -ctx->stack_usage;
 			}
 			
-			assert(phi->value.type == VAL_GPR);
-			Val dst = val_stack(dt, phi->spill);
-			Val src = val_gpr(dt.type, phi->value.gpr);
+			assert(phi->simple.value.type == VAL_GPR);
+			Val dst = val_stack(dt, phi->simple.spill);
+			Val src = val_gpr(dt.type, phi->simple.value.gpr);
 			inst2(ctx, MOV, &dst, &src, dt.type);
 		} else if (ctx->values[r].type == VAL_GPR && ctx->values[r].gpr == g) {
 			Val dst;
@@ -243,18 +243,18 @@ static bool evict_xmm(Ctx* restrict ctx, TB_Function* f, XMM x) {
 		if (f->nodes.data[r].type == TB_PHI2) {
 			// spill into designated space
 			PhiValue* phi = find_phi(ctx, r);
-			if (phi->spill == 0) {
+			if (phi->simple.spill == 0) {
 				int size = get_data_type_size(dt);
 				ctx->stack_usage = align_up(ctx->stack_usage + size, size);
 				
-				phi->spill = -ctx->stack_usage;
+				phi->simple.spill = -ctx->stack_usage;
 			}
 			
 			if (dt.type == TB_BOOL) dt.type = TB_I8;
 			
-			assert(phi->value.type == VAL_XMM);
-			Val dst = val_stack(dt, phi->spill);
-			Val src = val_xmm(dt, phi->value.xmm);
+			assert(phi->simple.value.type == VAL_XMM);
+			Val dst = val_stack(dt, phi->simple.spill);
+			Val src = val_xmm(dt, phi->simple.value.xmm);
 			inst2sse(ctx, FP_MOV, &dst, &src, flags);
 		} else if (ctx->values[r].type == VAL_XMM && ctx->values[r].xmm == x) {
 			int size = get_data_type_size(dt);

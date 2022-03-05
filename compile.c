@@ -3,6 +3,7 @@
 //
 // It's inspired by nobuild but different
 #include "compile.h"
+//#define RELEASE_BUILD
 
 static const char* output_lib_path = NULL;
 

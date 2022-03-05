@@ -226,7 +226,10 @@ typedef struct {
 	TB_DataType dt;
 	
 	union {
-		TB_Label label;
+		struct {
+			TB_Label id;
+			int next_label;
+		} label;
 		struct {
 			TB_Label target;
 		} jump;
@@ -338,6 +341,7 @@ typedef struct Ctx {
 	// virtual registers
 	uint32_t vgpr_count, vxmm_count;
 	uint32_t inst_count, inst_cap;
+	uint32_t last_machine_inst_label;
 	
 	MachineInst* insts;
 	

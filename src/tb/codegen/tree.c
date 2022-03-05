@@ -321,6 +321,7 @@ void tb_tree_clear(TreeNodeArena* arena) {
 }
 
 void tb_tree_free(TreeNodeArena* arena) {
+	// TODO(NeGate): why did i comment this out...
 	/*TreeNodePage* p = arena->base;
 	while (p) {
 		TreeNodePage* next = p->next;

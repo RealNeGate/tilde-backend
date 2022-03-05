@@ -920,6 +920,7 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				
 				Val val = eval(ctx, f, param);
 				val.dt = dt;
+				val.is_spill = false;
 				assert(is_value_mem(&val));
 				
 				kill(ctx, f, n->param_addr.param);
@@ -1254,11 +1255,25 @@ static void eval_basic_block(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Re
 				if (b.type == VAL_IMM) {
 					assert(b.imm < 64);
 					
-					// shl r/m, imm
+					// C1 /4       shl r/m, imm
+					// C1 /5       shr r/m, imm
+					// C1 /7       sar r/m, imm
 					if (dt.type == TB_I16) emit(0x66);
 					emit(rex(is_64bit, 0x00, val.gpr, 0x00));
 					emit(dt.type == TB_I8 ? 0xC0 : 0xC1);
-					emit(mod_rx_rm(MOD_DIRECT, 0x04, val.gpr));
+					switch (reg_type) {
+						case TB_SHL:
+						emit(mod_rx_rm(MOD_DIRECT, 0x04, val.gpr));
+						break;
+						case TB_SHR:
+						emit(mod_rx_rm(MOD_DIRECT, 0x05, val.gpr));
+						break;
+						case TB_SAR:
+						emit(mod_rx_rm(MOD_DIRECT, 0x07, val.gpr));
+						break;
+						default:
+						tb_unreachable();
+					}
 					emit(b.imm);
 					break;
 				}

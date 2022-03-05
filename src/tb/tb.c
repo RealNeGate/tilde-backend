@@ -115,20 +115,30 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 	return m;
 }
 
+#if 0
 #define OPT(x) if (tb_opt_ ## x (f)) { \
-/* printf("%s   ", #x); */ \
-/* tb_function_print(f, tb_default_print_callback, stdout); */ \
-/* printf("\n\n\n"); */ \
+printf("%s   ", #x); \
+tb_function_print(f, tb_default_print_callback, stdout); \
+printf("\n\n\n"); \
+changes = true; \
 goto repeat_opt; \
 }
+#else
+#define OPT(x) if (tb_opt_ ## x (f)) { \
+changes = true; \
+goto repeat_opt; \
+}
+#endif
 
-TB_API void tb_function_optimize(TB_Function* f, TB_OptLevel opt) {
+TB_API bool tb_function_optimize(TB_Function* f) {
 	//printf("INITIAL   ");
 	//tb_function_print(f, tb_default_print_callback, stdout);
 	//printf("\n\n\n");
 	
+	bool changes = false;
+	
 	// only needs to run once
-	tb_opt_hoist_locals(f);
+	changes |= tb_opt_hoist_locals(f);
 	
 	repeat_opt: {
 		// Passive optimizations
@@ -148,6 +158,12 @@ TB_API void tb_function_optimize(TB_Function* f, TB_OptLevel opt) {
 	//printf("FINAL   ");
 	//tb_function_print(f, tb_default_print_callback, stdout);
 	//printf("\n\n\n");
+	
+	return changes;
+}
+
+TB_API bool tb_module_optimize(TB_Module* m) {
+	return false;
 }
 #undef OPT
 
@@ -471,38 +487,40 @@ TB_API void tb_initializer_add_extern(TB_Module* m, TB_InitializerID id, size_t 
 	};
 }
 
-TB_API TB_GlobalID tb_global_create(TB_Module* m, TB_InitializerID initializer, const char* name, TB_Linkage linkage) {
+TB_API TB_GlobalID tb_global_create(TB_Module* m, const char* name, TB_Linkage linkage) {
 	int tid = get_local_thread_id();
 	
 	// each thread gets their own grouping of global ids
 	TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 	
-	// layout
-	size_t pos;
-	{
-		TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-		TB_Initializer* i = (TB_Initializer*)&m->initializers[initializer / per_thread_stride][initializer % per_thread_stride];
-		
-		pos = tb_atomic_size_add(&m->data_region_size, i->size + i->align);
-		
-		// TODO(NeGate): Assert on non power of two alignment
-		size_t align_mask = i->align - 1;
-		pos = (pos + align_mask) & ~align_mask;
-		
-		assert(pos < UINT32_MAX && "Cannot fit global into space");
-		assert((pos + i->size) < UINT32_MAX && "Cannot fit global into space");
-	}
-	
 	TB_GlobalID i = (tid * per_thread_stride) + arrlen(m->globals[tid]);
 	TB_Global g = {
 		.name = tb_platform_string_alloc(name),
-		.linkage = linkage,
-		.init = initializer,
-		.pos = pos
+		.linkage = linkage
 	};
 	arrput(m->globals[tid], g);
 	
 	return i;
+}
+
+TB_API void tb_global_set_initializer(TB_Module* m, TB_GlobalID global, TB_InitializerID initializer) {
+	const TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
+	
+	// layout
+	TB_Initializer* i = (TB_Initializer*)&m->initializers[initializer / per_thread_stride][initializer % per_thread_stride];
+	
+	size_t pos = tb_atomic_size_add(&m->data_region_size, i->size + i->align);
+	
+	// TODO(NeGate): Assert on non power of two alignment
+	size_t align_mask = i->align - 1;
+	pos = (pos + align_mask) & ~align_mask;
+	
+	assert(pos < UINT32_MAX && "Cannot fit global into space");
+	assert((pos + i->size) < UINT32_MAX && "Cannot fit global into space");
+	
+	TB_Global* g = &m->globals[global / per_thread_stride][global % per_thread_stride];
+	g->pos = pos;
+	g->init = initializer;
 }
 
 TB_API bool tb_jit_import(TB_Module* m, const char* name, void* address) {

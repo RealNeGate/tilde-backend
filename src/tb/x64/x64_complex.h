@@ -9,6 +9,10 @@ typedef struct {
 	size_t label_patch_count;
 } FunctionTallyComplex;
 
+typedef struct {
+	int start, end;
+} LiveInterval;
+
 static FunctionTallyComplex tally_memory_usage_complex(TB_Function* restrict f) {
 	size_t phi_count = 0;
 	size_t locals_count = 0;
@@ -85,9 +89,9 @@ static FunctionTallyComplex tally_memory_usage_complex(TB_Function* restrict f) 
 
 static void print_machine_insts(Ctx* restrict ctx) {
 	static const char* inst2_names[] = {
-		"add", "and", "or", "sub", "xor", "cmp", "mov",
-		"test", "lea", "imul", "xchg", "movsxb", "movsxw",
-		"movsxd", "movzxb", "movzxw"
+		"ADD", "AND", "OR", "SUB", "XOR", "CMP", "MOV",
+		"TEST", "LEA", "IMUL", "XCHG", "MOVSXB", "MOVSXW",
+		"MOVSXD", "MOVZXB", "MOVZXW"
 	};
 	
 	static const char* cc_names[] = {
@@ -100,19 +104,19 @@ static void print_machine_insts(Ctx* restrict ctx) {
 		
 		switch (inst->type) {
 			case INST_LABEL: {
-				printf("L%d:\n", inst->label);
+				printf("L%d:\n", inst->label.id);
 				break;
 			}
 			case INST_JUMP: {
-				printf("    jmp L%d\n", inst->jump.target);
+				printf("    JMP L%d\n", inst->jump.target);
 				break;
 			}
 			case INST_JUMP_IF: {
-				printf("    J%s L%d else L%d\n", cc_names[inst->jump_if.cond], inst->jump_if.if_true, inst->jump_if.if_false);
+				printf("    J%s L%d ELSE L%d\n", cc_names[inst->jump_if.cond], inst->jump_if.if_true, inst->jump_if.if_false);
 				break;
 			}
 			case INST_RET: {
-				printf("    ret\n");
+				printf("    RET\n");
 				break;
 			}
 			case INST_EXPLICIT_GPR: {
@@ -120,11 +124,11 @@ static void print_machine_insts(Ctx* restrict ctx) {
 				break;
 			}
 			case INST_COPY: {
-				printf("    $gpr:%d = gpr:%d\n", inst->copy.dst_vreg.value, inst->copy.src_vreg.value);
+				printf("    gpr:%d = gpr:%d\n", inst->copy.dst_vreg.value, inst->copy.src_vreg.value);
 				break;
 			}
 			case INST_COPY_TO_GPR: {
-				printf("    COPY %s, gpr:%d\n", GPR_NAMES[inst->copy_gpr.gpr], inst->copy_gpr.src_vreg.value);
+				printf("    $%s = gpr:%d\n", GPR_NAMES[inst->copy_gpr.gpr], inst->copy_gpr.src_vreg.value);
 				break;
 			}
 			case INST_IMMEDIATE: {
@@ -587,6 +591,104 @@ static void isel_top_level(Ctx* restrict ctx, TB_Function* f, TreeNode* tree_nod
 	}
 }
 
+#define idef(r) if (intervals[r].start == 0) intervals[r].start = intervals[r].end = i
+#define iuse(r) intervals[r].end = i
+static void compute_live_intervals(Ctx* restrict ctx, TB_Function* restrict f, LiveInterval* intervals) {
+	loop(i, ctx->vgpr_count) {
+		intervals[i].start = 0;
+	}
+	
+	loop(i, ctx->inst_count) {
+		MachineInst* inst = &ctx->insts[i];
+		
+		switch (inst->type) {
+			case INST_LABEL: break;
+			case INST_JUMP: break;
+			case INST_JUMP_IF: break;
+			case INST_RET: break;
+			case INST_EXPLICIT_GPR: {
+				idef(inst->gpr.dst_vreg.value);
+				break;
+			}
+			case INST_COPY: {
+				idef(inst->copy.dst_vreg.value);
+				iuse(inst->copy.src_vreg.value);
+				break;
+			}
+			case INST_COPY_TO_GPR: {
+				iuse(inst->copy_gpr.src_vreg.value);
+				break;
+			}
+			case INST_IMMEDIATE: {
+				idef(inst->imm.dst_vreg.value);
+				break;
+			}
+			case INST_BINARY_OP: {
+				idef(inst->binary.dst_vreg.value);
+				iuse(inst->binary.a_vreg.value);
+				iuse(inst->binary.b_vreg.value);
+				break;
+			}
+			case INST_BINARY_OP_IMM: {
+				idef(inst->binary_imm.dst_vreg.value);
+				iuse(inst->binary_imm.dst_vreg.value);
+				iuse(inst->binary_imm.a_vreg.value);
+				break;
+			}
+			case INST_COMPARE: {
+				iuse(inst->compare.a_vreg.value);
+				iuse(inst->compare.b_vreg.value);
+				break;
+			}
+			case INST_FOLDED_LOAD: {
+				iuse(inst->folded_load.dst_vreg.value);
+				iuse(inst->folded_load.base.value);
+				iuse(inst->folded_load.index.value);
+				break;
+			}
+			case INST_FOLDED_STORE: {
+				iuse(inst->folded_store.base.value);
+				iuse(inst->folded_store.index.value);
+				iuse(inst->folded_store.src_vreg.value);
+				break;
+			}
+			case INST_FOLDED_STORE_IMM: {
+				iuse(inst->folded_store.index.value);
+				iuse(inst->folded_store.base.value);
+				break;
+			}
+			default: tb_todo();
+		}
+	}
+}
+#undef idef
+#undef iuse
+
+static GPR complex_alloc_gpr(Ctx* restrict ctx, TB_Function* restrict f, uint16_t* gpr_allocator, LiveInterval* interval, int i, TreeVReg dst_vreg) {
+	assert(dst_vreg.family == VREG_FAMILY_GPR);
+	assert(*gpr_allocator != 0xFFFF && "TODO: Implement spilling");
+	loop_range(j, i, interval->end+1) {
+		MachineInst* inst = &ctx->insts[j];
+		
+		if (inst->type == INST_COPY_TO_GPR && 
+			(*gpr_allocator & (1u << inst->copy_gpr.gpr)) &&
+			inst->copy_gpr.src_vreg.value == dst_vreg.value) {
+			// we can avoid a move if we just use this register directly
+			// TODO(NeGate): implement a weight system in case the same value
+			// is used across a bunch of values
+			*gpr_allocator |= (1u << inst->copy_gpr.gpr);
+			return inst->copy_gpr.gpr;
+		}
+	}
+	
+	int search = tb_ffs(~*gpr_allocator);
+	
+	GPR gpr = (GPR)(search-1);
+	*gpr_allocator |= (1u << gpr);
+	
+	return gpr;
+}
+
 TB_FunctionOutput x64_complex_compile_function(TB_CompiledFunctionID id, TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
 	s_local_thread_id = local_thread_id;
 	s_compiled_func_id = id;
@@ -686,7 +788,7 @@ TB_FunctionOutput x64_complex_compile_function(TB_CompiledFunctionID id, TB_Func
 	const TB_FunctionPrototype* restrict proto = f->prototype;
 	
 	// entry label
-	add_machine_inst(ctx, &(MachineInst) { .type = INST_LABEL, .label = 0 });
+	add_machine_inst(ctx, &(MachineInst) { .type = INST_LABEL, .label = { 0 } });
 	
 	ctx->vgpr_count = 3 + proto->param_count;
 	add_machine_inst(ctx, &(MachineInst){
@@ -745,17 +847,6 @@ TB_FunctionOutput x64_complex_compile_function(TB_CompiledFunctionID id, TB_Func
 		TB_Reg bb_end = start->label.terminator;
 		TB_Node* end = &f->nodes.data[bb_end];
 		
-		// Define label position
-		TB_Label label_id = start->label.id;
-		ctx->labels[label_id] = code_pos();
-		
-#if !TB_STRIP_LABELS
-		if (label_id) tb_emit_label_symbol(f->module,
-										   f - f->module->functions.data,
-										   label_id,
-										   code_pos());
-#endif
-		
 		// Generate expression tree
 		TreeNode* node = tb_tree_generate(&tree, f, ctx->use_count, bb, bb_end);
 		
@@ -766,8 +857,11 @@ TB_FunctionOutput x64_complex_compile_function(TB_CompiledFunctionID id, TB_Func
 		TB_Reg next_bb_reg = next_bb - f->nodes.data;
 		
 		// Walk expression tree
-		if (label_id) {
-			add_machine_inst(ctx, &(MachineInst) { .type = INST_LABEL, .label = label_id });
+		if (start->label.id) {
+			add_machine_inst(ctx, &(MachineInst) { .type = INST_LABEL, .label = { start->label.id } });
+			
+			ctx->insts[ctx->last_machine_inst_label].label.next_label = ctx->inst_count-1;
+			ctx->last_machine_inst_label = ctx->inst_count-1;
 		}
 		
 		// Instruction selection
@@ -784,10 +878,120 @@ TB_FunctionOutput x64_complex_compile_function(TB_CompiledFunctionID id, TB_Func
 	} while (bb != TB_NULL_REG);
 	
 	tb_tree_free(&tree);
+	print_machine_insts(ctx);
 	
 	// TODO(NeGate): Register allocation
-	// TODO(NeGate): Generate machine code
-	print_machine_insts(ctx);
+	// we just gotta map each VGPR into some Val
+	Val* mappings = calloc(1, ctx->vgpr_count * sizeof(Val));
+	LiveInterval* intervals = malloc(ctx->vgpr_count * sizeof(LiveInterval));
+	
+	compute_live_intervals(ctx, f, intervals);
+	
+	int next_label = 0;
+	uint16_t gpr_allocator = 0;
+	loop(i, ctx->inst_count) {
+		MachineInst* inst = &ctx->insts[i];
+		switch (inst->type) {
+			case INST_IMMEDIATE: {
+				TreeVReg dst = inst->imm.dst_vreg;
+				
+				if (intervals[dst.value].end > next_label) {
+					GPR gpr = complex_alloc_gpr(ctx, f, &gpr_allocator, &intervals[dst.value], i, dst);
+					mappings[dst.value] = val_gpr(TB_I64, gpr);
+				} else {
+					mappings[dst.value] = val_imm(TB_TYPE_I64, 0);
+				}
+				break;
+			}
+			
+			case INST_COPY: {
+				TreeVReg dst = inst->copy.dst_vreg;
+				
+				GPR gpr = complex_alloc_gpr(ctx, f, &gpr_allocator, &intervals[dst.value], i, dst);
+				mappings[inst->gpr.dst_vreg.value] = val_gpr(TB_I64, gpr);
+				break;
+			}
+			
+			case INST_EXPLICIT_GPR: {
+				mappings[inst->gpr.dst_vreg.value] = val_gpr(TB_I64, inst->gpr.gpr);
+				gpr_allocator |= inst->gpr.gpr;
+				break;
+			}
+			
+			case INST_LABEL:
+			next_label = ctx->insts[i].label.next_label;
+			break;
+			
+			default: break;
+		}
+	}
+	
+	// verify
+	bool has_unknowns = false;
+	loop_range(i, 1, ctx->vgpr_count) {
+		if (mappings[i].type == VAL_NONE) {
+			printf("x64 complex: unknown gpr:%zu\n", i);
+			has_unknowns = true;
+		}
+	}
+	
+	if (has_unknowns) {
+		printf("x64 complex: regalloc left unknowns\n");
+		abort();
+	}
+	
+	// Generate machine code
+	loop(i, ctx->inst_count) {
+		MachineInst* inst = &ctx->insts[i];
+		switch (inst->type) {
+			case INST_LABEL: {
+				// Define label position
+				ctx->labels[inst->label.id] = code_pos();
+				
+#if !TB_STRIP_LABELS
+				if (inst->label.id) {
+					tb_emit_label_symbol(f->module,
+										 f - f->module->functions.data,
+										 inst->label.id,
+										 code_pos());
+				}
+#endif
+				break;
+			}
+			case INST_COPY: {
+				TreeVReg dst = inst->copy.dst_vreg;
+				TreeVReg src = inst->copy.src_vreg;
+				
+				// TODO(NeGate): implement vector or float MOVs
+				if (mappings[dst.value].type == VAL_GPR &&
+					mappings[src.value].type == VAL_IMM && 
+					mappings[src.value].imm == 0) {
+					inst2(ctx, XOR, &mappings[dst.value], &mappings[dst.value], TB_I32);
+				} else {
+					inst2(ctx, MOV, &mappings[dst.value], &mappings[src.value], TB_I64);
+				}
+				break;
+			}
+			case INST_COMPARE: {
+				TreeVReg dst = inst->copy.dst_vreg;
+				TreeVReg src = inst->copy.src_vreg;
+				
+				// TODO(NeGate): implement vector or float CMPs
+				inst2(ctx, CMP, &mappings[dst.value], &mappings[src.value], TB_I64);
+				break;
+			}
+			case INST_JUMP_IF: {
+				jcc(ctx, inst->jump_if.cond, inst->jump_if.if_true);
+				jmp(ctx, inst->jump_if.if_false);
+				break;
+			}
+			case INST_JUMP: {
+				jmp(ctx, inst->jump.target);
+				break;
+			}
+			default: break;
+		}
+	}
 	
 	// Tally up any saved XMM registers
 	ctx->stack_usage += tb_popcount((ctx->regs_to_save >> 16) & 0xFFFF) * 16;

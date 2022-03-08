@@ -182,20 +182,14 @@ void inst2(X64_CtxHeader* restrict ctx, Inst2Type op, const Val* a, const Val* b
 	
 	if (b->type == VAL_IMM) {
 		if (dt_type == TB_I8 || short_imm) {
-			if (a->type == VAL_GLOBAL) RELOC4((ctx->out - ctx->start_out) - 4, -1);
-			
 			if (short_imm) assert(b->imm == (int8_t)b->imm);
 			EMIT((int8_t)b->imm);
 		} else if (dt_type == TB_I16) {
-			if (a->type == VAL_GLOBAL) RELOC4((ctx->out - ctx->start_out) - 4, -2);
-			
 			uint32_t imm = b->imm;
 			assert((imm & 0xFFFF0000) == 0xFFFF0000 || (imm & 0xFFFF0000) == 0);
 			
 			EMIT2(imm);
 		} else {
-			if (a->type == VAL_GLOBAL) RELOC4((ctx->out - ctx->start_out) - 4, 0);
-			
 			assert(dt_type == TB_I32 || dt_type == TB_I64 || dt_type == TB_PTR);
 			EMIT4((int32_t)b->imm);
 		}

@@ -9,7 +9,7 @@
 #define thread_local _Thread_local
 #endif
 
-#define TRIAL_COUNT 349525 // for max power 349525 
+#define TRIAL_COUNT 349525 // for max power 349525
 
 static uint32_t gen_random_any();
 static uint32_t gen_random(uint32_t min, uint32_t max);
@@ -172,7 +172,7 @@ static int ir_gen(FuzzerInfo* i) {
 		//tb_function_print(f, tb_default_print_callback, stdout);
 		//printf("\n\n\n");
 		
-		tb_module_compile_func(m, f);
+		tb_module_compile_func(m, f, TB_ISEL_FAST);
 		tb_function_free(f);
 		n++;
 	}

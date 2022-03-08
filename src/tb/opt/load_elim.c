@@ -117,7 +117,7 @@ bool tb_opt_load_elim(TB_Function* f) {
 	// ...          # anything but a possible store to addr, terminator,
 	// _2 = LOAD *p # or side effect then _2 = _1
 	TB_FOR_EACH_NODE(n, f) {
-		TB_Reg i = (n - f->nodes.data);
+		//TB_Reg i = (n - f->nodes.data);
 		
 		if (n->type == TB_STORE) {
 			TB_DataType dt = n->dt;

@@ -7,6 +7,8 @@
 #include <emmintrin.h>
 #endif
 
+#define TB_TEMP_REG INT_MAX
+
 static_assert(sizeof(float) == sizeof(uint32_t), "Float needs to be a 32-bit float!");
 static_assert(sizeof(double) == sizeof(uint64_t), "Double needs to be a 64-bit float!");
 
@@ -39,13 +41,6 @@ typedef enum XMM {
 	XMM_NONE = -1
 } XMM;
 
-enum {
-	MOD_INDIRECT = 0,        // [rax]
-	MOD_INDIRECT_DISP8 = 1,  // [rax + disp8]
-	MOD_INDIRECT_DISP32 = 2, // [rax + disp32]
-	MOD_DIRECT = 3,          // rax
-};
-
 typedef enum ValType {
 	VAL_NONE,
     
@@ -64,6 +59,13 @@ typedef enum Scale {
 	SCALE_X4,
 	SCALE_X8
 } Scale;
+
+enum {
+	MOD_INDIRECT = 0,        // [rax]
+	MOD_INDIRECT_DISP8 = 1,  // [rax + disp8]
+	MOD_INDIRECT_DISP32 = 2, // [rax + disp32]
+	MOD_DIRECT = 3,          // rax
+};
 
 typedef enum Inst2FPFlags {
 	INST2FP_DOUBLE = (1u << 0),
@@ -111,25 +113,6 @@ typedef struct LabelPatch {
     TB_Label target_lbl;
 } LabelPatch;
 
-typedef union {
-	struct {
-		TB_Reg reg;
-		int spill;
-		Val value;
-	} simple;
-	struct {
-		TB_Reg reg;
-		TreeVReg mapping;
-	} complex;
-} PhiValue;
-
-typedef struct StackSlot {
-	TB_Reg reg;
-	int32_t pos;
-	GPR gpr : 8;
-	XMM xmm : 8;
-} StackSlot;
-
 typedef enum Inst2Type {
     // Integer data processing
 	ADD, AND, OR, SUB, XOR, CMP, MOV,
@@ -169,160 +152,17 @@ typedef struct Inst2 {
     ExtMode ext : 8;
 } Inst2;
 
-// there's an infinite number of virtual registers
-// which map to some finite number of actual values
-typedef enum {
-	VREG_FAMILY_GPR,
-	VREG_FAMILY_XMM,
-	VREG_FAMILY_FLAGS
-} VRegFamily;
-
-#define VREG_STACK_POINTER (TreeVReg){ 1, VREG_FAMILY_GPR }
-#define VREG_BASE_POINTER (TreeVReg){ 2, VREG_FAMILY_GPR }
-
-// slight abstraction over x64 instructions
-typedef enum {
-	INST_NULL,
-	
-	INST_LABEL,
-	INST_JUMP_IF,
-	INST_JUMP,
-	INST_RET,
-	
-	// rA = GPR rax 
-	INST_EXPLICIT_GPR,
-	INST_COPY_TO_GPR,
-	
-	// rA = rB
-	INST_COPY,
-	INST_IMMEDIATE,
-	
-	INST_COMPARE,
-	
-	// rA = rB OP rC
-	INST_BINARY_OP,
-	INST_BINARY_OP_IMM,
-	
-	// lea rA, [rB + (rC * scale) + disp]
-	INST_LEA,
-	
-	// rA = rB OP [rC + (rD * scale) + disp]
-	// OP [rA + (rB * scale) + disp], rC
-	// OP [rA + (rB * scale) + disp], imm
-	INST_FOLDED_LOAD,
-	INST_FOLDED_STORE,
-	INST_FOLDED_STORE_IMM,
-} MachineInstType;
-
+// Both ISel contexts have this as a header
 typedef struct {
-	Scale scale;
-	TreeVReg base;
-	TreeVReg index; // can be 0
-	int32_t disp;
-} MachineInstMem;
-
-typedef struct {
-	uint16_t type;
-	TB_DataType dt;
-	
-	union {
-		struct {
-			TB_Label id;
-			int next_label;
-		} label;
-		struct {
-			TB_Label target;
-		} jump;
-		struct {
-			TB_Label if_true, if_false;
-			Cond cond;
-		} jump_if;
-		struct {
-			TreeVReg src_vreg;
-			GPR gpr;
-		} copy_gpr;
-		struct {
-			TreeVReg dst_vreg;
-			GPR gpr;
-		} gpr;
-		struct {
-			TreeVReg dst_vreg;
-			TreeVReg src_vreg;
-		} copy;
-		struct {
-			TreeVReg dst_vreg;
-			uint64_t src;
-		} imm;
-		struct {
-			uint8_t op;
-			TreeVReg dst_vreg;
-			TreeVReg a_vreg, b_vreg;
-		} binary;
-		struct {
-			uint8_t op;
-			TreeVReg dst_vreg;
-			TreeVReg a_vreg;
-			uint64_t b_imm;
-		} binary_imm;
-		struct {
-			TreeVReg a_vreg, b_vreg;
-		} compare;
-		struct {
-			TreeVReg dst_vreg;
-			MachineInstMem src;
-		} lea;
-		struct {
-			uint8_t op;
-			
-			// src (destructured MachineInstMem for better layout)
-			Scale scale;
-			TreeVReg base;
-			TreeVReg index; // can be 0
-			int32_t disp;
-			
-			TreeVReg dst_vreg;
-		} folded_load;
-		struct {
-			uint8_t op;
-			
-			// dst (destructured MachineInstMem for better layout)
-			Scale scale;
-			TreeVReg base;
-			TreeVReg index; // can be 0
-			int32_t disp;
-			
-			// src
-			union {
-				TreeVReg src_vreg; 
-				int32_t src_i32;
-			};
-		} folded_store;
-	};
-} MachineInst;
-
-typedef struct Ctx {
+	// Header that 
 	uint8_t* out;
 	uint8_t* start_out;
 	
 	size_t function_id;
 	TB_Function* f;
-	Val* values;
 	
-	bool is_sysv;
-	
-	// Patch info
-	uint32_t label_patch_count;
-	
-	uint32_t* labels;
-	LabelPatch* label_patches;
-	
-	TB_Reg* use_count;
-	PhiValue* phis;
-	ReturnPatch* ret_patches;
-	
-	uint32_t phi_count;
-	uint32_t ret_patch_count;
-	uint32_t caller_usage;
+	size_t line_count;
+	TB_Line* lines;
 	
 	// Used to allocate spills
 	uint32_t stack_usage;
@@ -331,22 +171,14 @@ typedef struct Ctx {
 	// XMM is the top 32bit
 	uint64_t regs_to_save;
 	
-	// Register allocation:
-	TB_Reg gpr_allocator[16];
-	TB_Reg xmm_allocator[16];
+	// Patch info
+	uint32_t label_patch_count;
+	uint32_t ret_patch_count;
 	
-	////////////////////////////////
-	// Complex path only
-	////////////////////////////////
-	// virtual registers
-	uint32_t vgpr_count, vxmm_count;
-	uint32_t inst_count, inst_cap;
-	uint32_t last_machine_inst_label;
-	
-	MachineInst* insts;
-	
-	TreeVReg* parameters;
-} Ctx;
+	uint32_t* labels;
+	LabelPatch* label_patches;
+	ReturnPatch* ret_patches;
+} X64_CtxHeader;
 
 static const GPR WIN64_GPR_PARAMETERS[4] = {
 	RCX, RDX, R8, R9
@@ -472,8 +304,7 @@ inline static Val val_base_index(TB_DataType dt, GPR b, GPR i, Scale s) {
 		.mem = {
 			.base = b,
 			.index = i,
-			.scale = s,
-			.disp = 0
+			.scale = s
 		}
 	};
 }
@@ -514,30 +345,7 @@ inline static bool is_value_match(const Val* a, const Val* b) {
 	else return false;
 }
 
-// Short and sweet C:
-#define code_pos() (ctx->out - ctx->start_out)
-
-#define emit(b) (*ctx->out++ = (b))
-#define emit2(b) (*((uint16_t*) ctx->out) = (b), ctx->out += 2)
-#define emit4(b) (*((uint32_t*) ctx->out) = (b), ctx->out += 4)
-#define emit8(b) (*((uint64_t*) ctx->out) = (b), ctx->out += 8)
-
-#define patch4(p, b) (*((uint32_t*) &ctx->start_out[p]) = (b))
-#define reloc4(p, b) (*((uint32_t*) &ctx->start_out[p]) += (b))
-
-static bool is_address_node(TB_NodeTypeEnum t);
-
-static PhiValue* find_phi(Ctx* ctx, TB_Reg r);
-static bool is_phi_that_contains(TB_Function* f, TB_Reg phi, TB_Reg reg);
-
-static bool is_temporary_of_bb(Ctx* ctx, TB_Function* f, TB_Reg bound, TB_Reg bb, TB_Reg bb_end);
-static void eval_compiler_fence(Ctx* restrict ctx, TB_Function* f, TB_Reg start, TB_Reg end, bool dont_handle_last_node);
-
 static int get_data_type_size(const TB_DataType dt);
-
-static MachineInstMem compute_complex_address(Ctx* restrict ctx, TB_Function* f, TreeNode* tree_node);
-static void add_machine_inst(Ctx* restrict ctx, const MachineInst* inst);
-static TreeVReg isel(Ctx* restrict ctx, TB_Function* f, TreeNode* tree_node);
 
 // used to add patches since there's separate arrays per thread
 static thread_local size_t s_local_thread_id;
@@ -547,3 +355,17 @@ static const char* GPR_NAMES[] = {
 	"RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI",
 	"R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"
 };
+
+// shorthand macros
+#define STACK_ALLOC(size, align) \
+(ctx->header.stack_usage = align_up(ctx->header.stack_usage + (size), align), -ctx->header.stack_usage)
+
+#define INST1(op, a) inst1(&ctx->header, op, a)
+#define INST2(op, a, b, dt) inst2(&ctx->header, op, a, b, dt)
+#define INST2SSE(op, a, b, flags) inst2sse(&ctx->header, op, a, b, flags)
+#define JCC(cc, label) jcc(&ctx->header, cc, label)
+#define JMP(label) jmp(&ctx->header, label)
+#define RET_JMP() ret_jmp(&ctx->header)
+
+#define GET_CODE_POS() (ctx->header.out - ctx->header.start_out)
+#define PATCH4(p, b) (*((uint32_t*) &ctx->header.start_out[p]) = (b))

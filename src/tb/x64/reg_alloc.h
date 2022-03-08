@@ -1,6 +1,4 @@
-
-#define TB_TEMP_REG INT_MAX
-
+#if 0
 static void spill_reg(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
 	if (ctx->use_count[r] == 0) {
 		ctx->values[r] = (Val){ 0 };
@@ -271,3 +269,4 @@ static bool evict_xmm(Ctx* restrict ctx, TB_Function* f, XMM x) {
 	ctx->xmm_allocator[x] = TB_NULL_REG;
 	return true;
 }
+#endif

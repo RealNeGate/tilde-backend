@@ -1,4 +1,160 @@
 
+// there's an infinite number of virtual registers
+// which map to some finite number of actual values
+typedef enum {
+	VREG_FAMILY_GPR,
+	VREG_FAMILY_XMM,
+	VREG_FAMILY_FLAGS
+} VRegFamily;
+
+#define VREG_STACK_POINTER (TreeVReg){ 1, VREG_FAMILY_GPR }
+#define VREG_BASE_POINTER (TreeVReg){ 2, VREG_FAMILY_GPR }
+
+// slight abstraction over x64 instructions
+typedef enum {
+	INST_NULL,
+	
+	INST_LABEL,
+	INST_JUMP_IF,
+	INST_JUMP,
+	INST_RET,
+	
+	// rA = GPR rax 
+	INST_EXPLICIT_GPR,
+	INST_COPY_TO_GPR,
+	
+	// rA = rB
+	INST_COPY,
+	INST_IMMEDIATE,
+	
+	INST_COMPARE,
+	
+	// rA = rB OP rC
+	INST_BINARY_OP,
+	INST_BINARY_OP_IMM,
+	
+	// lea rA, [rB + (rC * scale) + disp]
+	INST_LEA,
+	
+	// rA = rB OP [rC + (rD * scale) + disp]
+	// OP [rA + (rB * scale) + disp], rC
+	// OP [rA + (rB * scale) + disp], imm
+	INST_FOLDED_LOAD,
+	INST_FOLDED_STORE,
+	INST_FOLDED_STORE_IMM,
+} MachineInstType;
+
+typedef struct {
+	Scale scale;
+	TreeVReg base;
+	TreeVReg index; // can be 0
+	int32_t disp;
+} MachineInstMem;
+
+typedef struct {
+	uint16_t type;
+	TB_DataType dt;
+	
+	union {
+		struct {
+			TB_Label id;
+			int next_label;
+		} label;
+		struct {
+			TB_Label target;
+		} jump;
+		struct {
+			TB_Label if_true, if_false;
+			Cond cond;
+		} jump_if;
+		struct {
+			TreeVReg src_vreg;
+			GPR gpr;
+		} copy_gpr;
+		struct {
+			TreeVReg dst_vreg;
+			GPR gpr;
+		} gpr;
+		struct {
+			TreeVReg dst_vreg;
+			TreeVReg src_vreg;
+		} copy;
+		struct {
+			TreeVReg dst_vreg;
+			uint64_t src;
+		} imm;
+		struct {
+			uint8_t op;
+			TreeVReg dst_vreg;
+			TreeVReg a_vreg, b_vreg;
+		} binary;
+		struct {
+			uint8_t op;
+			TreeVReg dst_vreg;
+			TreeVReg a_vreg;
+			uint64_t b_imm;
+		} binary_imm;
+		struct {
+			TreeVReg a_vreg, b_vreg;
+		} compare;
+		struct {
+			TreeVReg dst_vreg;
+			MachineInstMem src;
+		} lea;
+		struct {
+			uint8_t op;
+			
+			// src (destructured MachineInstMem for better layout)
+			Scale scale;
+			TreeVReg base;
+			TreeVReg index; // can be 0
+			int32_t disp;
+			
+			TreeVReg dst_vreg;
+		} folded_load;
+		struct {
+			uint8_t op;
+			
+			// dst (destructured MachineInstMem for better layout)
+			Scale scale;
+			TreeVReg base;
+			TreeVReg index; // can be 0
+			int32_t disp;
+			
+			// src
+			union {
+				TreeVReg src_vreg; 
+				int32_t src_i32;
+			};
+		} folded_store;
+	};
+} MachineInst;
+
+typedef struct {
+	TB_Reg reg;
+	TreeVReg mapping;
+} PhiValue;
+
+typedef struct {
+	X64_CtxHeader header;
+	int* use_count;
+	
+	bool is_sysv;
+	uint32_t caller_usage;
+	
+	uint32_t phi_count;
+	PhiValue* phis;
+	
+	// virtual registers
+	uint32_t vgpr_count, vxmm_count;
+	uint32_t inst_count, inst_cap;
+	uint32_t last_machine_inst_label;
+	
+	MachineInst* insts;
+	
+	TreeVReg* parameters;
+} X64_ComplexCtx;
+
 typedef struct {
 	size_t memory_usage;
 	
@@ -12,6 +168,10 @@ typedef struct {
 typedef struct {
 	int start, end;
 } LiveInterval;
+
+static MachineInstMem compute_complex_address(X64_ComplexCtx* restrict ctx, TB_Function* f, TreeNode* tree_node);
+static void add_machine_inst(X64_ComplexCtx* restrict ctx, const MachineInst* inst);
+static TreeVReg isel(X64_ComplexCtx* restrict ctx, TB_Function* f, TreeNode* tree_node);
 
 static FunctionTallyComplex tally_memory_usage_complex(TB_Function* restrict f) {
 	size_t phi_count = 0;
@@ -41,7 +201,7 @@ static FunctionTallyComplex tally_memory_usage_complex(TB_Function* restrict f) 
 	size_t tally = 0;
 	
 	// context
-	tally += sizeof(Ctx) + (f->nodes.count * sizeof(Val));
+	tally += sizeof(X64_ComplexCtx);
 	tally = (tally + align_mask) & ~align_mask;
 	
 	// use_count
@@ -87,7 +247,7 @@ static FunctionTallyComplex tally_memory_usage_complex(TB_Function* restrict f) 
 	};
 }
 
-static void print_machine_insts(Ctx* restrict ctx) {
+static void print_machine_insts(X64_ComplexCtx* restrict ctx) {
 	static const char* inst2_names[] = {
 		"ADD", "AND", "OR", "SUB", "XOR", "CMP", "MOV",
 		"TEST", "LEA", "IMUL", "XCHG", "MOVSXB", "MOVSXW",
@@ -199,14 +359,21 @@ static void print_machine_insts(Ctx* restrict ctx) {
 	}
 }
 
-static void add_machine_inst(Ctx* restrict ctx, const MachineInst* inst) {
+static PhiValue* find_phi(X64_ComplexCtx* restrict ctx, TB_Reg r) {
+	for (size_t i = 0; i < ctx->phi_count; i++) {
+		if (ctx->phis[i].reg == r) return &ctx->phis[i];
+	}
+	
+	return NULL;
+}
+
+static void add_machine_inst(X64_ComplexCtx* restrict ctx, const MachineInst* inst) {
 	assert(ctx->inst_count+1 < ctx->inst_cap);
 	ctx->insts[ctx->inst_count++] = *inst;
 }
 
-static bool is_a_32bit_immediate(Ctx* restrict ctx, TB_Function* f, TreeNode* tree_node, int32_t* out) {
-	if (f->nodes.data[tree_node->reg].type == TB_UNSIGNED_CONST ||
-		f->nodes.data[tree_node->reg].type == TB_SIGNED_CONST) {
+static bool is_a_32bit_immediate(X64_ComplexCtx* restrict ctx, TB_Function* f, TreeNode* tree_node, int32_t* out) {
+	if (EITHER2(f->nodes.data[tree_node->reg].type, TB_UNSIGNED_CONST, TB_SIGNED_CONST)) {
 		uint64_t imm = f->nodes.data[tree_node->reg].uint.value;
 		
 		if (imm == (int32_t)imm) {
@@ -218,7 +385,7 @@ static bool is_a_32bit_immediate(Ctx* restrict ctx, TB_Function* f, TreeNode* tr
 	return false;
 }
 
-static TreeVReg isel(Ctx* restrict ctx, TB_Function* f, TreeNode* tree_node) {
+static TreeVReg isel(X64_ComplexCtx* restrict ctx, TB_Function* f, TreeNode* tree_node) {
 	if (tree_node->use_count) {
 		// shared node, try reuse
 		if (tree_node->vreg.value != 0) {
@@ -235,7 +402,7 @@ static TreeVReg isel(Ctx* restrict ctx, TB_Function* f, TreeNode* tree_node) {
 		case TB_PHI2: {
 			PhiValue* phi = find_phi(ctx, tree_node->reg);
 			assert(phi);
-			dst = phi->complex.mapping;
+			dst = phi->mapping;
 			break;
 		}
 		case TB_PARAM: {
@@ -336,10 +503,10 @@ static TreeVReg isel(Ctx* restrict ctx, TB_Function* f, TreeNode* tree_node) {
 	return dst;
 }
 
-static MachineInstMem compute_complex_address(Ctx* restrict ctx, TB_Function* f, TreeNode* tree_node) {
+static MachineInstMem compute_complex_address(X64_ComplexCtx* restrict ctx, TB_Function* f, TreeNode* tree_node) {
 	TB_Node* restrict n = &f->nodes.data[tree_node->reg];
 	TB_NodeTypeEnum reg_type = n->type;
-	TB_DataType dt = n->dt;
+	//TB_DataType dt = n->dt;
 	
 	if (reg_type == TB_ARRAY_ACCESS) {
 		TreeVReg base = isel(ctx, f, tree_node->operands[0]);
@@ -351,7 +518,7 @@ static MachineInstMem compute_complex_address(Ctx* restrict ctx, TB_Function* f,
 			stride_as_shift = tb_ffs(stride) - 1;
 			
 			if (stride_as_shift <= 3) {
-				
+				// this section is intentionally left blank
 			} else {
 				tb_todo();
 			}
@@ -380,7 +547,7 @@ static MachineInstMem compute_complex_address(Ctx* restrict ctx, TB_Function* f,
 	}
 }
 
-static void isel_top_level(Ctx* restrict ctx, TB_Function* f, TreeNode* tree_node) {
+static void isel_top_level(X64_ComplexCtx* restrict ctx, TB_Function* f, TreeNode* tree_node) {
 	TB_Node* restrict n = &f->nodes.data[tree_node->reg];
 	TB_NodeTypeEnum reg_type = n->type;
 	TB_DataType dt = n->dt;
@@ -393,7 +560,7 @@ static void isel_top_level(Ctx* restrict ctx, TB_Function* f, TreeNode* tree_nod
 			
 			// generate new mapping if one doesn't exist
 			TB_NodeTypeEnum op_type = f->nodes.data[tree_node->operands[0]->reg].type;
-			TreeVReg mapping = phi->complex.mapping;
+			TreeVReg mapping = phi->mapping;
 			
 			if (mapping.value == 0) {
 				if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
@@ -401,7 +568,7 @@ static void isel_top_level(Ctx* restrict ctx, TB_Function* f, TreeNode* tree_nod
 				} else {
 					mapping = (TreeVReg){ ctx->vgpr_count++, VREG_FAMILY_GPR };
 				}
-				phi->complex.mapping = mapping;
+				phi->mapping = mapping;
 			}
 			
 			// copy correct value into the mapping
@@ -575,7 +742,7 @@ static void isel_top_level(Ctx* restrict ctx, TB_Function* f, TreeNode* tree_nod
 					case TB_CMP_SLE: cc = LE; break;
 					case TB_CMP_ULT: cc = B; break;
 					case TB_CMP_ULE: cc = BE; break;
-					default: tb_unreachable();
+					default: tb_todo();
 				}
 				
 				add_machine_inst(ctx, &(MachineInst) {
@@ -593,7 +760,7 @@ static void isel_top_level(Ctx* restrict ctx, TB_Function* f, TreeNode* tree_nod
 
 #define idef(r) if (intervals[r].start == 0) intervals[r].start = intervals[r].end = i
 #define iuse(r) intervals[r].end = i
-static void compute_live_intervals(Ctx* restrict ctx, TB_Function* restrict f, LiveInterval* intervals) {
+static void compute_live_intervals(X64_ComplexCtx* restrict ctx, TB_Function* restrict f, LiveInterval* intervals) {
 	loop(i, ctx->vgpr_count) {
 		intervals[i].start = 0;
 	}
@@ -664,7 +831,7 @@ static void compute_live_intervals(Ctx* restrict ctx, TB_Function* restrict f, L
 #undef idef
 #undef iuse
 
-static GPR complex_alloc_gpr(Ctx* restrict ctx, TB_Function* restrict f, uint16_t* gpr_allocator, LiveInterval* interval, int i, TreeVReg dst_vreg) {
+static GPR complex_alloc_gpr(X64_ComplexCtx* restrict ctx, TB_Function* restrict f, uint16_t* gpr_allocator, LiveInterval* interval, int i, TreeVReg dst_vreg) {
 	assert(dst_vreg.family == VREG_FAMILY_GPR);
 	assert(*gpr_allocator != 0xFFFF && "TODO: Implement spilling");
 	loop_range(j, i, interval->end+1) {
@@ -699,54 +866,50 @@ TB_FunctionOutput x64_complex_compile_function(TB_CompiledFunctionID id, TB_Func
 	// Allocate all the memory we'll need
 	////////////////////////////////
 	bool is_ctx_heap_allocated = false;
-	Ctx* restrict ctx = NULL;
-	
+	X64_ComplexCtx* restrict ctx = NULL;
 	{
 		// if we can't fit our memory usage into memory, we fallback
 		FunctionTallyComplex tally = tally_memory_usage_complex(f);
 		is_ctx_heap_allocated = !tb_tls_can_fit(tls, tally.memory_usage);
 		
-		size_t ctx_size = sizeof(Ctx);
+		size_t ctx_size = sizeof(X64_ComplexCtx);
 		if (is_ctx_heap_allocated) {
 			//printf("Could not allocate x64 code gen context: using heap fallback. (%zu bytes)\n", tally.memory_usage);
-			
 			ctx = calloc(1, ctx_size);
+			
+			ctx->header.labels = malloc(f->label_count * sizeof(uint32_t));
+			ctx->header.label_patches = malloc(tally.label_patch_count * sizeof(LabelPatch));
+			ctx->header.ret_patches = malloc(tally.return_count * sizeof(ReturnPatch));
 			
 			ctx->use_count = malloc(f->nodes.count * sizeof(TB_Reg));
 			ctx->phis = malloc(tally.phi_count * sizeof(PhiValue));
-			
-			ctx->labels = malloc(f->label_count * sizeof(uint32_t));
-			ctx->label_patches = malloc(tally.label_patch_count * sizeof(LabelPatch));
-			ctx->ret_patches = malloc(tally.return_count * sizeof(ReturnPatch));
-			
 			ctx->insts = malloc(f->nodes.count * 2 * sizeof(MachineInst));
 			ctx->parameters = malloc(f->prototype->param_count * sizeof(TreeVReg));
 		} else {
 			ctx = tb_tls_push(tls, ctx_size);
 			memset(ctx, 0, ctx_size);
 			
+			ctx->header.labels = tb_tls_push(tls, f->label_count * sizeof(uint32_t));
+			ctx->header.label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch));
+			ctx->header.ret_patches = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch));
+			
 			ctx->use_count = tb_tls_push(tls, f->nodes.count * sizeof(TB_Reg));
 			ctx->phis = tb_tls_push(tls, tally.phi_count * sizeof(PhiValue));
-			
-			ctx->labels = tb_tls_push(tls, f->label_count * sizeof(uint32_t));
-			ctx->label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch));
-			ctx->ret_patches = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch));
-			
 			ctx->insts = tb_tls_push(tls, f->nodes.count * 2 * sizeof(MachineInst));
 			ctx->parameters = tb_tls_push(tls, f->prototype->param_count * sizeof(TreeVReg));
 		}
 		
-		ctx->start_out = ctx->out = out;
-		ctx->f = f;
-		ctx->function_id = f - f->module->functions.data;
+		ctx->header.start_out = ctx->header.out = out;
+		ctx->header.f = f;
+		ctx->header.function_id = f - f->module->functions.data;
+		
 		ctx->inst_cap = f->nodes.count*2;
 		
 		// virtual registers keep 0 as a NULL slot
 		ctx->vgpr_count = 1;
 		ctx->vxmm_count = 1;
 		
-		ctx->is_sysv = (f->module->target_system == TB_SYSTEM_LINUX ||
-						f->module->target_system == TB_SYSTEM_MACOS);
+		ctx->is_sysv = EITHER2(f->module->target_system, TB_SYSTEM_LINUX, TB_SYSTEM_MACOS);
 		
 		f->line_count = 0;
 		f->lines = tb_platform_arena_alloc(tally.line_info_count * sizeof(TB_Line));
@@ -755,8 +918,6 @@ TB_FunctionOutput x64_complex_compile_function(TB_CompiledFunctionID id, TB_Func
 	////////////////////////////////
 	// Analyze function for stack, live intervals and phi nodes
 	////////////////////////////////
-	ctx->regs_to_save = 0;
-	
 	tb_function_calculate_use_count(f, ctx->use_count);
 	
 	// Create phi lookup table for later evaluation stages
@@ -765,7 +926,7 @@ TB_FunctionOutput x64_complex_compile_function(TB_CompiledFunctionID id, TB_Func
 	TB_FOR_EACH_NODE(n, f) {
 		if (n->type == TB_PHI2) {
 			ctx->phis[ctx->phi_count++] = (PhiValue){
-				.complex = { n - f->nodes.data }
+				n - f->nodes.data
 			};
 		} else if (n->type == TB_CALL ||
 				   n->type == TB_ECALL ||
@@ -806,7 +967,7 @@ TB_FunctionOutput x64_complex_compile_function(TB_CompiledFunctionID id, TB_Func
 		
 		// Allocate space in stack
 		int size = get_data_type_size(dt);
-		ctx->stack_usage = align_up(ctx->stack_usage + size, size);
+		STACK_ALLOC(size, size);
 		assert(size <= 8 && "Parameter too big");
 		
 		if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
@@ -946,7 +1107,7 @@ TB_FunctionOutput x64_complex_compile_function(TB_CompiledFunctionID id, TB_Func
 		switch (inst->type) {
 			case INST_LABEL: {
 				// Define label position
-				ctx->labels[inst->label.id] = code_pos();
+				ctx->header.labels[inst->label.id] = GET_CODE_POS();
 				
 #if !TB_STRIP_LABELS
 				if (inst->label.id) {
@@ -966,9 +1127,9 @@ TB_FunctionOutput x64_complex_compile_function(TB_CompiledFunctionID id, TB_Func
 				if (mappings[dst.value].type == VAL_GPR &&
 					mappings[src.value].type == VAL_IMM && 
 					mappings[src.value].imm == 0) {
-					inst2(ctx, XOR, &mappings[dst.value], &mappings[dst.value], TB_I32);
+					INST2(XOR, &mappings[dst.value], &mappings[dst.value], TB_I32);
 				} else {
-					inst2(ctx, MOV, &mappings[dst.value], &mappings[src.value], TB_I64);
+					INST2(XOR, &mappings[dst.value], &mappings[src.value], TB_I64);
 				}
 				break;
 			}
@@ -977,16 +1138,16 @@ TB_FunctionOutput x64_complex_compile_function(TB_CompiledFunctionID id, TB_Func
 				TreeVReg src = inst->copy.src_vreg;
 				
 				// TODO(NeGate): implement vector or float CMPs
-				inst2(ctx, CMP, &mappings[dst.value], &mappings[src.value], TB_I64);
+				INST2(CMP, &mappings[dst.value], &mappings[src.value], TB_I64);
 				break;
 			}
 			case INST_JUMP_IF: {
-				jcc(ctx, inst->jump_if.cond, inst->jump_if.if_true);
-				jmp(ctx, inst->jump_if.if_false);
+				JCC(inst->jump_if.cond, inst->jump_if.if_true);
+				JMP(inst->jump_if.if_false);
 				break;
 			}
 			case INST_JUMP: {
-				jmp(ctx, inst->jump.target);
+				JMP(inst->jump.target);
 				break;
 			}
 			default: break;
@@ -994,42 +1155,42 @@ TB_FunctionOutput x64_complex_compile_function(TB_CompiledFunctionID id, TB_Func
 	}
 	
 	// Tally up any saved XMM registers
-	ctx->stack_usage += tb_popcount((ctx->regs_to_save >> 16) & 0xFFFF) * 16;
-	ctx->stack_usage = align_up(ctx->stack_usage + 8, 16) + 8;
+	ctx->header.stack_usage += tb_popcount((ctx->header.regs_to_save >> 16) & 0xFFFF) * 16;
+	ctx->header.stack_usage = align_up(ctx->header.stack_usage + 8, 16) + 8;
 	
 	////////////////////////////////
 	// Evaluate internal relocations (return and labels)
 	////////////////////////////////
-	loop(i, ctx->ret_patch_count) {
-		uint32_t pos = ctx->ret_patches[i];
-		patch4(pos, code_pos() - (pos + 4));
+	loop(i, ctx->header.ret_patch_count) {
+		uint32_t pos = ctx->header.ret_patches[i];
+		PATCH4(pos, GET_CODE_POS() - (pos + 4));
 	}
 	
-	loop(i, ctx->label_patch_count) {
-		uint32_t pos = ctx->label_patches[i].pos;
-		uint32_t target_lbl = ctx->label_patches[i].target_lbl;
+	loop(i, ctx->header.label_patch_count) {
+		uint32_t pos = ctx->header.label_patches[i].pos;
+		uint32_t target_lbl = ctx->header.label_patches[i].target_lbl;
 		
-		patch4(pos, ctx->labels[target_lbl] - (pos + 4));
+		PATCH4(pos, ctx->header.labels[target_lbl] - (pos + 4));
 	}
 	
 	TB_FunctionOutput func_out = {
 		.name = f->name,
 		.function = tb_function_get_id(f->module, f),
 		.linkage = f->linkage,
-		.code = ctx->start_out,
-		.code_size = ctx->out - ctx->start_out,
-		.stack_usage = ctx->stack_usage,
+		.code = ctx->header.start_out,
+		.code_size = ctx->header.out - ctx->header.start_out,
+		.stack_usage = ctx->header.stack_usage,
 		
-		.prologue_epilogue_metadata = ctx->regs_to_save
+		.prologue_epilogue_metadata = ctx->header.regs_to_save
 	};
 	
 	if (is_ctx_heap_allocated) {
+		free(ctx->header.labels);
+		free(ctx->header.label_patches);
+		free(ctx->header.ret_patches);
+		
 		free(ctx->use_count);
 		free(ctx->phis);
-		
-		free(ctx->labels);
-		free(ctx->label_patches);
-		free(ctx->ret_patches);
 		
 		free(ctx->insts);
 		free(ctx->parameters);

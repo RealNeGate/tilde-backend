@@ -347,13 +347,13 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
 	fwrite(stab.data, stab.count, 1, f);
 	
 	assert(ftell(f) == header.e_shoff);
-	fwrite(&null_section, sizeof(null_section), 1, f);
+	fwrite(&null_section,   sizeof(null_section), 1, f);
 	fwrite(&strtab_section, sizeof(strtab_section), 1, f);
-	fwrite(&code_section, sizeof(code_section), 1, f);
-	fwrite(&data_section, sizeof(data_section), 1, f);
+	fwrite(&code_section,   sizeof(code_section), 1, f);
+	fwrite(&data_section,   sizeof(data_section), 1, f);
 	fwrite(&rodata_section, sizeof(rodata_section), 1, f);
-	fwrite(&bss_section, sizeof(bss_section), 1, f);
-	fwrite(&stab_section, sizeof(stab_section), 1, f);
+	fwrite(&bss_section,    sizeof(bss_section), 1, f);
+	fwrite(&stab_section,   sizeof(stab_section), 1, f);
 	
 	free(stab.data);
 	free(strtbl.data);

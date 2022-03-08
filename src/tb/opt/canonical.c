@@ -109,7 +109,6 @@ bool tb_opt_canonicalize(TB_Function* f) {
 				changes++;*/
 			}
 		} else if (type == TB_UMOD || type == TB_SMOD) {
-			TB_Node* a = &f->nodes.data[n->i_arith.a];
 			TB_Node* b = &f->nodes.data[n->i_arith.b];
 			
 			// (mod a N) => (and a N-1) where N is a power of two

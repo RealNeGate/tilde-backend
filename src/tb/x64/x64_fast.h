@@ -940,31 +940,6 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				uint16_t caller_saved = (ctx->is_sysv ? SYSV_ABI_CALLER_SAVED : WIN64_ABI_CALLER_SAVED);
 				const GPR* parameter_gprs = ctx->is_sysv ? SYSV_GPR_PARAMETERS : WIN64_GPR_PARAMETERS;
 				
-				loop(j, param_count) {
-					TB_Reg param_reg = f->vla.data[param_start + j];
-					TB_DataType param_dt = f->nodes.data[param_reg].dt;
-					
-					if (!(TB_IS_FLOAT_TYPE(param_dt.type) || param_dt.width)) {
-						caller_saved &= ~(1u << parameter_gprs[j]);
-					}
-				}
-				
-				loop(j, 16) if (caller_saved & (1u << j)) {
-					fast_evict_gpr(ctx, f, j);
-				}
-				
-				// TODO(NeGate): Evict the XMMs that are caller saved
-				/*loop_range(j, ctx->is_sysv ? 0 : 5, 16) {
-					evict_xmm(ctx, f, j);
-				}*/
-				
-				// reserve return value
-				if (TB_IS_FLOAT_TYPE(dt.type) || dt.width) {
-					ctx->xmm_allocator[XMM0] = TB_TEMP_REG;
-				} else if (dt.type != TB_VOID) {
-					ctx->gpr_allocator[RAX] = TB_TEMP_REG;
-				}
-				
 				// evaluate parameters
 				loop(j, param_count) {
 					TB_Reg param_reg = f->vla.data[param_start + j];
@@ -973,6 +948,10 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 					if (TB_IS_FLOAT_TYPE(param_dt.type) || param_dt.width) {
 						tb_todo();
 					} else if (param_dt.type != TB_VOID) {
+						// since we evict now we don't need to later
+						fast_evict_gpr(ctx, f, parameter_gprs[j]);
+						caller_saved &= ~(1u << parameter_gprs[j]);
+						
 						// Win64 has 4 GPR parameters (RCX, RDX, R8, R9)
 						// SysV has 6 of them (RDI, RSI, RDX, RCX, R8, R9)
 						if ((ctx->is_sysv && j < 6) || j < 4) {
@@ -986,6 +965,24 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 							fast_folded_op(ctx, f, MOV, &dst, param_reg);
 						}
 					}
+					
+					fast_kill_reg(ctx, f, param_reg);
+				}
+				
+				// Spill anything else
+				loop(j, 16) if (caller_saved & (1u << j)) {
+					fast_evict_gpr(ctx, f, j);
+				}
+				
+				// TODO(NeGate): Evict the XMMs that are caller saved
+				/*loop_range(j, ctx->is_sysv ? 0 : 5, 16) {
+					evict_xmm(ctx, f, j);
+				}*/
+				
+				// reserve return value
+				if (TB_IS_FLOAT_TYPE(dt.type) || dt.width) {
+					// evict XMM0
+					tb_todo();
 				}
 				
 				// CALL instruction and patch

@@ -194,7 +194,7 @@ void inst2(X64_CtxHeader* restrict ctx, Inst2Type op, const Val* a, const Val* b
 			
 			EMIT2(imm);
 		} else {
-			if (a->type == VAL_GLOBAL) RELOC4((ctx->out - ctx->start_out) - 4, -4);
+			if (a->type == VAL_GLOBAL) RELOC4((ctx->out - ctx->start_out) - 4, 0);
 			
 			assert(dt_type == TB_I32 || dt_type == TB_I64 || dt_type == TB_PTR);
 			EMIT4((int32_t)b->imm);

@@ -1389,3 +1389,64 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	free(string_table);
 	free(func_layout);
 }
+
+// let's ignore error handling for now :p
+// buffered reading i guess?
+TB_ObjectFile* tb_object_parse_coff(FILE* file) {
+	COFF_FileHeader header;
+	fread(&header, 1, sizeof(COFF_FileHeader), file);
+	
+	TB_ObjectFile* obj_file = malloc(sizeof(TB_ObjectFile) + (header.num_sections * sizeof(TB_ObjectSection)));
+	memset(obj_file, 0, sizeof(TB_ObjectFile));
+	
+	obj_file->type = TB_OBJECT_FILE_COFF;
+	
+	switch (header.machine) {
+		case COFF_MACHINE_AMD64: obj_file->arch = TB_ARCH_X86_64; break;
+		case COFF_MACHINE_ARM64: obj_file->arch = TB_ARCH_AARCH64; break;
+		default: tb_todo();
+	}
+	
+	obj_file->section_count = header.num_sections;
+	loop(i, header.num_sections) {
+		// TODO(NeGate): bounds check this
+		size_t section_offset = sizeof(COFF_FileHeader) + (i * sizeof(COFF_SectionHeader));
+		
+		COFF_SectionHeader sec;
+		fseek(file, section_offset, SEEK_SET);
+		fread(&sec, 1, sizeof(COFF_SectionHeader), file);
+		
+		TB_ObjectSection* out_sec = &obj_file->sections[i];
+		*out_sec = (TB_ObjectSection) { 0 };
+		
+		// Parse string table name stuff
+		uint32_t long_name[2];
+		memcpy(long_name, sec.name, sizeof(uint8_t[8]));
+		if (long_name[0] == 0) {
+			// string table access
+			tb_todo();
+		} else {
+			// normal inplace string
+			out_sec->name = malloc(9);
+			
+			memcpy(out_sec->name, sec.name, sizeof(uint8_t[8]));
+			out_sec->name[8] = '\0';
+		}
+		
+		// Parse virtual region
+		out_sec->virtual_address = sec.virtual_address;
+		out_sec->virtual_size = sec.misc.virtual_size;
+		
+		// Read raw data (if applies)
+		if (sec.raw_data_size) {
+			out_sec->raw_data_size = sec.raw_data_size;
+			out_sec->raw_data = malloc(sec.raw_data_size);
+			
+			// We should probably bounds check something here? idk
+			fseek(file, sec.raw_data_pos, SEEK_SET);
+			fread(out_sec->raw_data, 1, sec.raw_data_size, file);
+		}
+	}
+	
+	return obj_file;
+}

@@ -115,7 +115,7 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch,
 	return m;
 }
 
-#if 0
+#if 1
 #define OPT(x) if (tb_opt_ ## x (f)) { \
 printf("%s   ", #x); \
 tb_function_print(f, tb_default_print_callback, stdout); \
@@ -1086,6 +1086,53 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
 	}
 }
 
+TB_API void tb_function_print_cfg(TB_Function* f, TB_PrintCallback callback, void* user_data) {
+	callback(user_data, "digraph %s {\n  node [shape=plaintext]\n", f->name);
+	
+	// Evaluate basic blocks
+	TB_Reg bb = 1;
+	do {
+		assert(f->nodes.data[bb].type == TB_LABEL);
+		TB_Node* start = &f->nodes.data[bb];
+		
+		TB_Reg bb_end = start->label.terminator;
+		TB_Node* end = &f->nodes.data[bb_end];
+		TB_Label label_id = start->label.id;
+		
+		callback(user_data, "  node[shape=\"box\", style=\"\"] L%d;\n", label_id);
+		
+		// TODO(NeGate): Fill in body
+		// Evaluate the terminator
+		if (end->type == TB_RET) {
+			// empty
+		} else if (end->type == TB_IF) {
+			callback(user_data, "  L%d -> L%d[label=\"true\"]\n", label_id, end->if_.if_true);
+			callback(user_data, "  L%d -> L%d[label=\"false\"]\n", label_id, end->if_.if_false);
+		} else if (end->type == TB_LABEL) {
+			callback(user_data, "  L%d -> L%d\n", label_id, end->label.id);
+		} else if (end->type == TB_GOTO) {
+			callback(user_data, "  L%d -> L%d\n", label_id, end->goto_.label);
+		}
+		
+		// Next Basic block
+		bb = (end->type == TB_LABEL) ? bb_end : end->next;
+	} while (bb != TB_NULL_REG);
+	
+	callback(user_data, "}\n");
+}
+
+//
+// OBJECT FILE
+//
+void tb_object_free(TB_ObjectFile* obj) {
+	loop(i, obj->section_count) {
+		free(obj->sections[i].name);
+		free(obj->sections[i].raw_data);
+		free(obj->sections[i].relocations);
+	}
+	free(obj);
+}
+
 //
 // EMITTER CODE
 // 
@@ -1182,4 +1229,3 @@ void tb_outs_UNSAFE(TB_Emitter* o, size_t len, const uint8_t* str) {
 	for (size_t i = 0; i < len; i++) o->data[o->count + i] = str[i];
 	o->count += len;
 }
-

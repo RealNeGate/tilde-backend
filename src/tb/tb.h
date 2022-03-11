@@ -562,6 +562,68 @@ extern "C" {
 		} loops[];
 	} TB_LoopInfo;
 	
+	typedef struct {
+		char* name;
+	} TB_ObjectSymbol;
+	
+	typedef enum {
+		TB_OBJECT_RELOC_NONE, // how?
+		
+		// Target independent
+		TB_OBJECT_RELOC_ADDR32,
+		TB_OBJECT_RELOC_ADDR64,  // unsupported on 32bit platforms
+		
+		// x64 only
+		TB_OBJECT_RELOC_REL32,   // relative 32bit displacement
+		TB_OBJECT_RELOC_REL32_1, //   plus 1
+		TB_OBJECT_RELOC_REL32_2, //   plus 2
+		TB_OBJECT_RELOC_REL32_3, //   and so on
+		TB_OBJECT_RELOC_REL32_4, //   ...
+		TB_OBJECT_RELOC_REL32_5,
+		
+		// Aarch64 only
+		TB_OBJECT_RELOC_BRANCH26, // 26bit displacement for B and BL instructions
+		TB_OBJECT_RELOC_REL21,    // for ADR instructions
+		
+		// TODO(NeGate): fill in the rest of this later
+	} TB_ObjectRelocType;
+	
+	typedef struct {
+		TB_ObjectRelocType type;
+		uint32_t symbol_index;
+		size_t virtual_address;
+	} TB_ObjectReloc;
+	
+	typedef struct {
+		char* name;
+		
+		size_t virtual_address;
+		size_t virtual_size;
+		
+		// You can have a virtual size without having a raw
+		// data size, that's how the BSS section works
+		size_t raw_data_size;
+		uint8_t* raw_data;
+		
+		size_t relocation_count;
+		TB_ObjectReloc* relocations;
+	} TB_ObjectSection;
+	
+	typedef enum {
+		TB_OBJECT_FILE_UNKNOWN,
+		
+		TB_OBJECT_FILE_COFF,
+		TB_OBJECT_FILE_ELF64
+	} TB_ObjectFileType;
+	
+	typedef struct {
+		TB_ObjectFileType type;
+		TB_Arch arch;
+		
+		size_t section_count;
+		TB_ObjectSection sections[];
+	} TB_ObjectFile;
+	
 	// *******************************
 	// Public macros
 	// *******************************
@@ -690,6 +752,9 @@ extern "C" {
 	
 	TB_API TB_Function* tb_function_clone(TB_Module* m, TB_Function* f, const char* name);
 	TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* user_data);
+	
+	// Prints out the IR in the GraphViz format
+	TB_API void tb_function_print_cfg(TB_Function* f, TB_PrintCallback callback, void* user_data);
 	TB_API void tb_function_free(TB_Function* f);
 	
 	TB_API TB_Label tb_inst_get_current_label(TB_Function* f);
@@ -904,6 +969,12 @@ extern "C" {
 	// These work for any floating point, comparison, or integer arithmatic ops
 	TB_API TB_Reg tb_node_arith_get_left(TB_Function* f, TB_Reg r);
 	TB_API TB_Reg tb_node_arith_get_right(TB_Function* f, TB_Reg r);
+	
+	////////////////////////////////
+	// Objects
+	////////////////////////////////
+	TB_ObjectFile* tb_object_parse_coff(FILE* file);
+	void tb_object_free(TB_ObjectFile* obj);
 	
 #ifdef __cplusplus
 }

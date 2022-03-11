@@ -69,7 +69,7 @@ static void compile_with_cl() {
 	
 	// fuzzer.c
 #if defined(BUILD_FUZZER)
-	cmd_append("src\\fuzzer.c ");
+	cmd_append("src\\objdump.c ");
 #endif
 	
 	cmd_run();

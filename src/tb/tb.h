@@ -353,7 +353,7 @@ extern "C" {
 	
 	typedef unsigned int TB_FileID;
 	typedef unsigned int TB_FunctionID;
-	typedef unsigned int TB_ExternalID;
+	typedef unsigned int TB_ExternalID; // 0 means NULL
 	typedef unsigned int TB_GlobalID;
 	typedef unsigned int TB_InitializerID;
 	
@@ -562,10 +562,6 @@ extern "C" {
 		} loops[];
 	} TB_LoopInfo;
 	
-	typedef struct {
-		char* name;
-	} TB_ObjectSymbol;
-	
 	typedef enum {
 		TB_OBJECT_RELOC_NONE, // how?
 		
@@ -610,6 +606,14 @@ extern "C" {
 	} TB_ObjectSection;
 	
 	typedef enum {
+		TB_OBJECT_SYMBOL_SECTION,
+	} TB_ObjectSymbolType;
+	
+	typedef struct {
+		char* name;
+	} TB_ObjectSymbol;
+	
+	typedef enum {
 		TB_OBJECT_FILE_UNKNOWN,
 		
 		TB_OBJECT_FILE_COFF,
@@ -619,6 +623,12 @@ extern "C" {
 	typedef struct {
 		TB_ObjectFileType type;
 		TB_Arch arch;
+		
+		size_t string_table_size;
+		char* string_table;
+		
+		size_t symbol_count;
+		TB_ObjectSymbol* symbols;
 		
 		size_t section_count;
 		TB_ObjectSection sections[];
@@ -948,6 +958,15 @@ extern "C" {
 	
 	// either an unsigned or signed constant
 	TB_API bool tb_node_is_constant_int(TB_Function* f, TB_Reg r, uint64_t imm);
+	
+	// returns true if it's a signed or unsigned constant
+	// in which case *imm is the raw bits and *is_signed is
+	// signedness
+	//
+	// notes:
+	//   imm cannot be NULL
+	//   is_signed can be NULL
+	TB_API bool tb_node_get_constant_int(TB_Function* f, TB_Reg r, uint64_t* imm, bool* is_signed);
 	
 	// Returns the size and alignment of a LOCAL node, both must
 	// be valid addresses

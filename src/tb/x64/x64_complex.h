@@ -292,7 +292,7 @@ static void print_machine_insts(X64_ComplexCtx* restrict ctx) {
 				break;
 			}
 			case INST_IMMEDIATE: {
-				printf("    gpr:%d = %lld\n", inst->imm.dst_vreg.value, inst->imm.src);
+				printf("    gpr:%d = %lld\n", inst->imm.dst_vreg.value, (long long)inst->imm.src);
 				break;
 			}
 			case INST_BINARY_OP: {
@@ -302,7 +302,7 @@ static void print_machine_insts(X64_ComplexCtx* restrict ctx) {
 			}
 			case INST_BINARY_OP_IMM: {
 				printf("    gpr:%d = %s ", inst->binary_imm.dst_vreg.value, inst2_names[inst->binary_imm.op]);
-				printf("gpr:%d, %lld\n", inst->binary_imm.a_vreg.value, inst->binary_imm.b_imm);
+				printf("gpr:%d, %lld\n", inst->binary_imm.a_vreg.value, (long long)inst->binary_imm.b_imm);
 				break;
 			}
 			case INST_COMPARE: {
@@ -675,6 +675,7 @@ static void isel_top_level(X64_ComplexCtx* restrict ctx, TB_Function* f, TreeNod
 			}
 			
 			MachineInst inst = { 0 };
+			inst.type = inst_type;
 			inst.dt = dt;
 			inst.folded_store.scale = addr.scale;
 			inst.folded_store.base = addr.base;
@@ -967,7 +968,7 @@ TB_FunctionOutput x64_complex_compile_function(TB_CompiledFunctionID id, TB_Func
 		
 		// Allocate space in stack
 		int size = get_data_type_size(dt);
-		STACK_ALLOC(size, size);
+		(void)STACK_ALLOC(size, size);
 		assert(size <= 8 && "Parameter too big");
 		
 		if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {

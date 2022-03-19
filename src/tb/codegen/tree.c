@@ -9,7 +9,7 @@ static TreeNode* append(TreeNodeArena* arena) {
 			new_p = p->next;
 			new_p->count = 0;
 		} else {
-			TreeNodePage* new_p = tb_platform_heap_alloc(sizeof(TreeNodePage));
+			new_p = tb_platform_heap_alloc(sizeof(TreeNodePage));
 			if (!new_p) {
 				tb_panic("Out of memory!");
 			}
@@ -159,7 +159,7 @@ static TreeNode* walk(TreeNodeArena* arena, TB_Function* f, TB_Reg* use_count, T
 	// just use some simple heuristics
 	if (TB_UNLIKELY(use_count[r] > 1)) {
 		// volatile load always shares, immediates never split
-		if (n->type == TB_UNSIGNED_CONST && n->type == TB_SIGNED_CONST) {
+		if (n->type == TB_UNSIGNED_CONST || n->type == TB_SIGNED_CONST) {
 			return result;
 		}
 		

@@ -50,6 +50,20 @@ int main(int argc, char** argv) {
 		printf("\n");
 	}
 	
+	printf("SYMBOL TABLE\n\n");
+	
+	for (size_t i = 0; i < obj->symbol_count; i++) {
+		TB_ObjectSymbol* sym = &obj->symbols[i];
+		printf("  %s\n", sym->name);
+	}
+	
+	printf("\nSUMMARY\n\n");
+	for (size_t i = 0; i < obj->section_count; i++) {
+		TB_ObjectSection* sec = &obj->sections[i];
+		printf("  %8zx %s\n", sec->raw_data_size, sec->name);
+	}
+	printf("\n");
+	
 	fclose(file);
 	return 0;
 }

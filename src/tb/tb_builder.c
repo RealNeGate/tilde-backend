@@ -82,6 +82,21 @@ TB_API bool tb_node_is_constant_int(TB_Function* f, TB_Reg r, uint64_t imm) {
 	return false;
 }
 
+TB_API bool tb_node_get_constant_int(TB_Function* f, TB_Reg r, uint64_t* imm, bool* is_signed) {
+	TB_Node* restrict n = &f->nodes.data[r];
+	
+	if (n->type == TB_UNSIGNED_CONST || n->type == TB_SIGNED_CONST) {
+		*imm = n->uint.value;
+		
+		if (is_signed) {
+			*is_signed = n->type == TB_SIGNED_CONST;
+		}
+		return true;
+	}
+	
+	return false;
+}
+
 static TB_Reg tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
 	// Cannot add registers to terminated basic blocks, except labels
 	// which start new basic blocks

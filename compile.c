@@ -69,7 +69,7 @@ static void compile_with_cl() {
 	
 	// fuzzer.c
 #if defined(BUILD_FUZZER)
-	cmd_append("src\\objdump.c ");
+	cmd_append("src\\fuzzer.c ");
 #endif
 	
 	cmd_run();
@@ -146,6 +146,9 @@ static void compile_with_cc(const char* cc_command) {
 		}
 	}
 	file_iter_close(&it);
+	
+	// tree target module
+	compile_file_with_cc(cc_command, "tb" SLASH, "codegen" SLASH "tree.c", "tree");
 	
 	// x64 target module
 	compile_file_with_cc(cc_command, "tb" SLASH, "x64" SLASH "x64.c", "x64");

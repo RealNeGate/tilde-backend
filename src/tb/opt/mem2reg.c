@@ -129,8 +129,6 @@ static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB
 	
 	// Walk past any pass nodes
 	while (f->nodes.data[phi_reg].type == TB_PASS) {
-		if (f->nodes.data[phi_reg].pass.value == 0) __debugbreak();
-		
 		phi_reg = f->nodes.data[phi_reg].pass.value;
 	}
 	

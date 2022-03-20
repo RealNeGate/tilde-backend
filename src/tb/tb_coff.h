@@ -117,9 +117,29 @@ typedef struct {
 } LINENO;
 #pragma pack(pop)
 
+#pragma pack(push, 1)
+typedef struct {
+	uint16_t        len;            // doesn't include itself, so sizeof(T)-2
+	uint16_t        leaf;           // LF_PROCEDURE
+	uint32_t        rvtype;         // type index of return value
+	uint8_t         calltype;       // calling convention (CV_call_t)
+	uint8_t         funcattr;       // attributes
+	uint16_t        parmcount;      // number of parameters
+	uint32_t        arglist;        // type index of argument list
+} CV_LFProc;
+
+typedef struct {
+	uint16_t        len;            // doesn't include itself, so sizeof(T)-2
+	uint16_t        leaf;       // LF_FUNC_ID
+	uint32_t        scopeId;    // parent scope of the ID, 0 if global
+	uint32_t        type;       // function type
+	uint8_t         name[]; 
+} CV_LFFuncID;
+#pragma pack(pop)
+
 // represents a CodeView type entry, they start with 16bits for length field
 typedef struct CV_TypeEntry {
-	uint32_t key; // points to somewhere in the debug$T section, 0 is assumed as empty
+	uint32_t key; // points to somewhere in the debug$T section, 0 is assumed to mean nothing
 	uint16_t value; // type index
 } CV_TypeEntry;
 

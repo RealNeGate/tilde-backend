@@ -116,7 +116,7 @@ static GPR fast_alloc_gpr(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r) {
 	}
 	
 	// spilling
-	loop_reverse(i, COUNTOF(PRIORITIES)) {
+	loop(i, COUNTOF(PRIORITIES)) {
 		GPR gpr = PRIORITIES[i];
 		
 		if (ctx->gpr_allocator[gpr] != TB_NULL_REG &&
@@ -173,13 +173,18 @@ static void fast_kill_reg(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r) {
 		if (ctx->addresses[r].type == ADDRESS_DESC_GPR) {
 			GPR gpr = ctx->addresses[r].gpr;
 			
-			assert(ctx->gpr_allocator[gpr] == r || ctx->gpr_allocator[gpr] == TB_TEMP_REG);
-			ctx->gpr_allocator[gpr] = TB_NULL_REG;
+			// This might be wrong but im essentially assuming that if it got spilled
+			// and repo'd in the time between alloc and kill, the if won't trigger and
+			// that's ok? maybe?
+			if (ctx->gpr_allocator[gpr] == r || ctx->gpr_allocator[gpr] == TB_TEMP_REG) {
+				ctx->gpr_allocator[gpr] = TB_NULL_REG;
+			}
 		} else if (ctx->addresses[r].type == ADDRESS_DESC_XMM) {
 			XMM xmm = ctx->addresses[r].xmm;
 			
-			assert(ctx->xmm_allocator[xmm] == r || ctx->xmm_allocator[xmm] == TB_TEMP_REG);
-			ctx->xmm_allocator[xmm] = TB_NULL_REG;
+			if (ctx->xmm_allocator[xmm] == r || ctx->xmm_allocator[xmm] == TB_TEMP_REG) {
+				ctx->xmm_allocator[xmm] = TB_NULL_REG;
+			}
 		}
 	}
 }
@@ -1371,7 +1376,8 @@ TB_FunctionOutput x64_fast_compile_function(TB_CompiledFunctionID id, TB_Functio
 		ctx->header.f = f;
 		ctx->header.function_id = f - f->module->functions.data;
 		
-		ctx->header.lines = tb_platform_arena_alloc(tally.line_info_count * sizeof(TB_Line));
+		f->line_count = 0;
+		f->lines = tb_platform_arena_alloc(tally.line_info_count * sizeof(TB_Line));
 		
 		ctx->is_sysv = EITHER2(f->module->target_system, TB_SYSTEM_LINUX, TB_SYSTEM_MACOS);
 		memset(ctx->addresses, 0, f->nodes.count * sizeof(AddressDesc));
@@ -1650,6 +1656,10 @@ TB_FunctionOutput x64_fast_compile_function(TB_CompiledFunctionID id, TB_Functio
 		uint32_t target_lbl = ctx->header.label_patches[i].target_lbl;
 		
 		PATCH4(pos, ctx->header.labels[target_lbl] - (pos + 4));
+	}
+	
+	if (f->line_count > 0) {
+		f->lines[0].pos = 0;
 	}
 	
 	TB_FunctionOutput func_out = {

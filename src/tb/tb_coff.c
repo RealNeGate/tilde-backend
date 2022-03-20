@@ -414,11 +414,15 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	// if the codeview stuff is never done, this is never actually needed so it's
 	// fine that it's NULL
 	uint32_t* file_table_offset = NULL;
+	uint32_t* function_type_table = NULL;
+	uint32_t* line_secrel_patch = NULL;
 	
 	// Based on this, it's the only nice CodeView source out there:
 	// https://github.com/netwide-assembler/nasm/blob/master/output/codeview.c
 	if (emit_debug_info) {
 		file_table_offset = tb_tls_push(tls, m->functions.count * sizeof(uint32_t));
+		function_type_table = tb_tls_push(tls, m->functions.count * sizeof(uint32_t));
+		line_secrel_patch = tb_tls_push(tls, m->functions.count * sizeof(uint32_t));
 		
 		// Write type table
 		{
@@ -450,21 +454,41 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 					tb_tls_restore(tls, data);
 				}
 				
+				uint16_t proc_type;
 				{
-					size_t length = 2 + 2 + 4 + 1 + 1 + 2 + 4;
-					uint16_t* data = tb_tls_push(tls, length);
+					CV_LFProc* data = tb_tls_push(tls, sizeof(CV_LFProc));
 					
 					uint16_t return_type = get_codeview_type(proto->return_dt);
 					
-					data[0] = length - 2;
-					data[1] = 0x1008; // PROC type
-					*((uint32_t*) &data[2])  = return_type;        // return type VOID
-					*((uint8_t*)  &data[6])  = 0;                  // calling convention (default)
-					*((uint8_t*)  &data[7])  = 0;                  // function attributes
-					*((uint8_t*)  &data[8])  = proto->param_count; // number of params
-					*((uint16_t*) &data[10]) = arg_list;           // argument list type
+					*data = (CV_LFProc) {
+						.len = sizeof(CV_LFProc) - 2,
+						.leaf = 0x1008, // LF_PROCEDURE
+						.rvtype = return_type,
+						.parmcount = proto->param_count,
+						.arglist = arg_list
+					};
 					
-					file_table_offset[i] = find_or_make_cv_type(&debugt_out, &type_entry_count, lookup_table, length, data);
+					proc_type = find_or_make_cv_type(&debugt_out, &type_entry_count, lookup_table, sizeof(CV_LFProc), (uint16_t*)data);
+					tb_tls_restore(tls, data);
+				}
+				
+				{
+					size_t name_len = strlen(m->functions.data[i].name);
+					size_t entry_size = sizeof(CV_LFFuncID) + name_len;
+					entry_size = align_up(entry_size + 1, 4);
+					
+					CV_LFFuncID* data = tb_tls_push(tls, entry_size);
+					
+					*data = (CV_LFFuncID) {
+						.len = entry_size - 2,
+						.leaf = 0x1601, // LF_FUNC_ID
+						.type = proc_type
+					};
+					
+					memcpy(data->name, m->functions.data[i].name, name_len);
+					data->name[name_len] = 0;
+					
+					function_type_table[i] = find_or_make_cv_type(&debugt_out, &type_entry_count, lookup_table, entry_size, (uint16_t*)data);
 					tb_tls_restore(tls, data);
 				}
 			}
@@ -491,6 +515,187 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 			size_t path_len = strlen(path) + 1;
 			
 			tb_out4b(&debugs_out, 0x00000004);
+			
+			// File nametable
+			if (true) {
+				tb_out4b(&debugs_out, 0x000000F3);
+				
+				size_t field_length_patch = debugs_out.count;
+				tb_out4b(&debugs_out, 0);
+				tb_out1b(&debugs_out, 0);
+				
+				// skip the NULL file entry
+				size_t pos = 1;
+				loop_range(i, 1, m->files.count) {
+					size_t len = strlen(m->files.data[i].path);
+					
+					tb_out_reserve(&debugs_out, len + 1);
+					tb_outs_UNSAFE(&debugs_out, len + 1, (const uint8_t*) m->files.data[i].path);
+					
+					file_table_offset[i] = pos;
+					pos += len + 1;
+				}
+				
+				tb_patch4b(&debugs_out, field_length_patch, (debugs_out.count - field_length_patch) - 4);
+			}
+			
+			// Source file table
+			// we practically transmute the file_table_offset from meaning file string
+			// table entries into source file entries.
+			if (true) {
+				tb_out4b(&debugs_out, 0x000000F4);
+				
+				size_t field_length_patch = debugs_out.count;
+				tb_out4b(&debugs_out, 0);
+				
+				size_t pos = 0;
+				loop_range(i, 1, m->files.count) {
+					uint8_t sum[16];
+					md5sum_file(sum, m->files.data[i].path);
+					
+					tb_out4b(&debugs_out, file_table_offset[i]);
+					tb_out2b(&debugs_out, 0x0110);
+					tb_out_reserve(&debugs_out, MD5_HASHBYTES);
+					tb_outs_UNSAFE(&debugs_out, MD5_HASHBYTES, sum);
+					tb_out2b(&debugs_out, 0);
+					
+					file_table_offset[i] = pos;
+					pos += 4 + 2 + MD5_HASHBYTES + 2;
+				}
+				
+				tb_patch4b(&debugs_out, field_length_patch, (debugs_out.count - field_length_patch) - 4);
+			}
+			
+			// Line info table
+			if (true) {
+				loop(func_id, m->functions.count) {
+					TB_FunctionOutput* out_f = &m->compiled_functions.data[func_id];
+					if (!out_f->code) continue;
+					
+					uint64_t meta = out_f->prologue_epilogue_metadata;
+					uint64_t stack_usage = out_f->stack_usage;
+					
+					// Layout crap
+					uint32_t function_start = func_layout[func_id];
+					uint32_t function_end = (func_id+1) < m->functions.count
+						? func_layout[func_id+1] : text_section.raw_data_size;
+					
+					uint32_t body_start = code_gen->get_prologue_length(meta, stack_usage);
+					
+					size_t line_count = m->functions.data[func_id].line_count;
+					TB_Line* restrict lines = m->functions.data[func_id].lines;
+					
+					printf("FUNC %s\n", m->functions.data[func_id].name);
+					
+					tb_out4b(&debugs_out, 0x000000F2);
+					size_t field_length_patch = debugs_out.count;
+					tb_out4b(&debugs_out, 0);
+					
+					// Source mapping header
+					line_secrel_patch[func_id] = debugs_out.count;
+					tb_out4b(&debugs_out, 0); // SECREL  | .text
+					tb_out4b(&debugs_out, 0); // SECTION | .text
+					tb_out4b(&debugs_out, function_end - function_start);
+					
+					// when we make new file line regions
+					// we backpatch the line count for the
+					// region we just finished
+					uint32_t backpatch = 0;
+					int last_line = 0;
+					TB_FileID last_file = 0;
+					uint32_t current_line_count = 0;
+					
+					loop(line_id, line_count) {
+						TB_Line line = lines[line_id];
+						
+						if (last_file != line.file) {
+							if (backpatch) {
+								tb_patch4b(&debugs_out, backpatch, current_line_count);
+								tb_patch4b(&debugs_out, backpatch+4, 12 + (current_line_count * 8));
+							}
+							last_file = line.file;
+							
+							// File entry
+							tb_out4b(&debugs_out, file_table_offset[line.file]);
+							backpatch = debugs_out.count;
+							tb_out4b(&debugs_out, 0);
+							tb_out4b(&debugs_out, 0);
+							
+							printf("  FILE %d\n", line.file);
+							current_line_count = 0;
+							last_line = 0;
+						}
+						
+						if (last_line != line.line) {
+							last_line = line.line;
+							printf("  * LINE %d : %x\n", line.line, body_start + line.pos);
+							
+							tb_out4b(&debugs_out, line.pos ? body_start + line.pos : line.pos);
+							tb_out4b(&debugs_out, line.line);
+							current_line_count++;
+						}
+					}
+					
+					// finalize the patch work
+					if (backpatch) {
+						tb_patch4b(&debugs_out, backpatch, current_line_count);
+						tb_patch4b(&debugs_out, backpatch+4, 12 + (current_line_count * 8));
+					}
+					
+					tb_patch4b(&debugs_out, field_length_patch, (debugs_out.count - field_length_patch) - 4);
+					printf("\n");
+				}
+				
+#if 0
+				// TODO(NeGate): most likely slow...
+				loop_range(file_id, 1, m->files.count) {
+					// File entry
+					tb_out4b(&debugs_out, file_table_offset[file_id]);
+					size_t line_count_patch = debugs_out.count;
+					tb_out4b(&debugs_out, 0);
+					tb_out4b(&debugs_out, 0);
+					
+					// Source mapping
+					size_t line_count_for_file = 0;
+					loop(func_id, m->functions.count) {
+						TB_FunctionOutput* out_f = &m->compiled_functions.data[func_id];
+						if (!out_f->code) continue;
+						
+						uint64_t meta = out_f->prologue_epilogue_metadata;
+						uint64_t stack_usage = out_f->stack_usage;
+						
+						// what TB_Line.pos is relative to 
+						uint32_t baseline = func_layout[func_id] + code_gen->get_prologue_length(meta, stack_usage);
+						
+						size_t line_count = m->functions.data[func_id].line_count;
+						TB_Line* restrict lines = m->functions.data[func_id].lines;
+						
+						size_t last_line = 0;
+						loop(line_id, line_count) {
+							if (file_id == lines[line_id].file && lines[line_id].line != last_line) {
+								/*printf("%s:%s -> %d\n",
+									   m->functions.data[func_id].name,
+									   m->files.data[file_id].path,
+									   lines[line_id].line);*/
+								
+								tb_out4b(&debugs_out, baseline + lines[line_id].pos);
+								tb_out4b(&debugs_out, ((uint32_t)lines[line_id].line));
+								
+								last_line = lines[line_id].line;
+								line_count_for_file++;
+							}
+						}
+					}
+					
+					tb_patch4b(&debugs_out, line_count_patch, line_count_for_file);
+					tb_patch4b(&debugs_out, line_count_patch+4, 12 + (line_count_for_file * 8));
+				}
+				
+				tb_patch4b(&debugs_out, field_length_patch, (debugs_out.count - field_length_patch) - 4);
+#endif
+			}
+			
+			// Symbol table
 			tb_out4b(&debugs_out, 0x000000F1);
 			
 			size_t field_length_patch = debugs_out.count;
@@ -501,7 +706,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 				uint32_t obj_length = 2 + 4 + path_len;
 				tb_out2b(&debugs_out, obj_length);
 				tb_out2b(&debugs_out, 0x1101);
-				tb_out4b(&debugs_out, 0); /* ASM language */
+				tb_out4b(&debugs_out, 0);
 				
 				tb_out_reserve(&debugs_out, sizeof(creator_str));
 				tb_outs_UNSAFE(&debugs_out, path_len, (const uint8_t*)path);
@@ -511,17 +716,16 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 			{
 				tb_out2b(&debugs_out, creator_length);
 				tb_out2b(&debugs_out, 0x1116);
-				tb_out4b(&debugs_out, 'N'); /* language: 'N' (0x4e) for "NASM"; flags are 0 */
+				tb_out4b(&debugs_out, 0);
 				
 				tb_out2b(&debugs_out, 0x00D0); /* machine */
 				tb_out2b(&debugs_out, 0); /* verFEMajor */
 				tb_out2b(&debugs_out, 0); /* verFEMinor */
 				tb_out2b(&debugs_out, 0); /* verFEBuild */
 				
-				/* BinScope/WACK insist on version >= 8.0.50727 */
-				tb_out2b(&debugs_out, 9); /* verMajor */
-				tb_out2b(&debugs_out, 9); /* verMinor */
-				tb_out2b(&debugs_out, 65535); /* verBuild */
+				tb_out2b(&debugs_out, TB_VERSION_MAJOR); /* verMajor */
+				tb_out2b(&debugs_out, TB_VERSION_MINOR); /* verMinor */
+				tb_out2b(&debugs_out, TB_VERSION_PATCH); /* verBuild */
 				
 				tb_out_reserve(&debugs_out, sizeof(creator_str));
 				tb_outs_UNSAFE(&debugs_out, sizeof(creator_str), (const uint8_t*)creator_str);
@@ -549,14 +753,14 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 				tb_out4b(&debugs_out, 1); // procedure length
 				tb_out4b(&debugs_out, 0); // debug start offset (?)
 				tb_out4b(&debugs_out, 0); // debug end offset (?)
-				tb_out4b(&debugs_out, file_table_offset[i]); // type index
+				tb_out4b(&debugs_out, function_type_table[i]); // type index
 				
 				// we save this location because there's two relocations
 				// we'll put there:
 				//   type      target     size
 				//   SECREL    .text     4 bytes
 				//   SECTION   .text     2 bytes
-				file_table_offset[i] = debugs_out.count;
+				function_type_table[i] = debugs_out.count;
 				tb_out4b(&debugs_out, 0); // offset
 				tb_out2b(&debugs_out, 0); // segment
 				
@@ -692,7 +896,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	// debug info then these are ignored/non-existent.
 	if (emit_debug_info) {
 		debugt_section.num_reloc = 0;
-		debugs_section.num_reloc = 2 * m->compiled_functions.count;
+		debugs_section.num_reloc = (4 * m->compiled_functions.count);
 		
 		text_section.pointer_to_reloc = debugs_section.raw_data_pos
 			+ debugs_section.raw_data_size;
@@ -1013,7 +1217,26 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 		assert(ftell(f) == debugs_section.pointer_to_reloc);
 		
 		loop(i, m->compiled_functions.count) {
-			uint32_t off = file_table_offset[i];
+			if (!m->compiled_functions.data[i].code) continue;
+			
+			uint32_t off = line_secrel_patch[i];
+			fwrite(&(COFF_ImageReloc) {
+					   .Type = IMAGE_REL_AMD64_SECREL,
+					   .SymbolTableIndex = function_sym_start + i,
+					   .VirtualAddress = off
+				   }, sizeof(COFF_ImageReloc), 1, f);
+			
+			fwrite(&(COFF_ImageReloc) {
+					   .Type = IMAGE_REL_AMD64_SECTION,
+					   .SymbolTableIndex = function_sym_start + i,
+					   .VirtualAddress = off + 4
+				   }, sizeof(COFF_ImageReloc), 1, f);
+		}
+		
+		loop(i, m->compiled_functions.count) {
+			if (!m->compiled_functions.data[i].code) continue;
+			
+			uint32_t off = function_type_table[i];
 			
 			fwrite(&(COFF_ImageReloc) {
 					   .Type = IMAGE_REL_AMD64_SECREL,

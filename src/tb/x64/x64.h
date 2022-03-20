@@ -161,9 +161,6 @@ typedef struct {
 	size_t function_id;
 	TB_Function* f;
 	
-	size_t line_count;
-	TB_Line* lines;
-	
 	// Used to allocate spills
 	uint32_t stack_usage;
 	

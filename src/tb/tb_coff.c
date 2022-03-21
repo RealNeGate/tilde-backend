@@ -414,6 +414,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	// if the codeview stuff is never done, this is never actually needed so it's
 	// fine that it's NULL
 	uint32_t* file_table_offset = NULL;
+	uint32_t* function_args_table = NULL;
 	uint32_t* function_type_table = NULL;
 	uint32_t* line_secrel_patch = NULL;
 	
@@ -421,6 +422,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	// https://github.com/netwide-assembler/nasm/blob/master/output/codeview.c
 	if (emit_debug_info) {
 		file_table_offset = tb_tls_push(tls, m->functions.count * sizeof(uint32_t));
+		function_args_table = tb_tls_push(tls, m->functions.count * sizeof(uint32_t));
 		function_type_table = tb_tls_push(tls, m->functions.count * sizeof(uint32_t));
 		line_secrel_patch = tb_tls_push(tls, m->functions.count * sizeof(uint32_t));
 		
@@ -437,12 +439,14 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 				
 				uint16_t arg_list;
 				{
-					size_t length = 2 + 2 + 4 + (4 * proto->param_count);
+					size_t param_count = proto->param_count + proto->has_varargs;
+					
+					size_t length = 2 + 2 + 4 + (4 * param_count);
 					uint16_t* data = tb_tls_push(tls, length);
 					
 					data[0] = length - 2;
 					data[1] = 0x1201; // ARGLIST type
-					*((uint32_t*)&data[2]) = proto->param_count;
+					*((uint32_t*)&data[2]) = param_count;
 					
 					uint32_t* param_data = (uint32_t*) &data[4];
 					loop(j, proto->param_count) {
@@ -450,9 +454,15 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 						param_data[j] = param_type_entry;
 					}
 					
+					// varargs add a dummy type at the end
+					if (proto->has_varargs) {
+						param_data[proto->param_count] = 0;
+					}
+					
 					arg_list = find_or_make_cv_type(&debugt_out, &type_entry_count, lookup_table, length, data);
 					tb_tls_restore(tls, data);
 				}
+				function_args_table[i] = arg_list;
 				
 				uint16_t proc_type;
 				{
@@ -585,7 +595,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 					size_t line_count = m->functions.data[func_id].line_count;
 					TB_Line* restrict lines = m->functions.data[func_id].lines;
 					
-					printf("FUNC %s\n", m->functions.data[func_id].name);
+					//printf("FUNC %s\n", m->functions.data[func_id].name);
 					
 					tb_out4b(&debugs_out, 0x000000F2);
 					size_t field_length_patch = debugs_out.count;
@@ -621,14 +631,14 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 							tb_out4b(&debugs_out, 0);
 							tb_out4b(&debugs_out, 0);
 							
-							printf("  FILE %d\n", line.file);
+							//printf("  FILE %d\n", line.file);
 							current_line_count = 0;
 							last_line = 0;
 						}
 						
 						if (last_line != line.line) {
 							last_line = line.line;
-							printf("  * LINE %d : %x\n", line.line, body_start + line.pos);
+							//printf("  * LINE %d : %x\n", line.line, body_start + line.pos);
 							
 							tb_out4b(&debugs_out, line.pos ? body_start + line.pos : line.pos);
 							tb_out4b(&debugs_out, line.line);
@@ -643,7 +653,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 					}
 					
 					tb_patch4b(&debugs_out, field_length_patch, (debugs_out.count - field_length_patch) - 4);
-					printf("\n");
+					//printf("\n");
 				}
 				
 #if 0
@@ -789,6 +799,25 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 					tb_out4b(&debugs_out, 0); // offset of exception handler
 					tb_out4b(&debugs_out, 0); // section id of exception handler
 					tb_out4b(&debugs_out, 0); // flags
+					
+					// Parameters are relatively consistent on x64
+					// [rbp + 16 + N*8]
+					// we'll walk the type info and see how that goes...
+					/*const TB_FunctionPrototype* proto = m->functions.data[i].prototype;
+					
+					loop(j, proto->param_count) {
+						uint16_t param_type_entry = get_codeview_type(proto->params[j]);
+						param_data[j] = param_type_entry;
+						
+						tb_out2b(&debugs_out, 0);
+						tb_out2b(&debugs_out, S_REGREL32);
+						tb_out4b(&debugs_out, 0);
+						tb_out4b(&debugs_out, 0);
+						tb_out2b(&debugs_out, 5); // RBP
+						
+						tb_out_reserve(&debugs_out, 4);
+						tb_outs_UNSAFE(&debugs_out, , (const uint8_t*)creator_str);
+					}*/
 					
 					tb_patch2b(&debugs_out, frameproc_baseline, (debugs_out.count - frameproc_baseline) - 2);
 				}

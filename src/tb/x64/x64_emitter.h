@@ -101,7 +101,9 @@ void inst2(X64_CtxHeader* restrict ctx, Inst2Type op, const Val* a, const Val* b
 	const Inst2* inst = &inst2_tbl[op];
 	
 	bool dir = b->type == VAL_MEM || b->type == VAL_GLOBAL;
-	if (dir || inst->op == 0xAF || inst->ext == EXT_DEF2) tb_swap(const Val*, a, b);
+	if (dir || inst->op == 0x63 || inst->op == 0xAF || inst->ext == EXT_DEF2) {
+		tb_swap(const Val*, a, b);
+	}
 	
 	// operand size
 	uint8_t sz = (dt_type != TB_I8);

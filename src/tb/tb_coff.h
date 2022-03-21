@@ -129,12 +129,21 @@ typedef struct {
 } CV_LFProc;
 
 typedef struct {
-	uint16_t        len;            // doesn't include itself, so sizeof(T)-2
+	uint16_t        len;        // doesn't include itself, so sizeof(T)-2
 	uint16_t        leaf;       // LF_FUNC_ID
 	uint32_t        scopeId;    // parent scope of the ID, 0 if global
 	uint32_t        type;       // function type
 	uint8_t         name[]; 
 } CV_LFFuncID;
+
+typedef struct {
+    uint16_t        reclen;     // Record length
+	uint16_t        rectyp;     // S_REGREL32
+	uint32_t        off;        // offset of symbol
+	uint32_t        typind;     // Type index or metadata token
+	uint16_t        reg;        // register index for symbol
+    uint8_t         name[];     // Length-prefixed name
+} CV_RegRel32;
 #pragma pack(pop)
 
 // represents a CodeView type entry, they start with 16bits for length field
@@ -156,7 +165,8 @@ enum {
     S_INLINESITE_END  = 0x114e,
     S_PROC_ID_END     = 0x114f,
 	
-    S_FRAMEPROC       =  0x1012,  // extra frame and proc information
+    S_FRAMEPROC       =  0x1012, // extra frame and proc information
+	S_REGREL32        =  0x1111, // register relative address
 };
 
 typedef enum {

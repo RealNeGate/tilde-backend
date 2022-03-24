@@ -70,6 +70,8 @@ typedef struct TB_Emitter {
 // label, then parameters, then everything else
 #define TB_FIRST_PARAMETER_REG 2
 
+#define TB_NEXT_INST(node, f) (&(f)->nodes.data[(node)->next])
+
 #define TB_FOR_EACH_NODE(elem, f) \
 for (TB_Node* elem = &f->nodes.data[1]; elem != &f->nodes.data[0]; elem = &f->nodes.data[elem->next])
 
@@ -671,7 +673,7 @@ printf(" (part of %s)\n", __FUNCTION__); \
 (n->call.param_end - n->call.param_start)
 
 // NOTE(NeGate): Considers 0 as a power of two
-inline static bool tb_is_power_of_two(size_t x) {
+inline static bool tb_is_power_of_two(uint64_t x) {
     return (x & (x - 1)) == 0;
 }
 

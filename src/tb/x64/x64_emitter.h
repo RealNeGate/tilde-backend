@@ -161,7 +161,7 @@ void inst2(X64_CtxHeader* restrict ctx, Inst2Type op, const Val* a, const Val* b
 		// Opcode
 		if (inst->ext == EXT_DEF || inst->ext == EXT_DEF2) {
 			// DEF instructions can only be 32bit and 64bit... maybe?
-			sz = 0;
+			if (op != XADD) sz = 0;
 			EMIT(0x0F);
 		}
 		

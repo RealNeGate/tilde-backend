@@ -231,6 +231,7 @@ static uint16_t get_codeview_type(TB_DataType dt) {
 	assert(dt.width == 0 && "TODO: implement vector types in CodeView output");
 	switch (dt.type) {
 		case TB_VOID: return 0x0003; // T_VOID
+		case TB_BOOL: return 0x0030; // T_BOOL08
 		case TB_I8:   return 0x0020; // T_UCHAR
 		case TB_I16:  return 0x0073; // T_UINT4
 		case TB_I32:  return 0x0075; // T_UINT4
@@ -414,7 +415,6 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	// if the codeview stuff is never done, this is never actually needed so it's
 	// fine that it's NULL
 	uint32_t* file_table_offset = NULL;
-	uint32_t* function_args_table = NULL;
 	uint32_t* function_type_table = NULL;
 	uint32_t* line_secrel_patch = NULL;
 	
@@ -422,7 +422,6 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	// https://github.com/netwide-assembler/nasm/blob/master/output/codeview.c
 	if (emit_debug_info) {
 		file_table_offset = tb_tls_push(tls, m->functions.count * sizeof(uint32_t));
-		function_args_table = tb_tls_push(tls, m->functions.count * sizeof(uint32_t));
 		function_type_table = tb_tls_push(tls, m->functions.count * sizeof(uint32_t));
 		line_secrel_patch = tb_tls_push(tls, m->functions.count * sizeof(uint32_t));
 		
@@ -462,7 +461,6 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 					arg_list = find_or_make_cv_type(&debugt_out, &type_entry_count, lookup_table, length, data);
 					tb_tls_restore(tls, data);
 				}
-				function_args_table[i] = arg_list;
 				
 				uint16_t proc_type;
 				{
@@ -655,54 +653,6 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 					tb_patch4b(&debugs_out, field_length_patch, (debugs_out.count - field_length_patch) - 4);
 					//printf("\n");
 				}
-				
-#if 0
-				// TODO(NeGate): most likely slow...
-				loop_range(file_id, 1, m->files.count) {
-					// File entry
-					tb_out4b(&debugs_out, file_table_offset[file_id]);
-					size_t line_count_patch = debugs_out.count;
-					tb_out4b(&debugs_out, 0);
-					tb_out4b(&debugs_out, 0);
-					
-					// Source mapping
-					size_t line_count_for_file = 0;
-					loop(func_id, m->functions.count) {
-						TB_FunctionOutput* out_f = &m->compiled_functions.data[func_id];
-						if (!out_f->code) continue;
-						
-						uint64_t meta = out_f->prologue_epilogue_metadata;
-						uint64_t stack_usage = out_f->stack_usage;
-						
-						// what TB_Line.pos is relative to 
-						uint32_t baseline = func_layout[func_id] + code_gen->get_prologue_length(meta, stack_usage);
-						
-						size_t line_count = m->functions.data[func_id].line_count;
-						TB_Line* restrict lines = m->functions.data[func_id].lines;
-						
-						size_t last_line = 0;
-						loop(line_id, line_count) {
-							if (file_id == lines[line_id].file && lines[line_id].line != last_line) {
-								/*printf("%s:%s -> %d\n",
-									   m->functions.data[func_id].name,
-									   m->files.data[file_id].path,
-									   lines[line_id].line);*/
-								
-								tb_out4b(&debugs_out, baseline + lines[line_id].pos);
-								tb_out4b(&debugs_out, ((uint32_t)lines[line_id].line));
-								
-								last_line = lines[line_id].line;
-								line_count_for_file++;
-							}
-						}
-					}
-					
-					tb_patch4b(&debugs_out, line_count_patch, line_count_for_file);
-					tb_patch4b(&debugs_out, line_count_patch+4, 12 + (line_count_for_file * 8));
-				}
-				
-				tb_patch4b(&debugs_out, field_length_patch, (debugs_out.count - field_length_patch) - 4);
-#endif
 			}
 			
 			// Symbol table
@@ -799,25 +749,6 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 					tb_out4b(&debugs_out, 0); // offset of exception handler
 					tb_out4b(&debugs_out, 0); // section id of exception handler
 					tb_out4b(&debugs_out, 0); // flags
-					
-					// Parameters are relatively consistent on x64
-					// [rbp + 16 + N*8]
-					// we'll walk the type info and see how that goes...
-					/*const TB_FunctionPrototype* proto = m->functions.data[i].prototype;
-					
-					loop(j, proto->param_count) {
-						uint16_t param_type_entry = get_codeview_type(proto->params[j]);
-						param_data[j] = param_type_entry;
-						
-						tb_out2b(&debugs_out, 0);
-						tb_out2b(&debugs_out, S_REGREL32);
-						tb_out4b(&debugs_out, 0);
-						tb_out4b(&debugs_out, 0);
-						tb_out2b(&debugs_out, 5); // RBP
-						
-						tb_out_reserve(&debugs_out, 4);
-						tb_outs_UNSAFE(&debugs_out, , (const uint8_t*)creator_str);
-					}*/
 					
 					tb_patch2b(&debugs_out, frameproc_baseline, (debugs_out.count - frameproc_baseline) - 2);
 				}
@@ -1221,7 +1152,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	
 	if (emit_unwind_info) {
 		assert(ftell(f) == pdata_section.pointer_to_reloc);
-		loop(i, m->compiled_functions.count) {
+		loop(i, m->functions.count) {
 			fwrite(&(COFF_ImageReloc) {
 					   .Type = IMAGE_REL_AMD64_ADDR32NB,
 					   .SymbolTableIndex = function_sym_start + i,
@@ -1245,7 +1176,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	if (emit_debug_info) {
 		assert(ftell(f) == debugs_section.pointer_to_reloc);
 		
-		loop(i, m->compiled_functions.count) {
+		loop(i, m->functions.count) {
 			if (!m->compiled_functions.data[i].code) continue;
 			
 			uint32_t off = line_secrel_patch[i];
@@ -1262,7 +1193,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 				   }, sizeof(COFF_ImageReloc), 1, f);
 		}
 		
-		loop(i, m->compiled_functions.count) {
+		loop(i, m->functions.count) {
 			if (!m->compiled_functions.data[i].code) continue;
 			
 			uint32_t off = function_type_table[i];

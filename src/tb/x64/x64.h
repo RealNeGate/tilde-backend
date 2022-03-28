@@ -116,7 +116,7 @@ typedef struct LabelPatch {
 typedef enum Inst2Type {
     // Integer data processing
 	ADD, AND, OR, SUB, XOR, CMP, MOV,
-    TEST, LEA, IMUL, XCHG,
+    TEST, LEA, IMUL, XCHG, XADD,
 	
 	MOVSXB, MOVSXW, MOVSXD,
 	MOVZXB, MOVZXW
@@ -206,8 +206,9 @@ static const Inst2 inst2_tbl[] = {
 	[TEST] = { 0x84, 0xF6, 0x00 },
     
 	[XCHG] = { 0x86 },
+	[XADD] = { 0xC0, .ext = EXT_DEF },
 	[LEA] = { 0x8D },
-    
+	
 	[IMUL] = { 0xAF, .ext = EXT_DEF },
 	
 	[MOVSXB] = { 0xBE, .ext = EXT_DEF2 },

@@ -94,6 +94,10 @@ typedef struct {
 #define EITHER3(a, b, c, d) ((a) == (b) || (a) == (c) || (a) == (d))
 #define FITS_INTO(a, type) ((a) == ((type)(a)))
 
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
 static const char* FINAL_STATE_NAMES[] = {
 	[ISEL_MACHINE_NULL]                = "ISEL_MACHINE_NULL",
 	
@@ -108,6 +112,9 @@ static const char* FINAL_STATE_NAMES[] = {
 	[ISEL_MACHINE_IMUL]                = "ISEL_MACHINE_IMUL",
 	[ISEL_MACHINE_SHL_IMM]             = "ISEL_MACHINE_SHL_IMM",
 };
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 
 static bool is_address_node(TB_Function* f, TB_Reg r) {
 	switch (f->nodes.data[r].type) {
@@ -1376,8 +1383,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 			}
 			case TB_PTR2INT: {
 				assert(dt.width == 0 && "TODO: Implement vector zero extend");
-				TB_DataType src_dt = f->nodes.data[n->unary.src].dt;
-				bool sign_ext = (reg_type == TB_SIGN_EXT);
+				//TB_DataType src_dt = f->nodes.data[n->unary.src].dt;
+				//bool sign_ext = (reg_type == TB_SIGN_EXT);
 				
 				GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
 				fast_def_gpr(ctx, f, r, dst_gpr, dt);
@@ -1733,7 +1740,7 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
 
 static void fast_da_machine(X64_FastCtx* restrict ctx, TB_Function* f, X64_IselMachine* machine, TB_Reg r) {
 	TB_Node* restrict n = &f->nodes.data[r];
-	TB_DataType dt = n->dt;
+	//TB_DataType dt = n->dt;
 	TB_NodeTypeEnum reg_type = n->type;
 	
 	switch (reg_type) {
@@ -1805,6 +1812,7 @@ static void fast_da_machine(X64_FastCtx* restrict ctx, TB_Function* f, X64_IselM
 				case TB_ADD: machine->state = ISEL_MACHINE_ADD; break;
 				case TB_SUB: machine->state = ISEL_MACHINE_SUB; break;
 				case TB_MUL: machine->state = ISEL_MACHINE_IMUL; break;
+				default: tb_unreachable();
 			}
 			machine->user_count = 2;
 			machine->users[0] = n->i_arith.a;

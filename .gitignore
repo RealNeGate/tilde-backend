@@ -8,6 +8,7 @@ build/
 *.pdb
 
 debug.bat
+build.bat
 run.bat
 run4coder.bat
 project.4coder

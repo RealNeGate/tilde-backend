@@ -2,6 +2,7 @@
 build/
 
 *.swp
+*.out
 *.o
 *.obj
 *.exe

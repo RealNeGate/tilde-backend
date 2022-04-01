@@ -92,6 +92,7 @@ case TB_FUNC_ADDRESS: \
 case TB_EXTERN_ADDRESS: \
 case TB_GLOBAL_ADDRESS: \
 case TB_DEBUGBREAK: \
+case TB_RESTRICT: \
 break; \
 case TB_LABEL: \
 macro(n->label.terminator); \
@@ -100,7 +101,6 @@ case TB_INITIALIZE: \
 macro(n->init.addr); \
 break; \
 case TB_KEEPALIVE: \
-case TB_RESTRICT: \
 case TB_VA_START: \
 case TB_NOT: \
 case TB_NEG: \
@@ -336,9 +336,26 @@ typedef struct TB_Line {
 	uint32_t pos;
 } TB_Line;
 
+typedef enum {
+	TB_ATTRIB_NONE,
+	
+	TB_ATTRIB_RESTRICT,
+	TB_ATTRIB_SCOPE
+} TB_AttribType;
+
+// linked lists amirite
+typedef struct TB_AttribList {
+	struct TB_AttribList* next;
+	TB_AttributeID      attrib;
+} TB_AttribList;
+
+typedef struct {
+	TB_AttribType type;
+	TB_AttributeID ref;
+} TB_Attrib;
+
 struct TB_Function {
 	char* name;
-	
 	// It's kinda a weird circular reference but yea
 	TB_Module* module;
 	
@@ -352,7 +369,13 @@ struct TB_Function {
 		TB_Node*  data;
 	} nodes;
 	
+	// Attributes
+	// attrib_map[reg] is the root link in a chain
+	// of attrib references
+	TB_AttribList* attrib_map;
+	
 	// Used by the IR building
+	TB_AttributeID active_attrib;
 	TB_Reg last_reg;
 	TB_Reg current_label;
 	TB_Label label_count;
@@ -366,6 +389,11 @@ struct TB_Function {
 		size_t count;
 		TB_Reg* data;
 	} vla;
+	
+	// Attribute pool
+	size_t attrib_pool_capacity;
+	size_t attrib_pool_count;
+	TB_Attrib* attrib_pool;
 	
 	// Part of the debug info
 	size_t line_count;

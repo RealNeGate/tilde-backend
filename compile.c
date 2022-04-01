@@ -31,7 +31,7 @@ static void compile_with_cl() {
 #endif
 	
 #if defined(RELEASE_BUILD)
-	cmd_append("/GL /Ox /WX /GS- /DNDEBUG ");
+	cmd_append("/Ox /WX /GS- /DNDEBUG ");
 #else
 	cmd_append("/MTd /Od /WX /Zi /D_DEBUG /RTC1 ");
 #endif
@@ -69,7 +69,7 @@ static void compile_with_cl() {
 	
 	// fuzzer.c
 #if defined(BUILD_FUZZER)
-	cmd_append("src\\fuzzer.c ");
+	cmd_append("src\\objdump.c ");
 #endif
 	
 	cmd_run();

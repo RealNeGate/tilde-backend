@@ -120,6 +120,9 @@ static TB_Reg tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
 	
 	f->nodes.data[f->nodes.end].next = r;
 	f->nodes.end = r;
+	
+	// map the scope attribute
+	f->attrib_map[r].attrib = f->active_attrib;
 	return r;
 }
 
@@ -144,6 +147,58 @@ static TB_Reg tb_bin_farith(TB_Function* f, int type, TB_Reg a, TB_Reg b) {
 	f->nodes.data[r].f_arith.a = a;
 	f->nodes.data[r].f_arith.b = b;
 	return r;
+}
+
+static TB_AttributeID tb_make_attrib(TB_Function* f, int extra) {
+	if (f->attrib_pool_count + extra >= f->attrib_pool_capacity) {
+		f->attrib_pool_capacity = (f->attrib_pool_count + extra) * 2;
+		
+		f->attrib_pool = realloc(f->attrib_pool, sizeof(TB_Attrib) * f->attrib_pool_capacity);
+		if (!f->attrib_pool) tb_panic("Out of memory");
+	}
+	
+	return f->attrib_pool_count++;
+}
+
+TB_API void tb_inst_set_scope(TB_Function* f, TB_AttributeID scope) {
+	f->active_attrib = scope;
+}
+
+TB_API TB_AttributeID tb_inst_get_scope(TB_Function* f) {
+	return f->active_attrib;
+}
+
+TB_API TB_AttributeID tb_function_attrib_restrict(TB_Function* f, TB_AttributeID scope) {
+	TB_AttributeID id = tb_make_attrib(f, 1);
+	
+	f->attrib_pool[id] = (TB_Attrib){ .type = TB_ATTRIB_RESTRICT, .ref = scope };
+	return id;
+}
+
+TB_API TB_AttributeID tb_function_attrib_scope(TB_Function* f, TB_AttributeID parent_scope) {
+	TB_AttributeID id = tb_make_attrib(f, 1);
+	
+	f->attrib_pool[id] = (TB_Attrib){ .type = TB_ATTRIB_SCOPE, .ref = parent_scope };
+	return id;
+}
+
+TB_API void tb_function_append_attrib(TB_Function* f, TB_Reg r, TB_AttributeID a) {
+	if (f->attrib_map[r].next == NULL) {
+		// empty chain
+		f->attrib_map[r].attrib = a;
+	} else {
+		// TODO(NeGate): this code path will a slow thing if abused...
+		TB_AttribList* new_link = malloc(sizeof(TB_AttribList));
+		new_link->attrib = a;
+		new_link->next = NULL;
+		
+		TB_AttribList* chain = f->attrib_map[r].next;
+		do {
+			chain = chain->next;
+		} while (chain != NULL);
+		
+		chain->next = new_link;
+	}
 }
 
 TB_API TB_Reg tb_inst_trunc(TB_Function* f, TB_Reg src, TB_DataType dt) {
@@ -268,9 +323,7 @@ TB_API TB_Reg tb_inst_local(TB_Function* f, uint32_t size, TB_CharUnits alignmen
 }
 
 TB_API TB_Reg tb_inst_restrict(TB_Function* f, TB_Reg value) {
-	TB_Reg r = tb_make_reg(f, TB_RESTRICT, TB_TYPE_PTR);
-	f->nodes.data[r].unary.src = value;
-	return r;
+	return tb_make_reg(f, TB_RESTRICT, TB_TYPE_PTR);
 }
 
 TB_API TB_Reg tb_inst_load(TB_Function* f, TB_DataType dt, TB_Reg addr, TB_CharUnits alignment) {

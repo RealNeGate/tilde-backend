@@ -38,16 +38,18 @@ TB_ObjectFile* tb_object_parse_coff(FILE* file) {
 		fread(obj_file->string_table, string_table_size, 1, file);
 	}
 	
-	obj_file->symbol_count = header.symbol_count;
 	obj_file->symbols = malloc(header.symbol_count * sizeof(TB_ObjectSymbol));
-	loop(i, header.symbol_count) {
-		size_t symbol_offset = header.symbol_table + (i * sizeof(COFF_Symbol));
+	obj_file->symbol_count = 0;
+
+	size_t sym_id = 0;
+	while (sym_id < header.symbol_count) {
+		size_t symbol_offset = header.symbol_table + (sym_id * sizeof(COFF_Symbol));
 		
 		COFF_Symbol sym;
 		fseek(file, symbol_offset, SEEK_SET);
 		fread(&sym, 1, sizeof(COFF_Symbol), file);
 		
-		TB_ObjectSymbol* out_sym = &obj_file->symbols[i];
+		TB_ObjectSymbol* out_sym = &obj_file->symbols[obj_file->symbol_count++];
 		*out_sym = (TB_ObjectSymbol) { 0 };
 		
 		// Parse string table name stuff
@@ -62,7 +64,17 @@ TB_ObjectFile* tb_object_parse_coff(FILE* file) {
 			memcpy(out_sym->name, sym.short_name, sizeof(uint8_t[8]));
 			out_sym->name[8] = '\0';
 		}
+
+		// Process aux symbols
+		loop(j, sym.aux_symbols_count) {
+			// TODO(NeGate): idk do something
+		}
+
+		sym_id += sym.aux_symbols_count + 1;
 	}
+	// trim the symbol table
+	obj_file->symbols = realloc(obj_file->symbols,
+								obj_file->symbol_count * sizeof(TB_ObjectSymbol));
 	
 	obj_file->section_count = header.num_sections;
 	loop(i, header.num_sections) {

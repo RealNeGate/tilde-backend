@@ -346,8 +346,8 @@ static void fast_folded_op_sse(X64_FastCtx* ctx, TB_Function* f, Inst2FPType op,
 	if (is_value_mem(lhs) && is_value_mem(&rhs)) {
 		Val tmp = val_xmm(TB_TYPE_VOID, fast_alloc_xmm(ctx, f, TB_TEMP_REG));
 		
-		INST2SSE(FP_MOV, &tmp, &rhs, flags);
-		INST2SSE(op, lhs, &tmp, flags);
+		INST2SSE(op, &tmp, &rhs, flags);
+		INST2SSE(FP_MOV, lhs, &tmp, flags);
 		
 		fast_kill_temp_xmm(ctx, f, tmp.xmm);
 	} else {
@@ -506,13 +506,15 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 			}
 		}
 		
-		/*printf("r%d:\tGPR = { ", r);
+#if 0
+		printf("r%d:\tXMM = { ", r);
 		loop(i, 16) {
-			printf("%s:", GPR_NAMES[i]);
-			if (ctx->gpr_allocator[i] == TB_TEMP_REG) printf("R    ");
-			else printf("r%-3d ", ctx->gpr_allocator[i]);
+			printf("XMM%zu:", i);
+			if (ctx->xmm_allocator[i] == TB_TEMP_REG) printf("R    ");
+			else printf("r%-3d ", ctx->xmm_allocator[i]);
 		}
-		printf("}\n");*/
+		printf("}\n");
+#endif
 		
 		// memory operand tiling
 		if (ctx->tile.mapping) {
@@ -554,6 +556,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 			case TB_PHI2:
 			case TB_PARAM_ADDR:
 			case TB_GLOBAL_ADDRESS:
+			case TB_RESTRICT:
 			break;
 			case TB_EXTERN_ADDRESS:
 			case TB_FUNC_ADDRESS: {
@@ -793,7 +796,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				if (dt.type == TB_BOOL) dt.type = TB_I8;
 				
 				if (TB_IS_FLOAT_TYPE(dt.type) || dt.width) {
-					Val dst = val_gpr(dt.type, fast_alloc_gpr(ctx, f, r));
+					Val dst = val_xmm(dt, fast_alloc_xmm(ctx, f, r));
 					fast_def_xmm(ctx, f, r, dst.xmm, dt);
 					
 					uint8_t flags = 0;
@@ -1099,6 +1102,34 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				break;
 			}
 			
+			// Float binary operators
+			case TB_FADD:
+			case TB_FSUB:
+			case TB_FMUL:
+			case TB_FDIV: {
+				// supported modes (for now)
+				assert(dt.width <= 2 && "unsupported instruction");
+				
+				Val dst = val_xmm(dt, fast_alloc_xmm(ctx, f, r));
+				fast_def_xmm(ctx, f, r, dst.xmm, dt);
+				
+				{
+					// simple scalar ops
+					const static Inst2FPType ops[] = { FP_ADD, FP_SUB, FP_MUL, FP_DIV };
+					
+					fast_folded_op_sse(ctx, f, FP_MOV, &dst, n->f_arith.a);
+					fast_folded_op_sse(ctx, f, ops[reg_type - TB_FADD], &dst, n->f_arith.b);
+				}
+				
+				if (n->f_arith.a == n->f_arith.b) {
+					fast_kill_reg(ctx, f, n->f_arith.a);
+				} else {
+					fast_kill_reg(ctx, f, n->f_arith.a);
+					fast_kill_reg(ctx, f, n->f_arith.b);
+				}
+				break;
+			}
+			
 			case TB_CMP_EQ:
 			case TB_CMP_NE:
 			case TB_CMP_SLT:
@@ -1136,7 +1167,24 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				
 				Cond cc;
 				if (TB_IS_FLOAT_TYPE(cmp_dt.type)) {
-					tb_todo();
+					Val compare_tmp = val_xmm(cmp_dt, fast_alloc_xmm(ctx, f, TB_TEMP_REG));
+					
+					uint8_t flags = 0;
+					flags |= (cmp_dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+					flags |= (cmp_dt.width) ? INST2FP_PACKED : 0;
+					
+					fast_folded_op_sse(ctx, f, FP_MOV, &temp, n->i_arith.a);
+					fast_folded_op_sse(ctx, f, FP_UCOMI, &temp, n->i_arith.b);
+					
+					switch (reg_type) {
+						case TB_CMP_EQ: cc = E; break;
+						case TB_CMP_NE: cc = NE; break;
+						case TB_CMP_FLT: cc = B; break;
+						case TB_CMP_FLE: cc = BE; break;
+						default: tb_unreachable();
+					}
+					
+					fast_kill_temp_xmm(ctx, f, compare_tmp.xmm);
 				} else {
 					bool invert = (f->nodes.data[n->i_arith.a].type == TB_UNSIGNED_CONST ||
 								   f->nodes.data[n->i_arith.a].type == TB_SIGNED_CONST);
@@ -1365,6 +1413,25 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 					fast_folded_op(ctx, f, sign_ext ? MOVSXB : MOVZXB, &val, n->unary.src);
 				} else {
 					fast_folded_op(ctx, f, MOV, &val, n->unary.src);
+				}
+				
+				fast_kill_reg(ctx, f, n->unary.src);
+				break;
+			}
+			case TB_FLOAT_EXT: {
+				Val src = fast_eval(ctx, f, n->unary.src);
+				
+				Val val = val_xmm(dt, fast_alloc_xmm(ctx, f, r));
+				fast_def_xmm(ctx, f, r, val.xmm, dt);
+				
+				uint8_t flags = 0;
+				flags |= (src.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
+				flags |= (src.dt.width) ? INST2FP_PACKED : 0;
+				
+				if (src.dt.type != dt.type || src.dt.width != dt.width) {
+					INST2SSE(FP_CVT, &val, &src, flags);
+				} else {
+					INST2SSE(FP_MOV, &val, &src, flags);
 				}
 				
 				fast_kill_reg(ctx, f, n->unary.src);

@@ -1,6 +1,7 @@
 .vs/
 build/
 
+*.swp
 *.o
 *.obj
 *.exe

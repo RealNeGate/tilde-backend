@@ -595,7 +595,7 @@ ICodeGen x64_codegen = {
     .emit_epilogue = x64_emit_epilogue,
 	
 	.fast_path = x64_fast_compile_function,
-    .complex_path = x64_complex_compile_function
+	.complex_path = NULL /* x64_complex_compile_function */
 };
 
 #if _MSC_VER

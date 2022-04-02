@@ -1,8 +1,8 @@
 #include "../tb_internal.h"
 
 bool tb_opt_deshort_circuit(TB_Function* f) {
-	return false;
-	
+    return false;
+
 #if 0
 	TB_TemporaryStorage* tls = tb_tls_allocate();
     

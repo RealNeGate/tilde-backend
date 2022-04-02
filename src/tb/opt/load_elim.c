@@ -19,8 +19,8 @@ static bool tb_address_may_alias(TB_Function* f, TB_Reg r, TB_Reg target) {
 #endif
 
 bool tb_opt_load_elim(TB_Function* f) {
-	int changes = 0;
-	
+    int changes = 0;
+
 #if 0
 	TB_FOR_EACH_NODE(n, f) {
 		TB_Reg i = (n - f->nodes.data);
@@ -150,6 +150,6 @@ bool tb_opt_load_elim(TB_Function* f) {
 		}
 	}
 #endif
-	
-	return changes;
+
+    return changes;
 }

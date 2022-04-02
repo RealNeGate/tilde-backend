@@ -8,7 +8,7 @@
 // This is used for JIT compiler pages or any large scale memory
 // allocations.
 void* tb_platform_valloc(size_t size);
-void tb_platform_vfree(void* ptr, size_t size);
+void  tb_platform_vfree(void* ptr, size_t size);
 
 // It's either execute-read or read-write
 bool tb_platform_vprotect(void* ptr, size_t size, bool execute_read);
@@ -20,13 +20,13 @@ bool tb_platform_vprotect(void* ptr, size_t size, bool execute_read);
 // compared to the large scale arenas.
 void* tb_platform_heap_alloc(size_t size);
 void* tb_platform_heap_realloc(void* ptr, size_t size);
-void tb_platform_heap_free(void* ptr);
+void  tb_platform_heap_free(void* ptr);
 
 ////////////////////////////////
 // String arena
 ////////////////////////////////
 char* tb_platform_string_alloc(const char* str);
-void tb_platform_string_free();
+void  tb_platform_string_free();
 
 ////////////////////////////////
 // Persistent arena allocator

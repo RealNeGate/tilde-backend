@@ -42,12 +42,14 @@ TB_API TB_Function* tb_function_clone(TB_Module* m, TB_Function* source_func, co
     assert(i < TB_MAX_FUNCTIONS);
 
     TB_Function* f = &m->functions.data[i];
-    *f             = (TB_Function) { .module = m,
-        .prototype               = f->prototype,
-        .name                    = tb_platform_string_alloc(name),
-        .nodes.count             = source_func->nodes.count,
-        .label_count             = source_func->label_count,
-        .current_label           = source_func->current_label };
+    *f = (TB_Function) {
+		.module        = m,
+        .prototype     = f->prototype,
+        .name          = tb_platform_string_alloc(name),
+        .nodes.count   = source_func->nodes.count,
+        .label_count   = source_func->label_count,
+        .current_label = source_func->current_label
+	};
 
     f->nodes.capacity = f->nodes.count < 16 ? 16 : tb_next_pow2(f->nodes.count);
     f->nodes.data     = malloc(f->nodes.capacity * sizeof(TB_Node));
@@ -183,20 +185,19 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f, TB_ISelMode ise
     }
 
     if (isel_mode == TB_ISEL_COMPLEX) {
-        func_out[index] =
-            codegen->complex_path(index, f, &m->features, &region->data[region->size], id);
+        *func_out = codegen->complex_path(index, f, &m->features, &region->data[region->size], id);
     } else {
-        func_out[index] =
-            codegen->fast_path(index, f, &m->features, &region->data[region->size], id);
+        *func_out = codegen->fast_path(index, f, &m->features, &region->data[region->size], id);
     }
     tb_atomic_size_add(&m->functions.compiled_count, 1);
-    region->size += func_out[index].code_size;
+    region->size += func_out->code_size;
 
     if (region->size > CODE_REGION_BUFFER_SIZE) {
         fprintf(stderr, "Code region buffer: out of memory!\n");
         abort();
     }
 
+	f->output = func_out;
     return true;
 }
 
@@ -396,8 +397,7 @@ TB_API TB_InitializerID tb_initializer_create(
     int tid = get_local_thread_id();
 
     size_t space_needed = (sizeof(TB_Initializer) + (sizeof(uint64_t) - 1)) / sizeof(uint64_t);
-    space_needed +=
-        ((max_objects * sizeof(TB_InitObj)) + (sizeof(uint64_t) - 1)) / sizeof(uint64_t);
+    space_needed += ((max_objects * sizeof(TB_InitObj)) + (sizeof(uint64_t) - 1)) / sizeof(uint64_t);
 
     // each thread gets their own grouping of ids
     size_t len = arrlen(m->initializers[tid]);
@@ -420,8 +420,7 @@ TB_API void* tb_initializer_add_region(
     assert(size == (uint32_t)size);
 
     TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-    TB_Initializer*  i =
-        (TB_Initializer*)&m->initializers[id / per_thread_stride][id % per_thread_stride];
+    TB_Initializer*  i = (TB_Initializer*)&m->initializers[id / per_thread_stride][id % per_thread_stride];
 
     assert(i->obj_count + 1 <= i->obj_capacity);
 
@@ -475,30 +474,32 @@ TB_API void tb_initializer_add_extern(
     };
 }
 
-TB_API TB_GlobalID tb_global_create(
-    TB_Module* m, const char* name, TB_StorageClass storage, TB_Linkage linkage) {
+TB_API TB_GlobalID tb_global_create(TB_Module* m, const char* name, TB_StorageClass storage, TB_Linkage linkage) {
     int tid = get_local_thread_id();
 
     // each thread gets their own grouping of global ids
     TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 
     TB_GlobalID i = (tid * per_thread_stride) + arrlen(m->globals[tid]);
-    TB_Global   g = { .name = tb_platform_string_alloc(name), .linkage = linkage };
+    TB_Global   g = {
+		.name = tb_platform_string_alloc(name),
+		.linkage = linkage,
+		.storage = storage
+	};
     arrput(m->globals[tid], g);
 
     return i;
 }
 
-TB_API void tb_global_set_initializer(
-    TB_Module* m, TB_GlobalID global, TB_InitializerID initializer) {
+TB_API void tb_global_set_initializer(TB_Module* m, TB_GlobalID global, TB_InitializerID init) {
     const TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-
+    TB_Global* g = &m->globals[global / per_thread_stride][global % per_thread_stride];
+	
     // layout
-    TB_Initializer* i =
-        (TB_Initializer*)&m
-            ->initializers[initializer / per_thread_stride][initializer % per_thread_stride];
+	tb_atomic_size_t* region_size = g->storage == TB_STORAGE_TLS ? &m->tls_region_size : &m->data_region_size;
+    TB_Initializer* i = (TB_Initializer*)&m->initializers[init / per_thread_stride][init % per_thread_stride];
 
-    size_t pos = tb_atomic_size_add(&m->data_region_size, i->size + i->align);
+    size_t pos = tb_atomic_size_add(region_size, i->size + i->align);
 
     // TODO(NeGate): Assert on non power of two alignment
     size_t align_mask = i->align - 1;
@@ -507,9 +508,12 @@ TB_API void tb_global_set_initializer(
     assert(pos < UINT32_MAX && "Cannot fit global into space");
     assert((pos + i->size) < UINT32_MAX && "Cannot fit global into space");
 
-    TB_Global* g = &m->globals[global / per_thread_stride][global % per_thread_stride];
     g->pos       = pos;
-    g->init      = initializer;
+    g->init      = init;
+}
+
+TB_API void tb_module_set_tls_index(TB_Module* m, TB_ExternalID e) {
+	m->tls_index_extern = e;
 }
 
 TB_API bool tb_jit_import(TB_Module* m, const char* name, void* address) {
@@ -1097,8 +1101,6 @@ TB_API void tb_function_print_cfg(TB_Function* f, TB_PrintCallback callback, voi
 //
 void tb_object_free(TB_ObjectFile* obj) {
     loop(i, obj->section_count) {
-        free(obj->sections[i].name);
-        free(obj->sections[i].raw_data);
         free(obj->sections[i].relocations);
     }
     free(obj);

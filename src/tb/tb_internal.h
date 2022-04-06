@@ -290,7 +290,8 @@ typedef struct TB_Global {
     char*            name;
     TB_Linkage       linkage;
     TB_InitializerID init;
-    size_t           pos;
+    uint32_t         pos;
+	TB_StorageClass  storage;
 } TB_Global;
 
 typedef struct TB_Line {
@@ -397,6 +398,10 @@ struct TB_Module {
     TB_Arch       target_arch;
     TB_System     target_system;
     TB_FeatureSet features;
+	
+	// This is a hack for windows since they've got this idea
+	// of a _tls_index
+	TB_ExternalID tls_index_extern;
 
     // Convert this into a dynamic memory arena... maybe
     tb_atomic_size_t prototypes_arena_size;
@@ -422,6 +427,11 @@ struct TB_Module {
     dyn_array(TB_FunctionPatch) call_patches[TB_MAX_THREADS];
     dyn_array(TB_ExternFunctionPatch) ecall_patches[TB_MAX_THREADS];
 
+	// TODO(NeGate): start migrating all those dyn arrays into this array
+	struct {
+		int empty_for_now;
+	} thread_info[TB_MAX_THREADS];
+
     struct {
         size_t   count;
         size_t   capacity;
@@ -444,7 +454,8 @@ struct TB_Module {
     // we need to keep track of these for layout reasons
     tb_atomic_size_t data_region_size;
     tb_atomic_size_t rdata_region_size;
-
+    tb_atomic_size_t tls_region_size;
+	
     // The code is stored into giant buffers
     // there's on per code gen thread so that
     // each can work at the same time without

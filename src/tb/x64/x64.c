@@ -558,6 +558,7 @@ void x64_emit_call_patches(TB_Module* m, uint32_t* func_layout) {
         loop(j, arrlen(patches)) {
             TB_FunctionPatch*  p     = &patches[j];
             TB_FunctionOutput* out_f = p->source->output;
+			assert(out_f && "Patch cannot be applied to function with no compiled output");
 
             uint64_t meta        = out_f->prologue_epilogue_metadata;
             uint64_t stack_usage = out_f->stack_usage;

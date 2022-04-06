@@ -374,6 +374,12 @@ typedef struct {
     TB_Label value;
 } TB_SwitchEntry;
 
+// just represents some region of bytes, usually in file parsing crap
+typedef struct {
+	size_t length;
+	uint8_t* data;
+} TB_Slice; 
+
 // represents byte counts
 typedef uint32_t TB_CharUnits;
 
@@ -619,15 +625,14 @@ typedef struct {
 } TB_ObjectReloc;
 
 typedef struct {
-    char* name;
+    TB_Slice name;
 
     size_t virtual_address;
     size_t virtual_size;
 
     // You can have a virtual size without having a raw
     // data size, that's how the BSS section works
-    size_t   raw_data_size;
-    uint8_t* raw_data;
+	TB_Slice raw_data;
 
     size_t          relocation_count;
     TB_ObjectReloc* relocations;
@@ -637,7 +642,7 @@ typedef enum
 { TB_OBJECT_SYMBOL_SECTION, } TB_ObjectSymbolType;
 
 typedef struct {
-    char* name;
+    TB_Slice name;
 } TB_ObjectSymbol;
 
 typedef enum
@@ -651,9 +656,6 @@ typedef enum
 typedef struct {
     TB_ObjectFileType type;
     TB_Arch           arch;
-
-    size_t string_table_size;
-    char*  string_table;
 
     size_t           symbol_count;
     TB_ObjectSymbol* symbols;
@@ -736,6 +738,11 @@ TB_API void tb_module_destroy(TB_Module* m);
 
 // Finalizes the compilation phase
 TB_API bool tb_module_compile(TB_Module* m);
+
+// When targetting windows & thread local storage, you'll need to bind a tls index
+// which is usually just a global that the runtime support has initialized, if you
+// dont and the tls_index is used, it'll crash
+TB_API void tb_module_set_tls_index(TB_Module* m, TB_ExternalID e);
 
 // Exports an object file with all the machine code and symbols generated.
 TB_API bool tb_module_export(TB_Module* m, const char* path, bool emit_debug_info);
@@ -1081,7 +1088,7 @@ TB_API TB_Reg tb_node_arith_get_right(TB_Function* f, TB_Reg r);
 ////////////////////////////////
 // Objects
 ////////////////////////////////
-TB_ObjectFile* tb_object_parse_coff(FILE* file);
+TB_ObjectFile* tb_object_parse_coff(const TB_Slice file);
 void           tb_object_free(TB_ObjectFile* obj);
 
 #ifdef __cplusplus

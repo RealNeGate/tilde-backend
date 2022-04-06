@@ -213,7 +213,7 @@ static uint16_t get_codeview_type(TB_DataType dt) {
     switch (dt.type) {
     case TB_VOID: return 0x0003; // T_VOID
     case TB_BOOL: return 0x0030; // T_BOOL08
-    case TB_I8: return 0x0020;   // T_UCHAR
+    case TB_I8:  return 0x0020;   // T_UCHAR
     case TB_I16: return 0x0073;  // T_UINT4
     case TB_I32: return 0x0075;  // T_UINT4
     case TB_I64: return 0x0023;  // T_UQUAD
@@ -229,12 +229,11 @@ static uint16_t get_codeview_type(TB_DataType dt) {
 static uint16_t find_or_make_cv_type(TB_Emitter* sect, uint32_t* type_entry_count,
     CV_TypeEntry* lookup_table, size_t length, uint16_t* key) {
     assert(length % 4 == 0);
-    uint32_t* key_as_u32 = (uint32_t*)key;
 
     // Hash it
     uint32_t hash = 0;
     loop(i, length) {
-        hash ^= key_as_u32[i];
+        hash ^= key[i] << (i&1 ? 8 : 0);
         hash = LEFTROTATE(hash, 3);
     }
 
@@ -292,8 +291,7 @@ void tb_export_coff(
 
             TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
             TB_Initializer*  i =
-                (TB_Initializer*)&m
-                    ->initializers[g->init / per_thread_stride][g->init % per_thread_stride];
+                (TB_Initializer*)&m->initializers[g->init / per_thread_stride][g->init % per_thread_stride];
 
             loop(k, i->obj_count) {
                 data_relocation_count += (i->objects[k].type != TB_INIT_OBJ_REGION);
@@ -322,7 +320,10 @@ void tb_export_coff(
 
     char** string_table = malloc(string_table_cap * sizeof(const char*));
 
-    const int       number_of_sections = 3 + (emit_unwind_info ? 2 : 0) + (emit_debug_info ? 2 : 0);
+    const int       number_of_sections = 3 + (emit_unwind_info ? 2 : 0) 
+										   + (emit_debug_info ? 2 : 0)
+										   + (m->tls_region_size ? 1 : 0);
+
     COFF_FileHeader header             = { .num_sections = number_of_sections,
         .timestamp                           = time(NULL),
         .symbol_count                        = 0,
@@ -351,6 +352,10 @@ void tb_export_coff(
 
     COFF_SectionHeader debugs_section = { .name = { ".debug$S" },
         .characteristics                        = COFF_CHARACTERISTICS_CV };
+
+	COFF_SectionHeader tls_section = { .name = { ".tls$" },
+		.characteristics                        = COFF_CHARACTERISTICS_DATA,
+		.raw_data_size                          = m->tls_region_size };
 
     switch (m->target_arch) {
     case TB_ARCH_X86_64: header.machine = COFF_MACHINE_AMD64; break;
@@ -538,8 +543,7 @@ void tb_export_coff(
                     pos += 4 + 2 + MD5_HASHBYTES + 2;
                 }
 
-                tb_patch4b(
-                    &debugs_out, field_length_patch, (debugs_out.count - field_length_patch) - 4);
+                tb_patch4b(&debugs_out, field_length_patch, (debugs_out.count - field_length_patch) - 4);
             }
 
             // Line info table
@@ -797,19 +801,19 @@ void tb_export_coff(
                 }
             }
         }
-        xdata_section.raw_data_size = xdata_out.count;
 
+        xdata_section.raw_data_size = xdata_out.count;
         pdata_section.raw_data_size = m->functions.compiled_count * 12;
     }
 
     // Target specific: resolve internal call patches
     code_gen->emit_call_patches(m, func_layout);
 
-    text_section.raw_data_pos =
-        sizeof(COFF_FileHeader) + (number_of_sections * sizeof(COFF_SectionHeader));
+    text_section.raw_data_pos = sizeof(COFF_FileHeader) + (number_of_sections * sizeof(COFF_SectionHeader));
     rdata_section.raw_data_pos = text_section.raw_data_pos + text_section.raw_data_size;
     data_section.raw_data_pos  = rdata_section.raw_data_pos + rdata_section.raw_data_size;
-    pdata_section.raw_data_pos = data_section.raw_data_pos + data_section.raw_data_size;
+	tls_section.raw_data_pos = data_section.raw_data_pos + data_section.raw_data_size;
+    pdata_section.raw_data_pos = tls_section.raw_data_pos + tls_section.raw_data_size;
     xdata_section.raw_data_pos = pdata_section.raw_data_pos + pdata_section.raw_data_size;
 
     if (emit_debug_info) {
@@ -876,6 +880,10 @@ void tb_export_coff(
     fwrite(&rdata_section, sizeof(rdata_section), 1, f);
     fwrite(&data_section, sizeof(data_section), 1, f);
 
+	if (tls_section.raw_data_size) {
+        fwrite(&tls_section, sizeof(tls_section), 1, f);
+	}
+
     if (emit_unwind_info) {
         fwrite(&pdata_section, sizeof(pdata_section), 1, f);
         fwrite(&xdata_section, sizeof(xdata_section), 1, f);
@@ -935,6 +943,7 @@ void tb_export_coff(
         loop(i, m->max_threads) {
             loop(j, arrlen(m->globals[i])) {
                 TB_Global* g = &m->globals[i][j];
+				if (g->storage != TB_STORAGE_DATA) continue;
 
                 TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
                 TB_Initializer*  init =
@@ -952,6 +961,37 @@ void tb_export_coff(
         }
 
         fwrite(data, m->data_region_size, 1, f);
+        tb_platform_heap_free(data);
+    }
+	
+	assert(ftell(f) == tls_section.raw_data_pos);
+    {
+        // TODO(NeGate): Optimize this for size and speed, sometimes
+        // there's huge sections will be filled with just empty regions
+        // so it's probably best not to represent everything in a big
+        // buffer.
+        char* data = tb_platform_heap_alloc(m->tls_region_size);
+
+        loop(i, m->max_threads) {
+            loop(j, arrlen(m->globals[i])) {
+                TB_Global* g = &m->globals[i][j];
+				if (g->storage != TB_STORAGE_TLS) continue;
+
+                TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
+                TB_Initializer*  init =
+                    (TB_Initializer*)&m->initializers[g->init / per_thread_stride][g->init % per_thread_stride];
+
+                // clear out space
+                memset(&data[g->pos], 0, init->size);
+
+                loop(k, init->obj_count) if (init->objects[k].type == TB_INIT_OBJ_REGION) {
+                    memcpy(&data[g->pos + init->objects[k].offset], init->objects[k].region.ptr,
+                        init->objects[k].region.size);
+                }
+            }
+        }
+
+        fwrite(data, m->tls_region_size, 1, f);
         tb_platform_heap_free(data);
     }
 
@@ -1170,91 +1210,123 @@ void tb_export_coff(
     }
 
     assert(ftell(f) == header.symbol_table);
+	int section_num = 1;
+
     fwrite(&(COFF_Symbol) { .short_name = { ".text" },
-               .section_number          = 1,
+               .section_number          = section_num,
                .storage_class           = IMAGE_SYM_CLASS_STATIC,
                .aux_symbols_count       = 1 },
         sizeof(COFF_Symbol), 1, f);
 
     fwrite(&(COFF_AuxSectionSymbol) { .length = text_section.raw_data_size,
                .reloc_count                   = text_section.num_reloc,
-               .number                        = 1 },
+               .number                        = section_num },
         sizeof(COFF_AuxSectionSymbol), 1, f);
+	section_num += 1;
 
-    fwrite(&(COFF_Symbol) { .short_name = { ".rdata" },
-               .section_number          = 2,
+    assert(section_num == 2); // things expect it to be 2
+	fwrite(&(COFF_Symbol) { .short_name = { ".rdata" },
+               .section_number          = section_num,
                .storage_class           = IMAGE_SYM_CLASS_STATIC,
                .aux_symbols_count       = 1 },
         sizeof(COFF_Symbol), 1, f);
 
-    fwrite(&(COFF_AuxSectionSymbol) { .length = data_section.raw_data_size, .number = 2 },
+    fwrite(&(COFF_AuxSectionSymbol) { 
+			.length = data_section.raw_data_size,
+			.number = section_num },
         sizeof(COFF_AuxSectionSymbol), 1, f);
+	section_num += 1;
 
+	assert(section_num == 3); // things expect it to be 3
     fwrite(&(COFF_Symbol) { .short_name = { ".data" },
-               .section_number          = 3,
+               .section_number          = section_num,
                .storage_class           = IMAGE_SYM_CLASS_STATIC,
                .aux_symbols_count       = 1 },
         sizeof(COFF_Symbol), 1, f);
 
     fwrite(&(COFF_AuxSectionSymbol) { .length = data_section.raw_data_size,
                .reloc_count                   = data_section.num_reloc,
-               .number                        = 3 },
+               .number                        = section_num },
         sizeof(COFF_AuxSectionSymbol), 1, f);
+	section_num += 1;
+
+	int tls_section_num = section_num;
+	if (m->tls_region_size) {
+		fwrite(&(COFF_Symbol) { .short_name = { ".tls" },
+				   .section_number          = section_num,
+				   .storage_class           = IMAGE_SYM_CLASS_STATIC,
+				   .aux_symbols_count       = 1 },
+			sizeof(COFF_Symbol), 1, f);
+
+		fwrite(&(COFF_AuxSectionSymbol) { .length = data_section.raw_data_size,
+				   .reloc_count                   = data_section.num_reloc,
+				   .number                        = section_num },
+			sizeof(COFF_AuxSectionSymbol), 1, f);
+		section_num += 1;
+	}
 
     if (emit_unwind_info) {
         fwrite(&(COFF_Symbol) { .short_name = { ".pdata" },
-                   .section_number          = 4,
+                   .section_number          = section_num,
                    .storage_class           = IMAGE_SYM_CLASS_STATIC,
                    .aux_symbols_count       = 1 },
             sizeof(COFF_Symbol), 1, f);
 
         fwrite(&(COFF_AuxSectionSymbol) { .length = pdata_section.raw_data_size,
                    .reloc_count                   = pdata_section.num_reloc,
-                   .number                        = 4 },
+                   .number                        = section_num },
             sizeof(COFF_AuxSectionSymbol), 1, f);
+		section_num += 1;
 
         fwrite(&(COFF_Symbol) { .short_name = { ".xdata" },
-                   .section_number          = 5,
+                   .section_number          = section_num,
                    .storage_class           = IMAGE_SYM_CLASS_STATIC,
                    .aux_symbols_count       = 1 },
             sizeof(COFF_Symbol), 1, f);
 
         fwrite(&(COFF_AuxSectionSymbol) { .length = xdata_section.raw_data_size,
                    .reloc_count                   = xdata_section.num_reloc,
-                   .number                        = 5 },
+                   .number                        = section_num },
             sizeof(COFF_AuxSectionSymbol), 1, f);
+		section_num += 1;
     }
 
     if (emit_debug_info) {
         fwrite(&(COFF_Symbol) { .short_name = { ".debug$T" },
-                   .section_number          = 6,
+                   .section_number          = section_num,
                    .storage_class           = IMAGE_SYM_CLASS_STATIC,
                    .aux_symbols_count       = 1 },
             sizeof(COFF_Symbol), 1, f);
 
-        fwrite(&(COFF_AuxSectionSymbol) { .length = debugt_section.raw_data_size, .number = 6 },
-            sizeof(COFF_AuxSectionSymbol), 1, f);
-
+        fwrite(&(COFF_AuxSectionSymbol) {
+				.length = debugt_section.raw_data_size,
+				.number = section_num }, 
+			sizeof(COFF_AuxSectionSymbol), 1, f);
+		section_num += 1;
+		
         fwrite(&(COFF_Symbol) { .short_name = { ".debug$S" },
-                   .section_number          = 7,
+                   .section_number          = section_num,
                    .storage_class           = IMAGE_SYM_CLASS_STATIC,
                    .aux_symbols_count       = 1 },
             sizeof(COFF_Symbol), 1, f);
 
         fwrite(&(COFF_AuxSectionSymbol) { .length = debugs_section.raw_data_size,
                    .reloc_count                   = debugs_section.num_reloc,
-                   .number                        = 7 },
+                   .number                        = section_num },
             sizeof(COFF_AuxSectionSymbol), 1, f);
+		section_num += 1;
     }
 
     loop(i, m->functions.count) {
         TB_FunctionOutput* out_f = m->functions.data[i].output;
         if (!out_f) continue;
 
-        bool        is_extern = out_f->linkage == TB_LINKAGE_PUBLIC;
-        COFF_Symbol sym       = { .value = func_layout[i],
-            .section_number        = 1,
-            .storage_class = is_extern ? IMAGE_SYM_CLASS_EXTERNAL : IMAGE_SYM_CLASS_STATIC };
+        bool is_extern = out_f->linkage == TB_LINKAGE_PUBLIC;
+        COFF_Symbol sym = {
+			.value = func_layout[i],
+            .section_number = 1,
+            .storage_class = is_extern ? IMAGE_SYM_CLASS_EXTERNAL : IMAGE_SYM_CLASS_STATIC
+		};
 
         const char* name     = m->functions.data[i].name;
         size_t      name_len = strlen(name);
@@ -1276,8 +1348,10 @@ void tb_export_coff(
     loop(i, m->max_threads) {
         loop_range(j, 1, arrlen(m->externals[i])) {
             const TB_External* restrict e = &m->externals[i][j];
-            COFF_Symbol sym               = {
-                .value = 0, .section_number = 0, .storage_class = IMAGE_SYM_CLASS_EXTERNAL
+            COFF_Symbol sym = {
+                .value = 0,
+				.section_number = 0,
+				.storage_class = IMAGE_SYM_CLASS_EXTERNAL
             };
 
             size_t name_len = strlen(e->name);
@@ -1301,10 +1375,12 @@ void tb_export_coff(
         loop(j, arrlen(m->globals[i])) {
             const TB_Global* restrict g = &m->globals[i][j];
 
-            bool        is_extern = g->linkage == TB_LINKAGE_PUBLIC;
-            COFF_Symbol sym       = { .value = g->pos,
-                .section_number        = 3, // data section
-                .storage_class = is_extern ? IMAGE_SYM_CLASS_EXTERNAL : IMAGE_SYM_CLASS_STATIC };
+            bool is_extern = g->linkage == TB_LINKAGE_PUBLIC;
+            COFF_Symbol sym = {
+				.value = g->pos,
+                .section_number = g->storage == TB_STORAGE_TLS ? tls_section_num : 3, // data or tls section
+                .storage_class = is_extern ? IMAGE_SYM_CLASS_EXTERNAL : IMAGE_SYM_CLASS_STATIC
+			};
 
             size_t name_len = strlen(g->name);
             assert(name_len < UINT16_MAX);
@@ -1335,7 +1411,9 @@ void tb_export_coff(
             func_layout[l->func_id] + code_gen->get_prologue_length(meta, stack_usage) + l->pos;
 
         COFF_Symbol sym = {
-            .value = actual_pos, .section_number = 1, .storage_class = IMAGE_SYM_CLASS_LABEL
+            .value = actual_pos,
+			.section_number = 1,
+			.storage_class = IMAGE_SYM_CLASS_LABEL
         };
 
         assert(l->label_id < 65536);

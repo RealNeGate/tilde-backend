@@ -1072,22 +1072,26 @@ void tb_export_coff(
 
     loop(i, m->max_threads) {
         loop(j, arrlen(m->global_patches[i])) {
-            TB_GlobalPatch*    p     = &m->global_patches[i][j];
-            TB_FunctionOutput* out_f = p->source->output;
+			TB_GlobalPatch*    p     = &m->global_patches[i][j];
+			TB_FunctionOutput* out_f = p->source->output;
 
-            uint64_t meta        = out_f->prologue_epilogue_metadata;
-            uint64_t stack_usage = out_f->stack_usage;
+			uint64_t meta        = out_f->prologue_epilogue_metadata;
+			uint64_t stack_usage = out_f->stack_usage;
 
-            size_t actual_pos = func_layout[p->source - m->functions.data] +
+			size_t actual_pos = func_layout[p->source - m->functions.data] +
                                 code_gen->get_prologue_length(meta, stack_usage) + p->pos;
 
-            TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-            int         symbol_id = global_symbol_relative_id[p->global / per_thread_stride] +
+			TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
+			TB_Global*  global = &m->globals[p->global / per_thread_stride][p->global % per_thread_stride];
+
+			int         symbol_id = global_symbol_relative_id[p->global / per_thread_stride] +
                             (p->global % per_thread_stride);
 
-            fwrite(&(COFF_ImageReloc) { .Type = IMAGE_REL_AMD64_REL32,
-                       .SymbolTableIndex      = extern_func_sym_start + symbol_id,
-                       .VirtualAddress        = actual_pos },
+			fwrite(&(COFF_ImageReloc) { 
+					.Type = global->storage == TB_STORAGE_TLS ?
+						IMAGE_REL_AMD64_SECREL : IMAGE_REL_AMD64_REL32,
+                    .SymbolTableIndex      = extern_func_sym_start + symbol_id,
+                    .VirtualAddress        = actual_pos },
                 sizeof(COFF_ImageReloc), 1, f);
         }
     }
@@ -1252,7 +1256,7 @@ void tb_export_coff(
 
 	int tls_section_num = section_num;
 	if (m->tls_region_size) {
-		fwrite(&(COFF_Symbol) { .short_name = { ".tls" },
+		fwrite(&(COFF_Symbol) { .short_name = { ".tls$" },
 				   .section_number          = section_num,
 				   .storage_class           = IMAGE_SYM_CLASS_STATIC,
 				   .aux_symbols_count       = 1 },

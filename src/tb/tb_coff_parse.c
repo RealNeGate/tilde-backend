@@ -1,5 +1,20 @@
 #include "tb_coff.h"
 
+TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
+	uint8_t* signature = &file.data[0];
+	if (memcmp(signature, "!<arch>\n", 8) != 0) {
+		// TODO(NeGate): maybe we should make a custom error stream...
+		fprintf(stderr, "TB archive parser: invalid .lib header!\n");
+		return NULL;
+	}
+
+	// Process first, second and long name members
+	COFF_ArchiveMemberHeader* first = (COFF_ArchiveMemberHeader*) &file.data[8];
+
+	// TODO: shit
+	return NULL;
+}
+
 // let's ignore error handling for now :p
 // buffered reading i guess?
 TB_ObjectFile* tb_object_parse_coff(const TB_Slice file) {

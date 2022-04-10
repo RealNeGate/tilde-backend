@@ -316,7 +316,7 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
 				*ctx->header.out++ = 0x00;
 				*ctx->header.out++ = 0x00;
 				*ctx->header.out++ = 0x00;
-                tb_emit_ecall_patch(f->module, f, m->tls_index_extern, GET_CODE_POS() - 4, s_local_thread_id);
+				tb_emit_ecall_patch(f->module, f, m->tls_index_extern, GET_CODE_POS() - 4, s_local_thread_id);
 
 				// mov t1, qword gs:[58h]
         		Val t1 = val_gpr(TB_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
@@ -347,7 +347,7 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
 				*ctx->header.out++ = 0x00;
 				*ctx->header.out++ = 0x00;
 				*ctx->header.out++ = 0x00;
-				tb_emit_global_patch(f->module, f, n->global.value, GET_CODE_POS() - 4, s_local_thread_id);
+				tb_emit_global_patch(f->module, f, GET_CODE_POS() - 4, n->global.value, s_local_thread_id);
 
 				fast_def_gpr(ctx, f, r, dst.gpr, TB_TYPE_PTR);
 				fast_kill_temp_gpr(ctx, f, t1.gpr);

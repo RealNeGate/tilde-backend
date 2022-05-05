@@ -197,30 +197,30 @@ case TB_RET: macro(n->ret.value); break
 
 typedef struct TB_ConstPoolPatch {
     TB_Function* source;
-    uint32_t     pos; // relative to the start of the function
-
+    uint32_t pos; // relative to the start of the function
+	
     size_t rdata_pos;
-
-    const void* data;
-    size_t      length;
+	
+	size_t length;
+	const void* data;
 } TB_ConstPoolPatch;
 
 typedef struct TB_GlobalPatch {
     TB_Function* source;
-    uint32_t     pos; // relative to the start of the function
-    TB_GlobalID  global;
+    uint32_t pos; // relative to the start of the function
+    TB_GlobalID global;
 } TB_GlobalPatch;
 
 typedef struct TB_FunctionPatch {
     TB_Function* source;
-    uint32_t     target_id;
-    uint32_t     pos; // relative to the start of the function
+    uint32_t target_id;
+    uint32_t pos; // relative to the start of the function
 } TB_FunctionPatch;
 
 typedef struct TB_ExternFunctionPatch {
-    TB_Function*  source;
+    TB_Function* source;
     TB_ExternalID target_id;
-    uint32_t      pos; // relative to the start of the function
+    uint32_t pos; // relative to the start of the function
 } TB_ExternFunctionPatch;
 
 typedef struct TB_File {
@@ -239,13 +239,13 @@ typedef struct TB_External {
 struct TB_FunctionPrototype {
     // header
     TB_CallingConv call_conv;
-
+	
     short param_capacity;
     short param_count;
-
+	
     TB_DataType return_dt;
     bool has_varargs;
-
+	
     // payload
     TB_DataType params[];
 };
@@ -253,7 +253,7 @@ struct TB_FunctionPrototype {
 typedef struct TB_InitObj {
     enum {
         TB_INIT_OBJ_REGION,
-
+		
         // relocations
         TB_INIT_OBJ_RELOC_EXTERN,
         TB_INIT_OBJ_RELOC_FUNCTION,
@@ -263,21 +263,21 @@ typedef struct TB_InitObj {
     union {
         struct {
             TB_CharUnits size;
-            const void*  ptr;
+            const void* ptr;
         } region;
-
+		
         TB_ExternalID reloc_extern;
         TB_FunctionID reloc_function;
-        TB_GlobalID   reloc_global;
+        TB_GlobalID reloc_global;
     };
 } TB_InitObj;
 
 typedef struct TB_Initializer {
     // header
     TB_CharUnits size, align;
-    uint32_t     obj_capacity;
-    uint32_t     obj_count;
-
+    uint32_t obj_capacity;
+    uint32_t obj_count;
+	
     // payload
     TB_InitObj objects[];
 } TB_Initializer;
@@ -315,13 +315,13 @@ struct TB_AttribList {
 
 typedef struct TB_FunctionOutput {
     TB_Linkage linkage;
-
+	
     // NOTE(NeGate): This data is actually specific to the
     // architecture run but generically can be thought of as
     // 64bits which keep track of which registers to save.
     uint64_t prologue_epilogue_metadata;
     uint64_t stack_usage;
-
+	
     uint8_t* code;
     size_t code_size;
 } TB_FunctionOutput;
@@ -330,42 +330,42 @@ struct TB_Function {
     char* name;
     // It's kinda a weird circular reference but yea
     TB_Module* module;
-
+	
     const TB_FunctionPrototype* prototype;
     TB_Linkage linkage;
-
+	
     struct TB_NodeStream {
-        TB_Reg   capacity;
-        TB_Reg   count;
-        TB_Reg   end;
+        TB_Reg capacity;
+        TB_Reg count;
+        TB_Reg end;
         TB_Node* data;
     } nodes;
-
+	
     // Used by the IR building
     TB_AttributeID active_attrib;
-    TB_Reg         last_reg;
-    TB_Reg         current_label;
-    TB_Label       label_count;
-
+    TB_Reg last_reg;
+    TB_Reg current_label;
+    TB_Label label_count;
+	
     // Used by nodes which have variable
     // length arguments like PHI and CALL.
     // SWITCH has arguments here too but they
     // are two slots each
     struct {
-        size_t  capacity;
-        size_t  count;
+        size_t capacity;
+        size_t count;
         TB_Reg* data;
     } vla;
-
+	
     // Attribute pool
-    size_t     attrib_pool_capacity;
-    size_t     attrib_pool_count;
+    size_t attrib_pool_capacity;
+    size_t attrib_pool_count;
     TB_Attrib* attrib_pool;
-
+	
     // Part of the debug info
-    size_t   line_count;
+    size_t line_count;
     TB_Line* lines;
-
+	
     // Compilation output
     TB_FunctionOutput* output;
 };
@@ -377,29 +377,29 @@ typedef struct TB_LabelSymbol {
 } TB_LabelSymbol;
 
 typedef struct TB_CodeRegion {
-    size_t  size;
+    size_t size;
     uint8_t data[CODE_REGION_BUFFER_SIZE - sizeof(size_t)];
 } TB_CodeRegion;
 
 struct TB_Module {
     int max_threads;
-
+	
     TB_Arch target_arch;
     TB_System target_system;
     TB_FeatureSet features;
-
+	
 	// This is a hack for windows since they've got this idea
 	// of a _tls_index
 	TB_ExternalID tls_index_extern;
-
+	
     // Convert this into a dynamic memory arena... maybe
     tb_atomic_size_t prototypes_arena_size;
     uint64_t* prototypes_arena;
-
+	
 #if !TB_STRIP_LABELS
     dyn_array(TB_LabelSymbol) label_symbols;
 #endif
-
+	
 	// TODO(NeGate): I should probably re-organize these to avoid
     // false sharing
     dyn_array(TB_GlobalPatch) global_patches[TB_MAX_THREADS];
@@ -409,36 +409,36 @@ struct TB_Module {
     dyn_array(TB_Global) globals[TB_MAX_THREADS];
     dyn_array(TB_FunctionPatch) call_patches[TB_MAX_THREADS];
     dyn_array(TB_ExternFunctionPatch) ecall_patches[TB_MAX_THREADS];
-
+	
 	// TODO(NeGate): start migrating all those dyn arrays into this array
 	struct {
 		int empty_for_now;
 	} thread_info[TB_MAX_THREADS];
-
+	
     struct {
-        size_t   count;
-        size_t   capacity;
+        size_t count;
+        size_t capacity;
         TB_File* data;
     } files;
-
+	
     struct {
         tb_atomic_size_t compiled_count;
         tb_atomic_size_t count;
-        TB_Function*     data;
+        TB_Function* data;
     } functions;
-
-    void*  jit_region;
+	
+    void* jit_region;
     size_t jit_region_size;
-
+	
     // If not NULL, there's JITted functions in each
     // non NULL entry which map to the `compiled_functions`
     void** compiled_function_pos;
-
+	
     // we need to keep track of these for layout reasons
     tb_atomic_size_t data_region_size;
     tb_atomic_size_t rdata_region_size;
     tb_atomic_size_t tls_region_size;
-
+	
     // The code is stored into giant buffers
     // there's on per code gen thread so that
     // each can work at the same time without
@@ -449,7 +449,7 @@ struct TB_Module {
 
 typedef struct TB_TemporaryStorage {
     uint32_t used;
-    uint8_t  data[];
+    uint8_t data[];
 } TB_TemporaryStorage;
 
 // the maximum size the prologue and epilogue can be for any machine code impl
@@ -457,21 +457,21 @@ typedef struct TB_TemporaryStorage {
 
 typedef struct ICodeGen {
     void (*emit_call_patches)(TB_Module* m, uint32_t* func_layout);
-
+	
     size_t (*get_prologue_length)(uint64_t saved, uint64_t stack_usage);
     size_t (*get_epilogue_length)(uint64_t saved, uint64_t stack_usage);
     size_t (*emit_prologue)(uint8_t* out, uint64_t saved, uint64_t stack_usage);
     size_t (*emit_epilogue)(uint8_t* out, uint64_t saved, uint64_t stack_usage);
-
+	
     TB_FunctionOutput (*fast_path)(TB_FunctionID id, TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
     TB_FunctionOutput (*complex_path)(TB_FunctionID id, TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
 } ICodeGen;
 
-#define tb_swap(type, a, b) \
-do {                    \
-type temp = a;      \
-a         = b;      \
-b         = temp;   \
+#define tb_swap(T, a, b) \
+do {                 \
+T temp = a;      \
+a = b;           \
+b = temp;        \
 } while (0)
 
 #ifndef NDEBUG
@@ -547,13 +547,12 @@ typedef struct TB_MultiplyResult {
 #if defined(_MSC_VER) && !defined(__clang__)
 inline static int tb_ffs(uint32_t x) {
     unsigned long index;
-
-    if (_BitScanForward(&index, x)) return 1 + index;
-    else
-        return 0;
+	return _BitScanForward(&index, x) ? 1 + index ? 0;
 }
 
-inline static int tb_popcount(uint32_t x) { return __popcnt(x); }
+inline static int tb_popcount(uint32_t x) {
+	return __popcnt(x);
+}
 
 inline static uint64_t tb_next_pow2(uint64_t x) {
     return x == 1 ? 1 : 1 << (64 - _lzcnt_u64(x - 1));
@@ -561,13 +560,13 @@ inline static uint64_t tb_next_pow2(uint64_t x) {
 
 inline static bool tb_add_overflow(uint64_t a, uint64_t b, uint64_t* result) {
     uint64_t c = a + b;
-    *result    = c;
+    *result = c;
     return c < a;
 }
 
 inline static bool tb_sub_overflow(uint64_t a, uint64_t b, uint64_t* result) {
     uint64_t c = a - b;
-    *result    = c;
+    *result = c;
     return c > a;
 }
 
@@ -578,9 +577,13 @@ inline static TB_MultiplyResult tb_mul64x128(uint64_t a, uint64_t b) {
     return (TB_MultiplyResult) { lo, hi };
 }
 #else
-inline static int tb_ffs(uint32_t x) { return __builtin_ffs(x); }
+inline static int tb_ffs(uint32_t x) { 
+	return __builtin_ffs(x);
+}
 
-inline static int tb_popcount(uint32_t x) { return __builtin_popcount(x); }
+inline static int tb_popcount(uint32_t x) {
+	return __builtin_popcount(x);
+}
 
 inline static uint64_t tb_next_pow2(uint64_t x) {
     return x == 1 ? 1 : 1 << (64 - __builtin_clzl(x - 1));
@@ -596,26 +599,23 @@ inline static bool tb_sub_overflow(uint64_t a, uint64_t b, uint64_t* result) {
 
 inline static TB_MultiplyResult tb_mul64x128(uint64_t a, uint64_t b) {
     __uint128_t product = (__uint128_t)a * (__uint128_t)b;
-
-    return (
-			TB_MultiplyResult) { (uint64_t)(product & 0xFFFFFFFFFFFFFFFF), (uint64_t)(product >> 64) };
+	
+    return (TB_MultiplyResult) { (uint64_t)(product & 0xFFFFFFFFFFFFFFFF), (uint64_t)(product >> 64) };
 }
 #endif
 
 bool tb_validate(TB_Function* f);
 
 TB_TemporaryStorage* tb_tls_allocate();
-void*                tb_tls_push(TB_TemporaryStorage* store, size_t size);
-void*                tb_tls_try_push(TB_TemporaryStorage* store, size_t size);
-void                 tb_tls_restore(TB_TemporaryStorage* store, void* ptr);
-void*                tb_tls_pop(TB_TemporaryStorage* store, size_t size);
-void*                tb_tls_peek(TB_TemporaryStorage* store, size_t distance);
-bool                 tb_tls_can_fit(TB_TemporaryStorage* store, size_t size);
+void* tb_tls_push(TB_TemporaryStorage* store, size_t size);
+void* tb_tls_try_push(TB_TemporaryStorage* store, size_t size);
+void tb_tls_restore(TB_TemporaryStorage* store, void* ptr);
+void* tb_tls_pop(TB_TemporaryStorage* store, size_t size);
+void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance);
+bool tb_tls_can_fit(TB_TemporaryStorage* store, size_t size);
 
-void tb_export_coff(
-					TB_Module* m, const ICodeGen* restrict code_gen, const char* path, bool emit_debug_info);
-void tb_export_elf64(
-					 TB_Module* m, const ICodeGen* restrict code_gen, const char* path, bool emit_debug_info);
+void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, bool emit_debug_info);
+void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, bool emit_debug_info);
 
 uint8_t* tb_out_reserve(TB_Emitter* o, size_t count);
 // The return value is the start of the empty region after
@@ -650,17 +650,24 @@ uint32_t tb_get4b(TB_Emitter* o, uint32_t pos);
 ////////////////////////////////
 TB_Reg tb_find_reg_from_label(TB_Function* f, TB_Label id);
 TB_Reg tb_find_first_use(const TB_Function* f, TB_Reg find, size_t start, size_t end);
-void   tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace);
+void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace);
 size_t tb_count_uses(const TB_Function* f, TB_Reg find, size_t start, size_t end);
-void   tb_function_reserve_nodes(TB_Function* f, size_t extra);
-TB_Reg tb_insert_copy_ops(TB_Function* f, const TB_Reg* params, TB_Reg at,
-						  const TB_Function* src_func, TB_Reg src_base, int count);
-
+void tb_function_reserve_nodes(TB_Function* f, size_t extra);
+TB_Reg tb_insert_copy_ops(TB_Function* f, const TB_Reg* params, TB_Reg at, const TB_Function* src_func, TB_Reg src_base, int count);
 TB_Reg tb_function_insert_after(TB_Function* f, TB_Reg at);
 
-inline static void tb_kill_op(TB_Function* f, TB_Reg at) { f->nodes.data[at].type = TB_NULL; }
+inline static void tb_kill_op(TB_Function* f, TB_Reg at) {
+	f->nodes.data[at].type = TB_NULL;
+}
 
-inline static int align_up(int a, int b) { return a + (b - (a % b)) % b; }
+inline static uint64_t align_up(uint64_t a, uint64_t b) {
+	return a + (b - (a % b)) % b;
+}
+
+// NOTE(NeGate): Considers 0 as a power of two
+inline static bool tb_is_power_of_two(uint64_t x) {
+	return (x & (x - 1)) == 0;
+}
 
 ////////////////////////////////
 // HELPER FUNCTIONS
@@ -687,9 +694,6 @@ printf(" (part of %s)\n", __FUNCTION__);   \
 
 #define CALL_NODE_PARAM_COUNT(n) (n->call.param_end - n->call.param_start)
 
-// NOTE(NeGate): Considers 0 as a power of two
-inline static bool tb_is_power_of_two(uint64_t x) { return (x & (x - 1)) == 0; }
-
 ////////////////////////////////
 // CONSTANT FOLDING UTILS
 ////////////////////////////////
@@ -701,19 +705,14 @@ uint64_t tb_fold_div(TB_DataType dt, uint64_t a, uint64_t b);
 ////////////////////////////////
 // ANALYSIS
 ////////////////////////////////
-void      tb_function_calculate_use_count(const TB_Function* f, int use_count[]);
-int       tb_function_find_uses_of_node(const TB_Function* f, TB_Reg def, TB_Reg uses[]);
-TB_Label* tb_calculate_immediate_predeccessors(
-											   TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count);
+void tb_function_calculate_use_count(const TB_Function* f, int use_count[]);
+int tb_function_find_uses_of_node(const TB_Function* f, TB_Reg def, TB_Reg uses[]);
+TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count);
 
-uint32_t tb_emit_const_patch(TB_Module* m, TB_Function* source, size_t pos, const void* ptr,
-							 size_t len, size_t local_thread_id);
-void     tb_emit_global_patch(
-							  TB_Module* m, TB_Function* source, size_t pos, TB_GlobalID global, size_t local_thread_id);
-void tb_emit_call_patch(
-						TB_Module* m, TB_Function* source, uint32_t target_id, size_t pos, size_t local_thread_id);
-void tb_emit_ecall_patch(
-						 TB_Module* m, TB_Function* source, TB_ExternalID target_id, size_t pos, size_t local_thread_id);
+uint32_t tb_emit_const_patch(TB_Module* m, TB_Function* source, size_t pos, const void* ptr,size_t len, size_t local_thread_id);
+void tb_emit_global_patch(TB_Module* m, TB_Function* source, size_t pos, TB_GlobalID global, size_t local_thread_id);
+void tb_emit_call_patch(TB_Module* m, TB_Function* source, uint32_t target_id, size_t pos, size_t local_thread_id);
+void tb_emit_ecall_patch(TB_Module* m, TB_Function* source, TB_ExternalID target_id, size_t pos, size_t local_thread_id);
 
 #if !TB_STRIP_LABELS
 void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, size_t pos);

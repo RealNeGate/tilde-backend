@@ -291,7 +291,7 @@ inline static void builder_init() {
 	}
 }
 
-inline static void builder_compile_cuik(size_t count, const char* filepaths[], const char* output_path) {
+inline static void builder_compile_cuik(size_t count, const char* filepaths[], const char* output_path, const char* extra_libraries) {
 	cmd_append("cuik --include src/ -o ");
 	cmd_append(output_path);
 	cmd_append(" build ");
@@ -305,7 +305,7 @@ inline static void builder_compile_cuik(size_t count, const char* filepaths[], c
 	cmd_dump(cmd_run());
 }
 
-inline static void builder_compile_msvc(BuildMode mode, size_t count, const char* filepaths[], const char* output_path) {
+inline static void builder_compile_msvc(BuildMode mode, size_t count, const char* filepaths[], const char* output_path, const char* extra_libraries) {
 	cmd_append("cl /MP /arch:AVX /D_CRT_SECURE_NO_WARNINGS /I:src ");
 	
 	if (mode == BUILD_MODE_EXECUTABLE) {
@@ -338,7 +338,7 @@ inline static void builder_compile_msvc(BuildMode mode, size_t count, const char
 	}
 }
 
-inline static void builder_compile_cc(BuildMode mode, size_t count, const char* filepaths[], const char* output_path) {
+inline static void builder_compile_cc(BuildMode mode, size_t count, const char* filepaths[], const char* output_path, const char* extra_libraries) {
 	const char* cc_command = ON_CLANG ? "clang" : "gcc";
 	
 	// compile object files
@@ -410,47 +410,64 @@ inline static void builder_compile_cc(BuildMode mode, size_t count, const char* 
 			cmd_append(" ");
 			
 			if (ON_WINDOWS) {
-				cmd_append("tildebackend.lib tbb/tbbmalloc.lib build\\*.obj -lole32 -lAdvapi32 -lOleAut32 -lDbgHelp ");
+				cmd_append("tildebackend.lib build/*.obj -lole32 -lAdvapi32 -lOleAut32 -lDbgHelp ");
 			} else {
 				cmd_append("./tildebackend.a build/*.o -lc -lm -lpthread ");
 			}
+			
+			cmd_append(extra_libraries);
+			cmd_append(" ");
 			
 			if (USE_DA_ASAN) {
 				cmd_append("-fsanitize=address ");
 				printf("Using address sanitizer :p\n");
 			}
 		} else if (ON_GCC) {
-			cmd_append("ld -o build/cuik ");
-			cmd_append("build/*.o ./tildebackend.a -lc -lm -lpthread ");
+			cmd_append("ld -o ");
+			cmd_append(output_path);
+			if (ON_WINDOWS) cmd_append(".exe");
+			cmd_append(" build/*.o ./tildebackend.a -lc -lm -lpthread ");
 			cmd_append("/usr/lib/x86_64-linux-gnu/crt1.o ");
 			cmd_append("/usr/lib/x86_64-linux-gnu/crti.o ");
 			cmd_append("/usr/lib/x86_64-linux-gnu/crtn.o ");
 			cmd_append("/usr/lib/x86_64-linux-gnu/libc_nonshared.a ");
 			cmd_append("--dynamic-linker /lib64/ld-linux-x86-64.so.2 ");
+			cmd_append(extra_libraries);
 		} else {
 			assert(0 && "TODO");
 		}
 	} else if (mode == BUILD_MODE_STATIC_LIB) {
-		if (ON_CLANG) cmd_append("llvm-ar rc ");
-		else cmd_append("ar -rcs ");
-		
-		cmd_append(output_path);
-		cmd_append(" ");
-		
-		if (ON_WINDOWS) cmd_append("build/*.obj");
-		else cmd_append("build/*.o");
+		if (ON_MSVC) {
+			cmd_append("lib /out:");
+			cmd_append(output_path);
+			cmd_append(".lib build/*.obj ");
+			cmd_append(extra_libraries);
+		} else {
+			if (ON_CLANG) cmd_append("llvm-ar rc ");
+			else cmd_append("ar -rcs ");
+			
+			cmd_append(output_path);
+			if (ON_WINDOWS) cmd_append(".lib");
+			else cmd_append(".a");
+			
+			cmd_append(" ");
+			cmd_append("build/*.obj ");
+			cmd_append(extra_libraries);
+		}
 	} else {
 		printf("unknown build mode\n");
 		abort();
 	}
+	
+	printf("CMD: %s\n", command_buffer);
 	cmd_dump(cmd_run());
 }
 
-inline static void builder_compile(BuildMode mode, size_t count, const char* filepaths[], const char* output_path) {
+inline static void builder_compile(BuildMode mode, size_t count, const char* filepaths[], const char* output_path, const char* extra_libraries) {
 	if (UNIX_STYLE) {
-		builder_compile_cc(mode, count, filepaths, output_path);
+		builder_compile_cc(mode, count, filepaths, output_path, extra_libraries);
 	} else {
-		builder_compile_msvc(mode, count, filepaths, output_path);
+		builder_compile_msvc(mode, count, filepaths, output_path, extra_libraries);
 	}
 	
 	// delete any intermediates

@@ -19,6 +19,7 @@ static const char* INPUT_FILES[] = {
 	"src/tb/opt/copy_elision.c",
 	"src/tb/opt/dead_code_elim.c",
 	"src/tb/opt/deshort_circuit.c",
+	"src/tb/opt/load_elim.c",
 	"src/tb/opt/hoist_locals.c",
 	"src/tb/opt/mem2reg.c",
 	"src/tb/opt/strength_reduction.c",
@@ -33,7 +34,7 @@ static const char* INPUT_FILES[] = {
 };
 enum { INPUT_FILE_COUNT = sizeof(INPUT_FILES) / sizeof(INPUT_FILES[0]) };
 
-int main(int argc, char** argv) {
+int main(int argc, char* argv[]) {
 	const char* output_lib_path = NULL;
 	if (argc >= 2) {
 		output_lib_path = argv[1];
@@ -42,12 +43,12 @@ int main(int argc, char** argv) {
 	}
 	
 	builder_init();
-	builder_compile(BUILD_MODE_STATIC_LIB, INPUT_FILE_COUNT, INPUT_FILES, output_lib_path);
+	builder_compile(BUILD_MODE_STATIC_LIB, INPUT_FILE_COUNT, INPUT_FILES, output_lib_path, "external/tbbmalloc.lib");
 	
 #if defined(NEGATE)
 	// personal crap
 	system("cd W:/Workspace/Cuik/ && clang compile.c -o compile.exe && compile.exe");
 #endif
-
+	
 	return 0;
 }

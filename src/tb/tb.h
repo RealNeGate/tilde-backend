@@ -729,8 +729,7 @@ TB_DataType { TB_PTR }
 	// Module management
 	////////////////////////////////
 	// Creates a module with the correct target and settings
-	TB_API TB_Module* tb_module_create(
-									   TB_Arch target_arch, TB_System target_system, const TB_FeatureSet* features);
+	TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, const TB_FeatureSet* features);
 	
 	// Validates IR & compiles the function into machine code.
 	// For isel_mode, TB_ISEL_FAST will compile faster but worse codegen
@@ -777,8 +776,7 @@ TB_DataType { TB_PTR }
 	// function prototypes do not get freed individually and last for the entire run
 	// of the backend, they can also be reused for multiple functions which have
 	// matching signatures.
-	TB_API TB_FunctionPrototype* tb_prototype_create(
-													 TB_Module* m, TB_CallingConv conv, TB_DataType return_dt, int num_params, bool has_varargs);
+	TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv conv, TB_DataType return_dt, int num_params, bool has_varargs);
 	
 	// adds a parameter to the function prototype, TB doesn't support struct
 	// parameters so the frontend must lower them to pointers or any other type
@@ -791,38 +789,30 @@ TB_DataType { TB_PTR }
 	// adds a parameter to the function prototype, TB doesn't support struct
 	// parameters so the frontend must lower them to pointers or any other type
 	// depending on their preferred ABI.
-	TB_API TB_Function* tb_prototype_build(
-										   TB_Module* m, TB_FunctionPrototype* p, const char* name, TB_Linkage linkage);
+	TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, const char* name, TB_Linkage linkage);
 	
 	////////////////////////////////
 	// Constant Initializers
 	////////////////////////////////
 	// NOTE: the max objects is a cap and thus it can be bigger than the actual
 	// number used.
-	TB_API TB_InitializerID tb_initializer_create(
-												  TB_Module* m, size_t size, size_t align, size_t max_objects);
+	TB_API TB_InitializerID tb_initializer_create(TB_Module* m, size_t size, size_t align, size_t max_objects);
 	
 	// returns a buffer which the user can fill to then have represented in the
 	// initializer
-	TB_API void* tb_initializer_add_region(
-										   TB_Module* m, TB_InitializerID id, size_t offset, size_t size);
+	TB_API void* tb_initializer_add_region(TB_Module* m, TB_InitializerID id, size_t offset, size_t size);
 	
 	// places a relocation for a global at offset, the size of the relocation
 	// depends on the pointer size
-	TB_API void tb_initializer_add_global(
-										  TB_Module* m, TB_InitializerID id, size_t offset, TB_GlobalID global);
-	TB_API void tb_initializer_add_function(
-											TB_Module* m, TB_InitializerID id, size_t offset, TB_FunctionID func);
-	TB_API void tb_initializer_add_extern(
-										  TB_Module* m, TB_InitializerID id, size_t offset, TB_ExternalID external);
+	TB_API void tb_initializer_add_global(TB_Module* m, TB_InitializerID id, size_t offset, TB_GlobalID global);
+	TB_API void tb_initializer_add_function(TB_Module* m, TB_InitializerID id, size_t offset, TB_FunctionID func);
+	TB_API void tb_initializer_add_extern(TB_Module* m, TB_InitializerID id, size_t offset, TB_ExternalID external);
 	
 	////////////////////////////////
 	// Constant Initializers
 	////////////////////////////////
-	TB_API TB_GlobalID tb_global_create(
-										TB_Module* m, const char* name, TB_StorageClass storage, TB_Linkage linkage);
-	TB_API void tb_global_set_initializer(
-										  TB_Module* m, TB_GlobalID global, TB_InitializerID initializer);
+	TB_API TB_GlobalID tb_global_create(TB_Module* m, const char* name, TB_StorageClass storage, TB_Linkage linkage);
+	TB_API void tb_global_set_initializer(TB_Module* m, TB_GlobalID global, TB_InitializerID initializer);
 	
 	////////////////////////////////
 	// Function Attributes
@@ -965,8 +955,7 @@ TB_DataType { TB_PTR }
 	// } else {
 	//   return { false };
 	// }
-	TB_API TB_CmpXchgResult tb_inst_atomic_cmpxchg(TB_Function* f, TB_Reg addr, TB_Reg expected,
-												   TB_Reg desired, TB_MemoryOrder succ, TB_MemoryOrder fail);
+	TB_API TB_CmpXchgResult tb_inst_atomic_cmpxchg(TB_Function* f, TB_Reg addr, TB_Reg expected, TB_Reg desired, TB_MemoryOrder succ, TB_MemoryOrder fail);
 	
 	// Float math
 	TB_API TB_Reg tb_inst_fadd(TB_Function* f, TB_Reg a, TB_Reg b);

@@ -25,23 +25,23 @@ static int get_local_thread_id() {
 		int new_id = tb_atomic_int_add(&total_tid, 1);
 		tid = new_id + 1;
 	}
-
+	
 	return tid - 1;
 }
 
 static TB_CodeRegion* get_or_allocate_code_region(TB_Module* m, int tid) {
 	if (m->code_regions[tid] == NULL) {
-		m->code_regions[tid] = tb_platform_valloc_guard(CODE_REGION_BUFFER_SIZE);
+		m->code_regions[tid] = tb_platform_valloc(CODE_REGION_BUFFER_SIZE);
 		if (m->code_regions[tid] == NULL) tb_panic("could not allocate code region!");
 	}
-
+	
 	return m->code_regions[tid];
 }
 
 TB_API TB_Function* tb_function_clone(TB_Module* m, TB_Function* source_func, const char* name) {
 	size_t i = tb_atomic_size_add(&m->functions.count, 1);
 	assert(i < TB_MAX_FUNCTIONS);
-
+	
 	TB_Function* f = &m->functions.data[i];
 	*f = (TB_Function) {
 		.module = m,
@@ -51,10 +51,10 @@ TB_API TB_Function* tb_function_clone(TB_Module* m, TB_Function* source_func, co
 		.label_count = source_func->label_count,
 		.current_label = source_func->current_label
 	};
-
+	
 	f->nodes.capacity = f->nodes.count < 16 ? 16 : tb_next_pow2(f->nodes.count);
 	f->nodes.data = tb_platform_heap_alloc(f->nodes.capacity * sizeof(TB_Node));
-
+	
 	memcpy(f->nodes.data, source_func->nodes.data, f->nodes.count * sizeof(uint8_t));
 	return f;
 }
@@ -62,47 +62,47 @@ TB_API TB_Function* tb_function_clone(TB_Module* m, TB_Function* source_func, co
 // TODO(NeGate): Doesn't free the name, it's kept forever
 TB_API void tb_function_free(TB_Function* f) {
 	if (f->nodes.data == NULL) return;
-
+	
 	tb_platform_heap_free(f->nodes.data);
 	tb_platform_heap_free(f->vla.data);
-
+	
 	f->nodes.data = NULL;
-	f->vla.data	  = NULL;
+	f->vla.data = NULL;
 }
 
 TB_API TB_DataType tb_vector_type(TB_DataTypeEnum type, int width) {
 	assert(tb_is_power_of_two(width));
-
+	
 	return (TB_DataType) { .type = type, .width = tb_ffs(width) - 1 };
 }
 
 TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, const TB_FeatureSet* features) {
 	TB_Module* m = tb_platform_heap_alloc(sizeof(TB_Module));
 	memset(m, 0, sizeof(TB_Module));
-
+	
 	m->max_threads = TB_MAX_THREADS;
 	m->target_arch = target_arch;
 	m->target_system = target_system;
 	m->features = *features;
-
+	
 	m->prototypes_arena = tb_platform_valloc(PROTOTYPES_ARENA_SIZE * sizeof(uint64_t));
-
+	
 	m->files.count = 1;
 	m->files.capacity = 64;
 	m->files.data = tb_platform_heap_alloc(64 * sizeof(TB_File));
 	m->files.data[0] = (TB_File) { 0 };
-
+	
 	m->functions.count = 0;
 	m->functions.data = tb_platform_heap_alloc(TB_MAX_FUNCTIONS * sizeof(TB_Function));
-
+	
 	loop(i, TB_MAX_THREADS) {
 		TB_External dummy = { 0 };
 		arrput(m->externals[i], dummy);
 	}
-
+	
 	// we start a little off the start just because
 	m->rdata_region_size = 16;
-
+	
 	tb_platform_arena_init();
 	return m;
 }
@@ -128,12 +128,12 @@ TB_API bool tb_function_optimize(TB_Function* f) {
 	// printf("INITIAL	 ");
 	// tb_function_print(f, tb_default_print_callback, stdout);
 	// printf("\n\n\n");
-
+	
 	bool changes = false;
-
+	
 	// only needs to run once
 	changes |= tb_opt_hoist_locals(f);
-
+	
 	repeat_opt: {
 		// Passive optimizations
 		OPT(dead_expr_elim);
@@ -148,11 +148,11 @@ TB_API bool tb_function_optimize(TB_Function* f) {
 		OPT(deshort_circuit);
 		OPT(compact_dead_regs);
 	}
-
+	
 	// printf("FINAL   ");
 	// tb_function_print(f, tb_default_print_callback, stdout);
 	// printf("\n\n\n");
-
+	
 	return changes;
 }
 
@@ -163,21 +163,21 @@ TB_API bool tb_module_optimize(TB_Module* m) {
 
 TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f, TB_ISelMode isel_mode) {
 	ICodeGen* restrict codegen = tb_find_code_generator(m);
-
+	
 	// Machine code gen
 	int id = get_local_thread_id();
 	assert(id < TB_MAX_THREADS);
-
+	
 	TB_CodeRegion* region = get_or_allocate_code_region(m, id);
 	TB_FunctionOutput* func_out = tb_platform_arena_alloc(sizeof(TB_FunctionOutput));
-
+	
 	TB_FunctionID index = tb_function_get_id(m, f);
 	if (isel_mode == TB_ISEL_COMPLEX && codegen->complex_path == NULL) {
 		// TODO(NeGate): we need better logging...
 		fprintf(stderr, "TB warning: complex path is missing, defaulting to fast path.\n");
 		isel_mode = TB_ISEL_FAST;
 	}
-
+	
 	if (isel_mode == TB_ISEL_COMPLEX) {
 		*func_out = codegen->complex_path(index, f, &m->features, &region->data[region->size], id);
 	} else {
@@ -185,53 +185,47 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f, TB_ISelMode ise
 	}
 	tb_atomic_size_add(&m->functions.compiled_count, 1);
 	region->size += func_out->code_size;
-
+	
 	if (region->size > CODE_REGION_BUFFER_SIZE) {
 		tb_panic("Code region buffer: out of memory!\n");
 	}
-
+	
 	f->output = func_out;
 	return true;
 }
 
 TB_API bool tb_module_compile(TB_Module* m) {
 	m->max_threads = total_tid;
-
+	
 	return true;
-}
-
-TB_API size_t tb_DEBUG_module_get_full_node_count(TB_Module* m) {
-	size_t node_count = 0;
-	loop(i, m->functions.count) { node_count += m->functions.data[i].nodes.count; }
-	return node_count;
 }
 
 TB_API void tb_module_destroy(TB_Module* m) {
 	tb_platform_arena_free();
 	tb_platform_string_free();
-
+	
 	loop(i, m->functions.count) {
 		tb_function_free(&m->functions.data[i]);
 	}
-
+	
 	loop(i, m->max_threads) if (m->code_regions[i]) {
 		tb_platform_vfree(m->code_regions[i], CODE_REGION_BUFFER_SIZE);
 		m->code_regions[i] = NULL;
 	}
-
+	
 	if (m->jit_region) {
 		tb_platform_vfree(m->jit_region, m->jit_region_size);
 		m->jit_region = NULL;
 	}
-
+	
 	loop(i, m->max_threads) arrfree(m->initializers[i]);
 	loop(i, m->max_threads) arrfree(m->call_patches[i]);
 	loop(i, m->max_threads) arrfree(m->ecall_patches[i]);
 	loop(i, m->max_threads) arrfree(m->const_patches[i]);
 	loop(i, m->max_threads) arrfree(m->externals[i]);
-
+	
 	tb_platform_vfree(m->prototypes_arena, PROTOTYPES_ARENA_SIZE * sizeof(uint64_t));
-
+	
 #if !TB_STRIP_LABELS
 	arrfree(m->label_symbols);
 #endif
@@ -245,14 +239,14 @@ TB_API TB_FileID tb_file_create(TB_Module* m, const char* path) {
 	loop_range(i, 1, m->files.count) {
 		if (strcmp(m->files.data[i].path, path) == 0) return i;
 	}
-
+	
 	if (m->files.count + 1 >= m->files.capacity) {
 		m->files.capacity *= 2;
 		m->files.data = tb_platform_heap_realloc(m->files.data, m->files.capacity * sizeof(TB_File));
 	}
-
+	
 	char* str = tb_platform_string_alloc(path);
-
+	
 	size_t r = m->files.count++;
 	m->files.data[r] = (TB_File) { .path = str };
 	return r;
@@ -260,20 +254,20 @@ TB_API TB_FileID tb_file_create(TB_Module* m, const char* path) {
 
 TB_API bool tb_module_export(TB_Module* m, const char* path, bool emit_debug_info) {
 	const ICodeGen* restrict code_gen = tb_find_code_generator(m);
-
+	
 	switch (m->target_system) {
 		case TB_SYSTEM_WINDOWS: tb_export_coff(m, code_gen, path, emit_debug_info); break;
 		case TB_SYSTEM_LINUX:   tb_export_elf64(m, code_gen, path, emit_debug_info); break;
 		default:                tb_panic("TinyBackend error: Unknown system!\n");
 	}
-
+	
 	return true;
 }
 
 void tb_function_reserve_nodes(TB_Function* f, size_t extra) {
 	if (f->nodes.count + extra >= f->nodes.capacity) {
 		f->nodes.capacity = (f->nodes.count + extra) * 2;
-
+		
 		f->nodes.data = tb_platform_heap_realloc(f->nodes.data, sizeof(TB_Node) * f->nodes.capacity);
 		if (f->nodes.data == NULL) tb_panic("Out of memory");
 	}
@@ -281,15 +275,15 @@ void tb_function_reserve_nodes(TB_Function* f, size_t extra) {
 
 TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv conv, TB_DataType return_dt, int num_params, bool has_varargs) {
 	assert(num_params == (uint32_t)num_params);
-
+	
 	size_t space_needed = (sizeof(TB_FunctionPrototype) + (sizeof(uint64_t) - 1)) / sizeof(uint64_t);
 	space_needed += ((num_params * sizeof(TB_DataType)) + (sizeof(uint64_t) - 1)) / sizeof(uint64_t);
-
+	
 	size_t len = tb_atomic_size_add(&m->prototypes_arena_size, space_needed);
 	if (len + space_needed >= PROTOTYPES_ARENA_SIZE) {
 		tb_panic("Prototype arena: out of memory!\n");
 	}
-
+	
 	TB_FunctionPrototype* p = (TB_FunctionPrototype*)&m->prototypes_arena[len];
 	p->call_conv = conv;
 	p->param_capacity = num_params;
@@ -315,29 +309,29 @@ TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, co
 	if (i >= TB_MAX_FUNCTIONS) {
 		tb_panic("cannot spawn more TB functions\n");
 	}
-
+	
 	assert(p->param_count == p->param_capacity);
-
+	
 	TB_Function* f = &m->functions.data[i];
 	*f = (TB_Function) {
 		.module = m, .linkage = linkage, .prototype = p, .name = tb_platform_string_alloc(name)
 	};
-
+	
 	f->nodes.capacity = 64;
 	f->nodes.count = 2 + p->param_count;
 	f->nodes.data = tb_platform_heap_alloc(f->nodes.capacity * sizeof(TB_Node));
-
+	
 	f->attrib_pool_capacity = 64;
 	f->attrib_pool_count = 1; // 0 is reserved
 	f->attrib_pool = tb_platform_heap_alloc(64 * sizeof(TB_Attrib));
-
+	
 	// Null slot, Entry label & Parameters
 	f->nodes.data[0] = (TB_Node) { .next = 1 };
 	f->nodes.data[1] = (TB_Node) { .type = TB_LABEL, .dt = TB_TYPE_PTR, .label = { 0, 0 } };
-
+	
 	loop(i, p->param_count) {
 		TB_DataType dt = p->params[i];
-
+		
 		// TODO(NeGate): It's currently assuming that all pointers are 8bytes big,
 		// which is untrue for some platforms.
 		int size = 0;
@@ -352,16 +346,16 @@ TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, co
 			case TB_PTR: size = 8; break;
 			default: break;
 		}
-
+		
 		assert(size);
 		assert(dt.width < 8 && "Vector width too big!");
-
+		
 		f->nodes.data[1 + i].next = 2 + i;
 		f->nodes.data[2 + i] = (TB_Node) {
 			.type = TB_PARAM, .dt = dt, .next = 2, .param = { .id = i, .size = size << dt.width }
 		};
 	}
-
+	
 	f->nodes.end = 2 + (p->param_count - 1);
 	f->label_count = f->current_label = 1;
 	return f;
@@ -372,17 +366,17 @@ TB_API TB_InitializerID tb_initializer_create(TB_Module* m, size_t size, size_t 
 	tb_assume(align == (uint32_t)align);
 	tb_assume(max_objects == (uint32_t)max_objects);
 	int tid = get_local_thread_id();
-
+	
 	size_t space_needed = (sizeof(TB_Initializer) + (sizeof(uint64_t) - 1)) / sizeof(uint64_t);
 	space_needed += ((max_objects * sizeof(TB_InitObj)) + (sizeof(uint64_t) - 1)) / sizeof(uint64_t);
-
+	
 	// each thread gets their own grouping of ids
 	size_t len = arrlen(m->initializers[tid]);
-
+	
 	TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 	TB_InitializerID i = (tid * per_thread_stride) + len;
 	arrsetlen(m->initializers[tid], len + space_needed);
-
+	
 	TB_Initializer* initializer = (TB_Initializer*)&m->initializers[tid][len];
 	initializer->size = size;
 	initializer->align = align;
@@ -394,36 +388,36 @@ TB_API TB_InitializerID tb_initializer_create(TB_Module* m, size_t size, size_t 
 TB_API void* tb_initializer_add_region(TB_Module* m, TB_InitializerID id, size_t offset, size_t size) {
 	assert(offset == (uint32_t)offset);
 	assert(size == (uint32_t)size);
-
+	
 	TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 	TB_Initializer* i = (TB_Initializer*)&m->initializers[id / per_thread_stride][id % per_thread_stride];
-
+	
 	assert(i->obj_count + 1 <= i->obj_capacity);
-
+	
 	void* ptr = tb_platform_heap_alloc(size);
 	i->objects[i->obj_count++] = (TB_InitObj) {
 		.type = TB_INIT_OBJ_REGION, .offset = offset, .region = { .size = size, .ptr = ptr }
 	};
-
+	
 	return ptr;
 }
 
 TB_API void tb_initializer_add_global(TB_Module* m, TB_InitializerID id, size_t offset, TB_GlobalID global) {
 	assert(offset == (uint32_t)offset);
-
+	
 	TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 	TB_Initializer* i = (TB_Initializer*)&m->initializers[id / per_thread_stride][id % per_thread_stride];
-
+	
 	assert(i->obj_count + 1 <= i->obj_capacity);
 	i->objects[i->obj_count++] = (TB_InitObj) { .type = TB_INIT_OBJ_RELOC_GLOBAL, .offset = offset, .reloc_global = global };
 }
 
 TB_API void tb_initializer_add_function(TB_Module* m, TB_InitializerID id, size_t offset, TB_FunctionID func) {
 	assert(offset == (uint32_t)offset);
-
+	
 	TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 	TB_Initializer* i = (TB_Initializer*)&m->initializers[id / per_thread_stride][id % per_thread_stride];
-
+	
 	assert(i->obj_count + 1 <= i->obj_capacity);
 	i->objects[i->obj_count++] = (TB_InitObj) {
 		.type = TB_INIT_OBJ_RELOC_FUNCTION, .offset = offset, .reloc_function = func
@@ -432,10 +426,10 @@ TB_API void tb_initializer_add_function(TB_Module* m, TB_InitializerID id, size_
 
 TB_API void tb_initializer_add_extern(TB_Module* m, TB_InitializerID id, size_t offset, TB_ExternalID external) {
 	assert(offset == (uint32_t)offset);
-
+	
 	TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 	TB_Initializer* i = (TB_Initializer*)&m->initializers[id / per_thread_stride][id % per_thread_stride];
-
+	
 	assert(i->obj_count + 1 <= i->obj_capacity);
 	i->objects[i->obj_count++] = (TB_InitObj) {
 		.type = TB_INIT_OBJ_RELOC_EXTERN, .offset = offset, .reloc_extern = external
@@ -444,10 +438,10 @@ TB_API void tb_initializer_add_extern(TB_Module* m, TB_InitializerID id, size_t 
 
 TB_API TB_GlobalID tb_global_create(TB_Module* m, const char* name, TB_StorageClass storage, TB_Linkage linkage) {
 	int tid = get_local_thread_id();
-
+	
 	// each thread gets their own grouping of global ids
 	TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-
+	
 	TB_GlobalID i = (tid * per_thread_stride) + arrlen(m->globals[tid]);
 	TB_Global g = {
 		.name = tb_platform_string_alloc(name),
@@ -455,27 +449,27 @@ TB_API TB_GlobalID tb_global_create(TB_Module* m, const char* name, TB_StorageCl
 		.storage = storage
 	};
 	arrput(m->globals[tid], g);
-
+	
 	return i;
 }
 
 TB_API void tb_global_set_initializer(TB_Module* m, TB_GlobalID global, TB_InitializerID init) {
 	const TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 	TB_Global* g = &m->globals[global / per_thread_stride][global % per_thread_stride];
-
+	
 	// layout
 	tb_atomic_size_t* region_size = g->storage == TB_STORAGE_TLS ? &m->tls_region_size : &m->data_region_size;
 	TB_Initializer* i = (TB_Initializer*)&m->initializers[init / per_thread_stride][init % per_thread_stride];
-
+	
 	size_t pos = tb_atomic_size_add(region_size, i->size + i->align);
-
+	
 	// TODO(NeGate): Assert on non power of two alignment
 	size_t align_mask = i->align - 1;
 	pos = (pos + align_mask) & ~align_mask;
-
+	
 	assert(pos < UINT32_MAX && "Cannot fit global into space");
 	assert((pos + i->size) < UINT32_MAX && "Cannot fit global into space");
-
+	
 	g->pos = pos;
 	g->init = init;
 }
@@ -492,20 +486,20 @@ TB_API bool tb_jit_import(TB_Module* m, const char* name, void* address) {
 			return true;
 		}
 	}
-
+	
 	return false;
 }
 
 TB_API TB_ExternalID tb_extern_create(TB_Module* m, const char* name) {
 	int tid = get_local_thread_id();
-
+	
 	// each thread gets their own grouping of external ids
 	TB_ExternalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-
+	
 	TB_ExternalID i = (tid * per_thread_stride) + arrlen(m->externals[tid]);
 	TB_External e = { .name = tb_platform_string_alloc(name) };
 	arrput(m->externals[tid], e);
-
+	
 	return i;
 }
 
@@ -513,7 +507,7 @@ TB_API void* tb_module_get_jit_func_by_name(TB_Module* m, const char* name) {
 	for (size_t i = 0; i < m->functions.count; i++) {
 		if (strcmp(m->functions.data[i].name, name) == 0) return m->compiled_function_pos[i];
 	}
-
+	
 	return NULL;
 }
 
@@ -529,7 +523,7 @@ TB_API void* tb_module_get_jit_func(TB_Module* m, TB_Function* f) {
 
 TB_API TB_Label tb_inst_get_current_label(TB_Function* f) {
 	if (!f->current_label) return 0;
-
+	
 	return f->nodes.data[f->current_label].label.id;
 }
 
@@ -554,7 +548,7 @@ void* tb_tls_try_push(TB_TemporaryStorage* store, size_t size) {
 	if (sizeof(TB_TemporaryStorage) + store->used + size >= TB_TEMPORARY_STORAGE_SIZE) {
 		return NULL;
 	}
-
+	
 	void* ptr = &store->data[store->used];
 	store->used += size;
 	return ptr;
@@ -562,7 +556,7 @@ void* tb_tls_try_push(TB_TemporaryStorage* store, size_t size) {
 
 void* tb_tls_push(TB_TemporaryStorage* store, size_t size) {
 	assert(sizeof(TB_TemporaryStorage) + store->used + size < TB_TEMPORARY_STORAGE_SIZE);
-
+	
 	void* ptr = &store->data[store->used];
 	store->used += size;
 	return ptr;
@@ -570,34 +564,34 @@ void* tb_tls_push(TB_TemporaryStorage* store, size_t size) {
 
 void* tb_tls_pop(TB_TemporaryStorage* store, size_t size) {
 	assert(sizeof(TB_TemporaryStorage) + store->used > size);
-
+	
 	store->used -= size;
 	return &store->data[store->used];
 }
 
 void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance) {
 	assert(sizeof(TB_TemporaryStorage) + store->used > distance);
-
+	
 	return &store->data[store->used - distance];
 }
 
 void tb_tls_restore(TB_TemporaryStorage* store, void* ptr) {
 	size_t i = ((uint8_t*)ptr) - store->data;
 	assert(i <= store->used);
-
+	
 	store->used = i;
 }
 
 void tb_emit_call_patch(TB_Module* m, TB_Function* source, uint32_t target_id, size_t pos, size_t local_thread_id) {
 	assert(pos == (uint32_t)pos);
-
+	
 	TB_FunctionPatch p = { .source = source, .target_id = target_id, .pos = pos };
 	arrput(m->call_patches[local_thread_id], p);
 }
 
 void tb_emit_ecall_patch(TB_Module* m, TB_Function* source, TB_ExternalID target_id, size_t pos, size_t local_thread_id) {
 	assert(pos == (uint32_t)pos);
-
+	
 	TB_ExternFunctionPatch p = { .source = source, .target_id = target_id, .pos = pos };
 	arrput(m->ecall_patches[local_thread_id], p);
 }
@@ -605,23 +599,23 @@ void tb_emit_ecall_patch(TB_Module* m, TB_Function* source, TB_ExternalID target
 uint32_t tb_emit_const_patch(TB_Module* m, TB_Function* source, size_t pos, const void* ptr, size_t len, size_t local_thread_id) {
 	assert(pos == (uint32_t)pos);
 	assert(len == (uint32_t)len);
-
+	
 	size_t align = len > 8 ? 16 : 0;
 	size_t alloc_pos = tb_atomic_size_add(&m->rdata_region_size, len + align);
-
+	
 	size_t rdata_pos = len > 8 ? align_up(alloc_pos, 16) : alloc_pos;
 	TB_ConstPoolPatch p = {
 		.source = source, .pos = pos, .rdata_pos = rdata_pos, .data = ptr, .length = len
 	};
 	arrput(m->const_patches[local_thread_id], p);
-
+	
 	assert(rdata_pos == (uint32_t)rdata_pos);
 	return rdata_pos;
 }
 
 void tb_emit_global_patch(TB_Module* m, TB_Function* source, size_t pos, TB_GlobalID global, size_t local_thread_id) {
 	assert(pos == (uint32_t)pos);
-
+	
 	TB_GlobalPatch p = { .source = source, .pos = pos, .global = global };
 	arrput(m->global_patches[local_thread_id], p);
 }
@@ -638,7 +632,7 @@ TB_API void tb_default_print_callback(void* user_data, const char* fmt, ...) {
 
 static void tb_print_type(TB_DataType dt, TB_PrintCallback callback, void* user_data) {
 	assert(dt.width < 8 && "Vector width too big!");
-
+	
 	switch (dt.type) {
 		case TB_VOID: callback(user_data, "void"); break;
 		case TB_BOOL: callback(user_data, "bool"); break;
@@ -658,7 +652,7 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 	TB_Reg i = n - f->nodes.data;
 	TB_NodeTypeEnum type = n->type;
 	TB_DataType dt = n->dt;
-
+	
 	switch (type) {
 		case TB_NULL: callback(user_data, "	 NOP"); break;
 		case TB_DEBUGBREAK: callback(user_data, " DEBUGBREAK"); break;
@@ -835,7 +829,7 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 			callback(user_data, "call %s(", i, n->call.target->name);
 			for (size_t j = n->call.param_start; j < n->call.param_end; j++) {
 				if (j != n->call.param_start) callback(user_data, ", ");
-
+				
 				callback(user_data, "r%u", f->vla.data[j]);
 			}
 			callback(user_data, ")");
@@ -845,13 +839,13 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 			TB_ExternalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 			TB_External*  e =
 				&m->externals[n->ecall.target / per_thread_stride][n->ecall.target % per_thread_stride];
-
+			
 			callback(user_data, "  r%u = ", i);
 			tb_print_type(dt, callback, user_data);
 			callback(user_data, " call %s(", e->name);
 			for (size_t j = n->ecall.param_start; j < n->ecall.param_end; j++) {
 				if (j != n->ecall.param_start) callback(user_data, ", ");
-
+				
 				callback(user_data, "r%u", f->vla.data[j]);
 			}
 			callback(user_data, ")");
@@ -863,7 +857,7 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 			callback(user_data, " call %s(", n->call.target->name);
 			for (size_t j = n->call.param_start; j < n->call.param_end; j++) {
 				if (j != n->call.param_start) callback(user_data, ", ");
-
+				
 				callback(user_data, "r%u", f->vla.data[j]);
 			}
 			callback(user_data, ")");
@@ -875,7 +869,7 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 			callback(user_data, " call r%u(", n->vcall.target);
 			for (size_t j = n->vcall.param_start; j < n->vcall.param_end; j++) {
 				if (j != n->vcall.param_start) callback(user_data, ", ");
-
+				
 				callback(user_data, "r%u", f->vla.data[j]);
 			}
 			callback(user_data, ")");
@@ -885,13 +879,13 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 			callback(user_data, " SWITCH\t");
 			tb_print_type(dt, callback, user_data);
 			callback(user_data, "\tr%u (", n->switch_.key);
-
+			
 			size_t entry_start = n->switch_.entries_start;
 			size_t entry_count = (n->switch_.entries_end - n->switch_.entries_start) / 2;
-
+			
 			for (size_t j = 0; j < entry_count; j++) {
 				TB_SwitchEntry* e = (TB_SwitchEntry*)&f->vla.data[entry_start + (j * 2)];
-
+				
 				callback(user_data, "\t\t\t%u -> L%d,\n", e->key, e->value);
 			}
 			callback(user_data, "\t\t\tdefault -> L%d)", n->switch_.default_label);
@@ -902,14 +896,14 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 			TB_ExternalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 			TB_External*  e					= &m->externals[n->external.value / per_thread_stride]
 			[n->external.value % per_thread_stride];
-
+			
 			callback(user_data, "  r%u = &%s", i, e->name);
 			break;
 		}
 		case TB_GLOBAL_ADDRESS: {
 			TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 			TB_Global* g = &m->globals[n->global.value / per_thread_stride][n->global.value % per_thread_stride];
-
+			
 			callback(user_data, "  r%u = &%s", i, g->name);
 			break;
 		}
@@ -964,12 +958,12 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 		break;
 		default: tb_todo();
 	}
-
+	
 	TB_AttribList* list = n->first_attrib;
 	if (list->attrib) {
 		do {
 			TB_Attrib* attrib = &f->attrib_pool[list->attrib];
-
+			
 			if (attrib->type == TB_ATTRIB_RESTRICT) {
 				printf(", restrict $%d", attrib->ref);
 			} else if (attrib->type == TB_ATTRIB_SCOPE) {
@@ -977,7 +971,7 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 			} else {
 				tb_todo();
 			}
-
+			
 			list = list->next;
 		} while (list);
 	}
@@ -985,7 +979,7 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 
 TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* user_data) {
 	callback(user_data, "%s():\n", f->name);
-
+	
 	TB_FOR_EACH_NODE(n, f) {
 		tb_print_node(f, callback, user_data, n);
 		callback(user_data, "\n");
@@ -1000,37 +994,37 @@ TB_API void tb_function_print_cfg(TB_Function* f, TB_PrintCallback callback, voi
 			 fid);
 	callback(user_data, "  node[label=\"%s\", shape=\"box\", style=\"\"] %s;\n", f->name, f->name);
 	callback(user_data, "  %s -> F%dL0;\n", f->name, fid);
-
+	
 	// Evaluate basic blocks
 	TB_Reg bb = 1;
 	do {
 		assert(f->nodes.data[bb].type == TB_LABEL);
 		TB_Node* start = &f->nodes.data[bb];
-
+		
 		TB_Reg	 bb_end	  = start->label.terminator;
 		TB_Node* end	  = &f->nodes.data[bb_end];
 		TB_Label label_id = start->label.id;
-
+		
 		callback(user_data, "  node[label=\"label.%d\", shape=\"box\", style=\"\"] F%dL%d;\n",
 				 label_id, fid, label_id);
-
+		
 		TB_Reg first_reg_in_bb = f->nodes.data[bb].next;
 		if (first_reg_in_bb != bb_end) {
 			callback(user_data, "  F%dL%d -> F%dR%d\n", fid, label_id, fid, first_reg_in_bb);
-
+			
 			TB_FOR_EACH_NODE_RANGE(n, f, first_reg_in_bb, bb_end) {
 				callback(user_data, "  node[label=\"");
 				tb_print_node(f, callback, user_data, n);
 				callback(user_data, "\"] F%dR%d;\n", fid, n - f->nodes.data);
-
+				
 				callback(user_data, "  F%dR%d -> F%dR%d;\n", fid, n - f->nodes.data, fid, n->next);
 			}
-
+			
 			callback(user_data, "  node[label=\"");
 			tb_print_node(f, callback, user_data, end);
 			callback(user_data, "\"] F%dR%d;\n", fid, bb_end);
 		}
-
+		
 		// TODO(NeGate): Fill in body
 		// Evaluate the terminator
 		if (end->type == TB_RET) {
@@ -1045,11 +1039,11 @@ TB_API void tb_function_print_cfg(TB_Function* f, TB_PrintCallback callback, voi
 		} else if (end->type == TB_GOTO) {
 			callback(user_data, "  F%dR%d -> F%dL%d\n", fid, bb, fid, end->goto_.label);
 		}
-
+		
 		// Next Basic block
 		bb = (end->type == TB_LABEL) ? bb_end : end->next;
 	} while (bb != TB_NULL_REG);
-
+	
 	callback(user_data, "}\n");
 }
 
@@ -1076,11 +1070,11 @@ uint8_t* tb_out_reserve(TB_Emitter* o, size_t count) {
 			o->capacity += count;
 			o->capacity *= 2;
 		}
-
+		
 		o->data = tb_platform_heap_realloc(o->data, o->capacity);
 		if (o->data == NULL) tb_todo();
 	}
-
+	
 	return &o->data[o->count];
 }
 
@@ -1091,35 +1085,35 @@ void tb_out_commit(TB_Emitter* o, size_t count) {
 
 void tb_out1b_UNSAFE(TB_Emitter* o, uint8_t i) {
 	assert(o->count + 1 < o->capacity);
-
+	
 	o->data[o->count] = i;
 	o->count += 1;
 }
 
 void tb_out4b_UNSAFE(TB_Emitter* o, uint32_t i) {
 	tb_out_reserve(o, 4);
-
+	
 	*((uint32_t*)&o->data[o->count]) = i;
 	o->count += 4;
 }
 
 void tb_out1b(TB_Emitter* o, uint8_t i) {
 	tb_out_reserve(o, 1);
-
+	
 	o->data[o->count] = i;
 	o->count += 1;
 }
 
 void tb_out2b(TB_Emitter* o, uint16_t i) {
 	tb_out_reserve(o, 2);
-
+	
 	*((uint16_t*)&o->data[o->count]) = i;
 	o->count += 2;
 }
 
 void tb_out4b(TB_Emitter* o, uint32_t i) {
 	tb_out_reserve(o, 4);
-
+	
 	*((uint32_t*)&o->data[o->count]) = i;
 	o->count += 4;
 }
@@ -1146,7 +1140,7 @@ uint32_t tb_get4b(TB_Emitter* o, uint32_t pos) {
 
 void tb_out8b(TB_Emitter* o, uint64_t i) {
 	tb_out_reserve(o, 8);
-
+	
 	*((uint64_t*)&o->data[o->count]) = i;
 	o->count += 8;
 }

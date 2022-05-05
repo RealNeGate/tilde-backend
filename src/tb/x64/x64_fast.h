@@ -8,7 +8,7 @@ typedef enum {
 } AddressDescType;
 
 typedef struct {
-    uint8_t     type;
+    uint8_t type;
     TB_DataType dt;
     union {
         GPR  gpr;
@@ -32,8 +32,7 @@ typedef struct {
 	
     bool is_sysv;
 	
-    TB_Reg* use_count;
-	
+    TB_Reg*  use_count;
     TB_Reg*  phis;
     uint32_t phi_count;
 	
@@ -43,7 +42,7 @@ typedef struct {
     // Peephole to improve tiling
     // of memory operands:
     struct {
-        TB_Reg mapping;
+        TB_Reg  mapping;
 		
         GPR     base : 8;
         GPR     index : 8;
@@ -59,8 +58,7 @@ typedef struct {
     AddressDesc addresses[];
 } X64_FastCtx;
 
-typedef enum
-{
+typedef enum {
     ISEL_MACHINE_NULL,
 	
     // final states
@@ -86,9 +84,9 @@ typedef enum
 
 typedef struct {
     X64_IselMachineState state;
-    int                  user_count;
-    int32_t              extra;
-    TB_Reg               users[2];
+    int user_count;
+    int32_t extra;
+    TB_Reg users[2];
 } X64_IselMachine;
 
 #define EITHER2(a, b, c)    ((a) == (b) || (a) == (c))
@@ -125,7 +123,8 @@ static bool is_address_node(TB_Function* f, TB_Reg r) {
 		case TB_EXTERN_ADDRESS:
 		case TB_GLOBAL_ADDRESS:
 		case TB_ARRAY_ACCESS:
-		case TB_MEMBER_ACCESS: return true;
+		case TB_MEMBER_ACCESS:
+		return true;
 		
 		default: return false;
     }
@@ -206,8 +205,9 @@ static void fast_evict_xmm(X64_FastCtx* restrict ctx, TB_Function* f, XMM xmm) {
 }
 
 
-static const GPR GPR_PRIORITIES[] = { RAX, RCX, RDX, R8, R9, R10, R11, RDI, RSI, RBX, R12, R13, R14,
-    R15 };
+static const GPR GPR_PRIORITIES[] = {
+	RAX, RCX, RDX, R8, R9, R10, R11, RDI, RSI, RBX, R12, R13, R14, R15
+};
 
 static GPR fast_alloc_gpr(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r) {
     assert(ctx->gpr_available > 0);
@@ -265,23 +265,19 @@ static void fast_kill_temp_xmm(X64_FastCtx* restrict ctx, TB_Function* f, XMM xm
     }
 }
 
-static void fast_def_gpr(
-						 X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r, GPR gpr, TB_DataType dt) {
+static void fast_def_gpr(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r, GPR gpr, TB_DataType dt) {
     ctx->addresses[r] = (AddressDesc) { .type = ADDRESS_DESC_GPR, .dt = dt, .gpr = gpr };
 }
 
-static void fast_def_xmm(
-						 X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r, XMM xmm, TB_DataType dt) {
+static void fast_def_xmm(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r, XMM xmm, TB_DataType dt) {
     ctx->addresses[r] = (AddressDesc) { .type = ADDRESS_DESC_XMM, .dt = dt, .xmm = xmm };
 }
 
-static void fast_def_spill(
-						   X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r, int spill, TB_DataType dt) {
+static void fast_def_spill(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r, int spill, TB_DataType dt) {
     ctx->addresses[r] = (AddressDesc) { .type = ADDRESS_DESC_SPILL, .dt = dt, .spill = spill };
 }
 
-static void fast_def_flags(
-						   X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r, Cond cc, TB_DataType dt) {
+static void fast_def_flags(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r, Cond cc, TB_DataType dt) {
     ctx->addresses[r] = (AddressDesc) { .type = ADDRESS_DESC_FLAGS, .dt = dt, .flags = cc };
 }
 
@@ -316,7 +312,8 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
             assert(ctx->addresses[r].dt.width == 0);
             return val_gpr(dt.type, ctx->addresses[r].gpr);
 			
-			case ADDRESS_DESC_XMM: return val_xmm(dt, ctx->addresses[r].xmm);
+			case ADDRESS_DESC_XMM:
+			return val_xmm(dt, ctx->addresses[r].xmm);
 			
 			case ADDRESS_DESC_SPILL:
             return (Val) {
@@ -1601,10 +1598,10 @@ static void fast_eval_basic_block(
 					TB_DataType param_dt  = f->nodes.data[param_reg].dt;
 					
 					if (TB_IS_FLOAT_TYPE(param_dt.type) || param_dt.width) {
-						// since we evict now we don't need to later
-						fast_evict_xmm(ctx, f, j);
-						
 						if (j < 4) {
+							// since we evict now we don't need to later
+							fast_evict_xmm(ctx, f, j);
+							
 							Val dst = val_gpr(param_dt.type, parameter_gprs[j]);
 							
 							// move to parameter XMM and reserve it
@@ -1614,15 +1611,15 @@ static void fast_eval_basic_block(
 							fast_folded_op(ctx, f, MOV, &dst, param_reg);
 						}
 					} else if (param_dt.type != TB_VOID) {
-						// since we evict now we don't need to later
-						fast_evict_gpr(ctx, f, parameter_gprs[j]);
-						caller_saved &= ~(1u << parameter_gprs[j]);
-						
 						// Win64 has 4 GPR parameters (RCX, RDX, R8, R9)
 						// SysV has 6 of them (RDI, RSI, RDX, RCX, R8, R9)
 						if ((ctx->is_sysv && j < 6) || j < 4) {
-							Val dst = val_gpr(param_dt.type, parameter_gprs[j]);
+							// since we evict now we don't need to later
+							fast_evict_gpr(ctx, f, parameter_gprs[j]);
+							caller_saved &= ~(1u << parameter_gprs[j]);
 							
+							Val dst = val_gpr(param_dt.type, parameter_gprs[j]);
+								
 							// move to parameter GPR and reserve it
 							fast_folded_op(ctx, f, MOV, &dst, param_reg);
 						} else {

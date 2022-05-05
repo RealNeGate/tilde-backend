@@ -9,12 +9,12 @@ void* tb_platform_valloc_guard(size_t size) {
 	void* ptr = VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE | PAGE_GUARD);
 	if (ptr == NULL) return NULL;
 	
-	/*SYSTEM_INFO sys_info;
+	SYSTEM_INFO sys_info;
 	GetSystemInfo(&sys_info);
 	
 	// mark the last page as a noaccess, this means it should segfault safely on running out of memory
 	DWORD old_protect;
-    VirtualProtect((char*)ptr + (size - sys_info.dwPageSize), sys_info.dwPageSize, PAGE_NOACCESS, &old_protect);*/
+    VirtualProtect((char*)ptr + (size - sys_info.dwPageSize), sys_info.dwPageSize, PAGE_NOACCESS, &old_protect);
 	
 	return ptr;
 }

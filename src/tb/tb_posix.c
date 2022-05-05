@@ -4,7 +4,13 @@ void* tb_platform_valloc(size_t size) {
     return mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 }
 
-void tb_platform_vfree(void* ptr, size_t size) { munmap(ptr, size); }
+void* tb_platform_valloc_guard(size_t size) {
+    return mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+}
+
+void tb_platform_vfree(void* ptr, size_t size) {
+	munmap(ptr, size);
+}
 
 bool tb_platform_vprotect(void* ptr, size_t size, bool execute) {
     return mprotect(ptr, size, PROT_READ | (execute ? PROT_EXEC : PROT_WRITE)) == 0;
@@ -21,13 +27,13 @@ static tb_atomic_size_t string_head;
 
 char* tb_platform_string_alloc(const char* str) {
     if (!string_buffer) { string_buffer = tb_platform_valloc(64 << 20); }
-
+	
     size_t len = strlen(str) + 1;
     size_t pos = tb_atomic_size_add(&string_head, len);
-
+	
     char* new_str = &string_buffer[pos];
     strcpy(new_str, str);
-
+	
     return new_str;
 }
 
@@ -53,9 +59,9 @@ static tb_atomic_int arena_lock = 0;
 
 void tb_platform_arena_init() {
     Segment* s = (Segment*)mmap(
-        NULL, ARENA_SEGMENT_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+								NULL, ARENA_SEGMENT_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (!s) abort();
-
+	
     arena_base = arena_top = s;
 }
 
@@ -63,15 +69,15 @@ void* tb_platform_arena_alloc(size_t size) {
     // align to max_align
     size_t align_mask = _Alignof(max_align_t) - 1;
     size              = (size + align_mask) & align_mask;
-
+	
     // If this ever happens... literally how...
     assert(size < ARENA_SEGMENT_SIZE);
-
+	
     // lock
     int expected = 0;
     while (!__atomic_compare_exchange_n(
-        &arena_lock, &expected, 1, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) { }
-
+										&arena_lock, &expected, 1, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) { }
+	
     void* ptr;
     if (arena_top->used + size - sizeof(Segment) < ARENA_SEGMENT_SIZE) {
         ptr = &arena_top->data[arena_top->used];
@@ -79,21 +85,21 @@ void* tb_platform_arena_alloc(size_t size) {
     } else {
         // Add new page
         Segment* s = (Segment*)mmap(
-            NULL, ARENA_SEGMENT_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+									NULL, ARENA_SEGMENT_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (!s) {
             printf("Out of memory!\n");
             abort();
         }
-
+		
         s->next = NULL;
         s->used = size;
         ptr     = s->data;
-
+		
         // Insert to top of nodes
         arena_top->next = s;
         arena_top       = s;
     }
-
+	
     // unlock
     __atomic_exchange_n(&arena_lock, 0, __ATOMIC_SEQ_CST);
     return ptr;

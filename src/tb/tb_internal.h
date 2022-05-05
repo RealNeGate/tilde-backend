@@ -46,8 +46,6 @@ size_t tb_atomic_size_store(size_t* dst, size_t src);
 // ***********************************
 // STB Data structures
 // ***********************************
-#define STBDS_REALLOC(c, p, s) tb_platform_heap_realloc(p, s)
-#define STBDS_FREE(c, p)       tb_platform_heap_free(p)
 #include "stb_ds.h"
 
 // cool part about stb_ds is that the dynamic arrays
@@ -55,7 +53,7 @@ size_t tb_atomic_size_store(size_t* dst, size_t src);
 #define dyn_array(T) T*
 
 #define PROTOTYPES_ARENA_SIZE   (32u << 20u)
-#define CODE_REGION_BUFFER_SIZE (512 * 1024 * 1024)
+#define CODE_REGION_BUFFER_SIZE (128 * 1024 * 1024)
 
 typedef struct TB_Emitter {
     size_t   capacity, count;
@@ -70,133 +68,132 @@ typedef struct TB_Emitter {
 
 #define TB_NEXT_INST(node, f) (&(f)->nodes.data[(node)->next])
 
-#define TB_FOR_EACH_NODE(elem, f)                                      \
-    for (TB_Node* elem = &f->nodes.data[1]; elem != &f->nodes.data[0]; \
-         elem          = &f->nodes.data[elem->next])
+#define TB_FOR_EACH_NODE(elem, f) \
+for (TB_Node* elem = &f->nodes.data[1]; elem != &f->nodes.data[0]; elem = &f->nodes.data[elem->next])
 
 #define TB_FOR_EACH_NODE_RANGE(elem, f, start, end)                                          \
-    for (TB_Node* elem = &f->nodes.data[start], *end__ = &f->nodes.data[end]; elem != end__; \
-         elem = &f->nodes.data[elem->next])
+for (TB_Node* elem = &f->nodes.data[start], *end__ = &f->nodes.data[end]; elem != end__; \
+elem = &f->nodes.data[elem->next])
 
 #define TB_FOR_EACH_REG_IN_NODE(macro)                                                    \
-    case TB_NULL:                                                                         \
-    case TB_SIGNED_CONST:                                                                 \
-    case TB_UNSIGNED_CONST:                                                               \
-    case TB_FLOAT_CONST:                                                                  \
-    case TB_STRING_CONST:                                                                 \
-    case TB_LOCAL:                                                                        \
-    case TB_PARAM:                                                                        \
-    case TB_GOTO:                                                                         \
-    case TB_LINE_INFO:                                                                    \
-    case TB_FUNC_ADDRESS:                                                                 \
-    case TB_EXTERN_ADDRESS:                                                               \
-    case TB_GLOBAL_ADDRESS:                                                               \
-    case TB_DEBUGBREAK:                                                                   \
-    case TB_RESTRICT: break;                                                              \
-    case TB_LABEL: macro(n->label.terminator); break;                                     \
-    case TB_INITIALIZE: macro(n->init.addr); break;                                       \
-    case TB_KEEPALIVE:                                                                    \
-    case TB_VA_START:                                                                     \
-    case TB_NOT:                                                                          \
-    case TB_NEG:                                                                          \
-    case TB_X86INTRIN_SQRT:                                                               \
-    case TB_X86INTRIN_RSQRT:                                                              \
-    case TB_INT2PTR:                                                                      \
-    case TB_PTR2INT:                                                                      \
-    case TB_INT2FLOAT:                                                                    \
-    case TB_FLOAT2INT:                                                                    \
-    case TB_TRUNCATE:                                                                     \
-    case TB_BITCAST: macro(n->unary.src); break;                                          \
-    case TB_ATOMIC_XCHG:                                                                  \
-    case TB_ATOMIC_ADD:                                                                   \
-    case TB_ATOMIC_SUB:                                                                   \
-    case TB_ATOMIC_AND:                                                                   \
-    case TB_ATOMIC_XOR:                                                                   \
-    case TB_ATOMIC_OR:                                                                    \
-        macro(n->atomic.addr);                                                            \
-        macro(n->atomic.src);                                                             \
-        break;                                                                            \
-    case TB_MEMCPY:                                                                       \
-    case TB_MEMSET:                                                                       \
-        macro(n->mem_op.dst);                                                             \
-        macro(n->mem_op.src);                                                             \
-        macro(n->mem_op.size);                                                            \
-        break;                                                                            \
-    case TB_MEMBER_ACCESS: macro(n->member_access.base); break;                           \
-    case TB_ARRAY_ACCESS:                                                                 \
-        macro(n->array_access.base);                                                      \
-        macro(n->array_access.index);                                                     \
-        break;                                                                            \
-    case TB_PARAM_ADDR: macro(n->param_addr.param); break;                                \
-    case TB_PASS: macro(n->pass.value); break;                                            \
-    case TB_PHI1:                                                                         \
-        macro(n->phi1.a);                                                                 \
-        macro(n->phi1.a_label);                                                           \
-        break;                                                                            \
-    case TB_PHI2:                                                                         \
-        macro(n->phi2.a);                                                                 \
-        macro(n->phi2.b);                                                                 \
-        macro(n->phi2.a_label);                                                           \
-        macro(n->phi2.b_label);                                                           \
-        break;                                                                            \
-    case TB_LOAD: macro(n->load.address); break;                                          \
-    case TB_STORE:                                                                        \
-        macro(n->store.address);                                                          \
-        macro(n->store.value);                                                            \
-        break;                                                                            \
-    case TB_ZERO_EXT:                                                                     \
-    case TB_SIGN_EXT:                                                                     \
-    case TB_FLOAT_EXT: macro(n->unary.src); break;                                        \
-    case TB_AND:                                                                          \
-    case TB_OR:                                                                           \
-    case TB_XOR:                                                                          \
-    case TB_ADD:                                                                          \
-    case TB_SUB:                                                                          \
-    case TB_MUL:                                                                          \
-    case TB_UDIV:                                                                         \
-    case TB_SDIV:                                                                         \
-    case TB_UMOD:                                                                         \
-    case TB_SMOD:                                                                         \
-    case TB_SAR:                                                                          \
-    case TB_SHL:                                                                          \
-    case TB_SHR:                                                                          \
-        macro(n->i_arith.a);                                                              \
-        macro(n->i_arith.b);                                                              \
-        break;                                                                            \
-    case TB_FADD:                                                                         \
-    case TB_FSUB:                                                                         \
-    case TB_FMUL:                                                                         \
-    case TB_FDIV:                                                                         \
-        macro(n->f_arith.a);                                                              \
-        macro(n->f_arith.b);                                                              \
-        break;                                                                            \
-    case TB_CMP_EQ:                                                                       \
-    case TB_CMP_NE:                                                                       \
-    case TB_CMP_SLT:                                                                      \
-    case TB_CMP_SLE:                                                                      \
-    case TB_CMP_ULT:                                                                      \
-    case TB_CMP_ULE:                                                                      \
-    case TB_CMP_FLT:                                                                      \
-    case TB_CMP_FLE:                                                                      \
-        macro(n->cmp.a);                                                                  \
-        macro(n->cmp.b);                                                                  \
-        break;                                                                            \
-    case TB_VCALL:                                                                        \
-        macro(n->vcall.target);                                                           \
-        for (size_t slot__ = n->call.param_start; slot__ < n->call.param_end; slot__++) { \
-            macro(f->vla.data[slot__]);                                                   \
-        }                                                                                 \
-        break;                                                                            \
-    case TB_CALL:                                                                         \
-    case TB_ICALL:                                                                        \
-    case TB_ECALL:                                                                        \
-        for (size_t slot__ = n->call.param_start; slot__ < n->call.param_end; slot__++) { \
-            macro(f->vla.data[slot__]);                                                   \
-        }                                                                                 \
-        break;                                                                            \
-    case TB_SWITCH: macro(n->switch_.key); break;                                         \
-    case TB_IF: macro(n->if_.cond); break;                                                \
-    case TB_RET: macro(n->ret.value); break
+case TB_NULL:                                                                         \
+case TB_SIGNED_CONST:                                                                 \
+case TB_UNSIGNED_CONST:                                                               \
+case TB_FLOAT_CONST:                                                                  \
+case TB_STRING_CONST:                                                                 \
+case TB_LOCAL:                                                                        \
+case TB_PARAM:                                                                        \
+case TB_GOTO:                                                                         \
+case TB_LINE_INFO:                                                                    \
+case TB_FUNC_ADDRESS:                                                                 \
+case TB_EXTERN_ADDRESS:                                                               \
+case TB_GLOBAL_ADDRESS:                                                               \
+case TB_DEBUGBREAK:                                                                   \
+case TB_RESTRICT: break;                                                              \
+case TB_LABEL: macro(n->label.terminator); break;                                     \
+case TB_INITIALIZE: macro(n->init.addr); break;                                       \
+case TB_KEEPALIVE:                                                                    \
+case TB_VA_START:                                                                     \
+case TB_NOT:                                                                          \
+case TB_NEG:                                                                          \
+case TB_X86INTRIN_SQRT:                                                               \
+case TB_X86INTRIN_RSQRT:                                                              \
+case TB_INT2PTR:                                                                      \
+case TB_PTR2INT:                                                                      \
+case TB_INT2FLOAT:                                                                    \
+case TB_FLOAT2INT:                                                                    \
+case TB_TRUNCATE:                                                                     \
+case TB_BITCAST: macro(n->unary.src); break;                                          \
+case TB_ATOMIC_XCHG:                                                                  \
+case TB_ATOMIC_ADD:                                                                   \
+case TB_ATOMIC_SUB:                                                                   \
+case TB_ATOMIC_AND:                                                                   \
+case TB_ATOMIC_XOR:                                                                   \
+case TB_ATOMIC_OR:                                                                    \
+macro(n->atomic.addr);                                                                \
+macro(n->atomic.src);                                                                 \
+break;                                                                                \
+case TB_MEMCPY:                                                                       \
+case TB_MEMSET:                                                                       \
+macro(n->mem_op.dst);                                                                 \
+macro(n->mem_op.src);                                                                 \
+macro(n->mem_op.size);                                                                \
+break;                                                                                \
+case TB_MEMBER_ACCESS: macro(n->member_access.base); break;                           \
+case TB_ARRAY_ACCESS:                                                                 \
+macro(n->array_access.base);                                                          \
+macro(n->array_access.index);                                                         \
+break;                                                                                \
+case TB_PARAM_ADDR: macro(n->param_addr.param); break;                                \
+case TB_PASS: macro(n->pass.value); break;                                            \
+case TB_PHI1:                                                                         \
+macro(n->phi1.a);                                                                     \
+macro(n->phi1.a_label);                                                               \
+break;                                                                                \
+case TB_PHI2:                                                                         \
+macro(n->phi2.a);                                                                     \
+macro(n->phi2.b);                                                                     \
+macro(n->phi2.a_label);                                                               \
+macro(n->phi2.b_label);                                                               \
+break;                                                                                \
+case TB_LOAD: macro(n->load.address); break;                                          \
+case TB_STORE:                                                                        \
+macro(n->store.address);                                                              \
+macro(n->store.value);                                                                \
+break;                                                                                \
+case TB_ZERO_EXT:                                                                     \
+case TB_SIGN_EXT:                                                                     \
+case TB_FLOAT_EXT: macro(n->unary.src); break;                                        \
+case TB_AND:                                                                          \
+case TB_OR:                                                                           \
+case TB_XOR:                                                                          \
+case TB_ADD:                                                                          \
+case TB_SUB:                                                                          \
+case TB_MUL:                                                                          \
+case TB_UDIV:                                                                         \
+case TB_SDIV:                                                                         \
+case TB_UMOD:                                                                         \
+case TB_SMOD:                                                                         \
+case TB_SAR:                                                                          \
+case TB_SHL:                                                                          \
+case TB_SHR:                                                                          \
+macro(n->i_arith.a);                                                                  \
+macro(n->i_arith.b);                                                                  \
+break;                                                                                \
+case TB_FADD:                                                                         \
+case TB_FSUB:                                                                         \
+case TB_FMUL:                                                                         \
+case TB_FDIV:                                                                         \
+macro(n->f_arith.a);                                                                  \
+macro(n->f_arith.b);                                                                  \
+break;                                                                                \
+case TB_CMP_EQ:                                                                       \
+case TB_CMP_NE:                                                                       \
+case TB_CMP_SLT:                                                                      \
+case TB_CMP_SLE:                                                                      \
+case TB_CMP_ULT:                                                                      \
+case TB_CMP_ULE:                                                                      \
+case TB_CMP_FLT:                                                                      \
+case TB_CMP_FLE:                                                                      \
+macro(n->cmp.a);                                                                      \
+macro(n->cmp.b);                                                                      \
+break;                                                                                \
+case TB_VCALL:                                                                        \
+macro(n->vcall.target);                                                               \
+for (size_t slot__ = n->call.param_start; slot__ < n->call.param_end; slot__++) {     \
+macro(f->vla.data[slot__]);                                                       \
+}                                                                                     \
+break;                                                                                \
+case TB_CALL:                                                                         \
+case TB_ICALL:                                                                        \
+case TB_ECALL:                                                                        \
+for (size_t slot__ = n->call.param_start; slot__ < n->call.param_end; slot__++) {     \
+macro(f->vla.data[slot__]);                                                       \
+}                                                                                     \
+break;                                                                                \
+case TB_SWITCH: macro(n->switch_.key); break;                                         \
+case TB_IF: macro(n->if_.cond); break;                                                \
+case TB_RET: macro(n->ret.value); break
 
 typedef struct TB_ConstPoolPatch {
     TB_Function* source;
@@ -247,15 +244,14 @@ struct TB_FunctionPrototype {
     short param_count;
 
     TB_DataType return_dt;
-    bool        has_varargs;
+    bool has_varargs;
 
     // payload
     TB_DataType params[];
 };
 
 typedef struct TB_InitObj {
-    enum
-    {
+    enum {
         TB_INIT_OBJ_REGION,
 
         // relocations
@@ -287,37 +283,35 @@ typedef struct TB_Initializer {
 } TB_Initializer;
 
 typedef struct TB_Global {
-    char*            name;
-    TB_Linkage       linkage;
+    char* name;
+    TB_Linkage linkage;
     TB_InitializerID init;
-    uint32_t         pos;
-	TB_StorageClass  storage;
+    uint32_t pos;
+	TB_StorageClass storage;
 } TB_Global;
 
 typedef struct TB_Line {
     TB_FileID file;
-    int       line;
-    uint32_t  pos;
+    int line;
+    uint32_t pos;
 } TB_Line;
 
-typedef enum
-{
+typedef enum {
     TB_ATTRIB_NONE,
-
     TB_ATTRIB_RESTRICT,
     TB_ATTRIB_SCOPE
 } TB_AttribType;
 
-// linked lists amirite
-typedef struct TB_AttribList {
-    struct TB_AttribList* next;
-    TB_AttributeID        attrib;
-} TB_AttribList;
-
 typedef struct {
-    TB_AttribType  type;
+    TB_AttribType type;
     TB_AttributeID ref;
 } TB_Attrib;
+
+// linked lists amirite
+struct TB_AttribList {
+    TB_AttribList* next;
+    TB_AttributeID attrib;
+};
 
 typedef struct TB_FunctionOutput {
     TB_Linkage linkage;
@@ -329,7 +323,7 @@ typedef struct TB_FunctionOutput {
     uint64_t stack_usage;
 
     uint8_t* code;
-    size_t   code_size;
+    size_t code_size;
 } TB_FunctionOutput;
 
 struct TB_Function {
@@ -338,7 +332,7 @@ struct TB_Function {
     TB_Module* module;
 
     const TB_FunctionPrototype* prototype;
-    TB_Linkage                  linkage;
+    TB_Linkage linkage;
 
     struct TB_NodeStream {
         TB_Reg   capacity;
@@ -346,11 +340,6 @@ struct TB_Function {
         TB_Reg   end;
         TB_Node* data;
     } nodes;
-
-    // Attributes
-    // attrib_map[reg] is the root link in a chain
-    // of attrib references
-    TB_AttribList* attrib_map;
 
     // Used by the IR building
     TB_AttributeID active_attrib;
@@ -395,29 +384,23 @@ typedef struct TB_CodeRegion {
 struct TB_Module {
     int max_threads;
 
-    TB_Arch       target_arch;
-    TB_System     target_system;
+    TB_Arch target_arch;
+    TB_System target_system;
     TB_FeatureSet features;
-	
+
 	// This is a hack for windows since they've got this idea
 	// of a _tls_index
 	TB_ExternalID tls_index_extern;
 
     // Convert this into a dynamic memory arena... maybe
     tb_atomic_size_t prototypes_arena_size;
-    uint64_t*        prototypes_arena;
+    uint64_t* prototypes_arena;
 
 #if !TB_STRIP_LABELS
     dyn_array(TB_LabelSymbol) label_symbols;
 #endif
 
-#if _WIN32
-    CRITICAL_SECTION mutex;
-#else
-    pthread_mutex_t mutex;
-#endif
-
-    // TODO(NeGate): I should probably re-organize these to avoid
+	// TODO(NeGate): I should probably re-organize these to avoid
     // false sharing
     dyn_array(TB_GlobalPatch) global_patches[TB_MAX_THREADS];
     dyn_array(TB_ConstPoolPatch) const_patches[TB_MAX_THREADS];
@@ -455,7 +438,7 @@ struct TB_Module {
     tb_atomic_size_t data_region_size;
     tb_atomic_size_t rdata_region_size;
     tb_atomic_size_t tls_region_size;
-	
+
     // The code is stored into giant buffers
     // there's on per code gen thread so that
     // each can work at the same time without
@@ -480,18 +463,16 @@ typedef struct ICodeGen {
     size_t (*emit_prologue)(uint8_t* out, uint64_t saved, uint64_t stack_usage);
     size_t (*emit_epilogue)(uint8_t* out, uint64_t saved, uint64_t stack_usage);
 
-    TB_FunctionOutput (*fast_path)(TB_FunctionID id, TB_Function* f, const TB_FeatureSet* features,
-        uint8_t* out, size_t local_thread_id);
-    TB_FunctionOutput (*complex_path)(TB_FunctionID id, TB_Function* f,
-        const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
+    TB_FunctionOutput (*fast_path)(TB_FunctionID id, TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
+    TB_FunctionOutput (*complex_path)(TB_FunctionID id, TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
 } ICodeGen;
 
 #define tb_swap(type, a, b) \
-    do {                    \
-        type temp = a;      \
-        a         = b;      \
-        b         = temp;   \
-    } while (0)
+do {                    \
+type temp = a;      \
+a         = b;      \
+b         = temp;   \
+} while (0)
 
 #ifndef NDEBUG
 #define TB_DEBUG_BUILD 1
@@ -522,17 +503,27 @@ typedef struct ICodeGen {
 #endif
 
 #define tb_assert(condition, ...) \
-    do {                          \
-        if (!(condition)) {       \
-            printf(__VA_ARGS__);  \
-            abort();              \
-        }                         \
-    } while (0)
-#define tb_panic(...)        \
-    do {                     \
-        printf(__VA_ARGS__); \
-        abort();             \
-    } while (0)
+do {                          \
+if (!(condition)) {       \
+printf(__VA_ARGS__);  \
+abort();              \
+}                         \
+} while (0)
+
+#ifdef _WIN32
+#define tb_panic(...)                         \
+do {                                      \
+printf(__VA_ARGS__);                  \
+__fastfail(FAST_FAIL_FATAL_APP_EXIT); \
+} while (0)
+#else
+#define tb_panic(...)                         \
+do {                                      \
+printf(__VA_ARGS__);                  \
+abort();                              \
+} while (0)
+#endif
+
 #define tb_arrlen(a) (sizeof(a) / sizeof(a[0]))
 
 #ifndef COUNTOF
@@ -540,10 +531,13 @@ typedef struct ICodeGen {
 #endif
 
 #define loop(iterator, count) \
-    for (size_t iterator = 0, end__ = (count); iterator < end__; ++iterator)
+for (size_t iterator = 0, end__ = (count); iterator < end__; ++iterator)
+
 #define loop_range(iterator, start, count) \
-    for (size_t iterator = (start), end__ = (count); iterator < end__; ++iterator)
-#define loop_reverse(iterator, count) for (size_t iterator = (count); iterator--;)
+for (size_t iterator = (start), end__ = (count); iterator < end__; ++iterator)
+
+#define loop_reverse(iterator, count) \
+for (size_t iterator = (count); iterator--;)
 
 typedef struct TB_MultiplyResult {
     uint64_t lo;
@@ -604,7 +598,7 @@ inline static TB_MultiplyResult tb_mul64x128(uint64_t a, uint64_t b) {
     __uint128_t product = (__uint128_t)a * (__uint128_t)b;
 
     return (
-        TB_MultiplyResult) { (uint64_t)(product & 0xFFFFFFFFFFFFFFFF), (uint64_t)(product >> 64) };
+			TB_MultiplyResult) { (uint64_t)(product & 0xFFFFFFFFFFFFFFFF), (uint64_t)(product >> 64) };
 }
 #endif
 
@@ -619,9 +613,9 @@ void*                tb_tls_peek(TB_TemporaryStorage* store, size_t distance);
 bool                 tb_tls_can_fit(TB_TemporaryStorage* store, size_t size);
 
 void tb_export_coff(
-    TB_Module* m, const ICodeGen* restrict code_gen, const char* path, bool emit_debug_info);
+					TB_Module* m, const ICodeGen* restrict code_gen, const char* path, bool emit_debug_info);
 void tb_export_elf64(
-    TB_Module* m, const ICodeGen* restrict code_gen, const char* path, bool emit_debug_info);
+					 TB_Module* m, const ICodeGen* restrict code_gen, const char* path, bool emit_debug_info);
 
 uint8_t* tb_out_reserve(TB_Emitter* o, size_t count);
 // The return value is the start of the empty region after
@@ -660,7 +654,7 @@ void   tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace)
 size_t tb_count_uses(const TB_Function* f, TB_Reg find, size_t start, size_t end);
 void   tb_function_reserve_nodes(TB_Function* f, size_t extra);
 TB_Reg tb_insert_copy_ops(TB_Function* f, const TB_Reg* params, TB_Reg at,
-    const TB_Function* src_func, TB_Reg src_base, int count);
+						  const TB_Function* src_func, TB_Reg src_base, int count);
 
 TB_Reg tb_function_insert_after(TB_Function* f, TB_Reg at);
 
@@ -684,11 +678,11 @@ inline static int align_up(int a, int b) { return a + (b - (a % b)) % b; }
 #define OPTIMIZER_LOG(at, ...)
 #else
 #define OPTIMIZER_LOG(at, ...)                     \
-    do {                                           \
-        printf("%s:r%d: ", f->name, (TB_Reg)(at)); \
-        printf(__VA_ARGS__);                       \
-        printf(" (part of %s)\n", __FUNCTION__);   \
-    } while (0)
+do {                                           \
+printf("%s:r%d: ", f->name, (TB_Reg)(at)); \
+printf(__VA_ARGS__);                       \
+printf(" (part of %s)\n", __FUNCTION__);   \
+} while (0)
 #endif
 
 #define CALL_NODE_PARAM_COUNT(n) (n->call.param_end - n->call.param_start)
@@ -710,16 +704,16 @@ uint64_t tb_fold_div(TB_DataType dt, uint64_t a, uint64_t b);
 void      tb_function_calculate_use_count(const TB_Function* f, int use_count[]);
 int       tb_function_find_uses_of_node(const TB_Function* f, TB_Reg def, TB_Reg uses[]);
 TB_Label* tb_calculate_immediate_predeccessors(
-    TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count);
+											   TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count);
 
 uint32_t tb_emit_const_patch(TB_Module* m, TB_Function* source, size_t pos, const void* ptr,
-    size_t len, size_t local_thread_id);
+							 size_t len, size_t local_thread_id);
 void     tb_emit_global_patch(
-        TB_Module* m, TB_Function* source, size_t pos, TB_GlobalID global, size_t local_thread_id);
+							  TB_Module* m, TB_Function* source, size_t pos, TB_GlobalID global, size_t local_thread_id);
 void tb_emit_call_patch(
-    TB_Module* m, TB_Function* source, uint32_t target_id, size_t pos, size_t local_thread_id);
+						TB_Module* m, TB_Function* source, uint32_t target_id, size_t pos, size_t local_thread_id);
 void tb_emit_ecall_patch(
-    TB_Module* m, TB_Function* source, TB_ExternalID target_id, size_t pos, size_t local_thread_id);
+						 TB_Module* m, TB_Function* source, TB_ExternalID target_id, size_t pos, size_t local_thread_id);
 
 #if !TB_STRIP_LABELS
 void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, size_t pos);

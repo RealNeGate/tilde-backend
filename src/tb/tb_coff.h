@@ -54,10 +54,33 @@ typedef struct {
 	char group_id[6];
 
 	char mode[8];
-	char size[8];
+	char size[10];
 
+	uint8_t newline[2];
 	uint8_t contents[];
 } COFF_ArchiveMemberHeader;
+
+typedef struct {
+	uint16_t sig1;
+	uint16_t sig2;
+	uint16_t version;
+	uint16_t machine;
+	uint32_t timestamp;
+	uint32_t size_of_data;
+	uint16_t ordinal_hint;
+
+	uint16_t type      : 2;
+	uint16_t name_type : 3;
+	uint16_t reserved  : 11;
+} COFF_ImportHeader;
+
+typedef struct {
+	uint32_t import_lookup_table; // RVA
+	uint32_t timestamp;
+	uint32_t forwarder_chain;
+	uint32_t name;
+	uint32_t import_address_table; // RVA; Thunk table
+} COFF_ImportDirectory;
 
 typedef struct COFF_SectionHeader {
     char name[8];

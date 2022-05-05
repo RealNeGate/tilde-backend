@@ -6,7 +6,7 @@ static TreeNode* append(TreeNodeArena* arena) {
         // recycle / spawn new page
         TreeNodePage* new_p;
         if (p->next) {
-            new_p        = p->next;
+            new_p = p->next;
             new_p->count = 0;
         } else {
             new_p = tb_platform_heap_alloc(sizeof(TreeNodePage));
@@ -17,7 +17,7 @@ static TreeNode* append(TreeNodeArena* arena) {
         }
 
         p->next = new_p;
-        p       = new_p;
+        p = new_p;
     }
 
     return &p->nodes[p->count++];
@@ -25,19 +25,19 @@ static TreeNode* append(TreeNodeArena* arena) {
 
 static TreeNode* push_leaf(TreeNodeArena* arena, TB_Reg r) {
     TreeNode* n = append(arena);
-    *n          = (TreeNode) { .reg = r };
+    *n = (TreeNode) { .reg = r };
     return n;
 }
 
 static TreeNode* push_unary(TreeNodeArena* arena, TB_Reg r, TreeNode* a) {
     TreeNode* n = append(arena);
-    *n          = (TreeNode) { .reg = r, .operands = { a } };
+    *n = (TreeNode) { .reg = r, .operands = { a } };
     return n;
 }
 
 static TreeNode* push_binary(TreeNodeArena* arena, TB_Reg r, TreeNode* a, TreeNode* b) {
     TreeNode* n = append(arena);
-    *n          = (TreeNode) { .reg = r, .operands = { a, b } };
+    *n = (TreeNode) { .reg = r, .operands = { a, b } };
     return n;
 }
 
@@ -66,9 +66,13 @@ static TreeNode* walk(TreeNodeArena* arena, TB_Function* f, TB_Reg* use_count, T
     case TB_PHI2:
     case TB_CALL:
     case TB_ECALL:
-    case TB_VCALL: result = push_leaf(arena, r); break;
+    case TB_VCALL:
+	result = push_leaf(arena, r);
+	break;
 
-    case TB_LOAD: result = push_unary(arena, r, walk(arena, f, use_count, n->load.address)); break;
+    case TB_LOAD:
+	result = push_unary(arena, r, walk(arena, f, use_count, n->load.address));
+	break;
 
     case TB_TRUNCATE:
     case TB_ZERO_EXT:
@@ -82,24 +86,24 @@ static TreeNode* walk(TreeNodeArena* arena, TB_Function* f, TB_Reg* use_count, T
     case TB_NOT:
     case TB_X86INTRIN_SQRT:
     case TB_X86INTRIN_RSQRT:
-    case TB_RESTRICT: result = push_unary(arena, r, walk(arena, f, use_count, n->unary.src)); break;
+    case TB_RESTRICT:
+	result = push_unary(arena, r, walk(arena, f, use_count, n->unary.src));
+	break;
 
     case TB_ARRAY_ACCESS:
-        result = push_binary(arena, r, walk(arena, f, use_count, n->array_access.base),
-            walk(arena, f, use_count, n->array_access.index));
-        break;
+	result = push_binary(arena, r, walk(arena, f, use_count, n->array_access.base), walk(arena, f, use_count, n->array_access.index));
+	break;
 
     case TB_MEMBER_ACCESS:
-        result = push_unary(arena, r, walk(arena, f, use_count, n->member_access.base));
-        break;
+	result = push_unary(arena, r, walk(arena, f, use_count, n->member_access.base));
+	break;
 
     case TB_FADD:
     case TB_FSUB:
     case TB_FMUL:
     case TB_FDIV:
-        result = push_binary(arena, r, walk(arena, f, use_count, n->f_arith.a),
-            walk(arena, f, use_count, n->f_arith.b));
-        break;
+	result = push_binary(arena, r, walk(arena, f, use_count, n->f_arith.a), walk(arena, f, use_count, n->f_arith.b));
+	break;
 
     case TB_AND:
     case TB_OR:
@@ -114,9 +118,8 @@ static TreeNode* walk(TreeNodeArena* arena, TB_Function* f, TB_Reg* use_count, T
     case TB_SDIV:
     case TB_UMOD:
     case TB_SMOD:
-        result = push_binary(arena, r, walk(arena, f, use_count, n->i_arith.a),
-            walk(arena, f, use_count, n->i_arith.b));
-        break;
+	result = push_binary(arena, r, walk(arena, f, use_count, n->i_arith.a), walk(arena, f, use_count, n->i_arith.b));
+	break;
 
     case TB_CMP_EQ:
     case TB_CMP_NE:
@@ -126,9 +129,8 @@ static TreeNode* walk(TreeNodeArena* arena, TB_Function* f, TB_Reg* use_count, T
     case TB_CMP_ULE:
     case TB_CMP_FLT:
     case TB_CMP_FLE:
-        result = push_binary(
-            arena, r, walk(arena, f, use_count, n->cmp.a), walk(arena, f, use_count, n->cmp.b));
-        break;
+	result = push_binary(arena, r, walk(arena, f, use_count, n->cmp.a), walk(arena, f, use_count, n->cmp.b));
+	break;
 
     default: tb_unreachable();
     }
@@ -160,12 +162,10 @@ static void schedule_phis(TreeNodeArena* arena, TB_Function* f, TB_Reg* use_coun
     TB_Reg start, TB_Reg end) {
     TB_FOR_EACH_NODE_RANGE(n, f, start, end) {
         if (n->type == TB_PHI2) {
-            TB_Reg src;
+            TB_Reg src = 0;
             if (n->phi2.a_label == label_reg) src = n->phi2.a;
-            else if (n->phi2.b_label == label_reg)
-                src = n->phi2.b;
-            else
-                tb_unreachable();
+            else if (n->phi2.b_label == label_reg) src = n->phi2.b;
+            else tb_unreachable();
 
             TreeNode* tree_node =
                 push_unary(arena, n - f->nodes.data, walk(arena, f, use_count, src));

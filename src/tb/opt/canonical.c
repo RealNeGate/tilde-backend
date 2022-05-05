@@ -1,251 +1,262 @@
 #include "../tb_internal.h"
 
 bool tb_opt_compact_dead_regs(TB_Function* f) {
-    int changes = 0;
+	int changes = 0;
 
-    TB_Node* n    = &f->nodes.data[1];
-    TB_Node* prev = &f->nodes.data[1];
-    TB_Node* end  = &f->nodes.data[0];
+	TB_Node* n	  = &f->nodes.data[1];
+	TB_Node* prev = &f->nodes.data[1];
+	TB_Node* end  = &f->nodes.data[0];
 
-    // Find a NULL, skip over any NULLs until a valid node is found and cut out the middle men
-    while (n != end) {
-        if (n->type == TB_NULL) {
-            tb_assume(prev != n);
-            do {
-                n = &f->nodes.data[n->next];
-            } while (n->type == TB_NULL && n != end);
+	// Find a NULL, skip over any NULLs until a valid node is found and cut out the middle men
+	while (n != end) {
+		if (n->type == TB_NULL) {
+			tb_assume(prev != n);
+			do {
+				n = &f->nodes.data[n->next];
+			} while (n->type == TB_NULL && n != end);
 
-            prev->next = n - f->nodes.data;
-            changes++;
-        }
+			prev->next = n - f->nodes.data;
+			changes++;
+		}
 
-        prev = n;
-        n    = &f->nodes.data[n->next];
-    }
+		prev = n;
+		n	 = &f->nodes.data[n->next];
+	}
 
-    return changes;
+	return changes;
 }
 
 bool tb_opt_remove_pass_node(TB_Function* f) {
-    int changes = 0;
-    TB_FOR_EACH_NODE(n, f) {
-        TB_Reg i = (n - f->nodes.data);
+	int changes = 0;
+	TB_FOR_EACH_NODE(n, f) {
+		TB_Reg i = (n - f->nodes.data);
 
-        if (n->type == TB_PASS) {
-            OPTIMIZER_LOG(i, "Replacing PASS with r%d", n->unary.src);
-            tb_function_find_replace_reg(f, i, n->unary.src);
+		if (n->type == TB_PASS) {
+			OPTIMIZER_LOG(i, "Replacing PASS with r%d", n->unary.src);
+			tb_function_find_replace_reg(f, i, n->unary.src);
 
-            n->type = TB_NULL;
-            changes++;
-        }
-    }
+			n->type = TB_NULL;
+			changes++;
+		}
+	}
 
-    return changes;
+	return changes;
 }
 
 bool tb_opt_canonicalize(TB_Function* f) {
-    int changes = 0;
-    TB_FOR_EACH_NODE(n, f) {
-        TB_Reg          i    = (n - f->nodes.data);
-        TB_NodeTypeEnum type = n->type;
+	int changes = 0;
+	TB_FOR_EACH_NODE(n, f) {
+		TB_Reg			i	 = (n - f->nodes.data);
+		TB_NodeTypeEnum type = n->type;
 
-        // TODO(NeGate): Maybe we should have a proper function/macro
-        // for detecting integer compares like this
-        if (type >= TB_CMP_EQ && type <= TB_CMP_ULE) {
-            // Sometimes we promote some types up when we don't need to
-            TB_Node* a = &f->nodes.data[n->cmp.a];
-            TB_Node* b = &f->nodes.data[n->cmp.b];
+		// TODO(NeGate): Maybe we should have a proper function/macro
+		// for detecting integer compares like this
+		if (type >= TB_CMP_EQ && type <= TB_CMP_ULE) {
+			// Sometimes we promote some types up when we don't need to
+			TB_Node* a = &f->nodes.data[n->cmp.a];
+			TB_Node* b = &f->nodes.data[n->cmp.b];
 
-            // (cmp (sxt/zxt A) (int B))
-            // VVV
-            // (cmp A (int B))
-            if (a->type == TB_SIGN_EXT && b->type == TB_SIGNED_CONST) {
-                OPTIMIZER_LOG(
-                    i, "removed unnecessary zero extension for compare against constants");
+			// (cmp (sxt/zxt A) (int B))
+			// VVV
+			// (cmp A (int B))
+			if (a->type == TB_SIGN_EXT && b->type == TB_SIGNED_CONST) {
+				OPTIMIZER_LOG(
+					i, "removed unnecessary zero extension for compare against constants");
 
-                n->cmp.a = a->unary.src;
-                changes++;
-            } else if (a->type == TB_ZERO_EXT && b->type == TB_UNSIGNED_CONST) {
-                OPTIMIZER_LOG(
-                    i, "removed unnecessary zero extension for compare against constants");
+				n->cmp.a = a->unary.src;
+				changes++;
+			} else if (a->type == TB_ZERO_EXT && b->type == TB_UNSIGNED_CONST) {
+				OPTIMIZER_LOG(
+					i, "removed unnecessary zero extension for compare against constants");
 
-                n->cmp.a = a->unary.src;
-                changes++;
-            }
-        } else if (type == TB_ADD || type == TB_MUL || type == TB_AND || type == TB_XOR ||
-                   type == TB_CMP_NE || type == TB_CMP_EQ) {
-            // NOTE(NeGate): compares alias the operands with i_arith so it's
-            // alright to group them here.
-            TB_Node* a = &f->nodes.data[n->i_arith.a];
-            TB_Node* b = &f->nodes.data[n->i_arith.b];
+				n->cmp.a = a->unary.src;
+				changes++;
+			}
+		} else if (type == TB_ADD || type == TB_MUL || type == TB_AND || type == TB_XOR ||
+				   type == TB_CMP_NE || type == TB_CMP_EQ) {
+			// NOTE(NeGate): compares alias the operands with i_arith so it's
+			// alright to group them here.
+			TB_Node* a = &f->nodes.data[n->i_arith.a];
+			TB_Node* b = &f->nodes.data[n->i_arith.b];
 
-            // Move all integer constants to the right side
-            bool is_aconst = (a->type == TB_SIGNED_CONST || a->type == TB_UNSIGNED_CONST);
+			// Move all integer constants to the right side
+			bool is_aconst = (a->type == TB_SIGNED_CONST || a->type == TB_UNSIGNED_CONST);
 
-            bool is_bconst = (b->type == TB_SIGNED_CONST || b->type == TB_UNSIGNED_CONST);
+			bool is_bconst = (b->type == TB_SIGNED_CONST || b->type == TB_UNSIGNED_CONST);
 
-            if (is_aconst && !is_bconst) {
-                OPTIMIZER_LOG(i, "moved constants to right hand side.");
+			if (is_aconst && !is_bconst) {
+				OPTIMIZER_LOG(i, "moved constants to right hand side.");
 
-                tb_swap(TB_Reg, n->i_arith.a, n->i_arith.b);
-                changes++;
-            } else if (a->type == type && b->type != type) {
-                // Reshuffle the adds from
-                // (x + y) + z => x + (y + z)
-                /*TB_Reg xy = a;
-                TB_Reg x = f->nodes.payload[a].i_arith.a;
-                TB_Reg y = f->nodes.payload[a].i_arith.b;
-                TB_Reg z = b;
+				tb_swap(TB_Reg, n->i_arith.a, n->i_arith.b);
+				changes++;
+			} else if (a->type == type && b->type != type) {
+				// Reshuffle the adds from
+				// (x + y) + z => x + (y + z)
+				/*TB_Reg xy = a;
+				TB_Reg x = f->nodes.payload[a].i_arith.a;
+				TB_Reg y = f->nodes.payload[a].i_arith.b;
+				TB_Reg z = b;
 
-                f->nodes.payload[i].i_arith.a = x;
-                f->nodes.payload[i].i_arith.b = xy;
+				f->nodes.payload[i].i_arith.a = x;
+				f->nodes.payload[i].i_arith.b = xy;
 
-                f->nodes.payload[a].i_arith.a = y;
-                f->nodes.payload[a].i_arith.b = z;
-                changes++;*/
-            }
-        } else if (type == TB_UMOD || type == TB_SMOD) {
-            TB_Node* b = &f->nodes.data[n->i_arith.b];
+				f->nodes.payload[a].i_arith.a = y;
+				f->nodes.payload[a].i_arith.b = z;
+				changes++;*/
+			}
+		} else if (type == TB_UMOD || type == TB_SMOD) {
+			TB_Node* b = &f->nodes.data[n->i_arith.b];
 
-            // (mod a N) => (and a N-1) where N is a power of two
-            if (b->type == TB_SIGNED_CONST || b->type == TB_UNSIGNED_CONST) {
-                uint64_t mask = b->uint.value;
+			// (mod a N) => (and a N-1) where N is a power of two
+			if (b->type == TB_SIGNED_CONST || b->type == TB_UNSIGNED_CONST) {
+				uint64_t mask = b->uint.value;
 
-                if (tb_is_power_of_two(mask)) {
-                    OPTIMIZER_LOG(i, "converted modulo into AND with constant mask");
+				if (tb_is_power_of_two(mask)) {
+					OPTIMIZER_LOG(i, "converted modulo into AND with constant mask");
 
-                    // generate mask
-                    TB_Reg   extra_reg = tb_function_insert_after(f, n->i_arith.b);
-                    TB_Node* extra     = &f->nodes.data[extra_reg];
-                    extra->type        = TB_UNSIGNED_CONST;
-                    extra->dt          = n->dt;
-                    extra->uint.value  = mask - 1;
+					// generate mask
+					TB_Reg	 extra_reg = tb_function_insert_after(f, n->i_arith.b);
+					TB_Node* extra	   = &f->nodes.data[extra_reg];
+					extra->type		   = TB_UNSIGNED_CONST;
+					extra->dt		   = n->dt;
+					extra->uint.value  = mask - 1;
 
-                    // new AND operation to replace old MOD
-                    n->type      = TB_AND;
-                    n->i_arith.b = extra_reg;
-                    changes++;
-                }
-            }
-        } else if (type == TB_MEMBER_ACCESS) {
-            int32_t offset = n->member_access.offset;
+					// new AND operation to replace old MOD
+					n->type		 = TB_AND;
+					n->i_arith.b = extra_reg;
+					changes++;
+				}
+			}
+		} else if (type == TB_MEMBER_ACCESS) {
+			int32_t offset = n->member_access.offset;
 
-            if (offset == 0) {
-                OPTIMIZER_LOG(i, "elided member access to first element");
+			if (offset == 0) {
+				OPTIMIZER_LOG(i, "elided member access to first element");
 
-                n->type       = TB_PASS;
-                n->pass.value = n->member_access.base;
-                changes++;
-            }
-        } else if (type == TB_ARRAY_ACCESS) {
-            TB_Node* index = &f->nodes.data[n->array_access.index];
+				n->type		  = TB_PASS;
+				n->pass.value = n->member_access.base;
+				changes++;
+			}
+		} else if (type == TB_ARRAY_ACCESS) {
+			TB_Node* index = &f->nodes.data[n->array_access.index];
 
-            if (index->type == TB_SIGNED_CONST || index->type == TB_UNSIGNED_CONST) {
-                uint64_t index_imm = index->uint.value;
+			if (index->type == TB_SIGNED_CONST || index->type == TB_UNSIGNED_CONST) {
+				uint64_t index_imm = index->uint.value;
 
-                if (index_imm == 0) {
-                    OPTIMIZER_LOG(i, "elided array access to first element");
+				if (index_imm == 0) {
+					OPTIMIZER_LOG(i, "elided array access to first element");
 
-                    n->type       = TB_PASS;
-                    n->pass.value = n->array_access.base;
-                    changes++;
-                }
-            }
-        } else if (type == TB_UNSIGNED_CONST || type == TB_SIGNED_CONST) {
-            uint64_t    data = n->uint.value;
-            TB_DataType dt   = n->dt;
+					n->type		  = TB_PASS;
+					n->pass.value = n->array_access.base;
+					changes++;
+				}
+			} else if (index->type == TB_MUL) {
+				TB_Node* potential_constant = &f->nodes.data[index->i_arith.b];
+				
+				if (potential_constant->type == TB_SIGNED_CONST ||
+					potential_constant->type == TB_UNSIGNED_CONST) {
+					OPTIMIZER_LOG(i, "folded multiply into array access");
 
-            for (TB_Node* other = &f->nodes.data[n->next]; other != &f->nodes.data[0];
-                 other          = &f->nodes.data[other->next]) {
-                if (other->type == type && other->uint.value == data &&
-                    TB_DATA_TYPE_EQUALS(other->dt, dt)) {
-                    OPTIMIZER_LOG(i, "merged integer constants");
+					n->array_access.index = index->i_arith.a;
+					n->array_access.stride *= potential_constant->uint.value;
+					changes++;
+				}
+			}
+		} else if (type == TB_UNSIGNED_CONST || type == TB_SIGNED_CONST) {
+			uint64_t	data = n->uint.value;
+			TB_DataType dt	 = n->dt;
 
-                    other->type       = TB_PASS;
-                    other->pass.value = i;
-                    changes++;
-                }
-            }
-        } else if (type == TB_INT2PTR) {
-            TB_Node* src = &f->nodes.data[n->unary.src];
+			for (TB_Node* other = &f->nodes.data[n->next]; other != &f->nodes.data[0];
+				 other			= &f->nodes.data[other->next]) {
+				if (other->type == type && other->uint.value == data &&
+					TB_DATA_TYPE_EQUALS(other->dt, dt)) {
+					OPTIMIZER_LOG(i, "merged integer constants");
 
-            if (src->type == TB_SIGNED_CONST || src->type == TB_UNSIGNED_CONST) {
-                OPTIMIZER_LOG(i, "constant int2ptr removed.");
+					other->type		  = TB_PASS;
+					other->pass.value = i;
+					changes++;
+				}
+			}
+		} else if (type == TB_INT2PTR) {
+			TB_Node* src = &f->nodes.data[n->unary.src];
 
-                uint64_t imm = src->uint.value;
+			if (src->type == TB_SIGNED_CONST || src->type == TB_UNSIGNED_CONST) {
+				OPTIMIZER_LOG(i, "constant int2ptr removed.");
 
-                n->type       = TB_UNSIGNED_CONST;
-                n->dt         = TB_TYPE_PTR;
-                n->uint.value = imm;
-                changes++;
-            }
-        } else if (type == TB_TRUNCATE) {
-            TB_Node* src = &f->nodes.data[n->unary.src];
+				uint64_t imm = src->uint.value;
 
-            if (src->type == TB_SIGNED_CONST || src->type == TB_UNSIGNED_CONST) {
-                OPTIMIZER_LOG(i, "constant truncate removed.");
+				n->type		  = TB_UNSIGNED_CONST;
+				n->dt		  = TB_TYPE_PTR;
+				n->uint.value = imm;
+				changes++;
+			}
+		} else if (type == TB_TRUNCATE) {
+			TB_Node* src = &f->nodes.data[n->unary.src];
 
-                uint64_t imm = src->uint.value;
+			if (src->type == TB_SIGNED_CONST || src->type == TB_UNSIGNED_CONST) {
+				OPTIMIZER_LOG(i, "constant truncate removed.");
 
-                uint64_t shift = 64 - (8 << (src->dt.type - TB_I8));
-                uint64_t mask  = (~0ull) >> shift;
+				uint64_t imm = src->uint.value;
 
-                TB_DataType dt = src->dt;
+				uint64_t shift = 64 - (8 << (src->dt.type - TB_I8));
+				uint64_t mask  = (~0ull) >> shift;
 
-                n->type       = TB_UNSIGNED_CONST;
-                n->dt         = dt;
-                n->uint.value = imm & mask;
-                changes++;
-            }
-        } else if (type == TB_IF) {
-            TB_Node* cond = &f->nodes.data[n->if_.cond];
+				TB_DataType dt = src->dt;
 
-            // (if (cmpne A 0) B C) => (if A B C)
-            if (cond->type == TB_CMP_NE && tb_node_is_constant_int(f, cond->cmp.b, 0)) {
-                OPTIMIZER_LOG(i, "removed redundant compare-to-zero on if node");
+				n->type		  = TB_UNSIGNED_CONST;
+				n->dt		  = dt;
+				n->uint.value = imm & mask;
+				changes++;
+			}
+		} else if (type == TB_IF) {
+			TB_Node* cond = &f->nodes.data[n->if_.cond];
 
-                TB_DataType dt = f->nodes.data[cond->cmp.a].dt;
+			// (if (cmpne A 0) B C) => (if A B C)
+			if (cond->type == TB_CMP_NE && tb_node_is_constant_int(f, cond->cmp.b, 0)) {
+				OPTIMIZER_LOG(i, "removed redundant compare-to-zero on if node");
 
-                n->dt       = dt;
-                n->if_.cond = cond->cmp.a;
-                changes++;
-            }
-        } else if (type == TB_PHI2) {
-            // remove useless phi
-            TB_Reg a = n->phi2.a;
-            TB_Reg b = n->phi2.b;
+				TB_DataType dt = f->nodes.data[cond->cmp.a].dt;
 
-            // trivial phi
-            if (a == b) {
-                OPTIMIZER_LOG(i, "removed trivial phi");
+				n->dt		= dt;
+				n->if_.cond = cond->cmp.a;
+				changes++;
+			}
+		} else if (type == TB_PHI2) {
+			// remove useless phi
+			TB_Reg a = n->phi2.a;
+			TB_Reg b = n->phi2.b;
 
-                n->type       = TB_PASS;
-                n->pass.value = a;
-                changes++;
-            } else if (i == b) {
-                OPTIMIZER_LOG(i, "removed trivial phi");
+			// trivial phi
+			if (a == b) {
+				OPTIMIZER_LOG(i, "removed trivial phi");
 
-                n->type       = TB_PASS;
-                n->pass.value = a;
-                changes++;
-            } else if (i == a) {
-                OPTIMIZER_LOG(i, "removed trivial phi");
+				n->type		  = TB_PASS;
+				n->pass.value = a;
+				changes++;
+			} else if (i == b) {
+				OPTIMIZER_LOG(i, "removed trivial phi");
 
-                n->type       = TB_PASS;
-                n->pass.value = b;
-                changes++;
-            }
-        } else if (n->type == TB_PHI1) {
-            OPTIMIZER_LOG(i, "removed trivial phi");
+				n->type		  = TB_PASS;
+				n->pass.value = a;
+				changes++;
+			} else if (i == a) {
+				OPTIMIZER_LOG(i, "removed trivial phi");
 
-            // remove useless phi
-            TB_Reg reg = n->phi1.a;
+				n->type		  = TB_PASS;
+				n->pass.value = b;
+				changes++;
+			}
+		} else if (n->type == TB_PHI1) {
+			OPTIMIZER_LOG(i, "removed trivial phi");
 
-            n->type       = TB_PASS;
-            n->pass.value = reg;
-            changes++;
-        }
-    }
+			// remove useless phi
+			TB_Reg reg = n->phi1.a;
 
-    return (changes > 0);
+			n->type		  = TB_PASS;
+			n->pass.value = reg;
+			changes++;
+		}
+	}
+
+	return (changes > 0);
 }

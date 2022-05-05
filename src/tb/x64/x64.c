@@ -34,16 +34,17 @@ TB_FunctionOutput x64_fast_compile_function(TB_CompiledFunctionID id, TB_Functio
 		
 		size_t ctx_size = sizeof(Ctx);
 		if (is_ctx_heap_allocated) {
-			ctx = calloc(1, ctx_size);
+			ctx = tb_platform_heap_alloc(1, ctx_size);
+			memset(ctx, 0, sizeof(Ctx));
 			
-			ctx->use_count = malloc(f->nodes.count * sizeof(TB_Reg));
-			ctx->phis = malloc(tally.phi_count * sizeof(PhiValue));
+			ctx->use_count = tb_platform_heap_alloc(f->nodes.count * sizeof(TB_Reg));
+			ctx->phis = tb_platform_heap_alloc(tally.phi_count * sizeof(PhiValue));
 			
-			ctx->labels = malloc(f->label_count * sizeof(uint32_t));
-			ctx->label_patches = malloc(tally.label_patch_count * sizeof(LabelPatch));
-			ctx->ret_patches = malloc(tally.return_count * sizeof(ReturnPatch));
+			ctx->labels = tb_platform_heap_alloc(f->label_count * sizeof(uint32_t));
+			ctx->label_patches = tb_platform_heap_alloc(tally.label_patch_count * sizeof(LabelPatch));
+			ctx->ret_patches = tb_platform_heap_alloc(tally.return_count * sizeof(ReturnPatch));
 			
-			ctx->values = calloc(f->nodes.count, sizeof(Val));
+			ctx->values = tb_platform_heap_alloc(f->nodes.count, sizeof(Val));
 		} else {
 			ctx = tb_tls_push(tls, ctx_size);
 			memset(ctx, 0, ctx_size);
@@ -56,8 +57,8 @@ TB_FunctionOutput x64_fast_compile_function(TB_CompiledFunctionID id, TB_Functio
 			ctx->ret_patches = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch));
 			
 			ctx->values = tb_tls_push(tls, f->nodes.count * sizeof(Val));
-			memset(ctx->values, 0, f->nodes.count * sizeof(Val));
 		}
+		memset(ctx->values, 0, f->nodes.count * sizeof(Val));
 		
 		ctx->start_out = ctx->out = out;
 		ctx->f = f;
@@ -163,7 +164,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_CompiledFunctionID id, TB_Functio
 		// Define label position
 		TB_Label label_id = start->label.id;
 		ctx->labels[label_id] = code_pos();
-
+		
 #if !TB_STRIP_LABELS
 		if (label_id) {
 			tb_emit_label_symbol(f->module, ctx->function_id, label_id, code_pos());
@@ -475,13 +476,13 @@ TB_FunctionOutput x64_fast_compile_function(TB_CompiledFunctionID id, TB_Functio
 	};
 	
 	if (is_ctx_heap_allocated) {
-		free(ctx->use_count);
-		free(ctx->phis);
+		tb_platform_heap_free(ctx->use_count);
+		tb_platform_heap_free(ctx->phis);
 		
-		free(ctx->labels);
-		free(ctx->label_patches);
-		free(ctx->ret_patches);
-		free(ctx);
+		tb_platform_heap_free(ctx->labels);
+		tb_platform_heap_free(ctx->label_patches);
+		tb_platform_heap_free(ctx->ret_patches);
+		tb_platform_heap_free(ctx);
 	}
 	return func_out;
 }
@@ -530,46 +531,46 @@ static void store_into(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, const 
 
 static int get_data_type_size(const TB_DataType dt) {
     assert(dt.width <= 2 && "Vector width too big!");
-
+	
     switch (dt.type) {
-    case TB_VOID:
-    case TB_BOOL: return 1;
-
-    case TB_I8: return 1 << dt.width;
-
-    case TB_I16: return 2 << dt.width;
-
-    case TB_I32:
-    case TB_F32: return 4 << dt.width;
-
-    case TB_I64:
-    case TB_F64: return 8 << dt.width;
-
-    case TB_PTR: return 8;
-
-    default: tb_unreachable(); return 0;
+		case TB_VOID:
+		case TB_BOOL: return 1;
+		
+		case TB_I8: return 1 << dt.width;
+		
+		case TB_I16: return 2 << dt.width;
+		
+		case TB_I32:
+		case TB_F32: return 4 << dt.width;
+		
+		case TB_I64:
+		case TB_F64: return 8 << dt.width;
+		
+		case TB_PTR: return 8;
+		
+		default: tb_unreachable(); return 0;
     }
 }
 
 void x64_emit_call_patches(TB_Module* m, uint32_t* func_layout) {
     loop(i, m->max_threads) {
         TB_FunctionPatch* patches = m->call_patches[i];
-
+		
         loop(j, arrlen(patches)) {
             TB_FunctionPatch*  p     = &patches[j];
             TB_FunctionOutput* out_f = p->source->output;
 			assert(out_f && "Patch cannot be applied to function with no compiled output");
-
+			
             uint64_t meta        = out_f->prologue_epilogue_metadata;
             uint64_t stack_usage = out_f->stack_usage;
             uint8_t* code        = out_f->code;
-
+			
             // x64 thinks of relative addresses as being relative
             // to the end of the instruction or in this case just
             // 4 bytes ahead hence the +4.
             size_t actual_pos = func_layout[p->source - m->functions.data] +
-                                x64_get_prologue_length(meta, stack_usage) + p->pos + 4;
-
+				x64_get_prologue_length(meta, stack_usage) + p->pos + 4;
+			
             *((uint32_t*)&code[p->pos]) = func_layout[p->target_id] - actual_pos;
         }
     }
@@ -579,16 +580,16 @@ void x64_emit_call_patches(TB_Module* m, uint32_t* func_layout) {
 _Pragma("warning (push)") _Pragma("warning (disable: 4028)")
 #endif
 
-    ICodeGen x64_codegen = {
-        .emit_call_patches   = x64_emit_call_patches,
-        .get_prologue_length = x64_get_prologue_length,
-        .get_epilogue_length = x64_get_epilogue_length,
-        .emit_prologue       = x64_emit_prologue,
-        .emit_epilogue       = x64_emit_epilogue,
-
-        .fast_path    = x64_fast_compile_function,
-        .complex_path = NULL /* x64_complex_compile_function */
-    };
+ICodeGen x64_codegen = {
+	.emit_call_patches   = x64_emit_call_patches,
+	.get_prologue_length = x64_get_prologue_length,
+	.get_epilogue_length = x64_get_epilogue_length,
+	.emit_prologue       = x64_emit_prologue,
+	.emit_epilogue       = x64_emit_epilogue,
+	
+	.fast_path    = x64_fast_compile_function,
+	.complex_path = x64_complex_compile_function
+};
 
 #if _MSC_VER
 _Pragma("warning (pop)")

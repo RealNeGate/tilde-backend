@@ -8,6 +8,7 @@
 // This is used for JIT compiler pages or any large scale memory
 // allocations.
 void* tb_platform_valloc(size_t size);
+void* tb_platform_valloc_guard(size_t size);
 void  tb_platform_vfree(void* ptr, size_t size);
 
 // It's either execute-read or read-write

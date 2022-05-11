@@ -6,15 +6,12 @@
 #define fileno _fileno
 #define fstat  _fstat
 #define stat   _stat
+#define strdup _strdup
 #endif
 
 #if TB_HOST_ARCH == TB_HOST_X86_64
 #include <emmintrin.h>
 #endif
-
-// constant sized "hash map" which is used to
-// deduplicate types in the codeview
-#define MAX_TYPE_ENTRY_LOOKUP_SIZE 1024
 
 // IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_16BYTES
 #define COFF_CHARACTERISTICS_TEXT 0x60500020u

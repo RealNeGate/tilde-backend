@@ -11,21 +11,25 @@ static const char* INPUT_FILES[] = {
 	"src/tb/tb_elf64.c",
 	"src/tb/tb_internal.c",
 	"src/tb/tb_jit.c",
-	
+	"src/tb/hash.c",
+
 	"src/tb/x64/x64.c",
-	
+
+	"src/tb/debug/codeview.c",
+
 	"src/tb/opt/canonical.c",
 	"src/tb/opt/const_fold.c",
 	"src/tb/opt/copy_elision.c",
+	"src/tb/opt/subexpr_elim.c",
 	"src/tb/opt/dead_code_elim.c",
 	"src/tb/opt/deshort_circuit.c",
 	"src/tb/opt/load_elim.c",
 	"src/tb/opt/hoist_locals.c",
 	"src/tb/opt/mem2reg.c",
 	"src/tb/opt/strength_reduction.c",
-	
+
 	"src/tb/codegen/tree.c",
-	
+
 #if defined(_WIN32)
 	"src/tb/tb_win32.c"
 #else
@@ -41,14 +45,14 @@ int main(int argc, char* argv[]) {
 	} else {
 		output_lib_path = "build/tildebackend";
 	}
-	
+
 	builder_init();
 	builder_compile(BUILD_MODE_STATIC_LIB, INPUT_FILE_COUNT, INPUT_FILES, output_lib_path, "external/tbbmalloc.lib");
-	
+
 #if defined(NEGATE)
 	// personal crap
 	system("cd W:/Workspace/Cuik/ && clang compile.c -o compile.exe && compile.exe");
 #endif
-	
+
 	return 0;
 }

@@ -50,7 +50,7 @@ size_t tb_atomic_size_store(size_t* dst, size_t src);
 
 // cool part about stb_ds is that the dynamic arrays
 // look and act like normal arrays for access and types.
-#define dyn_array(T) T*
+#define DynArray(T) T*
 
 #define PROTOTYPES_ARENA_SIZE   (32u << 20u)
 #define CODE_REGION_BUFFER_SIZE (128 * 1024 * 1024)
@@ -70,6 +70,10 @@ typedef struct TB_Emitter {
 
 #define TB_FOR_EACH_NODE(elem, f) \
 for (TB_Node* elem = &f->nodes.data[1]; elem != &f->nodes.data[0]; elem = &f->nodes.data[elem->next])
+
+#define TB_FOR_EACH_NODE_BB(elem, f, start)                                                                          \
+for (TB_Node* elem = &f->nodes.data[f->nodes.data[start].next], *end__ = &f->nodes.data[0]; elem != end__ && elem->type != TB_LABEL; \
+elem = &f->nodes.data[elem->next])
 
 #define TB_FOR_EACH_NODE_RANGE(elem, f, start, end)                                          \
 for (TB_Node* elem = &f->nodes.data[start], *end__ = &f->nodes.data[end]; elem != end__; \
@@ -198,9 +202,9 @@ case TB_RET: macro(n->ret.value); break
 typedef struct TB_ConstPoolPatch {
     TB_Function* source;
     uint32_t pos; // relative to the start of the function
-	
+
     size_t rdata_pos;
-	
+
 	size_t length;
 	const void* data;
 } TB_ConstPoolPatch;
@@ -239,13 +243,13 @@ typedef struct TB_External {
 struct TB_FunctionPrototype {
     // header
     TB_CallingConv call_conv;
-	
+
     short param_capacity;
     short param_count;
-	
+
     TB_DataType return_dt;
     bool has_varargs;
-	
+
     // payload
     TB_DataType params[];
 };
@@ -253,7 +257,7 @@ struct TB_FunctionPrototype {
 typedef struct TB_InitObj {
     enum {
         TB_INIT_OBJ_REGION,
-		
+
         // relocations
         TB_INIT_OBJ_RELOC_EXTERN,
         TB_INIT_OBJ_RELOC_FUNCTION,
@@ -265,7 +269,7 @@ typedef struct TB_InitObj {
             TB_CharUnits size;
             const void* ptr;
         } region;
-		
+
         TB_ExternalID reloc_extern;
         TB_FunctionID reloc_function;
         TB_GlobalID reloc_global;
@@ -277,7 +281,7 @@ typedef struct TB_Initializer {
     TB_CharUnits size, align;
     uint32_t obj_capacity;
     uint32_t obj_count;
-	
+
     // payload
     TB_InitObj objects[];
 } TB_Initializer;
@@ -315,13 +319,13 @@ struct TB_AttribList {
 
 typedef struct TB_FunctionOutput {
     TB_Linkage linkage;
-	
+
     // NOTE(NeGate): This data is actually specific to the
     // architecture run but generically can be thought of as
     // 64bits which keep track of which registers to save.
     uint64_t prologue_epilogue_metadata;
     uint64_t stack_usage;
-	
+
     uint8_t* code;
     size_t code_size;
 } TB_FunctionOutput;
@@ -330,23 +334,23 @@ struct TB_Function {
     char* name;
     // It's kinda a weird circular reference but yea
     TB_Module* module;
-	
+
     const TB_FunctionPrototype* prototype;
     TB_Linkage linkage;
-	
+
     struct TB_NodeStream {
         TB_Reg capacity;
         TB_Reg count;
         TB_Reg end;
         TB_Node* data;
     } nodes;
-	
+
     // Used by the IR building
     TB_AttributeID active_attrib;
     TB_Reg last_reg;
     TB_Reg current_label;
     TB_Label label_count;
-	
+
     // Used by nodes which have variable
     // length arguments like PHI and CALL.
     // SWITCH has arguments here too but they
@@ -356,89 +360,90 @@ struct TB_Function {
         size_t count;
         TB_Reg* data;
     } vla;
-	
+
     // Attribute pool
     size_t attrib_pool_capacity;
     size_t attrib_pool_count;
     TB_Attrib* attrib_pool;
-	
+
     // Part of the debug info
     size_t line_count;
     TB_Line* lines;
-	
+
     // Compilation output
     TB_FunctionOutput* output;
 };
 
-typedef struct TB_LabelSymbol {
+typedef struct {
     uint32_t func_id;
     uint32_t label_id;
     uint32_t pos; // relative to the start of the function
 } TB_LabelSymbol;
 
-typedef struct TB_CodeRegion {
+typedef struct {
     size_t size;
     uint8_t data[CODE_REGION_BUFFER_SIZE - sizeof(size_t)];
 } TB_CodeRegion;
 
 struct TB_Module {
     int max_threads;
-	
+
     TB_Arch target_arch;
     TB_System target_system;
-    TB_FeatureSet features;
-	
+    TB_DebugFormat debug_fmt;
+	TB_FeatureSet features;
+
 	// This is a hack for windows since they've got this idea
 	// of a _tls_index
 	TB_ExternalID tls_index_extern;
-	
+
     // Convert this into a dynamic memory arena... maybe
     tb_atomic_size_t prototypes_arena_size;
     uint64_t* prototypes_arena;
-	
+
 #if !TB_STRIP_LABELS
-    dyn_array(TB_LabelSymbol) label_symbols;
+    DynArray(TB_LabelSymbol) label_symbols;
 #endif
-	
+
 	// TODO(NeGate): I should probably re-organize these to avoid
     // false sharing
-    dyn_array(TB_GlobalPatch) global_patches[TB_MAX_THREADS];
-    dyn_array(TB_ConstPoolPatch) const_patches[TB_MAX_THREADS];
-    dyn_array(uint64_t) initializers[TB_MAX_THREADS];
-    dyn_array(TB_External) externals[TB_MAX_THREADS];
-    dyn_array(TB_Global) globals[TB_MAX_THREADS];
-    dyn_array(TB_FunctionPatch) call_patches[TB_MAX_THREADS];
-    dyn_array(TB_ExternFunctionPatch) ecall_patches[TB_MAX_THREADS];
-	
+    DynArray(TB_GlobalPatch) global_patches[TB_MAX_THREADS];
+    DynArray(TB_ConstPoolPatch) const_patches[TB_MAX_THREADS];
+    DynArray(uint64_t) initializers[TB_MAX_THREADS];
+    DynArray(TB_External) externals[TB_MAX_THREADS];
+    DynArray(TB_Global) globals[TB_MAX_THREADS];
+    DynArray(TB_FunctionPatch) call_patches[TB_MAX_THREADS];
+    DynArray(TB_ExternFunctionPatch) ecall_patches[TB_MAX_THREADS];
+
 	// TODO(NeGate): start migrating all those dyn arrays into this array
 	struct {
 		int empty_for_now;
 	} thread_info[TB_MAX_THREADS];
-	
+
     struct {
         size_t count;
         size_t capacity;
         TB_File* data;
     } files;
-	
+
     struct {
         tb_atomic_size_t compiled_count;
         tb_atomic_size_t count;
         TB_Function* data;
     } functions;
-	
+
     void* jit_region;
     size_t jit_region_size;
-	
+
     // If not NULL, there's JITted functions in each
     // non NULL entry which map to the `compiled_functions`
     void** compiled_function_pos;
-	
+
     // we need to keep track of these for layout reasons
     tb_atomic_size_t data_region_size;
     tb_atomic_size_t rdata_region_size;
     tb_atomic_size_t tls_region_size;
-	
+
     // The code is stored into giant buffers
     // there's on per code gen thread so that
     // each can work at the same time without
@@ -447,7 +452,12 @@ struct TB_Module {
     TB_CodeRegion* code_regions[TB_MAX_THREADS];
 };
 
-typedef struct TB_TemporaryStorage {
+typedef struct {
+	size_t length;
+	TB_ObjectSection* data;
+} TB_SectionGroup;
+
+typedef struct {
     uint32_t used;
     uint8_t data[];
 } TB_TemporaryStorage;
@@ -455,18 +465,32 @@ typedef struct TB_TemporaryStorage {
 // the maximum size the prologue and epilogue can be for any machine code impl
 #define PROEPI_BUFFER 256
 
-typedef struct ICodeGen {
+typedef struct {
     void (*emit_call_patches)(TB_Module* m, uint32_t* func_layout);
-	
+
     size_t (*get_prologue_length)(uint64_t saved, uint64_t stack_usage);
     size_t (*get_epilogue_length)(uint64_t saved, uint64_t stack_usage);
     size_t (*emit_prologue)(uint8_t* out, uint64_t saved, uint64_t stack_usage);
     size_t (*emit_epilogue)(uint8_t* out, uint64_t saved, uint64_t stack_usage);
-	
+
     TB_FunctionOutput (*fast_path)(TB_FunctionID id, TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
     TB_FunctionOutput (*complex_path)(TB_FunctionID id, TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
 } ICodeGen;
 
+// All debug formats i know of boil down to adding some extra sections to the object file
+typedef struct {
+	const char* name;
+
+	bool (*supported_target)(TB_Module* m);
+
+	int (*number_of_debug_sections)(TB_Module* m);
+
+	// functions are laid out linearly based on their function IDs and
+	// thus function_sym_start tells you what the starting point is in the symbol table
+	TB_SectionGroup (*generate_debug_info)(TB_Module* m, TB_TemporaryStorage* tls, const ICodeGen* code_gen, const char* path, size_t function_sym_start, uint32_t* func_layout);
+} IDebugFormat;
+
+// Macro enjoyer
 #define tb_swap(T, a, b) \
 do {                 \
 T temp = a;      \
@@ -480,6 +504,11 @@ b = temp;        \
 #define TB_DEBUG_BUILD 0
 #endif
 
+// tb_todo means it's something we fill in later
+// tb_unreachable means it's logically impossible to reach
+// tb_assume means we assume some expression cannot be false
+//
+// in debug builds these are all checked and tb_todo is some sort of trap
 #if defined(_MSC_VER) && !defined(__clang__)
 #if TB_DEBUG_BUILD
 #define tb_todo()            assert(0 && "TODO")
@@ -577,7 +606,7 @@ inline static TB_MultiplyResult tb_mul64x128(uint64_t a, uint64_t b) {
     return (TB_MultiplyResult) { lo, hi };
 }
 #else
-inline static int tb_ffs(uint32_t x) { 
+inline static int tb_ffs(uint32_t x) {
 	return __builtin_ffs(x);
 }
 
@@ -599,10 +628,18 @@ inline static bool tb_sub_overflow(uint64_t a, uint64_t b, uint64_t* result) {
 
 inline static TB_MultiplyResult tb_mul64x128(uint64_t a, uint64_t b) {
     __uint128_t product = (__uint128_t)a * (__uint128_t)b;
-	
+
     return (TB_MultiplyResult) { (uint64_t)(product & 0xFFFFFFFFFFFFFFFF), (uint64_t)(product >> 64) };
 }
 #endif
+
+// sometimes you just gotta do it to em'
+// imagine i++ but like i++y or something idk
+inline static size_t tb_post_inc(size_t* a, size_t b) {
+	size_t old = *a;
+	*a = old + b;
+	return old;
+}
 
 bool tb_validate(TB_Function* f);
 
@@ -614,8 +651,8 @@ void* tb_tls_pop(TB_TemporaryStorage* store, size_t size);
 void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance);
 bool tb_tls_can_fit(TB_TemporaryStorage* store, size_t size);
 
-void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, bool emit_debug_info);
-void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, bool emit_debug_info);
+void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt);
+void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt);
 
 uint8_t* tb_out_reserve(TB_Emitter* o, size_t count);
 // The return value is the start of the empty region after
@@ -682,7 +719,7 @@ inline static bool tb_is_power_of_two(uint64_t x) {
 
 // NOTE(NeGate): clean this up
 #if 1
-#define OPTIMIZER_LOG(at, ...)
+#define OPTIMIZER_LOG(at, ...) ((TB_Reg) (at))
 #else
 #define OPTIMIZER_LOG(at, ...)                     \
 do {                                           \
@@ -720,9 +757,19 @@ void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, siz
 
 TB_Reg* tb_vla_reserve(TB_Function* f, size_t count);
 
+// trusty lil hash functions
+uint32_t tb__crc32(uint32_t crc, size_t length, uint8_t* data);
+
+// out_bytes needs at least 16 bytes
+void tb__md5sum(uint8_t* out_bytes, uint8_t* initial_msg, size_t initial_len);
+
 inline static bool tb_data_type_match(const TB_DataType* a, const TB_DataType* b) {
     return a->type == b->type && a->width == b->width;
 }
 
 // NOTE(NeGate): Place all the codegen interfaces down here
 extern ICodeGen x64_codegen;
+
+// And all debug formats here
+//extern IDebugFormat dwarf_debug_format;
+extern IDebugFormat codeview_debug_format;

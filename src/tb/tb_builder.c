@@ -444,8 +444,6 @@ TB_API TB_Reg tb_inst_get_extern_address(TB_Function* f, TB_ExternalID target) {
 }
 
 TB_API TB_Reg tb_inst_get_global_address(TB_Function* f, TB_GlobalID target) {
-    assert(target != 0);
-	
 	TB_Reg r = tb_make_reg(f, TB_GLOBAL_ADDRESS, TB_TYPE_PTR);
     f->nodes.data[r].global = (struct TB_NodeGlobal) { target };
     return r;

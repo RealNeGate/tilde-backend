@@ -363,8 +363,14 @@ static int get_data_type_size(const TB_DataType dt);
 // used to add patches since there's separate arrays per thread
 static thread_local size_t s_local_thread_id;
 
-static const char* GPR_NAMES[] = { "RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI", "R8",
-    "R9", "R10", "R11", "R12", "R13", "R14", "R15" };
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
+static const char* GPR_NAMES[] = { "RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI", "R8",  "R9", "R10", "R11", "R12", "R13", "R14", "R15" };
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 
 // shorthand macros
 #define STACK_ALLOC(size, align)                                                  \

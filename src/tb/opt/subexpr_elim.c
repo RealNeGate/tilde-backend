@@ -2,15 +2,12 @@
 
 bool tb_opt_subexpr_elim(TB_Function* f) {
 	bool changes = false;
-	TB_Reg bb_start = 1;
 
 	TB_FOR_EACH_NODE(n, f) {
 		TB_Reg i = (n - f->nodes.data);
 		TB_NodeTypeEnum type = n->type;
 
-		if (type == TB_LABEL) {
-			bb_start = n - f->nodes.data;
-		} else if (type == TB_SIGN_EXT || type == TB_ZERO_EXT) {
+		if (type == TB_SIGN_EXT || type == TB_ZERO_EXT) {
 			TB_Reg src = n->unary.src;
 			TB_DataType dt = n->dt;
 
@@ -46,15 +43,12 @@ bool tb_opt_subexpr_elim(TB_Function* f) {
 
 bool tb_opt_hoist_invariants(TB_Function* f) {
 	bool changes = false;
-	TB_Label current_label = 0;
 
 	TB_FOR_EACH_NODE(n, f) {
 		TB_NodeTypeEnum type = n->type;
 		TB_Reg i = (n - f->nodes.data);
 
-		if (type == TB_LABEL) {
-			current_label = n->label.id;
-		} else if (type == TB_SIGN_EXT || type == TB_ZERO_EXT) {
+		if (type == TB_SIGN_EXT || type == TB_ZERO_EXT) {
 			TB_Reg src = n->unary.src;
 			TB_DataType dt = n->dt;
 

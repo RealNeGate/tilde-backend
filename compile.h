@@ -216,7 +216,7 @@ typedef struct FileIter {
 } FileIter;
 
 inline static FileIter file_iter_open(const char* directory) {
-    return (FileIter){ opendir(directory) };
+    return (FileIter){ NULL, opendir(directory) };
 }
 
 inline static bool file_iter_next(FileIter* iter) {
@@ -349,7 +349,7 @@ inline static void builder_compile_cc(BuildMode mode, size_t count, const char* 
 		const char* name = str_no_ext(str_filename(input));
 
 		cmd_append(cc_command);
-		cmd_append(" -march=haswell -maes -Werror -Wall -Wno-trigraphs -Wno-unused-function ");
+		cmd_append(" -march=haswell -maes -Werror -Wall -Wno-trigraphs -Wno-unused-function -Wno-unused-value ");
 
 		if (RELEASE_BUILD) {
 			cmd_append("-O2 -DNDEBUG ");
@@ -454,11 +454,8 @@ inline static void builder_compile_cc(BuildMode mode, size_t count, const char* 
 			else cmd_append("ar -rcs ");
 
 			cmd_append(output_path);
-			if (ON_WINDOWS) cmd_append(".lib");
-			else cmd_append(".a");
-
-			cmd_append(" ");
-			cmd_append("build/*.obj ");
+			if (ON_WINDOWS) cmd_append(".lib build/*.obj ");
+			else cmd_append(".a build/*.o ");
 			cmd_append(extra_libraries);
 		}
 	} else {

@@ -291,12 +291,7 @@ static void fast_kill_reg(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r) {
         } else if (ctx->addresses[r].type == ADDRESS_DESC_XMM) {
             XMM xmm = ctx->addresses[r].xmm;
 
-            //assert(ctx->xmm_allocator[xmm] == r || ctx->xmm_allocator[xmm] == TB_TEMP_REG);
-            if (!(ctx->xmm_allocator[xmm] == r || ctx->xmm_allocator[xmm] == TB_TEMP_REG)) {
-				tb_function_print(f, tb_default_print_callback, stdout);
-				__debugbreak();
-			}
-
+            assert(ctx->xmm_allocator[xmm] == r || ctx->xmm_allocator[xmm] == TB_TEMP_REG);
 			ctx->xmm_allocator[xmm] = TB_NULL_REG;
             ctx->xmm_available += 1;
         }
@@ -1536,8 +1531,10 @@ static void fast_eval_basic_block(
 
 					fast_folded_op_sse(ctx, f, FP_MOV, &val, n->unary.src);
 
-					if (dst_xmm >= 8) *ctx->header.out++ = rex(true, dst_xmm, dst_xmm, 0);
-					*ctx->header.out++ = (dt.type == TB_F64 ? 0xF2 : 0xF3);
+					if (dst_xmm >= 8) {
+						*ctx->header.out++ = rex(true, dst_xmm, dst_xmm, 0);
+						*ctx->header.out++ = (dt.type == TB_F64 ? 0xF2 : 0xF3);
+					}
 					*ctx->header.out++ = 0x0F;
 					*ctx->header.out++ = 0x57;
 					*ctx->header.out++ = ((dst_xmm & 7) << 3) | RBP;

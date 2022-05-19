@@ -58,7 +58,7 @@ typedef enum {
     R13,
     R14,
     R15,
-	
+
     GPR_NONE = -1
 } GPR;
 
@@ -79,18 +79,18 @@ typedef enum {
     XMM13,
     XMM14,
     XMM15,
-	
+
     XMM_NONE = -1
 } XMM;
 
 typedef enum {
     VAL_NONE,
-	
+
     VAL_IMM,
     VAL_MEM,
     VAL_GPR,
     VAL_XMM,
-	
+
     VAL_GLOBAL,
     VAL_FLAGS
 } ValType;
@@ -109,8 +109,7 @@ enum {
     MOD_DIRECT          = 3, // rax
 };
 
-typedef enum Inst2FPFlags
-{
+typedef enum Inst2FPFlags {
     INST2FP_DOUBLE = (1u << 0),
     INST2FP_PACKED = (1u << 1)
 } Inst2FPFlags;
@@ -119,7 +118,7 @@ typedef struct Val {
     uint8_t     type;
     bool        is_spill;
     TB_DataType dt;
-	
+
     union {
         GPR  gpr;
         XMM  xmm;
@@ -155,8 +154,7 @@ typedef struct LabelPatch {
     TB_Label target_lbl;
 } LabelPatch;
 
-typedef enum Inst2Type
-{
+typedef enum Inst2Type {
     // Integer data processing
     ADD,
     AND,
@@ -170,7 +168,7 @@ typedef enum Inst2Type
     IMUL,
     XCHG,
     XADD,
-	
+
     MOVSXB,
     MOVSXW,
     MOVSXD,
@@ -178,8 +176,7 @@ typedef enum Inst2Type
     MOVZXW
 } Inst2Type;
 
-typedef enum Inst2FPType
-{
+typedef enum Inst2FPType {
     FP_MOV,
     FP_ADD,
     FP_SUB,
@@ -195,14 +192,13 @@ typedef enum Inst2FPType
     FP_XOR
 } Inst2FPType;
 
-typedef enum ExtMode
-{
+typedef enum ExtMode {
     // Normal
     EXT_NONE,
-	
+
     // DEF instructions have a 0F prefix
     EXT_DEF,
-	
+
     // same as DEF but for MOVZX and MOVSX
     // these are forced as always load.
     EXT_DEF2
@@ -211,11 +207,11 @@ typedef enum ExtMode
 // Describes what general 2 operand instructions are like
 typedef struct Inst2 {
     uint8_t op;
-	
+
     // IMMEDIATES
     uint8_t op_i;
     uint8_t rx_i;
-	
+
     ExtMode ext : 8;
 } Inst2;
 
@@ -224,21 +220,21 @@ typedef struct {
     // Header that
     uint8_t* out;
     uint8_t* start_out;
-	
+
     size_t       function_id;
     TB_Function* f;
-	
+
     // Used to allocate spills
     uint32_t stack_usage;
-	
+
     // GPRs are the bottom 32bit
     // XMM is the top 32bit
     uint64_t regs_to_save;
-	
+
     // Patch info
     uint32_t label_patch_count;
     uint32_t ret_patch_count;
-	
+
     uint32_t*    labels;
     LabelPatch*  label_patches;
     ReturnPatch* ret_patches;
@@ -248,47 +244,45 @@ static const GPR WIN64_GPR_PARAMETERS[4] = { RCX, RDX, R8, R9 };
 
 static const GPR SYSV_GPR_PARAMETERS[6] = { RDI, RSI, RDX, RCX, R8, R9 };
 
-typedef enum Inst1
-{
+typedef enum Inst1 {
     // 0xF7
     NOT  = 0xF702,
     NEG  = 0xF703,
     IDIV = 0xF707,
-	
+
     // 0xFF
     CALL_RM = 0xFF02
 } Inst1;
 
-static const Inst2 inst2_tbl[] = { [ADD] = { 0x00, 0x80, 0x00 },
-    [AND]                                = { 0x20, 0x80, 0x04 },
-    [OR]                                 = { 0x08, 0x80, 0x01 },
-    [SUB]                                = { 0x28, 0x80, 0x05 },
-    [XOR]                                = { 0x30, 0x80, 0x06 },
-    [CMP]                                = { 0x38, 0x80, 0x07 },
-    [MOV]                                = { 0x88, 0xC6, 0x00 },
-    [TEST]                               = { 0x84, 0xF6, 0x00 },
-	
+static const Inst2 inst2_tbl[] = {
+	[ADD]  = { 0x00, 0x80, 0x00 },
+    [AND]  = { 0x20, 0x80, 0x04 },
+    [OR]   = { 0x08, 0x80, 0x01 },
+    [SUB]  = { 0x28, 0x80, 0x05 },
+    [XOR]  = { 0x30, 0x80, 0x06 },
+    [CMP]  = { 0x38, 0x80, 0x07 },
+    [MOV]  = { 0x88, 0xC6, 0x00 },
+    [TEST] = { 0x84, 0xF6, 0x00 },
+
     [XCHG] = { 0x86 },
     [XADD] = { 0xC0, .ext = EXT_DEF },
     [LEA]  = { 0x8D },
-	
+
     [IMUL] = { 0xAF, .ext = EXT_DEF },
-	
+
     [MOVSXB] = { 0xBE, .ext = EXT_DEF2 },
     [MOVSXW] = { 0xBF, .ext = EXT_DEF2 },
     [MOVSXD] = { 0x63, .ext = EXT_NONE },
-	
+
     [MOVZXB] = { 0xB6, .ext = EXT_DEF2 },
-    [MOVZXW] = { 0xB7, .ext = EXT_DEF2 } };
+    [MOVZXW] = { 0xB7, .ext = EXT_DEF2 }
+};
 
 // NOTE(NeGate): This is for Win64, we can handle SysV later
-static const uint16_t WIN64_ABI_CALLER_SAVED =
-(1u << RAX) | (1u << RCX) | (1u << RDX) | (1u << R8) | (1u << R9) | (1u << R10) | (1u << R11);
+static const uint16_t WIN64_ABI_CALLER_SAVED = (1u << RAX) | (1u << RCX) | (1u << RDX) | (1u << R8) | (1u << R9) | (1u << R10) | (1u << R11);
 #define WIN64_ABI_CALLEE_SAVED ~WIN64_ABI_CALLER_SAVED
 
-static const uint16_t SYSV_ABI_CALLER_SAVED = (1u << RAX) | (1u << RDI) | (1u << RSI) |
-(1u << RCX) | (1u << RDX) | (1u << R8) | (1u << R9) |
-(1u << R10) | (1u << R11);
+static const uint16_t SYSV_ABI_CALLER_SAVED = (1u << RAX) | (1u << RDI) | (1u << RSI) | (1u << RCX) | (1u << RDX) | (1u << R8) | (1u << R9) | (1u << R10) | (1u << R11);
 #define SYSV_ABI_CALLEE_SAVED ~SYSV_ABI_CALLER_SAVED
 
 // GPRs can only ever be scalar
@@ -305,8 +299,7 @@ inline static Val val_flags(Cond c) {
 }
 
 inline static Val val_global(TB_GlobalID g) {
-    return (
-			Val) { .type = VAL_GLOBAL, .dt = TB_TYPE_PTR, .global.is_rvalue = false, .global.id = g };
+    return (Val) { .type = VAL_GLOBAL, .dt = TB_TYPE_PTR, .global.is_rvalue = false, .global.id = g };
 }
 
 inline static Val val_imm(TB_DataType dt, int32_t imm) {
@@ -314,15 +307,19 @@ inline static Val val_imm(TB_DataType dt, int32_t imm) {
 }
 
 inline static Val val_stack(TB_DataType dt, int s) {
-    return (Val) { .type = VAL_MEM,
-        .dt              = dt,
-        .mem             = { .base = RBP, .index = GPR_NONE, .scale = SCALE_X1, .disp = s } };
+    return (Val) {
+		.type = VAL_MEM,
+        .dt = dt,
+        .mem = { .base = RBP, .index = GPR_NONE, .scale = SCALE_X1, .disp = s }
+	};
 }
 
 inline static Val val_base_disp(TB_DataType dt, GPR b, int d) {
-    return (Val) { .type = VAL_MEM,
-        .dt              = dt,
-        .mem             = { .base = b, .index = GPR_NONE, .scale = SCALE_X1, .disp = d } };
+    return (Val) {
+		.type = VAL_MEM,
+        .dt = dt,
+        .mem = { .base = b, .index = GPR_NONE, .scale = SCALE_X1, .disp = d }
+	};
 }
 
 inline static Val val_base_index(TB_DataType dt, GPR b, GPR i, Scale s) {
@@ -330,8 +327,7 @@ inline static Val val_base_index(TB_DataType dt, GPR b, GPR i, Scale s) {
 }
 
 inline static Val val_base_index_disp(TB_DataType dt, GPR b, GPR i, Scale s, int d) {
-    return (
-			Val) { .type = VAL_MEM, .dt = dt, .mem = { .base = b, .index = i, .scale = s, .disp = d } };
+    return (Val) { .type = VAL_MEM, .dt = dt, .mem = { .base = b, .index = i, .scale = s, .disp = d } };
 }
 
 inline static bool is_value_mem(const Val* v) {
@@ -340,22 +336,21 @@ inline static bool is_value_mem(const Val* v) {
 
 inline static bool is_value_gpr(const Val* v, GPR g) {
     if (v->type != VAL_GPR) return false;
-	
+
     return (v->gpr == g);
 }
 
 inline static bool is_value_xmm(const Val* v, XMM x) {
     if (v->type != VAL_XMM) return false;
-	
+
     return (v->xmm == x);
 }
 
 inline static bool is_value_match(const Val* a, const Val* b) {
     if (a->type != b->type) return false;
-	
+
     if (a->type == VAL_GPR) return a->gpr == b->gpr;
-    else
-        return false;
+    else return false;
 }
 
 static int get_data_type_size(const TB_DataType dt);

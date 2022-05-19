@@ -24,19 +24,19 @@ inline static void emit_memory_operand(X64_CtxHeader* restrict ctx, uint8_t rx, 
         GPR index = a->mem.index;
         uint8_t scale = a->mem.scale;
         int32_t disp  = a->mem.disp;
-		
+
         bool needs_index = (index != GPR_NONE) || (base & 7) == RSP;
-		
+
         // If it needs an index, it'll put RSP into the base slot
         // and write the real base into the SIB
         uint8_t mod = MOD_INDIRECT_DISP32;
         if (disp == 0 && (base & 7) != RBP) mod = MOD_INDIRECT;
         else if (disp == (int8_t)disp)
             mod = MOD_INDIRECT_DISP8;
-		
+
         EMIT(mod_rx_rm(mod, rx, needs_index ? RSP : base));
         if (needs_index) { EMIT(mod_rx_rm(scale, (base & 7) == RSP ? RSP : index, base)); }
-		
+
         if (mod == MOD_INDIRECT_DISP8) {
             EMIT((int8_t)disp);
         } else if (mod == MOD_INDIRECT_DISP32) {
@@ -45,7 +45,7 @@ inline static void emit_memory_operand(X64_CtxHeader* restrict ctx, uint8_t rx, 
     } else if (a->type == VAL_GLOBAL) {
         EMIT(((rx & 7) << 3) | RBP);
         EMIT4(a->global.disp);
-		
+
         tb_emit_global_patch(ctx->f->module, ctx->f, (ctx->out - ctx->start_out) - 4, a->global.id, s_local_thread_id);
     } else {
 		tb_unreachable();
@@ -62,32 +62,32 @@ void inst1(X64_CtxHeader* restrict ctx, Inst1 op, const Val* r) {
         GPR index = r->mem.index;
         uint8_t scale = r->mem.scale;
         int32_t disp  = r->mem.disp;
-		
+
         bool needs_index = (index != GPR_NONE) || (base & 7) == RSP;
-		
+
         EMIT(rex(true, 0x00, base, index != GPR_NONE ? index : 0));
         EMIT((op >> 8) & 0xFF);
-		
+
         // If it needs an index, it'll put RSP into the base slot
         // and write the real base into the SIB
         uint8_t mod = MOD_INDIRECT_DISP32;
         if (disp == 0) mod = MOD_INDIRECT_DISP8;
         else if (disp == (int8_t)disp)
             mod = MOD_INDIRECT_DISP8;
-		
+
         EMIT(mod_rx_rm(mod, op & 0xFF, needs_index ? RSP : base));
         if (needs_index) { EMIT(mod_rx_rm(scale, (base & 7) == RSP ? RSP : index, base)); }
-		
+
         if (mod == MOD_INDIRECT_DISP8) EMIT((int8_t)disp);
         else if (mod == MOD_INDIRECT_DISP32) EMIT4((int32_t)disp);
     } else if (r->type == VAL_GLOBAL) {
         uint8_t rx = (op & 0xFF);
-		
+
         EMIT(0x48); // rex.w
         EMIT((op >> 8) & 0xFF);
         EMIT(((rx & 7) << 3) | RBP);
         EMIT4(r->global.disp);
-		
+
         tb_emit_global_patch(ctx->f->module, ctx->f, (ctx->out - ctx->start_out) - 4, r->global.id, s_local_thread_id);
     } else
         tb_unreachable();
@@ -96,20 +96,20 @@ void inst1(X64_CtxHeader* restrict ctx, Inst1 op, const Val* r) {
 void inst2(X64_CtxHeader* restrict ctx, Inst2Type op, const Val* a, const Val* b, int dt_type) {
     assert(op < (sizeof(inst2_tbl) / sizeof(inst2_tbl[0])));
     const Inst2* inst = &inst2_tbl[op];
-	
+
     bool dir = b->type == VAL_MEM || b->type == VAL_GLOBAL;
     if (dir || inst->op == 0x63 || inst->op == 0xAF || inst->ext == EXT_DEF2) {
         tb_swap(const Val*, a, b);
     }
-	
+
     // operand size
     uint8_t sz = (dt_type != TB_I8);
-	
+
     // uses an immediate value that works as
     // a sign extended 8 bit number
     bool short_imm =
 	(dt_type != TB_I8 && b->type == VAL_IMM && b->imm == (int8_t)b->imm && inst->op_i == 0x80);
-	
+
     // All instructions that go through here are
     // based on the ModRxRm encoding so we do need
     // an RX and an RM (base, index, shift, disp)
@@ -117,82 +117,87 @@ void inst2(X64_CtxHeader* restrict ctx, Inst2Type op, const Val* a, const Val* b
     uint8_t rx = 0xFF;
     if (inst->ext == EXT_NONE || inst->ext == EXT_DEF || inst->ext == EXT_DEF2) {
         assert(dt_type == TB_I8 || dt_type == TB_I16 || dt_type == TB_I32 || dt_type == TB_I64 || dt_type == TB_PTR);
-		
+
         // the destination can only be a GPR, no direction flag
         bool is_gpr_only_dst = (inst->op & 1);
         bool dir_flag = (dir != is_gpr_only_dst);
-		
+
         // Address size prefix
         if (dt_type == TB_I16 && inst->ext != EXT_DEF2) { EMIT(0x66); }
-		
+
         // RX
         if (b->type == VAL_GPR) rx = b->gpr;
         else if (b->type == VAL_IMM) rx = inst->rx_i;
         else tb_unreachable();
-		
+
         // RM & REX
         bool is_64bit = (dt_type == TB_I64 || dt_type == TB_PTR);
-		
+
         if (a->type == VAL_GPR) {
             base = a->gpr;
-			
+
             if (base >= 8 || rx >= 8 || is_64bit) {
 				EMIT(rex(is_64bit, rx, base, 0));
+			} else if (dt_type == TB_I8 && (base >= 4 || rx >= 4)) {
+				EMIT(rex(false, rx, base, 0));
 			}
         } else if (a->type == VAL_MEM) {
             base = a->mem.base;
-			
+
             uint8_t rex_index = (a->mem.index != GPR_NONE ? a->mem.index : 0);
             if (base >= 8 || rx >= 8 || rex_index >= 8 || is_64bit) {
                 EMIT(rex(is_64bit, rx, base, rex_index));
-            }
+            } else if (dt_type == TB_I8 && (base >= 4 || rx >= 4 || rex_index >= 4)) {
+				EMIT(rex(false, rx, base, 0));
+			}
         } else if (a->type == VAL_GLOBAL) {
             base = RBP;
             if (rx >= 8 || is_64bit) {
 				EMIT(rex(is_64bit, rx, base, 0));
+			} else if (dt_type == TB_I8) {
+				EMIT(rex(false, rx, base, 0));
 			}
         } else tb_unreachable();
-		
+
         // Opcode
         if (inst->ext == EXT_DEF || inst->ext == EXT_DEF2) {
             // DEF instructions can only be 32bit and 64bit... maybe?
             if (op != XADD) sz = 0;
             EMIT(0x0F);
         }
-		
+
         if (b->type == VAL_IMM && inst->op_i == 0 && inst->rx_i == 0) {
             // No immediate version
             tb_unreachable();
         }
-		
+
         // Immediates have a custom opcode
         uint8_t opcode = b->type == VAL_IMM ? inst->op_i : inst->op;
         if (short_imm) opcode |= 2;
-		
+
         EMIT(opcode | sz | (dir_flag ? 2 : 0));
-    } else
-        tb_unreachable();
-	
+    } else tb_unreachable();
+
     // We forgot a case!
     assert(rx != 0xFF);
     emit_memory_operand(ctx, rx, a);
-	
+
     if (b->type == VAL_IMM) {
         if (dt_type == TB_I8 || short_imm) {
             if (a->type == VAL_GLOBAL) RELOC4((ctx->out - ctx->start_out) - 4, -1);
-			
+
             if (short_imm) assert(b->imm == (int8_t)b->imm);
             EMIT((int8_t)b->imm);
         } else if (dt_type == TB_I16) {
             if (a->type == VAL_GLOBAL) RELOC4((ctx->out - ctx->start_out) - 4, -2);
-			
+
             uint32_t imm = b->imm;
             assert((imm & 0xFFFF0000) == 0xFFFF0000 || (imm & 0xFFFF0000) == 0);
-			
+
             EMIT2(imm);
         } else {
             if (a->type == VAL_GLOBAL) RELOC4((ctx->out - ctx->start_out) - 4, -4);
-			
+
             assert(dt_type == TB_I32 || dt_type == TB_I64 || dt_type == TB_PTR);
             EMIT4((int32_t)b->imm);
         }
@@ -215,15 +220,15 @@ void inst2sse(X64_CtxHeader* restrict ctx, Inst2FPType op, const Val* a, const V
         [FP_OR]    = 0x56,
         [FP_XOR]   = 0x57
 	};
-	
+
     // most SSE instructions (that aren't mov__) are mem src only
     bool supports_mem_dst = (op == FP_MOV);
     bool dir = is_value_mem(a);
-	
+
     if (supports_mem_dst && dir) {
 		tb_swap(const Val*, a, b);
 	}
-	
+
     uint8_t rx = a->xmm;
     uint8_t base, index;
     if (b->type == VAL_MEM) {
@@ -237,21 +242,21 @@ void inst2sse(X64_CtxHeader* restrict ctx, Inst2FPType op, const Val* a, const V
         index = 0;
     } else
         tb_todo();
-	
+
     if ((flags & INST2FP_PACKED) == 0 && op != FP_UCOMI) {
         EMIT(flags & INST2FP_DOUBLE ? 0xF2 : 0xF3);
     } else if (flags & INST2FP_DOUBLE) {
         // packed double
         EMIT(0x66);
     }
-	
+
     if (rx >= 8 || base >= 8 || index >= 8) {
 		EMIT(rex(false, rx, base, index));
 	}
-	
+
     // extension prefix
     EMIT(0x0F);
-	
+
     EMIT(OPCODES[op] + (supports_mem_dst ? dir : 0));
     emit_memory_operand(ctx, rx, b);
 }
@@ -259,7 +264,7 @@ void inst2sse(X64_CtxHeader* restrict ctx, Inst2FPType op, const Val* a, const V
 inline static void jcc(X64_CtxHeader* restrict ctx, Cond cc, int label) {
     size_t pos = ctx->out - ctx->start_out;
     ctx->label_patches[ctx->label_patch_count++] = (LabelPatch) { .pos = pos + 2, .target_lbl = label };
-	
+
     EMIT(0x0F);
     EMIT(0x80 + (uint8_t)cc);
     EMIT4(0x0);
@@ -268,7 +273,7 @@ inline static void jcc(X64_CtxHeader* restrict ctx, Cond cc, int label) {
 inline static void jmp(X64_CtxHeader* restrict ctx, int label) {
     size_t pos = ctx->out - ctx->start_out;
     ctx->label_patches[ctx->label_patch_count++] = (LabelPatch) { .pos = pos + 1, .target_lbl = label };
-	
+
     EMIT(0xE9);
     EMIT4(0x0);
 }
@@ -277,7 +282,7 @@ inline static void jmp(X64_CtxHeader* restrict ctx, int label) {
 inline static void ret_jmp(X64_CtxHeader* restrict ctx) {
     size_t pos = ctx->out - ctx->start_out;
     ctx->ret_patches[ctx->ret_patch_count++] = pos + 1;
-	
+
     EMIT(0xE9);
     EMIT4(0x0);
 }

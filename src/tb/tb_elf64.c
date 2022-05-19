@@ -386,10 +386,10 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
     FILE* f = fopen(path, "wb");
     fwrite(&header, sizeof(header), 1, f);
 
-    assert(ftell(f) == strtab_section.sh_offset);
+	assert(ftell(f) == strtab_section.sh_offset);
     fwrite(strtbl.data, strtbl.count, 1, f);
 
-    assert(ftell(f) == code_section.sh_offset);
+	assert(ftell(f) == code_section.sh_offset);
     loop(i, m->functions.count) {
         TB_FunctionOutput* out_f = m->functions.data[i].output;
         if (!out_f) continue;
@@ -405,6 +405,7 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
         uint8_t* epilogue = proepi_buffer + prologue_len;
         size_t epilogue_len = code_gen->emit_epilogue(epilogue, meta, stack_usage);
 
+		printf("%s: %zu %zu %zu\n", m->functions.data[i].name, prologue_len, epilogue_len, code_size);
         fwrite(prologue, prologue_len, 1, f);
         fwrite(code, code_size, 1, f);
         fwrite(epilogue, epilogue_len, 1, f);
@@ -491,7 +492,7 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
         tb_platform_heap_free(data);
     }
 
-    assert(ftell(f) == rodata_section.sh_offset);
+	assert(ftell(f) == rodata_section.sh_offset);
     {
         char* rdata = tb_platform_heap_alloc(m->rdata_region_size);
 

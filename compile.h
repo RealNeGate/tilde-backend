@@ -433,7 +433,7 @@ inline static void builder_compile_cc(BuildMode mode, size_t count, const char* 
 			cmd_append("ld -o ");
 			cmd_append(output_path);
 			if (ON_WINDOWS) cmd_append(".exe");
-			cmd_append(" build/*.o ./tildebackend.a -lc -lm -lpthread ");
+			cmd_append(" build/*.o ./tildebackend.a -g -lc -lm -lpthread ");
 			cmd_append("/usr/lib/x86_64-linux-gnu/crt1.o ");
 			cmd_append("/usr/lib/x86_64-linux-gnu/crti.o ");
 			cmd_append("/usr/lib/x86_64-linux-gnu/crtn.o ");

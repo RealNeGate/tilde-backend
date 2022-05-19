@@ -291,8 +291,13 @@ static void fast_kill_reg(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r) {
         } else if (ctx->addresses[r].type == ADDRESS_DESC_XMM) {
             XMM xmm = ctx->addresses[r].xmm;
 
-            assert(ctx->xmm_allocator[xmm] == r || ctx->xmm_allocator[xmm] == TB_TEMP_REG);
-            ctx->xmm_allocator[xmm] = TB_NULL_REG;
+            //assert(ctx->xmm_allocator[xmm] == r || ctx->xmm_allocator[xmm] == TB_TEMP_REG);
+            if (!(ctx->xmm_allocator[xmm] == r || ctx->xmm_allocator[xmm] == TB_TEMP_REG)) {
+				tb_function_print(f, tb_default_print_callback, stdout);
+				__debugbreak();
+			}
+
+			ctx->xmm_allocator[xmm] = TB_NULL_REG;
             ctx->xmm_available += 1;
         }
 
@@ -1053,23 +1058,34 @@ static void fast_eval_basic_block(
 			case TB_ADD:
 			case TB_SUB:
 			case TB_MUL: {
-				GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
-				fast_def_gpr(ctx, f, r, dst_gpr, dt);
+				// simple scalar ops
+				const static Inst2Type ops[] = { AND, OR, XOR, ADD, SUB, IMUL };
 
-				Val dst = val_gpr(dt.type, dst_gpr);
-				{
-					// simple scalar ops
-					const static Inst2Type ops[] = { AND, OR, XOR, ADD, SUB, IMUL };
+				if (ctx->use_count[n->i_arith.a] == 1 && ctx->addresses[n->i_arith.a].type == ADDRESS_DESC_GPR) {
+					Val dst = val_gpr(dt.type, ctx->addresses[n->i_arith.a].gpr);
+					fast_def_gpr(ctx, f, r, dst.gpr, dt);
 
+					// rename a -> dst
+					ctx->gpr_allocator[dst.gpr] = r;
+					fast_folded_op(ctx, f, ops[reg_type - TB_AND], &dst, n->i_arith.b);
+
+					if (n->i_arith.a != n->i_arith.b) {
+						fast_kill_reg(ctx, f, n->i_arith.b);
+					}
+				} else {
+					GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
+					fast_def_gpr(ctx, f, r, dst_gpr, dt);
+
+					Val dst = val_gpr(dt.type, dst_gpr);
 					fast_folded_op(ctx, f, MOV, &dst, n->i_arith.a);
 					fast_folded_op(ctx, f, ops[reg_type - TB_AND], &dst, n->i_arith.b);
-				}
 
-				if (n->i_arith.a == n->i_arith.b) {
-					fast_kill_reg(ctx, f, n->i_arith.a);
-				} else {
-					fast_kill_reg(ctx, f, n->i_arith.a);
-					fast_kill_reg(ctx, f, n->i_arith.b);
+					if (n->i_arith.a == n->i_arith.b) {
+						fast_kill_reg(ctx, f, n->i_arith.a);
+					} else {
+						fast_kill_reg(ctx, f, n->i_arith.a);
+						fast_kill_reg(ctx, f, n->i_arith.b);
+					}
 				}
 				break;
 			}
@@ -1200,6 +1216,9 @@ static void fast_eval_basic_block(
 					// recycle a for the destination
 					Val dst = val_xmm(dt, ctx->addresses[n->f_arith.a].xmm);
 
+					// move ownership
+					ctx->xmm_allocator[dst.xmm] = r;
+
 					fast_def_xmm(ctx, f, r, dst.xmm, dt);
 					fast_folded_op_sse(ctx, f, ops[reg_type - TB_FADD], &dst, n->f_arith.b);
 
@@ -1299,6 +1318,8 @@ static void fast_eval_basic_block(
 				}
 
 				if (!returns_flags) {
+					// printf("r%d: setcc -> %s\n", r, GPR_NAMES[val.gpr]);
+
 					// setcc v
 					assert(val.type == VAL_GPR);
 					*ctx->header.out++ = (val.gpr >= 8) ? 0x41 : 0x40;
@@ -1653,7 +1674,7 @@ static void fast_eval_basic_block(
 							// since we evict now we don't need to later
 							fast_evict_xmm(ctx, f, j);
 
-							Val dst = val_gpr(param_dt.type, parameter_gprs[j]);
+							Val dst = val_xmm(param_dt, j);
 
 							// move to parameter XMM and reserve it
 							fast_folded_op_sse(ctx, f, FP_MOV, &dst, param_reg);
@@ -2198,8 +2219,10 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         }
     }
 
-    // tb_function_print(f, tb_default_print_callback, stdout);
-    // printf("\n\n\n");
+#if 0
+	tb_function_print(f, tb_default_print_callback, stdout);
+	printf("\n\n\n");
+#endif
 
     // Evaluate basic blocks
     TB_Reg bb = 1;
@@ -2207,11 +2230,11 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         assert(f->nodes.data[bb].type == TB_LABEL);
         TB_Node* start = &f->nodes.data[bb];
 
-        TB_Reg   bb_end = start->label.terminator;
-        TB_Node* end    = &f->nodes.data[bb_end];
+        TB_Reg bb_end = start->label.terminator;
+        TB_Node* end = &f->nodes.data[bb_end];
 
         // Define label position
-        TB_Label label_id            = start->label.id;
+        TB_Label label_id = start->label.id;
         ctx->header.labels[label_id] = GET_CODE_POS();
 
 #if !TB_STRIP_LABELS
@@ -2524,13 +2547,15 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         PATCH4(pos, ctx->header.labels[target_lbl] - (pos + 4));
     }
 
-    if (f->line_count > 0) { f->lines[0].pos = 0; }
+    if (f->line_count > 0) f->lines[0].pos = 0;
 
-    TB_FunctionOutput func_out = { .linkage = f->linkage,
-        .code                               = ctx->header.start_out,
-        .code_size                          = ctx->header.out - ctx->header.start_out,
-        .stack_usage                        = ctx->header.stack_usage,
-        .prologue_epilogue_metadata         = ctx->header.regs_to_save };
+    TB_FunctionOutput func_out = {
+		.linkage = f->linkage,
+        .code = ctx->header.start_out,
+        .code_size = ctx->header.out - ctx->header.start_out,
+        .stack_usage = ctx->header.stack_usage,
+        .prologue_epilogue_metadata = ctx->header.regs_to_save
+	};
 
     if (is_ctx_heap_allocated) {
         tb_platform_heap_free(ctx->use_count);

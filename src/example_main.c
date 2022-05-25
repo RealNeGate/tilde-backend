@@ -8,8 +8,7 @@ static TB_Function*  test_foo_func_ref = NULL;
 
 TB_Function* test_atomics(TB_Module* m) {
     TB_FunctionPrototype* p = tb_prototype_create(m, TB_STDCALL, TB_TYPE_VOID, 4, false);
-    tb_prototype_add_params(
-        p, 4, (TB_DataType[]) { TB_TYPE_PTR, TB_TYPE_PTR, TB_TYPE_PTR, TB_TYPE_PTR });
+    tb_prototype_add_params(p, 4, (TB_DataType[]) { TB_TYPE_PTR, TB_TYPE_PTR, TB_TYPE_PTR, TB_TYPE_PTR });
     TB_Function* func = tb_prototype_build(m, p, __FUNCTION__, TB_LINKAGE_PUBLIC);
 
     TB_Register params[4];
@@ -36,8 +35,7 @@ TB_Function* test_atomics(TB_Module* m) {
 
 TB_Function* test_cvt_int_and_floats(TB_Module* m) {
     TB_FunctionPrototype* p = tb_prototype_create(m, TB_STDCALL, TB_TYPE_VOID, 4, false);
-    tb_prototype_add_params(
-        p, 4, (TB_DataType[]) { TB_TYPE_PTR, TB_TYPE_PTR, TB_TYPE_PTR, TB_TYPE_PTR });
+    tb_prototype_add_params(p, 4, (TB_DataType[]) { TB_TYPE_PTR, TB_TYPE_PTR, TB_TYPE_PTR, TB_TYPE_PTR });
     TB_Function* func = tb_prototype_build(m, p, __FUNCTION__, TB_LINKAGE_PUBLIC);
 
     TB_Register params[4];
@@ -71,7 +69,7 @@ TB_Function* test_div_i64(TB_Module* m) {
     TB_Register b = tb_inst_param_addr(func, 1);
 
     TB_Register sum = tb_inst_div(
-        func, tb_inst_load(func, TB_TYPE_I64, a, 4), tb_inst_load(func, TB_TYPE_I64, b, 4), true);
+								  func, tb_inst_load(func, TB_TYPE_I64, a, 4), tb_inst_load(func, TB_TYPE_I64, b, 4), true);
 
     tb_inst_ret(func, sum);
     return func;
@@ -83,7 +81,7 @@ TB_Function* test_zero_mem(TB_Module* m) {
 
     TB_Register cells = tb_inst_local(func, 32, 4);
     tb_inst_memset(
-        func, cells, tb_inst_sint(func, TB_TYPE_I32, 0), tb_inst_sint(func, TB_TYPE_I32, 32), 4);
+				   func, cells, tb_inst_sint(func, TB_TYPE_I32, 0), tb_inst_sint(func, TB_TYPE_I32, 32), 4);
 
     tb_inst_ret(func, TB_NULL_REG);
     return func;
@@ -181,9 +179,9 @@ TB_Function* test_mul_i64(TB_Module* m) {
     TB_Register c = tb_inst_param_addr(func, 2);
 
     TB_Register factor = tb_inst_mul(func, tb_inst_load(func, TB_TYPE_I64, a, 4),
-        tb_inst_mul(func, tb_inst_load(func, TB_TYPE_I64, b, 4),
-            tb_inst_load(func, TB_TYPE_I64, c, 4), TB_UNSIGNED_TRAP_ON_WRAP),
-        TB_SATURATED_UNSIGNED);
+									 tb_inst_mul(func, tb_inst_load(func, TB_TYPE_I64, b, 4),
+												 tb_inst_load(func, TB_TYPE_I64, c, 4), TB_UNSIGNED_TRAP_ON_WRAP),
+									 TB_SATURATED_UNSIGNED);
 
     tb_inst_ret(func, factor);
     return func;
@@ -198,7 +196,7 @@ TB_Function* test_sat_uadd_i32(TB_Module* m) {
     TB_Register b = tb_inst_param_addr(func, 1);
 
     TB_Register sum = tb_inst_add(func, tb_inst_load(func, TB_TYPE_I32, a, 4),
-        tb_inst_load(func, TB_TYPE_I32, b, 4), TB_SATURATED_UNSIGNED);
+								  tb_inst_load(func, TB_TYPE_I32, b, 4), TB_SATURATED_UNSIGNED);
 
     tb_inst_ret(func, sum);
     return func;
@@ -213,7 +211,7 @@ TB_Function* test_sat_sadd_i32(TB_Module* m) {
     TB_Register b = tb_inst_param_addr(func, 1);
 
     TB_Register sum = tb_inst_add(func, tb_inst_load(func, TB_TYPE_I32, a, 4),
-        tb_inst_load(func, TB_TYPE_I32, b, 4), TB_SATURATED_SIGNED);
+								  tb_inst_load(func, TB_TYPE_I32, b, 4), TB_SATURATED_SIGNED);
 
     tb_inst_ret(func, sum);
     return func;
@@ -228,7 +226,7 @@ TB_Function* test_safe_add_i32(TB_Module* m) {
     TB_Register b = tb_inst_param_addr(func, 1);
 
     TB_Register sum = tb_inst_add(func, tb_inst_load(func, TB_TYPE_I32, a, 4),
-        tb_inst_load(func, TB_TYPE_I32, b, 4), TB_UNSIGNED_TRAP_ON_WRAP);
+								  tb_inst_load(func, TB_TYPE_I32, b, 4), TB_UNSIGNED_TRAP_ON_WRAP);
 
     tb_inst_ret(func, sum);
     return func;
@@ -244,8 +242,8 @@ TB_Function* test_andor_i32(TB_Module* m) {
     TB_Register c = tb_inst_param_addr(func, 2);
 
     TB_Register result = tb_inst_and(func, tb_inst_load(func, TB_TYPE_I32, a, 4),
-        tb_inst_or(
-            func, tb_inst_load(func, TB_TYPE_I32, b, 4), tb_inst_load(func, TB_TYPE_I32, c, 4)));
+									 tb_inst_or(
+												func, tb_inst_load(func, TB_TYPE_I32, b, 4), tb_inst_load(func, TB_TYPE_I32, c, 4)));
 
     tb_inst_ret(func, result);
     return func;
@@ -261,9 +259,9 @@ TB_Function* test_muladd_f32(TB_Module* m) {
     TB_Register c = tb_inst_param_addr(func, 2);
 
     TB_Register result = tb_inst_fadd(func,
-        tb_inst_fmul(
-            func, tb_inst_load(func, TB_TYPE_F32, a, 4), tb_inst_load(func, TB_TYPE_F32, b, 4)),
-        tb_inst_load(func, TB_TYPE_F32, c, 4));
+									  tb_inst_fmul(
+												   func, tb_inst_load(func, TB_TYPE_F32, a, 4), tb_inst_load(func, TB_TYPE_F32, b, 4)),
+									  tb_inst_load(func, TB_TYPE_F32, c, 4));
 
     tb_inst_ret(func, result);
     return func;
@@ -322,7 +320,7 @@ TB_Function* test_params_2(TB_Module* m) {
     TB_Register b = tb_inst_param_addr(func, 1);
 
     TB_Register sum = tb_inst_add(func, tb_inst_load(func, TB_TYPE_I32, a, 4),
-        tb_inst_load(func, TB_TYPE_I32, b, 4), TB_ASSUME_NUW);
+								  tb_inst_load(func, TB_TYPE_I32, b, 4), TB_ASSUME_NUW);
 
     tb_inst_ret(func, sum);
     return func;
@@ -349,7 +347,7 @@ TB_Function* test_locals_params_1(TB_Module* m) {
     TB_Register local = tb_inst_local(func, 4, 4);
 
     TB_Register sum = tb_inst_add(func, tb_inst_load(func, TB_TYPE_I32, a, 4),
-        tb_inst_load(func, TB_TYPE_I32, b, 4), TB_ASSUME_NUW);
+								  tb_inst_load(func, TB_TYPE_I32, b, 4), TB_ASSUME_NUW);
 
     tb_inst_store(func, TB_TYPE_I32, local, sum, 4);
     tb_inst_ret(func, tb_inst_load(func, TB_TYPE_I32, local, 4));
@@ -378,9 +376,9 @@ TB_Function* test_add_sub_i32(TB_Module* m) {
     TB_Register c = tb_inst_param_addr(func, 2);
 
     TB_Register result = tb_inst_sub(func, tb_inst_load(func, TB_TYPE_I32, c, 4),
-        tb_inst_add(func, tb_inst_load(func, TB_TYPE_I32, a, 4),
-            tb_inst_load(func, TB_TYPE_I32, b, 4), TB_ASSUME_NUW),
-        TB_ASSUME_NUW);
+									 tb_inst_add(func, tb_inst_load(func, TB_TYPE_I32, a, 4),
+												 tb_inst_load(func, TB_TYPE_I32, b, 4), TB_ASSUME_NUW),
+									 TB_ASSUME_NUW);
 
     tb_inst_ret(func, result);
     return func;
@@ -399,7 +397,7 @@ TB_Function* test_fib(TB_Module* m) {
 
     // if (n < 2)
     tb_inst_if(func, tb_inst_cmp_ilt(func, n, tb_inst_sint(func, TB_TYPE_I32, 2), true), if_true,
-        if_false);
+			   if_false);
 
     // then
     {
@@ -446,7 +444,7 @@ TB_Function* test_fact(TB_Module* m) {
         tb_inst_label(func, loop_entry);
         TB_Register n_ld = tb_inst_load(func, TB_TYPE_I32, n_addr, 4);
         tb_inst_if(func, tb_inst_cmp_ilt(func, n_ld, tb_inst_sint(func, TB_TYPE_I32, 0), true),
-            loop_body, loop_exit);
+				   loop_body, loop_exit);
     }
 
     // Loop body
@@ -461,7 +459,7 @@ TB_Function* test_fact(TB_Module* m) {
         // n = n - 1
         TB_Register n_ld2 = tb_inst_load(func, TB_TYPE_I32, n_addr, 4);
         tb_inst_store(func, TB_TYPE_I32, n_addr,
-            tb_inst_sub(func, n_ld2, tb_inst_sint(func, TB_TYPE_I32, 1), TB_ASSUME_NUW), 4);
+					  tb_inst_sub(func, n_ld2, tb_inst_sint(func, TB_TYPE_I32, 1), TB_ASSUME_NUW), 4);
 
         tb_inst_goto(func, loop_entry);
     }
@@ -481,7 +479,7 @@ TB_Function* test_foo(TB_Module* m) {
     TB_Register b = tb_inst_param_addr(func, 1);
 
     TB_Register factor = tb_inst_mul(func, tb_inst_load(func, TB_TYPE_I32, a, 4),
-        tb_inst_load(func, TB_TYPE_I32, b, 4), TB_ASSUME_NUW);
+									 tb_inst_load(func, TB_TYPE_I32, b, 4), TB_ASSUME_NUW);
 
     tb_inst_ret(func, factor);
     return func;
@@ -505,7 +503,7 @@ TB_Register test_spills_step(TB_Function* func, int step, int mode) {
     if (step == 0) { return tb_inst_param(func, mode); }
 
     return tb_inst_mul(func, test_spills_step(func, step - 1, 0),
-        test_spills_step(func, step - 1, 1), TB_ASSUME_NUW);
+					   test_spills_step(func, step - 1, 1), TB_ASSUME_NUW);
 }
 
 TB_Function* test_spills(TB_Module* m) {
@@ -527,15 +525,15 @@ TB_Function* test_entry(TB_Module* m) {
     TB_Register b  = tb_inst_sint(func, TB_TYPE_I32, 2);
 
     tb_inst_ecall(func, TB_TYPE_VOID, test_external1, 1,
-        (TB_Register[]) { tb_inst_sint(func, TB_TYPE_I64, 0) });
+				  (TB_Register[]) { tb_inst_sint(func, TB_TYPE_I64, 0) });
 
     tb_inst_ecall(func, TB_TYPE_VOID, test_external2, 1,
-        (TB_Register[]) { tb_inst_cstring(func, "Hello, World!") });
+				  (TB_Register[]) { tb_inst_cstring(func, "Hello, World!") });
 
     tb_inst_call(func, TB_TYPE_I32, test_foo_func_ref, 2, (TB_Register[]) { al, b });
 
     tb_inst_store(func, TB_TYPE_I32, tb_inst_get_global_address(func, test_global),
-        tb_inst_sint(func, TB_TYPE_I32, 69), 4);
+				  tb_inst_sint(func, TB_TYPE_I32, 69), 4);
 
     TB_Register ptr = tb_inst_get_func_address(func, test_fib_func_ref);
     tb_inst_ret(func, ptr);
@@ -586,7 +584,7 @@ TB_Function* test_float_array_add(TB_Module* m) {
         // i++
         i_ld = tb_inst_load(func, TB_TYPE_I64, i_addr, 8);
         tb_inst_store(func, TB_TYPE_I32, i_addr,
-            tb_inst_add(func, i_ld, tb_inst_uint(func, TB_TYPE_I64, 1), TB_ASSUME_NUW), 8);
+					  tb_inst_add(func, i_ld, tb_inst_uint(func, TB_TYPE_I64, 1), TB_ASSUME_NUW), 8);
 
         tb_inst_goto(func, loop_entry);
     }
@@ -649,13 +647,13 @@ static void print_function_as_html(FILE* out, TB_Function* f, const char* title)
 }
 
 #define OPT(x)                              \
-    if (tb_opt_##x(f)) {                    \
-        print_function_as_html(out, f, #x); \
-        goto repeat_opt;                    \
-    }
+if (tb_opt_##x(f)) {                    \
+print_function_as_html(out, f, #x); \
+goto repeat_opt;                    \
+}
 
 void visualize_tests(
-    const char* output_path, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
+					 const char* output_path, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
     TB_Module* m = tb_module_create(arch, system, features);
 
     test_external1 = tb_extern_create(m, "GetModuleHandleA");
@@ -686,20 +684,20 @@ void visualize_tests(
         TB_Function* f = test_functions[i](m);
         print_function_as_html(out, f, "start");
 
-    repeat_opt : {
-        OPT(dead_expr_elim);
-        OPT(remove_pass_node);
-        OPT(canonicalize);
-        OPT(fold);
-        OPT(load_elim);
-        OPT(strength_reduction);
-        OPT(hoist_locals);
-        OPT(mem2reg);
-        OPT(dead_block_elim);
-        OPT(deshort_circuit);
-        OPT(copy_elision);
-        OPT(compact_dead_regs);
-    }
+		repeat_opt : {
+			OPT(dead_expr_elim);
+			OPT(remove_pass_node);
+			OPT(canonicalize);
+			OPT(fold);
+			OPT(load_elim);
+			OPT(strength_reduction);
+			OPT(hoist_locals);
+			OPT(mem2reg);
+			OPT(dead_block_elim);
+			OPT(deshort_circuit);
+			OPT(copy_elision);
+			OPT(compact_dead_regs);
+		}
 
         print_function_as_html(out, f, "end");
         fprintf(out, "</tr>\n");
@@ -714,8 +712,7 @@ void visualize_tests(
 }
 #undef OPT
 
-void do_tests(
-    const char* output_path, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
+void do_tests(const char* output_path, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
     TB_Module* m = tb_module_create(arch, system, features);
 
     test_external1 = tb_extern_create(m, "GetModuleHandleA");

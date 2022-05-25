@@ -92,8 +92,8 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 		default: tb_todo();
     }
 
-    for (size_t i = 0; i < m->functions.count; i++) {
-        TB_FunctionOutput* out_f = m->functions.data[i].output;
+	loop(i, m->functions.count) {
+		TB_FunctionOutput* out_f = m->functions.data[i].output;
         func_layout[i] = text_section.raw_data_size;
         if (out_f == NULL) continue;
 
@@ -213,7 +213,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 	fwrite(debug_section_headers, sizeof(COFF_SectionHeader), debug_sections.length, f);
 
     assert(ftell(f) == text_section.raw_data_pos);
-    for (size_t i = 0; i < m->functions.count; i++) {
+	loop(i, m->functions.count) {
         TB_FunctionOutput* out_f = m->functions.data[i].output;
         if (!out_f) continue;
 

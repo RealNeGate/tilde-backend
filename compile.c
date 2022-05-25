@@ -6,17 +6,26 @@ static const char* INPUT_FILES[] = {
 	"src/tb/tb_analysis.c",
 	"src/tb/tb_atomic.c",
 	"src/tb/tb_builder.c",
-	"src/tb/tb_coff.c",
-	"src/tb/tb_coff_parse.c",
-	"src/tb/tb_elf64.c",
 	"src/tb/tb_internal.c",
 	"src/tb/tb_jit.c",
 	"src/tb/hash.c",
 
+	// Generic codegen stuff
+	"src/tb/codegen/tree.c",
+
+	// Object file formats
+	"src/tb/tb_coff.c",
+	"src/tb/tb_coff_parse.c",
+	"src/tb/tb_elf64.c",
+	"src/tb/tb_macho.c",
+
+	// Targets go here
 	"src/tb/x64/x64.c",
 
+	// Debug formats here
 	"src/tb/debug/codeview.c",
 
+	// Optimizer
 	"src/tb/opt/canonical.c",
 	"src/tb/opt/const_fold.c",
 	"src/tb/opt/copy_elision.c",
@@ -28,8 +37,7 @@ static const char* INPUT_FILES[] = {
 	"src/tb/opt/mem2reg.c",
 	"src/tb/opt/strength_reduction.c",
 
-	"src/tb/codegen/tree.c",
-
+	// Platform specific
 #if defined(_WIN32)
 	"src/tb/tb_win32.c"
 #else
@@ -43,7 +51,7 @@ int main(int argc, char* argv[]) {
 	if (argc >= 2) {
 		output_lib_path = argv[1];
 	} else {
-		output_lib_path = "build/tildebackend";
+		output_lib_path = "build/tildebackend.lib";
 	}
 
 	builder_init();

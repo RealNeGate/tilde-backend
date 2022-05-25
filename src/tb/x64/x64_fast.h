@@ -398,7 +398,10 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
         }
 	}
 
-    tb_unreachable();
+	tb_function_print(f, tb_default_print_callback, stderr);
+    fprintf(stderr, "error: could not eval r%u\n", r);
+
+	tb_unreachable();
     return (Val) { 0 };
 }
 
@@ -521,8 +524,7 @@ static Val fast_eval_address(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
     }
 }
 
-static void fast_memset_const_size(
-								   X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg addr, const Val* src, size_t sz) {
+static void fast_memset_const_size(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg addr, const Val* src, size_t sz) {
     Val dst = fast_eval_address(ctx, f, addr);
     assert(is_value_mem(&dst));
 
@@ -547,14 +549,17 @@ static Val fast_get_tile_mapping(X64_FastCtx* restrict ctx, TB_Function* f, TB_R
     assert(ctx->tile.mapping == r);
     ctx->tile.mapping = 0;
 
-    return (Val) { VAL_MEM, .mem = { .base = ctx->tile.base,
-			.index     = ctx->tile.index,
-			.scale     = ctx->tile.scale,
-			.disp      = ctx->tile.disp } };
+    return (Val) { VAL_MEM,
+		.mem = {
+			.base = ctx->tile.base,
+			.index = ctx->tile.index,
+			.scale = ctx->tile.scale,
+			.disp  = ctx->tile.disp
+		}
+	};
 }
 
-static void fast_eval_basic_block(
-								  X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Reg bb_end) {
+static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Reg bb_end) {
     // first node in the basic block
     bb = f->nodes.data[bb].next;
     if (bb == bb_end) return;
@@ -610,13 +615,15 @@ static void fast_eval_basic_block(
         // memory operand tiling
         if (ctx->tile.mapping) {
 			bool can_keep_it = false;
-			if (ctx->use_count[r] == 1) {
+			if (ctx->use_count[r] == 1 && ctx->use_count[ctx->tile.mapping] == 1) {
 				if (reg_type == TB_LOAD && n->load.address == ctx->tile.mapping) {
 					can_keep_it = true;
 				} else if (reg_type == TB_STORE && n->store.address == ctx->tile.mapping) {
 					can_keep_it = true;
 				}
-			} else if (reg_type == TB_SIGN_EXT) {
+			}
+
+			if (reg_type == TB_SIGN_EXT) {
 				TB_Reg potential_load = n->unary.src;
 				if (f->nodes.data[potential_load].type == TB_LOAD &&
 					f->nodes.data[potential_load].load.address == ctx->tile.mapping &&
@@ -626,10 +633,15 @@ static void fast_eval_basic_block(
 			}
 
 			if (!can_keep_it) {
-				Val src = { VAL_MEM, .mem = { .base = ctx->tile.base,
-						.index     = ctx->tile.index,
-						.scale     = ctx->tile.scale,
-						.disp      = ctx->tile.disp } };
+				Val src = {
+					VAL_MEM,
+					.mem = {
+						.base = ctx->tile.base,
+						.index = ctx->tile.index,
+						.scale = ctx->tile.scale,
+						.disp  = ctx->tile.disp
+					}
+				};
 
 				GPR dst_gpr = fast_alloc_gpr(ctx, f, ctx->tile.mapping);
 				fast_def_gpr(ctx, f, ctx->tile.mapping, dst_gpr, TB_TYPE_PTR);

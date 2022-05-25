@@ -576,7 +576,7 @@ typedef struct TB_MultiplyResult {
 #if defined(_MSC_VER) && !defined(__clang__)
 inline static int tb_ffs(uint32_t x) {
     unsigned long index;
-	return _BitScanForward(&index, x) ? 1 + index ? 0;
+	return _BitScanForward(&index, x) ? 1 + index : 0;
 }
 
 inline static int tb_popcount(uint32_t x) {
@@ -652,6 +652,7 @@ void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance);
 bool tb_tls_can_fit(TB_TemporaryStorage* store, size_t size);
 
 void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt);
+void tb_export_macho(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt);
 void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt);
 
 uint8_t* tb_out_reserve(TB_Emitter* o, size_t count);

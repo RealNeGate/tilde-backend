@@ -140,7 +140,7 @@ typedef struct COFF_AuxSectionSymbol {
     int16_t  number;       // section number to associate with
     uint8_t  selection;    // communal selection type
     uint8_t  reserved;
-    int16_t  high_bits; // high bits of the section number
+    int16_t  high_bits;    // high bits of the section number
 } COFF_AuxSectionSymbol;
 static_assert(sizeof(COFF_AuxSectionSymbol) == 18, "COFF Aux Section Symbol size != 18 bytes");
 
@@ -188,14 +188,12 @@ typedef struct CV_TypeEntry {
     uint16_t value; // type index
 } CV_TypeEntry;
 
-enum
-{
+enum {
     COFF_MACHINE_AMD64 = 0x8664, // AMD64 (K8)
     COFF_MACHINE_ARM64 = 0xAA64, // ARM64 Little-Endian
 };
 
-enum
-{
+enum {
     S_LPROC32_ID = 0x1146,
     S_GPROC32_ID = 0x1147,
 

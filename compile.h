@@ -151,7 +151,7 @@ inline static void create_dir_if_not_exists(const char* path) {
 }
 #else
 inline static void create_dir_if_not_exists(const char* path) {
-	mkdir(path, 0666);
+	mkdir(path, 0777);
 }
 #endif
 
@@ -311,8 +311,9 @@ inline static void builder_compile_msvc(BuildMode mode, size_t count, const char
 	if (mode == BUILD_MODE_EXECUTABLE) {
 		cmd_append("/Fe:");
 		cmd_append(output_path);
+		cmd_append(" ");
 	} else {
-		cmd_append("/Fo:build\\");
+		cmd_append("/Fo:build\\ ");
 	}
 
 	if (RELEASE_BUILD) {
@@ -332,9 +333,11 @@ inline static void builder_compile_msvc(BuildMode mode, size_t count, const char
 	if (mode == BUILD_MODE_STATIC_LIB) {
 		cmd_append("lib /out:");
 		cmd_append(output_path);
-		cmd_append(" build\\*.obj");
-		cmd_append(" external\\tbbmalloc.lib");
-		cmd_run();
+		cmd_append(" build\\*.obj ");
+		cmd_append(extra_libraries);
+		
+		printf("CMD: %s\n", command_buffer);
+		cmd_dump(cmd_run());
 	}
 }
 
@@ -444,7 +447,7 @@ inline static void builder_compile_cc(BuildMode mode, size_t count, const char* 
 			assert(0 && "TODO");
 		}
 	} else if (mode == BUILD_MODE_STATIC_LIB) {
-		if (ON_MSVC) {
+		if (ON_WINDOWS) {
 			cmd_append("lib /out:");
 			cmd_append(output_path);
 			cmd_append(".lib build/*.obj ");

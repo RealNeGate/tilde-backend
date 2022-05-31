@@ -5,8 +5,12 @@
 #define strtok_r(a, b, c) strtok_s(a, b, c)
 #endif
 
-#define OPT(x) { #x, tb_opt_ ## x }
+#define OPT(x) { #x, tb_opt_ ## x, false }
+#define OPT_RUN_ONCE(x) { #x, tb_opt_ ## x, true }
 static TB_FunctionPass opts[] = {
+	OPT_RUN_ONCE(hoist_locals),
+	OPT_RUN_ONCE(merge_rets),
+
 	OPT(dead_expr_elim),
 	OPT(remove_pass_node),
 	OPT(subexpr_elim),
@@ -92,8 +96,11 @@ TB_API bool tb_function_optimize(TB_Function* f) {
 	bool changes = false;
 
 	// only needs to run once
-	changes |= tb_opt_hoist_locals(f);
-	changes |= tb_opt_merge_rets(f);
+	for (int i = 0; i < OPTIMIZATION_COUNT; i++) {
+		if (opts[i].run_once) {
+			changes |= opts[i].execute(f);
+		}
+	}
 
 #if LOGGING_OPTS
 	char* big_boy = malloc(2*65536);
@@ -106,7 +113,7 @@ TB_API bool tb_function_optimize(TB_Function* f) {
 
 	int current = 0;
 	while (current < OPTIMIZATION_COUNT) {
-		if (opts[current].execute(f)) {
+		if (!opts[current].run_once && opts[current].execute(f)) {
 #if LOGGING_OPTS
 			// double buffering amirite
 			char* oldstr = &big_boy[in_use ? 0 : 65536];

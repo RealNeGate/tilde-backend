@@ -986,6 +986,8 @@ extern "C" {
 	typedef struct {
 		const char* name;
 		bool (*execute)(TB_Function* f);
+
+		bool run_once;
 	} TB_FunctionPass;
 
 	// Applies single function optimizations until it runs out

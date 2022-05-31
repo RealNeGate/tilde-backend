@@ -236,7 +236,7 @@ static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_
 
 // Algorithm 4: Handling incomplete CFGs
 static void seal_block(Mem2Reg_Ctx* restrict c, TB_Label block) {
-	printf("SEAL_BLOCK L%d\n", block);
+	//printf("SEAL_BLOCK L%d\n", block);
 
 	loop(i, c->to_promote_count) {
         TB_Reg phi_reg = c->incomplete_phis[(block * c->to_promote_count) + i];

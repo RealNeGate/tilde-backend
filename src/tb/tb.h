@@ -995,6 +995,7 @@ extern "C" {
 	// passes
 	TB_API bool tb_opt_merge_rets(TB_Function* f);
 	TB_API bool tb_opt_mem2reg(TB_Function* f);
+	TB_API bool tb_opt_branchless(TB_Function* f);
 	TB_API bool tb_opt_subexpr_elim(TB_Function* f);
 	TB_API bool tb_opt_dead_expr_elim(TB_Function* f);
 	TB_API bool tb_opt_dead_block_elim(TB_Function* f);
@@ -1009,9 +1010,6 @@ extern "C" {
 	TB_API bool tb_opt_strength_reduction(TB_Function* f);
 	TB_API bool tb_opt_compact_dead_regs(TB_Function* f);
 	TB_API bool tb_opt_copy_elision(TB_Function* f);
-
-	// analysis
-	TB_API TB_LoopInfo* tb_function_get_loop_info(TB_Function* f);
 
 	////////////////////////////////
 	// IR access

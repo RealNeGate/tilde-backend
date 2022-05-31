@@ -9,6 +9,7 @@ static const char* INPUT_FILES[] = {
 	"src/tb/tb_internal.c",
 	"src/tb/tb_jit.c",
 	"src/tb/hash.c",
+	"src/tb/bigint/BigInt.c",
 
 	// Generic codegen stuff
 	"src/tb/codegen/tree.c",
@@ -26,6 +27,7 @@ static const char* INPUT_FILES[] = {
 	"src/tb/debug/codeview.c",
 
 	// Optimizer
+	"src/tb/tb_optimizer.c",
 	"src/tb/opt/canonical.c",
 	"src/tb/opt/const_fold.c",
 	"src/tb/opt/copy_elision.c",

@@ -58,67 +58,61 @@ typedef struct {
     AddressDesc addresses[];
 } X64_FastCtx;
 
-typedef enum {
-    ISEL_MACHINE_NULL,
-
-    // final states
-    ISEL_MACHINE_DO_NOTHING,
-    ISEL_MACHINE_RET,
-    ISEL_MACHINE_IMMEDIATE,
-
-    // load variants
-    ISEL_MACHINE_LOAD,         // dst = LOAD src
-    ISEL_MACHINE_LOAD_INDEXED, // dst = LOAD base + (index * stride)
-
-    // integer arithmatic
-    ISEL_MACHINE_ADD,  // dst = ADD  a, b
-    ISEL_MACHINE_SUB,  // dst = SUB  a, b
-    ISEL_MACHINE_IMUL, // dst = IMUL a, b
-
-    ISEL_MACHINE_SHL_IMM, // dst = SHL  a, extra
-
-    // state >= ISEL_MACHINE_FINAL_STATES will terminate the
-    // decision machine
-    ISEL_MACHINE_FINAL_STATES = ISEL_MACHINE_DO_NOTHING
-} X64_IselMachineState;
-
-typedef struct {
-    X64_IselMachineState state;
-    int user_count;
-    int32_t extra;
-    TB_Reg users[2];
-} X64_IselMachine;
-
 #define EITHER2(a, b, c)    ((a) == (b) || (a) == (c))
 #define EITHER3(a, b, c, d) ((a) == (b) || (a) == (c) || (a) == (d))
 #define FITS_INTO(a, type)  ((a) == ((type)(a)))
 
-#ifdef __GNUC__
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-variable"
-#endif
-static const char* FINAL_STATE_NAMES[] = {
-    [ISEL_MACHINE_NULL] = "ISEL_MACHINE_NULL",
+// a valid type that the x64 backend can eat along with
+typedef struct {
+	TB_DataType dt;
+	uint64_t mask;
+} LegalInt;
 
-    [ISEL_MACHINE_DO_NOTHING]   = "ISEL_MACHINE_DO_NOTHING",
-    [ISEL_MACHINE_RET]          = "ISEL_MACHINE_RET",
-    [ISEL_MACHINE_IMMEDIATE]    = "ISEL_MACHINE_IMMEDIATE",
-    [ISEL_MACHINE_LOAD]         = "ISEL_MACHINE_LOAD",
-    [ISEL_MACHINE_LOAD_INDEXED] = "ISEL_MACHINE_LOAD_INDEXED",
+// forward declarations are a bitch
+static void fast_mask_out(X64_FastCtx* restrict ctx, TB_Function* f, const LegalInt l, const Val* dst);
 
-    [ISEL_MACHINE_ADD]     = "ISEL_MACHINE_ADD",
-    [ISEL_MACHINE_SUB]     = "ISEL_MACHINE_SUB",
-    [ISEL_MACHINE_IMUL]    = "ISEL_MACHINE_IMUL",
-    [ISEL_MACHINE_SHL_IMM] = "ISEL_MACHINE_SHL_IMM",
-};
-#ifdef __GNUC__
-#pragma GCC diagnostic pop
-#endif
+// returns a mask to remove the "out of bounds" bits
+static LegalInt legalize_int(TB_DataType dt) {
+	if (dt.type != TB_INT) return (LegalInt){ dt, 0 };
+
+	int bits;
+	if (!TB_NEXT_BIGGEST(&bits, dt.data, 8, 16, 32, 64)) {
+		// support bigger types
+		tb_todo();
+	}
+
+	int original_bits = dt.data;
+	uint64_t mask = ~UINT64_C(0) >> (64 - original_bits);
+
+	// we don't need the mask if it lines up nicely with machine sizes
+	if (original_bits == 8 || original_bits == 16 || original_bits == 32 || original_bits == 64) {
+		mask = 0;
+	}
+
+	dt.data = bits;
+	return (LegalInt){ dt, mask };
+}
+
+static uint8_t legalize_float(TB_DataType dt) {
+	assert(dt.type == TB_FLOAT);
+
+	uint8_t flags = 0;
+	if (dt.data == TB_FLT_64) {
+		assert(dt.width == 0 || dt.width == 1);
+		flags |= INST2FP_DOUBLE;
+	} else if (dt.data == TB_FLT_32) {
+		assert(dt.width == 0 || dt.width == 2);
+	} else {
+		tb_unreachable();
+	}
+
+	flags |= (dt.width ? INST2FP_PACKED : 0);
+	return flags;
+}
 
 static bool is_address_node(TB_Function* f, TB_Reg r) {
     switch (f->nodes.data[r].type) {
 		case TB_LOCAL:
-		case TB_RESTRICT:
 		case TB_PARAM_ADDR:
 		case TB_EXTERN_ADDRESS:
 		case TB_GLOBAL_ADDRESS:
@@ -128,6 +122,16 @@ static bool is_address_node(TB_Function* f, TB_Reg r) {
 
 		default: return false;
     }
+}
+
+static bool fits_into_int32(TB_Node* n) {
+	if (n->type == TB_INTEGER_CONST &&
+		n->integer.num_words == 1 &&
+		FITS_INTO(n->integer.single_word, int32_t)) {
+		return true;
+	}
+
+	return false;
 }
 
 static void fast_evict_gpr(X64_FastCtx* restrict ctx, TB_Function* f, GPR gpr) {
@@ -147,22 +151,23 @@ static void fast_evict_gpr(X64_FastCtx* restrict ctx, TB_Function* f, GPR gpr) {
         return;
     }
 
-    TB_DataType dt = f->nodes.data[r].dt;
-    if (dt.type == TB_BOOL) dt.type = TB_I8;
+	LegalInt l = legalize_int(f->nodes.data[r].dt);
 
     // printf("%s: Evicted r%d from %s\n", f->name, r, GPR_NAMES[gpr]);
     ctx->gpr_allocator[gpr] = TB_NULL_REG;
     ctx->gpr_available += 1;
 
-    int size = get_data_type_size(dt);
+    int size = get_data_type_size(l.dt);
     int pos  = STACK_ALLOC(size, size);
 
-    ctx->addresses[r] = (AddressDesc) { .type = ADDRESS_DESC_SPILL, .dt = dt, .spill = pos };
+    ctx->addresses[r] = (AddressDesc) {
+		.type = ADDRESS_DESC_SPILL, .dt = l.dt, .spill = pos
+	};
 
     // Save out GPR into stack slot
-    Val src = val_gpr(dt.type, gpr);
-    Val dst = val_stack(dt, pos);
-    INST2(MOV, &dst, &src, dt.type);
+    Val src = val_gpr(l.dt, gpr);
+    Val dst = val_stack(l.dt, pos);
+    INST2(MOV, &dst, &src, l.dt);
 }
 
 static void fast_evict_xmm(X64_FastCtx* restrict ctx, TB_Function* f, XMM xmm) {
@@ -197,10 +202,7 @@ static void fast_evict_xmm(X64_FastCtx* restrict ctx, TB_Function* f, XMM xmm) {
     Val src = val_xmm(dt, xmm);
     Val dst = val_stack(dt, pos);
 
-	uint8_t flags = 0;
-    flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
-    flags |= (dt.width) ? INST2FP_PACKED : 0;
-
+	uint8_t flags = legalize_float(dt);
 	INST2SSE(FP_MOV, &dst, &src, flags);
 }
 
@@ -309,7 +311,7 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
         switch (ctx->addresses[r].type) {
 			case ADDRESS_DESC_GPR:
             assert(ctx->addresses[r].dt.width == 0);
-            return val_gpr(dt.type, ctx->addresses[r].gpr);
+            return val_gpr(dt, ctx->addresses[r].gpr);
 
 			case ADDRESS_DESC_XMM:
 			return val_xmm(dt, ctx->addresses[r].xmm);
@@ -333,9 +335,8 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
 			default: break;
         }
     } else {
-        if (EITHER2(n->type, TB_UNSIGNED_CONST, TB_SIGNED_CONST) &&
-            FITS_INTO(n->uint.value, int32_t)) {
-            return val_imm(n->dt, n->uint.value);
+        if (fits_into_int32(n)) {
+            return val_imm(n->dt, n->integer.single_word);
         } else if (n->type == TB_GLOBAL_ADDRESS) {
 			TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 			TB_Module* m = f->module;
@@ -348,7 +349,7 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
 
 				// since t0 dies before dst is allocated we just recycle it
 				// mov t0, dword    [_tls_index]
-				Val dst = val_gpr(TB_PTR, fast_alloc_gpr(ctx, f, r));
+				Val dst = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, r));
 				if (dst.gpr >= 8) *ctx->header.out++ = 0x41;
 				*ctx->header.out++ = 0x8B;
 				*ctx->header.out++ = ((dst.gpr & 7) << 3) | RBP;
@@ -359,7 +360,7 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
 				tb_emit_ecall_patch(f->module, f, m->tls_index_extern, GET_CODE_POS() - 4, s_local_thread_id);
 
 				// mov t1, qword gs:[58h]
-				Val t1 = val_gpr(TB_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+				Val t1 = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
 				*ctx->header.out++ = 0x65;
 				*ctx->header.out++ = t1.gpr >= 8 ? 0x49 : 0x48;
 				*ctx->header.out++ = 0x8B;
@@ -371,8 +372,8 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
 				*ctx->header.out++ = 0x00;
 
 				// mov t1, qword    [t1+t0*8]
-				Val mem = val_base_index(TB_TYPE_VOID, t1.gpr, dst.gpr, SCALE_X8);
-				INST2(MOV, &t1, &mem, TB_I64);
+				Val mem = val_base_index(TB_TYPE_PTR, t1.gpr, dst.gpr, SCALE_X8);
+				INST2(MOV, &t1, &mem, TB_TYPE_I64);
 
 				// lea addr,        [t1+relocation]
 				*ctx->header.out++ = rex(true, dst.gpr, RBP, 0);
@@ -410,35 +411,39 @@ static void fast_folded_op(X64_FastCtx* ctx, TB_Function* f, Inst2Type op, const
     Val rhs = fast_eval(ctx, f, rhs_reg);
 
     TB_Node* restrict n = &f->nodes.data[rhs_reg];
-    TB_DataType dt      = n->dt;
-    if (dt.type == TB_BOOL) dt.type = TB_I8;
+    LegalInt l = legalize_int(n->dt);
+	//assert(l.mask == 0 && "TODO");
 
     if (!rhs.is_spill && is_value_mem(&rhs) && n->type != TB_LOAD) {
         // TODO(NeGate): peephole to remove extra MOV in the op=MOV && lhs=GPR case
-        Val tmp = val_gpr(TB_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+        Val tmp = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
 
-        INST2(LEA, &tmp, &rhs, dt.type);
-        if (!is_value_gpr(lhs, tmp.gpr)) { INST2(op, lhs, &tmp, dt.type); }
+        INST2(LEA, &tmp, &rhs, l.dt);
+        if (!is_value_gpr(lhs, tmp.gpr)) {
+			INST2(op, lhs, &tmp, l.dt);
+		}
 
         fast_kill_temp_gpr(ctx, f, tmp.gpr);
     } else if (is_value_mem(lhs) && is_value_mem(&rhs)) {
-        Val tmp = val_gpr(TB_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+        Val tmp = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
 
-        INST2(MOV, &tmp, &rhs, dt.type);
-        INST2(op, lhs, &tmp, dt.type);
+        INST2(MOV, &tmp, &rhs, l.dt);
+        INST2(op, lhs, &tmp, l.dt);
 
         fast_kill_temp_gpr(ctx, f, tmp.gpr);
     } else if (rhs.type == VAL_IMM && inst2_tbl[op].op_i == 0 && inst2_tbl[op].rx_i == 0) {
         // doesn't support immediates
-        Val tmp = val_gpr(TB_I32, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+        Val tmp = val_gpr(TB_TYPE_I32, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
 
-        INST2(MOV, &tmp, &rhs, dt.type);
-        INST2(op, lhs, &tmp, dt.type);
+        INST2(MOV, &tmp, &rhs, l.dt);
+        INST2(op, lhs, &tmp, l.dt);
 
         fast_kill_temp_gpr(ctx, f, tmp.gpr);
     } else if (rhs.type != VAL_GPR || (rhs.type == VAL_GPR && !is_value_gpr(lhs, rhs.gpr))) {
-        INST2(op, lhs, &rhs, dt.type);
+        INST2(op, lhs, &rhs, l.dt);
     }
+
+	if (l.mask) fast_mask_out(ctx, f, l, lhs);
 }
 
 // OP lhs, eval(rhs)
@@ -446,12 +451,9 @@ static void fast_folded_op_sse(X64_FastCtx* ctx, TB_Function* f, Inst2FPType op,
     Val rhs = fast_eval(ctx, f, rhs_reg);
 
     TB_Node* restrict n = &f->nodes.data[rhs_reg];
-    TB_DataType dt      = n->dt;
+    TB_DataType dt = n->dt;
 
-    uint8_t flags = 0;
-    flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
-    flags |= (dt.width) ? INST2FP_PACKED : 0;
-
+	uint8_t flags = legalize_float(dt);
     if (is_value_mem(lhs) && is_value_mem(&rhs)) {
         Val tmp = val_xmm(TB_TYPE_VOID, fast_alloc_xmm(ctx, f, TB_TEMP_REG));
 
@@ -469,12 +471,12 @@ static Cond fast_eval_cond(X64_FastCtx* ctx, TB_Function* f, TB_Reg src_reg) {
     Val src = fast_eval(ctx, f, src_reg);
 
     TB_Node* restrict n = &f->nodes.data[src_reg];
-    TB_DataType dt      = n->dt;
-    if (dt.type == TB_BOOL) dt.type = TB_I8;
+    LegalInt l = legalize_int(n->dt);
+	//assert(l.mask == 0);
 
-    if (!src.is_spill && is_value_mem(&src) && n->type != TB_LOAD) {
-        Val tmp = val_gpr(TB_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
-        INST2(LEA, &tmp, &src, dt.type);
+	if (!src.is_spill && is_value_mem(&src) && n->type != TB_LOAD) {
+        Val tmp = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+        INST2(LEA, &tmp, &src, l.dt);
 
         // early-kill: this is fine here because no allocations are made
         // between here and the end of the function (the time it actually
@@ -485,16 +487,16 @@ static Cond fast_eval_cond(X64_FastCtx* ctx, TB_Function* f, TB_Reg src_reg) {
     // TODO(NeGate): regalloc
     if (is_value_mem(&src)) {
         Val imm = val_imm(TB_TYPE_I32, 0);
-        INST2(CMP, &src, &imm, dt.type);
+        INST2(CMP, &src, &imm, l.dt);
         return NE;
     } else if (src.type == VAL_GPR) {
-        INST2(TEST, &src, &src, dt.type);
+        INST2(TEST, &src, &src, l.dt);
         return NE;
     } else if (src.type == VAL_IMM) {
-        Val tmp = val_gpr(TB_I32, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+        Val tmp = val_gpr(TB_TYPE_I32, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
 
         // 'xor a, a' will set ZF to 1
-        INST2(XOR, &tmp, &tmp, dt.type);
+        INST2(XOR, &tmp, &tmp, l.dt);
         fast_kill_temp_gpr(ctx, f, tmp.gpr);
 
         return (src.imm ? E : NE);
@@ -510,18 +512,37 @@ static Val fast_eval_address(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
     Val address = fast_eval(ctx, f, r);
 
     TB_Node* restrict n = &f->nodes.data[r];
-    TB_DataType dt      = n->dt;
+    TB_DataType dt = n->dt;
 
     if (address.type == VAL_GPR) {
         return val_base_disp(TB_TYPE_PTR, address.gpr, 0);
     } else if (is_value_mem(&address) && n->type == TB_LOAD) {
         // TODO(NeGate): regalloc
-        Val tmp = val_gpr(TB_PTR, R15);
-        INST2(MOV, &tmp, &address, dt.type);
+        Val tmp = val_gpr(TB_TYPE_PTR, R15);
+        INST2(MOV, &tmp, &address, dt);
         return tmp;
     } else {
         return address;
     }
+}
+
+static void fast_mask_out(X64_FastCtx* restrict ctx, TB_Function* f, const LegalInt l, const Val* dst) {
+	if (l.mask == (int32_t)l.mask) {
+		Val mask = val_imm(l.dt, l.mask);
+		INST2(AND, dst, &mask, l.dt);
+	} else {
+		Val tmp = val_gpr(l.dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+
+		// MOVABS     REX.W B8+r imm64
+		*ctx->header.out++ = tmp.gpr >= 8 ? 0x49 : 0x48;
+		*ctx->header.out++ = 0xB8 + (tmp.gpr & 7);
+		*((uint64_t*)ctx->header.out) = l.mask;
+		ctx->header.out += 8;
+
+		INST2(AND, dst, &tmp, l.dt);
+
+		fast_kill_temp_gpr(ctx, f, tmp.gpr);
+	}
 }
 
 static void fast_memset_const_size(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg addr, const Val* src, size_t sz) {
@@ -529,19 +550,19 @@ static void fast_memset_const_size(X64_FastCtx* restrict ctx, TB_Function* f, TB
     assert(is_value_mem(&dst));
 
     for (; sz >= 8; sz -= 8, dst.mem.disp += 8) {
-        INST2(MOV, &dst, src, TB_I64);
+        INST2(MOV, &dst, src, TB_TYPE_I64);
     }
 
     for (; sz >= 4; sz -= 4, dst.mem.disp += 4) {
-        INST2(MOV, &dst, src, TB_I32);
+        INST2(MOV, &dst, src, TB_TYPE_I32);
     }
 
     for (; sz >= 2; sz -= 2, dst.mem.disp += 2) {
-        INST2(MOV, &dst, src, TB_I16);
+        INST2(MOV, &dst, src, TB_TYPE_I16);
     }
 
     for (; sz >= 1; sz -= 1, dst.mem.disp += 1) {
-        INST2(MOV, &dst, src, TB_I8);
+        INST2(MOV, &dst, src, TB_TYPE_I8);
     }
 }
 
@@ -567,9 +588,9 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
     TB_FOR_EACH_NODE_RANGE(n, f, bb, bb_end) {
         TB_Reg r = n - f->nodes.data;
 
-        TB_Node* restrict n      = &f->nodes.data[r];
+        TB_Node* restrict n = &f->nodes.data[r];
         TB_NodeTypeEnum reg_type = n->type;
-        TB_DataType     dt       = n->dt;
+        TB_DataType dt = n->dt;
 
         // spilling
         if (ctx->gpr_available < 4) {
@@ -579,7 +600,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 GPR gpr = GPR_PRIORITIES[i];
 
                 if (ctx->gpr_allocator[gpr] != TB_NULL_REG &&
-                    ctx->gpr_allocator[gpr] != TB_TEMP_REG && ctx->gpr_allocator[gpr] < barrier) {
+                    ctx->gpr_allocator[gpr] != TB_TEMP_REG &&
+					ctx->gpr_allocator[gpr] < barrier) {
                     assert(ctx->gpr_allocator[gpr] != r);
 
                     // eviction notice lmao
@@ -592,7 +614,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
             loop(xmm, 16) {
                 if (ctx->xmm_allocator[xmm] != TB_NULL_REG &&
-                    ctx->xmm_allocator[xmm] != TB_TEMP_REG && ctx->gpr_allocator[xmm] < barrier) {
+                    ctx->xmm_allocator[xmm] != TB_TEMP_REG &&
+					ctx->gpr_allocator[xmm] < barrier) {
                     assert(ctx->xmm_allocator[xmm] != r);
 
                     // eviction notice lmao
@@ -646,8 +669,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				GPR dst_gpr = fast_alloc_gpr(ctx, f, ctx->tile.mapping);
 				fast_def_gpr(ctx, f, ctx->tile.mapping, dst_gpr, TB_TYPE_PTR);
 
-				Val dst = val_gpr(TB_PTR, dst_gpr);
-				INST2(LEA, &dst, &src, TB_PTR);
+				Val dst = val_gpr(TB_TYPE_PTR, dst_gpr);
+				INST2(LEA, &dst, &src, TB_TYPE_PTR);
 
 				ctx->tile.mapping = 0;
 			}
@@ -659,7 +682,6 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 			case TB_PHI1:
 			case TB_PHI2:
 			case TB_GLOBAL_ADDRESS:
-			case TB_RESTRICT:
 			case TB_PARAM_ADDR:
 			case TB_LOCAL:
 			break;
@@ -668,36 +690,35 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
 				fast_def_gpr(ctx, f, r, dst_gpr, TB_TYPE_PTR);
 
-				*ctx->header.out++            = rex(true, dst_gpr, RBP, 0);
-				*ctx->header.out++            = 0x8D;
-				*ctx->header.out++            = mod_rx_rm(MOD_INDIRECT, dst_gpr, RBP);
-				*((uint64_t*)ctx->header.out) = 0;
+				*ctx->header.out++ = rex(true, dst_gpr, RBP, 0);
+				*ctx->header.out++ = 0x8D;
+				*ctx->header.out++ = mod_rx_rm(MOD_INDIRECT, dst_gpr, RBP);
+				*((uint32_t*)ctx->header.out) = 0;
 				ctx->header.out += 4;
 
 				if (reg_type == TB_EXTERN_ADDRESS) {
-					tb_emit_ecall_patch(
-										f->module, f, n->external.value, GET_CODE_POS() - 4, s_local_thread_id);
+					tb_emit_ecall_patch(f->module, f, n->external.value, GET_CODE_POS() - 4, s_local_thread_id);
 				} else {
 					int target_func = n->func.value - f->module->functions.data;
-					tb_emit_call_patch(
-									   f->module, f, target_func, GET_CODE_POS() - 4, s_local_thread_id);
+					tb_emit_call_patch(f->module, f, target_func, GET_CODE_POS() - 4, s_local_thread_id);
 				}
 				break;
 			}
-			case TB_SIGNED_CONST:
-			case TB_UNSIGNED_CONST:
-            if (!FITS_INTO(n->uint.value, int32_t)) {
-                GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
+			case TB_INTEGER_CONST:
+            if (!fits_into_int32(n)) {
+                assert(dt.type < 64);
+
+				GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
                 fast_def_gpr(ctx, f, r, dst_gpr, TB_TYPE_PTR);
 
-                *ctx->header.out++            = dst_gpr >= 8 ? 0x49 : 0x48;
-                *ctx->header.out++            = 0xB8 + (dst_gpr & 7);
-                *((uint64_t*)ctx->header.out) = n->uint.value;
+                *ctx->header.out++ = dst_gpr >= 8 ? 0x49 : 0x48;
+                *ctx->header.out++ = 0xB8 + (dst_gpr & 7);
+                *((uint64_t*)ctx->header.out) = n->integer.single_word;
                 ctx->header.out += 8;
             }
             break;
 			case TB_FLOAT_CONST: {
-				assert(TB_IS_FLOAT_TYPE(dt.type) && dt.width == 0);
+				assert(dt.type == TB_FLOAT && dt.width == 0);
 				uint64_t imm = (Cvt_F64U64) { .f = n->flt.value }.i;
 
 				XMM dst_xmm = fast_alloc_xmm(ctx, f, r);
@@ -712,25 +733,27 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 					*ctx->header.out++ = mod_rx_rm(MOD_DIRECT, dst_xmm, dst_xmm);
 				} else {
 					// Convert it to raw bits
-					*ctx->header.out++ = dt.type == TB_F64 ? 0xF2 : 0xF3;
+					*ctx->header.out++ = dt.data == TB_FLT_64 ? 0xF2 : 0xF3;
 					if (dst_xmm >= 8) *ctx->header.out++ = 0x44;
 					*ctx->header.out++ = 0x0F;
 					*ctx->header.out++ = 0x10;
 					*ctx->header.out++ = ((dst_xmm & 7) << 3) | RBP;
 
-					uint32_t disp;
-					if (dt.type == TB_F64) {
+					uint32_t disp = 0;
+					if (dt.data == TB_FLT_64) {
 						uint64_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint64_t));
 						*rdata_payload = imm;
 
 						disp = tb_emit_const_patch(f->module, f, GET_CODE_POS(), rdata_payload, sizeof(uint64_t), s_local_thread_id);
-					} else {
+					} else if (dt.data == TB_FLT_32) {
 						uint32_t imm32 = (Cvt_F32U32) { .f = n->flt.value }.i;
 
 						uint32_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint32_t));
 						*rdata_payload = imm32;
 
 						disp = tb_emit_const_patch(f->module, f, GET_CODE_POS(), rdata_payload, sizeof(uint32_t), s_local_thread_id);
+					} else {
+						tb_unreachable();
 					}
 
 					*((uint32_t*)ctx->header.out) = disp;
@@ -786,8 +809,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
 				fast_def_gpr(ctx, f, r, dst_gpr, TB_TYPE_PTR);
 
-				Val dst = val_gpr(dt.type, dst_gpr);
-				INST2(LEA, &dst, &addr, dt.type);
+				Val dst = val_gpr(dt, dst_gpr);
+				INST2(LEA, &dst, &addr, dt);
 				break;
 			}
 
@@ -809,8 +832,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 					GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
 					fast_def_gpr(ctx, f, r, dst_gpr, TB_TYPE_PTR);
 
-					Val dst = val_gpr(dt.type, dst_gpr);
-					INST2(LEA, &dst, &addr, dt.type);
+					Val dst = val_gpr(dt, dst_gpr);
+					INST2(LEA, &dst, &addr, dt);
 				} else {
 					tb_unreachable();
 				}
@@ -821,14 +844,14 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				// because of the codegen quality...
 				uint32_t stride = n->array_access.stride;
 
-				Val val = val_gpr(TB_PTR, fast_alloc_gpr(ctx, f, r));
+				Val val = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, r));
 				fast_folded_op(ctx, f, MOV, &val, n->array_access.index);
 				fast_kill_reg(ctx, f, n->array_access.index);
 
 				// if it's an LEA index*stride
 				// then stride > 0, if not it's free
 				// do think of it however
-				GPR     index_reg       = val.gpr;
+				GPR index_reg = val.gpr;
 				uint8_t stride_as_shift = 0;
 
 				if (tb_is_power_of_two(stride)) {
@@ -865,7 +888,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				// Resolve base (if it's not already in a register)
 				if (stride_as_shift) {
 					// TODO(NeGate): Maybe i should couple these bad boys
-					Val temp = val_gpr(TB_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+					Val temp = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
 					fast_folded_op(ctx, f, MOV, &temp, n->array_access.base);
 
 #if 1
@@ -878,7 +901,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 					ctx->tile.disp    = 0;
 #else
 					Val arith = val_base_index(TB_TYPE_PTR, temp.gpr, index_reg, stride_as_shift);
-					INST2(LEA, &val, &arith, TB_PTR);
+					INST2(LEA, &val, &arith, TB_TYPE_PTR);
 #endif
 					fast_kill_temp_gpr(ctx, f, temp.gpr);
 				} else {
@@ -902,23 +925,23 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				} else {
 					addr = fast_eval_address(ctx, f, n->load.address);
 				}
-				if (dt.type == TB_BOOL) dt.type = TB_I8;
 
-				if (TB_IS_FLOAT_TYPE(dt.type) || dt.width) {
+				if (TB_IS_FLOAT_TYPE(dt) || dt.width) {
 					Val dst = val_xmm(dt, fast_alloc_xmm(ctx, f, r));
 					fast_def_xmm(ctx, f, r, dst.xmm, dt);
 
-					uint8_t flags = 0;
-					flags |= (dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
-					flags |= (dt.width) ? INST2FP_PACKED : 0;
-
+					uint8_t flags = legalize_float(dt);
 					INST2SSE(FP_MOV, &dst, &addr, flags);
 				} else {
-					GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
-					fast_def_gpr(ctx, f, r, dst_gpr, dt);
+					LegalInt l = legalize_int(dt);
 
-					Val dst = val_gpr(dt.type, dst_gpr);
-					INST2(MOV, &dst, &addr, dt.type);
+					GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
+					fast_def_gpr(ctx, f, r, dst_gpr, l.dt);
+
+					Val dst = val_gpr(dt, dst_gpr);
+					INST2(MOV, &dst, &addr, l.dt);
+
+					if (l.mask) fast_mask_out(ctx, f, l, &dst);
 				}
 
 				fast_kill_reg(ctx, f, n->load.address);
@@ -931,9 +954,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				} else {
 					addr = fast_eval_address(ctx, f, n->store.address);
 				}
-				if (dt.type == TB_BOOL) dt.type = TB_I8;
 
-				if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
+				if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
 					fast_folded_op_sse(ctx, f, FP_MOV, &addr, n->store.value);
 				} else {
 					fast_folded_op(ctx, f, MOV, &addr, n->store.value);
@@ -959,13 +981,13 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				TB_Reg size_reg = n->mem_op.size;
 
 				// memset on constant size
-				if (f->nodes.data[size_reg].type == TB_UNSIGNED_CONST &&
-					f->nodes.data[size_reg].type == TB_SIGNED_CONST) {
-					int64_t sz = f->nodes.data[size_reg].sint.value;
+				if (f->nodes.data[size_reg].type == TB_INTEGER_CONST &&
+					f->nodes.data[size_reg].integer.num_words == 1) {
+					int64_t sz = f->nodes.data[size_reg].integer.single_word;
 					assert(sz <= 0 && "Cannot memset on negative numbers or zero");
 
 					{
-						Val src = val_gpr(dt.type, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+						Val src = val_gpr(dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
 						fast_folded_op(ctx, f, MOV, &src, val_reg);
 
 						fast_memset_const_size(ctx, f, dst_reg, &src, sz);
@@ -984,21 +1006,21 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				fast_evict_gpr(ctx, f, RDI);
 
 				{
-					Val param = val_gpr(dt.type, RAX);
+					Val param = val_gpr(dt, RAX);
 					fast_folded_op(ctx, f, MOV, &param, val_reg);
 					ctx->gpr_allocator[RAX] = TB_TEMP_REG;
 					ctx->gpr_available -= 1;
 				}
 
 				{
-					Val param = val_gpr(dt.type, RDI);
+					Val param = val_gpr(dt, RDI);
 					fast_folded_op(ctx, f, MOV, &param, dst_reg);
 					ctx->gpr_allocator[RDI] = TB_TEMP_REG;
 					ctx->gpr_available -= 1;
 				}
 
 				{
-					Val param = val_gpr(dt.type, RCX);
+					Val param = val_gpr(dt, RCX);
 					fast_folded_op(ctx, f, MOV, &param, size_reg);
 					ctx->gpr_allocator[RCX] = TB_TEMP_REG;
 					ctx->gpr_available -= 1;
@@ -1026,21 +1048,21 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				fast_evict_gpr(ctx, f, RCX);
 
 				{
-					Val param = val_gpr(dt.type, RDI);
+					Val param = val_gpr(dt, RDI);
 					fast_folded_op(ctx, f, MOV, &param, dst_reg);
 					ctx->gpr_allocator[RDI] = TB_TEMP_REG;
 					ctx->gpr_available -= 1;
 				}
 
 				{
-					Val param = val_gpr(dt.type, RSI);
+					Val param = val_gpr(dt, RSI);
 					fast_folded_op(ctx, f, MOV, &param, src_reg);
 					ctx->gpr_allocator[RSI] = TB_TEMP_REG;
 					ctx->gpr_available -= 1;
 				}
 
 				{
-					Val param = val_gpr(dt.type, RCX);
+					Val param = val_gpr(dt, RCX);
 					fast_folded_op(ctx, f, MOV, &param, size_reg);
 					ctx->gpr_allocator[RCX] = TB_TEMP_REG;
 					ctx->gpr_available -= 1;
@@ -1068,8 +1090,9 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				// simple scalar ops
 				const static Inst2Type ops[] = { AND, OR, XOR, ADD, SUB, IMUL };
 
+				Val dst;
 				if (ctx->use_count[n->i_arith.a] == 1 && ctx->addresses[n->i_arith.a].type == ADDRESS_DESC_GPR) {
-					Val dst = val_gpr(dt.type, ctx->addresses[n->i_arith.a].gpr);
+					dst = val_gpr(dt, ctx->addresses[n->i_arith.a].gpr);
 					fast_def_gpr(ctx, f, r, dst.gpr, dt);
 
 					// rename a -> dst
@@ -1083,7 +1106,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 					GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
 					fast_def_gpr(ctx, f, r, dst_gpr, dt);
 
-					Val dst = val_gpr(dt.type, dst_gpr);
+					dst = val_gpr(dt, dst_gpr);
 					fast_folded_op(ctx, f, MOV, &dst, n->i_arith.a);
 					fast_folded_op(ctx, f, ops[reg_type - TB_AND], &dst, n->i_arith.b);
 
@@ -1112,13 +1135,17 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				ctx->gpr_allocator[RDX] = TB_TEMP_REG;
 				ctx->gpr_available -= 2;
 
+				LegalInt l = legalize_int(dt);
+
 				// MOV rax, a
-				Val rax = val_gpr(dt.type, RAX);
+				Val rax = val_gpr(l.dt, RAX);
 				fast_folded_op(ctx, f, MOV, &rax, n->i_arith.a);
 
 				if (is_signed) {
 					// cqo/cdq
-					if (dt.type == TB_PTR || dt.type == TB_I64) { *ctx->header.out++ = 0x48; }
+					if (dt.type == TB_PTR || (dt.type == TB_INT && l.dt.data == 64)) {
+						*ctx->header.out++ = 0x48;
+					}
 					*ctx->header.out++ = 0x99;
 				} else {
 					// xor rdx, rdx
@@ -1127,7 +1154,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				}
 
 				{
-					Val tmp = val_gpr(dt.type, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+					Val tmp = val_gpr(l.dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
 
 					fast_folded_op(ctx, f, MOV, &tmp, n->i_arith.b);
 					INST1(IDIV, &tmp);
@@ -1144,7 +1171,12 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
 				// the return value is in RAX for division
 				// and RDX for modulo
-				fast_def_gpr(ctx, f, r, is_div ? RAX : RDX, dt);
+				fast_def_gpr(ctx, f, r, is_div ? RAX : RDX, l.dt);
+
+				if (l.mask) {
+					Val dst = val_gpr(l.dt, is_div ? RAX : RDX);
+					fast_mask_out(ctx, f, l, &dst);
+				}
 
 				// free the other piece of the divmod result
 				ctx->gpr_allocator[is_div ? RAX : RDX] = r;
@@ -1155,23 +1187,25 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 			case TB_SHR:
 			case TB_SHL:
 			case TB_SAR: {
-				bool is_64bit = dt.type == TB_I64;
+				LegalInt l = legalize_int(dt);
+				int bits_in_type = l.dt.type == TB_PTR ? 64 : l.dt.data;
 
-				Val dst = val_gpr(dt.type, fast_alloc_gpr(ctx, f, r));
-				fast_def_gpr(ctx, f, r, dst.gpr, dt);
+				Val dst = val_gpr(l.dt, fast_alloc_gpr(ctx, f, r));
+				fast_def_gpr(ctx, f, r, dst.gpr, l.dt);
 
 				fast_folded_op(ctx, f, MOV, &dst, n->i_arith.a);
 
-				if (EITHER2(f->nodes.data[n->i_arith.b].type, TB_UNSIGNED_CONST, TB_SIGNED_CONST)) {
-					uint64_t imm = f->nodes.data[n->i_arith.b].uint.value;
+				if (f->nodes.data[n->i_arith.b].type == TB_INTEGER_CONST &&
+					f->nodes.data[n->i_arith.b].integer.num_words == 1) {
+					uint64_t imm = f->nodes.data[n->i_arith.b].integer.single_word;
 					assert(imm < 64);
 
 					// C1 /4       shl r/m, imm
 					// C1 /5       shr r/m, imm
 					// C1 /7       sar r/m, imm
-					if (dt.type == TB_I16) *ctx->header.out++ = 0x66;
-					*ctx->header.out++ = rex(is_64bit, 0x00, dst.gpr, 0x00);
-					*ctx->header.out++ = (dt.type == TB_I8 ? 0xC0 : 0xC1);
+					if (bits_in_type == 16) *ctx->header.out++ = 0x66;
+					*ctx->header.out++ = rex(bits_in_type == 64, 0x00, dst.gpr, 0x00);
+					*ctx->header.out++ = (bits_in_type == 8 ? 0xC0 : 0xC1);
 					switch (reg_type) {
 						case TB_SHL: *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0x04, dst.gpr); break;
 						case TB_SHR: *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0x05, dst.gpr); break;
@@ -1180,27 +1214,31 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 					}
 					*ctx->header.out++ = imm;
 
+					if (l.mask) fast_mask_out(ctx, f, l, &dst);
+
 					fast_kill_reg(ctx, f, n->i_arith.a);
 					fast_kill_reg(ctx, f, n->i_arith.b);
 					break;
 				}
 
 				// MOV rcx, b
-				Val rcx = val_gpr(dt.type, RCX);
+				Val rcx = val_gpr(dt, RCX);
 				fast_folded_op(ctx, f, MOV, &rcx, n->i_arith.b);
 
 				// D2 /4       shl r/m, cl
 				// D2 /5       shr r/m, cl
 				// D2 /7       sar r/m, cl
-				if (dt.type == TB_I16) *ctx->header.out++ = 0x66;
-				*ctx->header.out++ = rex(is_64bit, 0x00, dst.gpr, 0x00);
-				*ctx->header.out++ = (dt.type == TB_I8 ? 0xD2 : 0xD3);
+				if (bits_in_type == 16) *ctx->header.out++ = 0x66;
+				*ctx->header.out++ = rex(bits_in_type == 64, 0x00, dst.gpr, 0x00);
+				*ctx->header.out++ = (bits_in_type == 8 ? 0xD2 : 0xD3);
 				switch (reg_type) {
 					case TB_SHL: *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0x04, dst.gpr); break;
 					case TB_SHR: *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0x05, dst.gpr); break;
 					case TB_SAR: *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0x07, dst.gpr); break;
 					default: tb_unreachable();
 				}
+
+				if (l.mask) fast_mask_out(ctx, f, l, &dst);
 
 				fast_kill_reg(ctx, f, n->i_arith.a);
 				fast_kill_reg(ctx, f, n->i_arith.b);
@@ -1212,9 +1250,6 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 			case TB_FSUB:
 			case TB_FMUL:
 			case TB_FDIV: {
-				// supported modes (for now)
-				assert(dt.width <= 2 && "unsupported instruction");
-
 				// simple scalar ops
 				const static Inst2FPType ops[] = { FP_ADD, FP_SUB, FP_MUL, FP_DIV };
 
@@ -1260,41 +1295,38 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				TB_DataType cmp_dt = n->cmp.dt;
 				assert(cmp_dt.width == 0 && "TODO: Implement vector compares");
 
-				if (cmp_dt.type == TB_BOOL) cmp_dt.type = TB_I8;
-
 				// TODO(NeGate): add some simple const folding here... maybe?
 				// if (cmp XX (a, b)) should return a FLAGS because the IF
 				// will handle it properly
-				bool returns_flags = ctx->use_count[r] == 1 && f->nodes.data[n->next].type == TB_IF &&
+				bool returns_flags = ctx->use_count[r] == 1 &&
+					f->nodes.data[n->next].type == TB_IF &&
 					f->nodes.data[n->next].if_.cond == r;
 
-				Val temp = val_gpr(cmp_dt.type, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+				Val temp = val_gpr(cmp_dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
 
 				Val val = { 0 };
 				if (!returns_flags) {
-					val = val_gpr(TB_I8, fast_alloc_gpr(ctx, f, r));
+					val = val_gpr(TB_TYPE_I8, fast_alloc_gpr(ctx, f, r));
 					fast_def_gpr(ctx, f, r, val.gpr, dt);
 
 					// xor temp, temp
-					if (val.gpr >= 8) { *ctx->header.out++ = rex(false, val.gpr, val.gpr, 0); }
+					if (val.gpr >= 8) {
+						*ctx->header.out++ = rex(false, val.gpr, val.gpr, 0);
+					}
 					*ctx->header.out++ = 0x31;
 					*ctx->header.out++ = mod_rx_rm(MOD_DIRECT, val.gpr, val.gpr);
 				}
 
 				Cond cc;
-				if (TB_IS_FLOAT_TYPE(cmp_dt.type)) {
+				if (TB_IS_FLOAT_TYPE(cmp_dt)) {
 					Val compare_tmp = val_xmm(cmp_dt, fast_alloc_xmm(ctx, f, TB_TEMP_REG));
-
-					uint8_t flags = 0;
-					flags |= (cmp_dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
-					flags |= (cmp_dt.width) ? INST2FP_PACKED : 0;
 
 					fast_folded_op_sse(ctx, f, FP_MOV, &temp, n->i_arith.a);
 					fast_folded_op_sse(ctx, f, FP_UCOMI, &temp, n->i_arith.b);
 
 					switch (reg_type) {
-						case TB_CMP_EQ: cc = E; break;
-						case TB_CMP_NE: cc = NE; break;
+						case TB_CMP_EQ:  cc = E; break;
+						case TB_CMP_NE:  cc = NE; break;
 						case TB_CMP_FLT: cc = B; break;
 						case TB_CMP_FLE: cc = BE; break;
 						default: tb_unreachable();
@@ -1302,9 +1334,9 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
 					fast_kill_temp_xmm(ctx, f, compare_tmp.xmm);
 				} else {
-					bool invert = (f->nodes.data[n->i_arith.a].type == TB_UNSIGNED_CONST ||
-								   f->nodes.data[n->i_arith.a].type == TB_SIGNED_CONST);
+					cmp_dt = legalize_int(cmp_dt).dt;
 
+					bool invert = (f->nodes.data[n->i_arith.a].type == TB_INTEGER_CONST);
 					if (invert) {
 						fast_folded_op(ctx, f, MOV, &temp, n->i_arith.b);
 						fast_folded_op(ctx, f, CMP, &temp, n->i_arith.a);
@@ -1351,71 +1383,61 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				assert(dt.width == 0 && "TODO: Implement vector bitcast");
 
 				Val src = fast_eval(ctx, f, n->unary.src);
-				assert(get_data_type_size(dt) == get_data_type_size(src.dt));
 
-				// movd/q
-				*ctx->header.out++ = 0x66;
+				int dt_size = get_data_type_size(dt);
+				assert(dt_size == get_data_type_size(src.dt));
 
-				Val val;
-				if ((src.dt.type == TB_I64 || src.dt.type == TB_PTR) && dt.type == TB_F64) {
-					// movd dst:xmm, src:gpr
-					assert(src.type == VAL_GPR);
-					val = val_xmm(dt, fast_alloc_xmm(ctx, f, r));
-					fast_def_xmm(ctx, f, r, val.xmm, dt);
+				bool is_src_int = src.dt.type == TB_INT || src.dt.type == TB_PTR;
+				bool is_dst_int = dt.type == TB_INT || dt.type == TB_PTR;
 
-					*ctx->header.out++ = rex(true, src.gpr, val.xmm, 0);
-					*ctx->header.out++ = 0x0F;
-					*ctx->header.out++ = 0x6E;
-				} else if (src.dt.type == TB_I32 && dt.type == TB_F32) {
-					// movq dst:xmm, src:gpr
-					assert(src.type == VAL_GPR);
-					val = val_xmm(dt, fast_alloc_xmm(ctx, f, r));
-					fast_def_xmm(ctx, f, r, val.xmm, dt);
+				if (is_src_int == is_dst_int) {
+					// just doesn't do anything really
+					tb_todo();
+				} else {
+					// movd/q
+					*ctx->header.out++ = 0x66;
 
-					if (val.xmm >= 8 || src.gpr >= 8) {
+					Val val;
+					bool is_64bit = dt_size > 32;
+					bool int2float = is_src_int && !is_dst_int;
+					if (int2float) {
+						// int -> float
+						assert(src.type == VAL_GPR);
+						val = val_xmm(dt, fast_alloc_xmm(ctx, f, r));
+						fast_def_xmm(ctx, f, r, val.xmm, dt);
+					} else {
+						// float -> int
+						assert(src.type == VAL_XMM);
+						val = val_gpr(dt, fast_alloc_gpr(ctx, f, r));
+						fast_def_gpr(ctx, f, r, val.gpr, dt);
+					}
+
+					if (is_64bit || val.xmm >= 8 || src.gpr >= 8) {
 						*ctx->header.out++ = rex(false, src.gpr, val.xmm, 0);
 					}
 
 					*ctx->header.out++ = 0x0F;
-					*ctx->header.out++ = 0x6E;
-				} else if (src.dt.type == TB_F64 && (dt.type == TB_I64 || dt.type == TB_PTR)) {
-					// movd dst:gpr, src:xmm
-					assert(src.type == VAL_XMM);
-					val = val_gpr(dt.type, fast_alloc_gpr(ctx, f, r));
-					fast_def_gpr(ctx, f, r, val.gpr, dt);
+					*ctx->header.out++ = int2float ? 0x6E : 0x7E;
 
-					*ctx->header.out++ = rex(true, src.xmm, val.gpr, 0);
-					*ctx->header.out++ = 0x0F;
-					*ctx->header.out++ = 0x7E;
-				} else if (src.dt.type == TB_F32 && dt.type == TB_I32) {
-					// movq dst:gpr, src:xmm
-					assert(src.type == VAL_XMM);
-					val = val_gpr(dt.type, fast_alloc_gpr(ctx, f, r));
-					fast_def_gpr(ctx, f, r, val.gpr, dt);
+					// val.gpr and val.xmm alias so it's irrelevant which one we pick
+					emit_memory_operand(&ctx->header, src.gpr, &val);
 
-					if (val.gpr >= 8 || src.xmm >= 8) {
-						*ctx->header.out++ = rex(true, src.xmm, val.gpr, 0);
-					}
-
-					*ctx->header.out++ = 0x0F;
-					*ctx->header.out++ = 0x7E;
-				} else tb_todo();
-
-				// val.gpr and val.xmm alias so it's irrelevant which one we pick
-				emit_memory_operand(&ctx->header, src.gpr, &val);
-
-				fast_kill_reg(ctx, f, n->unary.src);
+					fast_kill_reg(ctx, f, n->unary.src);
+				}
 				break;
 			}
-			case TB_FLOAT2INT: {
+			case TB_FLOAT2INT:
+			case TB_FLOAT2UINT: {
 				assert(dt.width == 0 && "TODO: Implement vector float2int");
+
 				TB_DataType src_dt = f->nodes.data[n->unary.src].dt;
+				assert(src_dt.type == TB_FLOAT);
 
 				Val src = val_xmm(src_dt, fast_alloc_xmm(ctx, f, TB_TEMP_REG));
 				fast_folded_op_sse(ctx, f, FP_MOV, &src, n->unary.src);
 
 				assert(src.type == VAL_MEM || src.type == VAL_GLOBAL || src.type == VAL_XMM);
-				Val val = val_gpr(dt.type, fast_alloc_gpr(ctx, f, r));
+				Val val = val_gpr(dt, fast_alloc_gpr(ctx, f, r));
 				fast_def_gpr(ctx, f, r, val.gpr, dt);
 
 				// it's either 32bit or 64bit conversion
@@ -1424,8 +1446,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				// F2 0F 2D /r            CVTSD2SI xmm1, r/m32
 				// F2 REX.W 0F 2D /r      CVTSD2SI xmm1, r/m64
 				if (src.dt.width == 0) {
-					*ctx->header.out++ = (src.dt.type == TB_F64) ? 0xF2 : 0xF3;
-				} else if (src.dt.type == TB_F64) {
+					*ctx->header.out++ = (src.dt.data == TB_FLT_64) ? 0xF2 : 0xF3;
+				} else if (src.dt.data == TB_FLT_64) {
 					// packed double
 					*ctx->header.out++ = 0x66;
 				}
@@ -1440,7 +1462,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 					index = 0;
 				} else tb_todo();
 
-				bool is_64bit = (dt.type == TB_I64);
+				bool is_64bit = (dt.data > 32 || reg_type == TB_FLOAT2UINT);
 				if (is_64bit || rx >= 8 || base >= 8 || index >= 8) {
 					*ctx->header.out++ = rex(is_64bit, rx, base, index);
 				}
@@ -1453,16 +1475,22 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				fast_kill_reg(ctx, f, n->unary.src);
 				break;
 			}
+			case TB_UINT2FLOAT:
 			case TB_INT2FLOAT: {
 				assert(dt.width == 0 && "TODO: Implement vector int2float");
 				TB_DataType src_dt = f->nodes.data[n->unary.src].dt;
 
-				Val src = val_gpr(src_dt.type, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+				Val src = val_gpr(src_dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
 				fast_folded_op(ctx, f, MOV, &src, n->unary.src);
 
 				assert(src.type == VAL_MEM || src.type == VAL_GLOBAL || src.type == VAL_GPR);
 				Val val = val_xmm(dt, fast_alloc_xmm(ctx, f, r));
 				fast_def_xmm(ctx, f, r, val.xmm, dt);
+
+				if (reg_type == TB_UINT2FLOAT && dt.data <= 32) {
+					// zero extend 32bit value to 64bit
+					INST2(MOV, &src, &src, TB_TYPE_I32);
+				}
 
 				// it's either 32bit or 64bit conversion
 				// F3       0F 2A /r      CVTSI2SS xmm1, r/m32
@@ -1470,8 +1498,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				// F2       0F 2A /r      CVTSI2SD xmm1, r/m32
 				// F2 REX.W 0F 2A /r      CVTSI2SD xmm1, r/m64
 				if (dt.width == 0) {
-					*ctx->header.out++ = (dt.type == TB_F64) ? 0xF2 : 0xF3;
-				} else if (dt.type == TB_F64) {
+					*ctx->header.out++ = (dt.data == TB_FLT_64) ? 0xF2 : 0xF3;
+				} else if (dt.data == TB_FLT_64) {
 					// packed double
 					*ctx->header.out++ = 0x66;
 				}
@@ -1486,7 +1514,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 					index = 0;
 				} else tb_unreachable();
 
-				bool is_64bit = (src.dt.type == TB_I64);
+				bool is_64bit = (dt.data > 32 || reg_type == TB_UINT2FLOAT);
 				if (is_64bit || rx >= 8 || base >= 8 || index >= 8) {
 					*ctx->header.out++ = rex(is_64bit, rx, base, index);
 				}
@@ -1503,20 +1531,17 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 			case TB_TRUNCATE: {
 				assert(dt.width == 0 && "TODO: Implement vector truncate");
 
-				if (TB_IS_FLOAT_TYPE(dt.type)) {
+				if (TB_IS_FLOAT_TYPE(dt)) {
 					Val src = fast_eval(ctx, f, n->unary.src);
 
 					Val val = val_xmm(dt, fast_alloc_xmm(ctx, f, r));
 					fast_def_xmm(ctx, f, r, val.xmm, dt);
 
-					uint8_t flags = 0;
-					flags |= (src.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
-					flags |= (src.dt.width) ? INST2FP_PACKED : 0;
-
+					uint8_t flags = legalize_float(src.dt);
 					INST2SSE(FP_CVT, &val, &src, flags);
 				} else {
 					// we probably want some recycling eventually...
-					Val val = val_gpr(dt.type, fast_alloc_gpr(ctx, f, r));
+					Val val = val_gpr(dt, fast_alloc_gpr(ctx, f, r));
 					fast_def_gpr(ctx, f, r, val.gpr, dt);
 
 					fast_folded_op(ctx, f, MOV, &val, n->unary.src);
@@ -1529,7 +1554,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				assert(dt.width == 0 && "TODO: Implement vector negate");
 				bool is_not = reg_type == TB_NOT;
 
-				if (TB_IS_FLOAT_TYPE(dt.type)) {
+				if (TB_IS_FLOAT_TYPE(dt)) {
 					assert(!is_not && "TODO");
 
 					// .LCPI0_0:
@@ -1545,14 +1570,14 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
 					if (dst_xmm >= 8) {
 						*ctx->header.out++ = rex(true, dst_xmm, dst_xmm, 0);
-						*ctx->header.out++ = (dt.type == TB_F64 ? 0xF2 : 0xF3);
+						*ctx->header.out++ = (dt.data == TB_FLT_64 ? 0xF2 : 0xF3);
 					}
 					*ctx->header.out++ = 0x0F;
 					*ctx->header.out++ = 0x57;
 					*ctx->header.out++ = ((dst_xmm & 7) << 3) | RBP;
 
 					void* payload = NULL;
-					if (dt.type == TB_F64) {
+					if (dt.data == TB_FLT_64) {
 						uint64_t* rdata_payload = tb_platform_arena_alloc(2 * sizeof(uint64_t));
 						rdata_payload[0] = (1ull << 63ull);
 						rdata_payload[1] = (1ull << 63ull);
@@ -1575,7 +1600,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 					// we probably want some recycling eventually...
 					GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
 					fast_def_gpr(ctx, f, r, dst_gpr, dt);
-					Val val = val_gpr(dt.type, dst_gpr);
+					Val val = val_gpr(dt, dst_gpr);
 
 					fast_folded_op(ctx, f, MOV, &val, n->unary.src);
 					INST1(is_not ? NOT : NEG, &val);
@@ -1591,16 +1616,14 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
 				GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
 				fast_def_gpr(ctx, f, r, dst_gpr, dt);
-				Val val = val_gpr(dt.type, dst_gpr);
+				Val val = val_gpr(dt, dst_gpr);
 
-				if (dt.type == TB_I16) {
-					fast_folded_op(ctx, f, MOVZXW, &val, n->unary.src);
-				} else if (dt.type == TB_I8 || dt.type == TB_BOOL) {
-					fast_folded_op(ctx, f, MOVZXB, &val, n->unary.src);
-				} else {
-					fast_folded_op(ctx, f, MOV, &val, n->unary.src);
+				// make sure to zero it out if it's not a 64bit integer
+				if (dt.data < 64) {
+					INST2(XOR, &val, &val, TB_TYPE_I32);
 				}
 
+				fast_folded_op(ctx, f, MOV, &val, n->unary.src);
 				fast_kill_reg(ctx, f, n->unary.src);
 				break;
 			}
@@ -1608,38 +1631,53 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 			case TB_SIGN_EXT:
 			case TB_ZERO_EXT: {
 				assert(dt.width == 0 && "TODO: Implement vector zero extend");
-				TB_DataType src_dt   = f->nodes.data[n->unary.src].dt;
-				bool        sign_ext = (reg_type == TB_SIGN_EXT);
+				TB_DataType src_dt = f->nodes.data[n->unary.src].dt;
+				bool sign_ext = (reg_type == TB_SIGN_EXT);
 
 				GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
 				fast_def_gpr(ctx, f, r, dst_gpr, dt);
-				Val val = val_gpr(dt.type, dst_gpr);
+				Val val = val_gpr(dt, dst_gpr);
+
+				// Figure out if we can do it trivially
+				int bits;
+				if (!TB_NEXT_BIGGEST(&bits, dt.data, 8, 16, 32, 64)) {
+					// support bigger types
+					tb_todo();
+				}
+
+				// means we're using the MOV, MOVSX or MOVZX
+				Inst2Type op = MOV;
+
+				// figure out if we can use the cool instructions
+				// or if we gotta emulate it like a bitch
+				LegalInt l = legalize_int(src_dt);
+				int bits_in_type = l.dt.type == TB_PTR ? 64 : l.dt.data;
+
+				if (bits_in_type == 64) {
+					op = MOV;
+				} else if (bits_in_type == 32) {
+					op = (sign_ext ? MOVSXD : MOV);
+				} else if (bits_in_type == 16) {
+					op = sign_ext ? MOVSXW : MOVZXW;
+				} else if (bits_in_type == 8) {
+					op = (sign_ext ? MOVSXB : MOVZXB);
+				} else if (bits_in_type == 1) {
+					op = MOVZXB;
+				} else {
+					tb_todo();
+				}
 
 				TB_Reg src = n->unary.src;
 				if (f->nodes.data[src].type == TB_LOAD &&
 					f->nodes.data[src].load.address == ctx->tile.mapping) {
 					Val addr = fast_get_tile_mapping(ctx, f, ctx->tile.mapping);
 
-					if (src_dt.type == TB_I32 && sign_ext) {
-						INST2(MOVSXD, &val, &addr, dt.type);
-					} else if (src_dt.type == TB_I16) {
-						INST2(sign_ext ? MOVSXW : MOVZXW, &val, &addr, dt.type);
-					} else if (src_dt.type == TB_I8 || src_dt.type == TB_BOOL) {
-						INST2(sign_ext ? MOVSXB : MOVZXB, &val, &addr, dt.type);
-					} else {
-						INST2(MOV, &val, &addr, dt.type);
-					}
+					INST2(op, &val, &addr, dt);
 				} else {
-					if (src_dt.type == TB_I32 && sign_ext) {
-						fast_folded_op(ctx, f, MOVSXD, &val, n->unary.src);
-					} else if (src_dt.type == TB_I16) {
-						fast_folded_op(ctx, f, sign_ext ? MOVSXW : MOVZXW, &val, n->unary.src);
-					} else if (src_dt.type == TB_I8 || src_dt.type == TB_BOOL) {
-						fast_folded_op(ctx, f, sign_ext ? MOVSXB : MOVZXB, &val, n->unary.src);
-					} else {
-						fast_folded_op(ctx, f, MOV, &val, n->unary.src);
-					}
+					fast_folded_op(ctx, f, op, &val, n->unary.src);
 				}
+
+				if (l.mask) fast_mask_out(ctx, f, l, &val);
 				fast_kill_reg(ctx, f, n->unary.src);
 				break;
 			}
@@ -1649,10 +1687,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				Val val = val_xmm(dt, fast_alloc_xmm(ctx, f, r));
 				fast_def_xmm(ctx, f, r, val.xmm, dt);
 
-				uint8_t flags = 0;
-				flags |= (src.dt.type == TB_F64) ? INST2FP_DOUBLE : 0;
-				flags |= (src.dt.width) ? INST2FP_PACKED : 0;
-
+				uint8_t flags = legalize_float(src.dt);
 				if (src.dt.type != dt.type || src.dt.width != dt.width) {
 					INST2SSE(FP_CVT, &val, &src, flags);
 				} else {
@@ -1678,7 +1713,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 					TB_Reg      param_reg = f->vla.data[param_start + j];
 					TB_DataType param_dt  = f->nodes.data[param_reg].dt;
 
-					if (TB_IS_FLOAT_TYPE(param_dt.type) || param_dt.width) {
+					if (TB_IS_FLOAT_TYPE(param_dt) || param_dt.width) {
 						if (j < 4) {
 							// since we evict now we don't need to later
 							fast_evict_xmm(ctx, f, j);
@@ -1691,7 +1726,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 							Val dst = val_base_disp(param_dt, RSP, 8 * j);
 							fast_folded_op(ctx, f, MOV, &dst, param_reg);
 						}
-					} else if (param_dt.type != TB_VOID) {
+					} else {
 						// Win64 has 4 GPR parameters (RCX, RDX, R8, R9)
 						// SysV has 6 of them (RDI, RSI, RDX, RCX, R8, R9)
 						if ((ctx->is_sysv && j < 6) || j < 4) {
@@ -1699,7 +1734,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 							fast_evict_gpr(ctx, f, parameter_gprs[j]);
 							caller_saved &= ~(1u << parameter_gprs[j]);
 
-							Val dst = val_gpr(param_dt.type, parameter_gprs[j]);
+							Val dst = val_gpr(param_dt, parameter_gprs[j]);
 
 							// move to parameter GPR and reserve it
 							fast_folded_op(ctx, f, MOV, &dst, param_reg);
@@ -1711,7 +1746,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
 					fast_kill_reg(ctx, f, param_reg);
 
-					if (TB_IS_FLOAT_TYPE(param_dt.type) || param_dt.width) {
+					if (TB_IS_FLOAT_TYPE(param_dt) || param_dt.width) {
 						if (j < 4) {
 							if (ctx->xmm_allocator[j] == 0) ctx->xmm_available -= 1;
 							ctx->xmm_allocator[j] = TB_TEMP_REG;
@@ -1729,11 +1764,11 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
 				// TODO(NeGate): Evict the XMMs that are caller saved
 				loop_range(j, ctx->is_sysv ? 0 : 5, 16) {
-                    fast_evict_xmm(ctx, f, j);
+					fast_evict_xmm(ctx, f, j);
 				}
 
 				// reserve return value
-				if (ctx->is_sysv && (TB_IS_FLOAT_TYPE(dt.type) || dt.width)) {
+				if (ctx->is_sysv && (TB_IS_FLOAT_TYPE(dt) || dt.width)) {
 					// evict XMM0
 					fast_evict_xmm(ctx, f, XMM0);
 				}
@@ -1777,17 +1812,19 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				}
 
 				// the return value
-				if (dt.type == TB_VOID) {
-					/* none */
-				} else if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
+				if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
 					if (ctx->xmm_allocator[XMM0] == 0) ctx->xmm_available -= 1;
 					ctx->xmm_allocator[XMM0] = r;
 					fast_def_xmm(ctx, f, r, XMM0, dt);
 				} else {
-					if (ctx->gpr_allocator[RAX] == 0) ctx->gpr_available -= 1;
-					ctx->gpr_allocator[RAX] = r;
+					int bits_in_type = dt.type == TB_PTR ? 8 : dt.data;
 
-					fast_def_gpr(ctx, f, r, RAX, dt);
+					if (bits_in_type > 0) {
+						if (ctx->gpr_allocator[RAX] == 0) ctx->gpr_available -= 1;
+						ctx->gpr_allocator[RAX] = r;
+
+						fast_def_gpr(ctx, f, r, RAX, dt);
+					}
 				}
 				break;
 			}
@@ -1815,7 +1852,6 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				} else {
 					addr = fast_eval_address(ctx, f, n->atomic.addr);
 				}
-				if (dt.type == TB_BOOL) dt.type = TB_I8;
 
 				// sometimes we only need to do the operation atomic without
 				// a fetch, then things get... fancy
@@ -1827,16 +1863,22 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 					}
 				}
 
+				LegalInt l = legalize_int(dt);
+
 				Val tmp;
 				if (ctx->use_count[r] == 0) {
-					tmp = val_gpr(dt.type, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+					tmp = val_gpr(l.dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
 				} else {
-					tmp = val_gpr(dt.type, fast_alloc_gpr(ctx, f, r));
-					fast_def_gpr(ctx, f, r, tmp.gpr, dt);
+					tmp = val_gpr(l.dt, fast_alloc_gpr(ctx, f, r));
+					fast_def_gpr(ctx, f, r, tmp.gpr, l.dt);
 				}
 				fast_folded_op(ctx, f, MOV, &tmp, n->atomic.src);
 
+				if (l.mask) fast_mask_out(ctx, f, l, &tmp);
+
 				if (ctx->use_count[r] && reg_type == TB_ATOMIC_SUB) {
+					assert(l.mask == 0);
+
 					// there's no atomic_fetch_sub in x64, we just negate
 					// the src
 					INST1(NEG, &tmp);
@@ -1845,11 +1887,15 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				// LOCK prefix is not needed on XCHG because
 				// it's actually a MOV which is naturally atomic
 				// when aligned.
-				if (reg_type != TB_ATOMIC_XCHG) { *ctx->header.out++ = 0xF0; }
+				if (reg_type != TB_ATOMIC_XCHG) {
+					*ctx->header.out++ = 0xF0;
+				}
 
 				int op = (ctx->use_count[r] ? fetch_tbl : tbl)[reg_type - TB_ATOMIC_XCHG];
-				INST2(op, &addr, &tmp, dt.type);
-				if (ctx->use_count[r] == 0) { fast_kill_temp_gpr(ctx, f, tmp.gpr); }
+				INST2(op, &addr, &tmp, l.dt);
+				if (ctx->use_count[r] == 0) {
+					fast_kill_temp_gpr(ctx, f, tmp.gpr);
+				}
 
 				if (n->atomic.addr == n->atomic.src) {
 					fast_kill_reg(ctx, f, n->atomic.addr);
@@ -1866,24 +1912,21 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 			case TB_ATOMIC_CMPXCHG2: break;
 
 			default: tb_todo();
-        }
+		}
 
-        // This only logically makes sense if the IR is unoptimized
-        // which we'll assume here for now (don't worry it'll allow
-        // for BS later on)
-        ctx->register_barrier = r;
-    }
+		// This only logically makes sense if the IR is unoptimized
+		// which we'll assume here for now (don't worry it'll allow
+		// for BS later on)
+		ctx->register_barrier = r;
+	}
 }
 
-static void fast_eval_terminator_phis(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg from,
-									  TB_Reg from_terminator, TB_Reg to, TB_Reg to_terminator) {
+static void fast_eval_terminator_phis(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg from, TB_Reg from_terminator, TB_Reg to, TB_Reg to_terminator) {
     TB_FOR_EACH_NODE_RANGE(n, f, to, to_terminator) if (n->type == TB_PHI2) {
-        TB_Reg      r  = n - f->nodes.data;
+        TB_Reg r  = n - f->nodes.data;
         TB_DataType dt = n->dt;
 
-        if (dt.type == TB_BOOL) dt.type = TB_I8;
-
-        TB_Reg src = (n->phi2.a_label == from   ? n->phi2.a
+        TB_Reg src = (n->phi2.a_label   == from ? n->phi2.a
                       : n->phi2.b_label == from ? n->phi2.b
 					  : 0);
 
@@ -1899,7 +1942,7 @@ static void fast_eval_terminator_phis(X64_FastCtx* restrict ctx, TB_Function* f,
             dst = val_stack(dt, ctx->addresses[r].spill);
         }
 
-        if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
+        if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
             // TODO(NeGate): Handle vector and float types
             tb_todo();
         } else {
@@ -1909,25 +1952,21 @@ static void fast_eval_terminator_phis(X64_FastCtx* restrict ctx, TB_Function* f,
 }
 
 static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
-    size_t locals_count      = 0;
-    size_t return_count      = 0;
+    size_t locals_count = 0;
+    size_t return_count = 0;
     size_t label_patch_count = 0;
-    size_t line_info_count   = 0;
+    size_t line_info_count = 0;
 
     TB_FOR_EACH_NODE(n, f) {
         TB_NodeTypeEnum t = n->type;
 
         if (t == TB_RET) return_count++;
-        else if (t == TB_LOCAL)
-            locals_count++;
-        else if (t == TB_IF)
-            label_patch_count += 2;
-        else if (t == TB_GOTO)
-            label_patch_count++;
-        else if (t == TB_LINE_INFO)
-            line_info_count++;
+        else if (t == TB_LOCAL) locals_count++;
+        else if (t == TB_IF) label_patch_count += 2;
+        else if (t == TB_GOTO) label_patch_count++;
+        else if (t == TB_LINE_INFO) line_info_count++;
         else if (t == TB_SWITCH) {
-            label_patch_count += 1 + ((n->switch_.entries_end - n->switch_.entries_start) / 2);
+			label_patch_count += 1 + ((n->switch_.entries_end - n->switch_.entries_start) / 2);
         }
     }
 
@@ -1961,115 +2000,13 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
     tally += return_count * sizeof(ReturnPatch);
     tally = (tally + align_mask) & ~align_mask;
 
-    return (FunctionTallySimple) { .memory_usage = tally,
-
-        .line_info_count   = line_info_count,
-        .locals_count      = locals_count,
-        .return_count      = return_count,
-        .label_patch_count = label_patch_count };
-}
-
-static void fast_da_machine(
-							X64_FastCtx* restrict ctx, TB_Function* f, X64_IselMachine* machine, TB_Reg r) {
-    TB_Node* restrict n = &f->nodes.data[r];
-    // TB_DataType dt = n->dt;
-    TB_NodeTypeEnum reg_type = n->type;
-
-    switch (reg_type) {
-		case TB_PARAM:
-		case TB_PARAM_ADDR:
-        machine->state      = ISEL_MACHINE_DO_NOTHING;
-        machine->user_count = 0;
-        break;
-
-		case TB_LOAD: {
-			if (machine->state >= ISEL_MACHINE_FINAL_STATES) {
-				machine->state      = ISEL_MACHINE_NULL;
-				machine->user_count = 0;
-				break;
-			}
-
-			machine->state      = ISEL_MACHINE_LOAD;
-			machine->user_count = 1;
-			machine->users[0]   = n->load.address;
-			break;
-		}
-
-		case TB_UNSIGNED_CONST:
-		case TB_SIGNED_CONST: {
-			if (machine->state >= ISEL_MACHINE_FINAL_STATES) {
-				machine->state      = ISEL_MACHINE_NULL;
-				machine->user_count = 0;
-				break;
-			}
-
-			if (!FITS_INTO(n->uint.value, int32_t)) { tb_todo(); }
-
-			machine->state      = ISEL_MACHINE_IMMEDIATE;
-			machine->user_count = 1;
-			machine->users[0]   = r;
-			break;
-		}
-
-		case TB_ADD:
-		case TB_SUB:
-		case TB_MUL: {
-			if (machine->state >= ISEL_MACHINE_FINAL_STATES) {
-				bool is_chained = (machine->user_count > 0 &&
-								   n->i_arith.b == machine->users[machine->user_count - 1]);
-
-				if (is_chained) {
-					if (reg_type == TB_MUL && machine->state == ISEL_MACHINE_IMMEDIATE &&
-						tb_is_power_of_two(f->nodes.data[machine->users[0]].uint.value)) {
-						uint8_t shift_amount = tb_ffs(f->nodes.data[machine->users[0]].uint.value) - 1;
-						assert(shift_amount < 64 && "Phat shift broken");
-
-						machine->state      = ISEL_MACHINE_SHL_IMM;
-						machine->user_count = 1;
-						machine->extra      = shift_amount;
-						machine->users[0]   = n->i_arith.a;
-						break;
-					}
-				}
-
-				machine->state      = ISEL_MACHINE_NULL;
-				machine->user_count = 0;
-				break;
-			}
-
-			switch (reg_type) {
-				case TB_ADD: machine->state = ISEL_MACHINE_ADD; break;
-				case TB_SUB: machine->state = ISEL_MACHINE_SUB; break;
-				case TB_MUL: machine->state = ISEL_MACHINE_IMUL; break;
-				default: tb_unreachable();
-			}
-			machine->user_count = 2;
-			machine->users[0]   = n->i_arith.a;
-			machine->users[1]   = n->i_arith.b;
-			break;
-		}
-
-		case TB_RET:
-        if (machine->state >= ISEL_MACHINE_FINAL_STATES) {
-            machine->state      = ISEL_MACHINE_NULL;
-            machine->user_count = 0;
-            break;
-        }
-
-        machine->state      = ISEL_MACHINE_RET;
-        machine->user_count = 0;
-        break;
-
-		case TB_IF:
-		case TB_SWITCH:
-		case TB_LABEL:
-        // force a termination
-        machine->state      = ISEL_MACHINE_DO_NOTHING;
-        machine->user_count = 0;
-        break;
-
-		default: tb_todo();
-    }
+    return (FunctionTallySimple) {
+		.memory_usage = tally,
+        .line_info_count = line_info_count,
+        .locals_count = locals_count,
+        .return_count = return_count,
+        .label_patch_count = label_patch_count
+	};
 }
 
 // entry point to the x64 fast isel, it's got some nice features like when the
@@ -2115,7 +2052,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
             };
         }
 
-        ctx->header.f           = f;
+        ctx->header.f = f;
         ctx->header.function_id = f - f->module->functions.data;
 
         f->line_count = 0;
@@ -2147,12 +2084,12 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
     const TB_FunctionPrototype* restrict proto = f->prototype;
     loop(i, (size_t)proto->param_count) {
         TB_DataType dt = proto->params[i];
-        TB_Reg      r  = TB_FIRST_PARAMETER_REG + i;
+        TB_Reg r = TB_FIRST_PARAMETER_REG + i;
 
         // Allocate space in stack
         assert(get_data_type_size(dt) <= 8 && "Parameter too big");
 
-        if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
+        if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
             // xmm parameters
             if (i < 4) {
                 fast_def_xmm(ctx, f, r, (XMM)i, dt);
@@ -2183,15 +2120,14 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
 
         // spill the rest of the parameters (assumes they're all in the GPRs)
         size_t gpr_count = ctx->is_sysv ? 6 : 4;
-        size_t extra_param_count =
-            proto->param_count > gpr_count ? 0 : gpr_count - proto->param_count;
+        size_t extra_param_count = proto->param_count > gpr_count ? 0 : gpr_count - proto->param_count;
 
         loop(i, extra_param_count) {
             size_t param_num = proto->param_count + i;
 
             Val dst = val_stack(TB_TYPE_I64, 16 + (param_num * 8));
-            Val src = val_gpr(TB_I64, parameter_gprs[param_num]);
-            INST2(MOV, &dst, &src, TB_I64);
+            Val src = val_gpr(TB_TYPE_I64, parameter_gprs[param_num]);
+            INST2(MOV, &dst, &src, TB_TYPE_I64);
         }
     }
 
@@ -2201,20 +2137,20 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         TB_Reg r = n - f->nodes.data;
 
         if (n->type == TB_PARAM_ADDR) {
-            int         id = n->param_addr.param - TB_FIRST_PARAMETER_REG;
+            int id = n->param_addr.param - TB_FIRST_PARAMETER_REG;
             TB_DataType dt = n->dt;
 
-            if (dt.width || TB_IS_FLOAT_TYPE(dt.type)) {
+            if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
                 tb_todo();
             } else {
                 if (ctx->is_sysv && id < 6) {
                     Val dst = val_stack(TB_TYPE_I64, 16 + (id * 8));
-                    Val src = val_gpr(TB_I64, SYSV_GPR_PARAMETERS[id]);
-                    INST2(MOV, &dst, &src, TB_I64);
+                    Val src = val_gpr(TB_TYPE_I64, SYSV_GPR_PARAMETERS[id]);
+                    INST2(MOV, &dst, &src, TB_TYPE_I64);
                 } else if (id < 4) {
                     Val dst = val_stack(TB_TYPE_I64, 16 + (id * 8));
-                    Val src = val_gpr(TB_I64, WIN64_GPR_PARAMETERS[id]);
-                    INST2(MOV, &dst, &src, TB_I64);
+                    Val src = val_gpr(TB_TYPE_I64, WIN64_GPR_PARAMETERS[id]);
+                    INST2(MOV, &dst, &src, TB_TYPE_I64);
                 }
             }
 
@@ -2222,7 +2158,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         } else if (n->type == TB_LOCAL) {
             uint32_t size  = n->local.size;
             uint32_t align = n->local.alignment;
-            int      pos   = STACK_ALLOC(size, align);
+            int pos = STACK_ALLOC(size, align);
 
             fast_def_spill(ctx, f, r, pos, n->dt);
         }
@@ -2252,143 +2188,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         }
 #endif
 
-#if 0
-		TB_Reg next_bb_reg = end->type != TB_LABEL
-			? end->next : bb_end;
-		TB_Node* next_bb = &f->nodes.data[next_bb_reg];
-
-		TB_Reg current = start->next;
-		while (current != next_bb_reg) {
-			X64_IselMachine machine = { 0 };
-			TB_Reg chain = current;
-
-			// da machine
-			do {
-				fast_da_machine(ctx, f, &machine, current);
-				TB_Reg next = f->nodes.data[current].next;
-
-				if (next == next_bb_reg) break;
-				else if (machine.state >= ISEL_MACHINE_FINAL_STATES) {
-					// check if we hit a final state that doesn't have
-					// any possible states afterwards
-					X64_IselMachine peek = machine;
-					fast_da_machine(ctx, f, &peek, next);
-
-					// we didn't find anything, therefore terminate
-					// and codegen
-					if (peek.state < ISEL_MACHINE_FINAL_STATES) break;
-					current = next;
-				}
-			} while (true);
-
-			// validation
-			if (machine.state < ISEL_MACHINE_FINAL_STATES) {
-				tb_panic("ISEL STATE COULD NOT BE DECIDED\n");
-			}
-
-			printf("Decided on %s\n", FINAL_STATE_NAMES[machine.state]);
-
-			// We materialize some output now
-			switch (machine.state) {
-				case ISEL_MACHINE_DO_NOTHING: break;
-				case ISEL_MACHINE_IMMEDIATE: {
-					assert(machine.user_count == 1);
-					TB_Node* imm = &f->nodes.data[machine.users[0]];
-
-					Val dst = val_gpr(imm->dt.type, fast_alloc_gpr(ctx, f, current));
-					fast_def_gpr(ctx, f, current, dst.gpr, imm->dt);
-
-					Val val = val_imm(imm->dt, imm->uint.value);
-					INST2(MOV, &dst, &val, imm->dt.type);
-					break;
-				}
-				case ISEL_MACHINE_LOAD: {
-					assert(machine.user_count == 1);
-					TB_DataType dt = f->nodes.data[current].dt;
-
-					Val dst = val_gpr(dt.type, fast_alloc_gpr(ctx, f, current));
-					fast_def_gpr(ctx, f, current, dst.gpr, dt);
-
-					Val addr = fast_eval(ctx, f, machine.users[0]);
-					assert(addr.type == VAL_MEM || addr.type == VAL_GLOBAL);
-					INST2(MOV, &dst, &addr, dt.type);
-					break;
-				}
-				case ISEL_MACHINE_ADD:
-				case ISEL_MACHINE_SUB:
-				case ISEL_MACHINE_IMUL: {
-					assert(machine.user_count == 2);
-					TB_DataType dt = f->nodes.data[current].dt;
-
-					Val dst = val_gpr(dt.type, fast_alloc_gpr(ctx, f, current));
-					fast_def_gpr(ctx, f, current, dst.gpr, dt);
-
-					Val a = fast_eval(ctx, f, machine.users[0]);
-					Val b = fast_eval(ctx, f, machine.users[1]);
-
-					INST2(MOV, &dst, &a, dt.type);
-
-					Inst2Type op;
-					switch (machine.state) {
-						case ISEL_MACHINE_ADD: op = ADD; break;
-						case ISEL_MACHINE_SUB: op = SUB; break;
-						case ISEL_MACHINE_IMUL: op = IMUL; break;
-					}
-					INST2(op, &dst, &b, dt.type);
-					break;
-				}
-				case ISEL_MACHINE_SHL_IMM: {
-					assert(machine.user_count == 1);
-					TB_DataType dt = f->nodes.data[current].dt;
-
-					Val dst = val_gpr(dt.type, fast_alloc_gpr(ctx, f, current));
-					fast_def_gpr(ctx, f, current, dst.gpr, dt);
-
-					Val a = fast_eval(ctx, f, machine.users[0]);
-					INST2(MOV, &dst, &a, dt.type);
-
-					// shl index, stride_as_shift
-					*ctx->header.out++ = rex(true, 0, dst.gpr, 0);
-					*ctx->header.out++ = 0xC1;
-					*ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0x04, dst.gpr);
-					*ctx->header.out++ = machine.extra;
-					break;
-				}
-				case ISEL_MACHINE_RET: {
-					// Evaluate return value
-					if (machine.user_count == 1) {
-						TB_DataType dt = f->nodes.data[current].dt;
-						Val src = fast_eval(ctx, f, machine.users[0]);
-
-						if (TB_IS_FLOAT_TYPE(dt.type) || dt.width) {
-							tb_todo();
-						} else if (dt.type == TB_I8 ||
-								   dt.type == TB_I16 ||
-								   dt.type == TB_I32 ||
-								   dt.type == TB_I64 ||
-								   dt.type == TB_PTR) {
-							Val dst = val_gpr(dt.type, RAX);
-							INST2(MOV, &dst, &src, dt.type);
-						} else tb_todo();
-					}
-
-					// Only jump if we aren't literally about to end the function
-					if (next_bb != &f->nodes.data[0]) {
-						RET_JMP();
-					}
-					break;
-				}
-				default: tb_todo();
-			}
-
-			// Handle endpoint (if applies)
-			if (current) current = f->nodes.data[current].next;
-		}
-
-		// Next Basic block
-		bb = next_bb_reg;
-#else
-        // Generate instructions
+		// Generate instructions
         fast_eval_basic_block(ctx, f, bb, bb_end);
 
         // Evaluate the terminator
@@ -2399,27 +2199,21 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
 
         if (end->type == TB_RET) {
             TB_DataType dt = end->dt;
-            if (dt.type == TB_BOOL) dt.type = TB_I8;
 
             // Evaluate return value
             if (end->ret.value) {
-                if (TB_IS_FLOAT_TYPE(dt.type) || dt.width) {
+                if (dt.type == TB_FLOAT) {
                     tb_todo();
-                } else if (dt.type == TB_I8 || dt.type == TB_I16 || dt.type == TB_I32 ||
-                           dt.type == TB_I64 || dt.type == TB_PTR) {
-                    Val dst = val_gpr(dt.type, RAX);
-                    fast_folded_op(ctx, f, MOV, &dst, end->ret.value);
-                } else if (dt.type == TB_BOOL) {
-                    Val dst = val_gpr(TB_I8, RAX);
-                    fast_folded_op(ctx, f, MOV, &dst, end->ret.value);
-
-					Val mask = val_imm(TB_TYPE_I8, 1);
-					INST2(AND, &dst, &mask, TB_I8);
+                } else if ((dt.type == TB_INT && dt.data > 0) || dt.type == TB_PTR) {
+					Val dst = val_gpr(dt, RAX);
+					fast_folded_op(ctx, f, MOV, &dst, end->ret.value);
 				} else tb_todo();
             }
 
             // Only jump if we aren't literally about to end the function
-            if (next_bb != &f->nodes.data[0]) { RET_JMP(); }
+            if (next_bb != &f->nodes.data[0]) {
+				RET_JMP();
+			}
         } else if (end->type == TB_IF) {
             TB_Label if_true = end->if_.if_true;
             TB_Label if_false = end->if_.if_false;
@@ -2471,17 +2265,17 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
             // TODO(NeGate): don't emit jump if we can fallthrough
             JMP(end->goto_.label);
         } else if (end->type == TB_SWITCH) {
-            static_assert(_Alignof(TB_SwitchEntry) == _Alignof(TB_Reg),
-						  "We don't want any unaligned accesses");
+            static_assert(_Alignof(TB_SwitchEntry) == _Alignof(TB_Reg), "We don't want any unaligned accesses");
+			TB_Node* switch_key = &f->nodes.data[end->switch_.key];
 
-            uint64_t key_imm;
-            if (tb_node_get_constant_int(f, end->switch_.key, &key_imm, NULL)) {
+            if (switch_key->type == TB_INTEGER_CONST &&
+				switch_key->integer.num_words == 1) {
                 size_t entry_count = (end->switch_.entries_end - end->switch_.entries_start) / 2;
+				uint64_t key_imm = switch_key->integer.single_word;
 
                 TB_Label target_label = end->switch_.default_label;
                 loop(i, entry_count) {
-                    TB_SwitchEntry* entry =
-					(TB_SwitchEntry*)&f->vla.data[end->switch_.entries_start + (i * 2)];
+                    TB_SwitchEntry* entry = (TB_SwitchEntry*)&f->vla.data[end->switch_.entries_start + (i * 2)];
 
                     if (entry->key == key_imm) {
                         target_label = entry->value;
@@ -2494,14 +2288,16 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
                 fast_eval_terminator_phis(ctx, f, bb, bb_end, target, target_end);
 
                 TB_Label fallthrough_label = next_bb->label.id;
-                if (fallthrough_label != target) { JMP(target_label); }
+                if (fallthrough_label != target) {
+					JMP(target_label);
+				}
             } else {
-                TB_DataType dt = end->dt;
-                if (dt.type == TB_BOOL) dt.type = TB_I8;
+				LegalInt l = legalize_int(end->dt);
 
-                Val key = val_gpr(dt.type, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+                Val key = val_gpr(l.dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
                 fast_folded_op(ctx, f, MOV, &key, end->switch_.key);
-                fast_kill_temp_gpr(ctx, f, key.gpr);
+                if (l.mask) fast_mask_out(ctx, f, l, &key);
+				fast_kill_temp_gpr(ctx, f, key.gpr);
 
                 // Shitty if-chain
                 // CMP key, 0
@@ -2511,11 +2307,10 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
                 // JMP .default
                 size_t entry_count = (end->switch_.entries_end - end->switch_.entries_start) / 2;
                 loop(i, entry_count) {
-                    TB_SwitchEntry* entry =
-					(TB_SwitchEntry*)&f->vla.data[end->switch_.entries_start + (i * 2)];
-                    Val operand = val_imm(dt, entry->key);
+                    TB_SwitchEntry* entry = (TB_SwitchEntry*)&f->vla.data[end->switch_.entries_start + (i * 2)];
+                    Val operand = val_imm(l.dt, entry->key);
 
-                    INST2(CMP, &key, &operand, dt.type);
+                    INST2(CMP, &key, &operand, l.dt);
                     JCC(E, entry->value);
                 }
 
@@ -2526,7 +2321,6 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
 
         // Next Basic block
         bb = next_bb_reg;
-#endif
     } while (bb != TB_NULL_REG);
 
     // Fix up stack usage
@@ -2550,13 +2344,15 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
     }
 
     loop(i, ctx->header.label_patch_count) {
-        uint32_t pos        = ctx->header.label_patches[i].pos;
+        uint32_t pos = ctx->header.label_patches[i].pos;
         uint32_t target_lbl = ctx->header.label_patches[i].target_lbl;
 
         PATCH4(pos, ctx->header.labels[target_lbl] - (pos + 4));
     }
 
-    if (f->line_count > 0) f->lines[0].pos = 0;
+    if (f->line_count > 0) {
+		f->lines[0].pos = 0;
+	}
 
     TB_FunctionOutput func_out = {
 		.linkage = f->linkage,

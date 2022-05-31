@@ -21,18 +21,37 @@ bool tb_opt_subexpr_elim(TB_Function* f) {
 					changes = true;
 				}
 			}
-		} else if (type == TB_UNSIGNED_CONST || type == TB_SIGNED_CONST) {
-			uint64_t data = n->uint.value;
+		} else if (type == TB_INTEGER_CONST) {
 			TB_DataType dt = n->dt;
 
-			TB_FOR_EACH_NODE_BB(other, f, i) {
-				if (other->type == type && other->uint.value == data &&
-					TB_DATA_TYPE_EQUALS(other->dt, dt)) {
-					OPTIMIZER_LOG(i, "merged integer constants");
+			if (n->integer.num_words == 1) {
+				uint64_t data = n->integer.single_word;
 
-					other->type = TB_PASS;
-					other->pass.value = i;
-					changes = true;
+				TB_FOR_EACH_NODE_BB(other, f, i) {
+					if (other->type == type && TB_DT_EQUALS(other->dt, dt) &&
+						other->integer.num_words == 1 &&
+						other->integer.single_word == data) {
+						OPTIMIZER_LOG(i, "merged integer constants");
+
+						other->type = TB_PASS;
+						other->pass.value = i;
+						changes = true;
+					}
+				}
+			} else {
+				size_t num_words = n->integer.num_words;
+				uint64_t* words = n->integer.words;
+
+				TB_FOR_EACH_NODE_BB(other, f, i) {
+					if (other->type == type && TB_DT_EQUALS(other->dt, dt) &&
+						other->integer.num_words == num_words &&
+						memcmp(words, &other->integer.words, num_words*BigIntWordSize) == 0) {
+						OPTIMIZER_LOG(i, "merged integer constants");
+
+						other->type = TB_PASS;
+						other->pass.value = i;
+						changes = true;
+					}
 				}
 			}
 		}

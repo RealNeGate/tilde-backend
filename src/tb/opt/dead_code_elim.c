@@ -3,13 +3,13 @@
 bool tb_opt_dead_expr_elim(TB_Function* f) {
     int changes = 0;
     TB_TemporaryStorage* tls = tb_tls_allocate();
-	
+
     int* use_count = tb_tls_push(tls, f->nodes.count * sizeof(int));
     tb_function_calculate_use_count(f, use_count);
-	
+
     TB_FOR_EACH_NODE(n, f) {
         TB_Reg i = n - f->nodes.data;
-		
+
         if (use_count[i] == 0) {
             switch (n->type) {
 				// keep
@@ -42,11 +42,11 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
 				// don't delete volatile loads
 				case TB_LOAD: {
 					if (n->load.is_volatile) {
-						OPTIMIZER_LOG(i, "could not remove volatile load");
+						OPTIMIZER_LOG(i, "FAILURE could not remove volatile load");
 					} else {
 						OPTIMIZER_LOG(i, "removed unused expression node");
-						
-						n->type = TB_NULL;
+
+						tb_murder_node(f, n);
 						changes++;
 					}
 					break;
@@ -55,10 +55,9 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
 				case TB_GLOBAL_ADDRESS:
 				case TB_FUNC_ADDRESS:
 				case TB_EXTERN_ADDRESS:
-				case TB_UNSIGNED_CONST:
+				case TB_INTEGER_CONST:
 				case TB_ARRAY_ACCESS:
 				case TB_MEMBER_ACCESS:
-				case TB_SIGNED_CONST:
 				case TB_STRING_CONST:
 				case TB_FLOAT_CONST:
 				case TB_INT2PTR:
@@ -97,8 +96,8 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
 				case TB_CMP_FLT:
 				case TB_CMP_FLE: {
 					OPTIMIZER_LOG(i, "removed unused expression node");
-					
-					n->type = TB_NULL;
+
+					tb_murder_node(f, n);
 					changes++;
 					break;
 				}
@@ -106,7 +105,7 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
             }
         }
     }
-	
+
     return (changes > 0);
 }
 

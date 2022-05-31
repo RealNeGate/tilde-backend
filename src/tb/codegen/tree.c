@@ -56,8 +56,7 @@ static TreeNode* walk(TreeNodeArena* arena, TB_Function* f, TB_Reg* use_count, T
 		case TB_PARAM:
 		case TB_LOCAL:
 		case TB_PARAM_ADDR:
-		case TB_SIGNED_CONST:
-		case TB_UNSIGNED_CONST:
+		case TB_INTEGER_CONST:
 		case TB_FLOAT_CONST:
 		case TB_STRING_CONST:
 		case TB_GLOBAL_ADDRESS:
@@ -139,7 +138,9 @@ static TreeNode* walk(TreeNodeArena* arena, TB_Function* f, TB_Reg* use_count, T
     // just use some simple heuristics
     if (TB_UNLIKELY(use_count[r] > 1)) {
         // volatile load always shares, immediates never split
-        if (n->type == TB_UNSIGNED_CONST || n->type == TB_SIGNED_CONST) { return result; }
+        if (n->type == TB_INTEGER_CONST) {
+			return result;
+		}
 
         // shared point
         TreeNode* search = find(arena, r);

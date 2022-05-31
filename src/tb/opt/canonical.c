@@ -59,12 +59,12 @@ bool tb_opt_canonicalize(TB_Function* f) {
 			// (cmp (sxt/zxt A) (int B))
 			// VVV
 			// (cmp A (int B))
-			if (a->type == TB_SIGN_EXT && b->type == TB_SIGNED_CONST) {
+			if (a->type == TB_SIGN_EXT && b->type == TB_INTEGER_CONST) {
 				OPTIMIZER_LOG(i, "removed unnecessary zero extension for compare against constants");
 
 				n->cmp.a = a->unary.src;
 				changes++;
-			} else if (a->type == TB_ZERO_EXT && b->type == TB_UNSIGNED_CONST) {
+			} else if (a->type == TB_ZERO_EXT && b->type == TB_INTEGER_CONST) {
 				OPTIMIZER_LOG(i, "removed unnecessary zero extension for compare against constants");
 
 				n->cmp.a = a->unary.src;
@@ -79,35 +79,40 @@ bool tb_opt_canonicalize(TB_Function* f) {
 			TB_Node* b = &f->nodes.data[n->i_arith.b];
 
 			// Move all integer constants to the right side
-			bool is_aconst = (a->type == TB_SIGNED_CONST || a->type == TB_UNSIGNED_CONST);
-			bool is_bconst = (b->type == TB_SIGNED_CONST || b->type == TB_UNSIGNED_CONST);
+			bool is_aconst = (a->type == TB_INTEGER_CONST);
+			bool is_bconst = (b->type == TB_INTEGER_CONST);
 
 			if (is_aconst && !is_bconst) {
 				OPTIMIZER_LOG(i, "moved constants to right hand side.");
 
 				tb_swap(TB_Reg, n->i_arith.a, n->i_arith.b);
 				changes++;
-			} else if (a->type == type && b->type != type) {
+			} else if (a->type == type && is_bconst) {
 				// Reshuffle the adds from
 				// (x + y) + z => x + (y + z)
-				/*TB_Reg xy = a;
-				TB_Reg x = f->nodes.payload[a].i_arith.a;
-				TB_Reg y = f->nodes.payload[a].i_arith.b;
-				TB_Reg z = b;
+				OPTIMIZER_LOG(i, "Reassociated expressions");
 
-				f->nodes.payload[i].i_arith.a = x;
-				f->nodes.payload[i].i_arith.b = xy;
+				TB_Reg x = a->i_arith.a;
+				TB_Reg y = a->i_arith.b;
+				TB_Reg z = b - f->nodes.data;
 
-				f->nodes.payload[a].i_arith.a = y;
-				f->nodes.payload[a].i_arith.b = z;
-				changes++;*/
+				TB_Reg extra_reg = tb_function_insert_after(f, n->i_arith.b);
+				TB_Node* extra = &f->nodes.data[extra_reg];
+				extra->type = type;
+				extra->dt = n->dt;
+				extra->i_arith.a = y;
+				extra->i_arith.b = z;
+
+				n->i_arith.a = x;
+				n->i_arith.b = extra_reg;
+				changes++;
 			}
 		} else if (type == TB_UMOD || type == TB_SMOD) {
 			TB_Node* b = &f->nodes.data[n->i_arith.b];
 
 			// (mod a N) => (and a N-1) where N is a power of two
-			if (b->type == TB_SIGNED_CONST || b->type == TB_UNSIGNED_CONST) {
-				uint64_t mask = b->uint.value;
+			if (b->type == TB_INTEGER_CONST && b->integer.num_words == 1) {
+				uint64_t mask = b->integer.single_word;
 
 				if (tb_is_power_of_two(mask)) {
 					OPTIMIZER_LOG(i, "converted modulo into AND with constant mask");
@@ -115,9 +120,10 @@ bool tb_opt_canonicalize(TB_Function* f) {
 					// generate mask
 					TB_Reg extra_reg = tb_function_insert_after(f, n->i_arith.b);
 					TB_Node* extra = &f->nodes.data[extra_reg];
-					extra->type = TB_UNSIGNED_CONST;
+					extra->type = TB_INTEGER_CONST;
 					extra->dt = n->dt;
-					extra->uint.value  = mask - 1;
+					extra->integer.num_words = 1;
+					extra->integer.single_word = mask - 1;
 
 					// new AND operation to replace old MOD
 					n->type = TB_AND;
@@ -138,89 +144,85 @@ bool tb_opt_canonicalize(TB_Function* f) {
 		} else if (type == TB_ARRAY_ACCESS) {
 			TB_Node* index = &f->nodes.data[n->array_access.index];
 
-			if (index->type == TB_SIGNED_CONST || index->type == TB_UNSIGNED_CONST) {
-				uint64_t index_imm = index->uint.value;
+			if (tb_node_is_constant_zero(f, n->array_access.index)) {
+				OPTIMIZER_LOG(i, "elided array access to first element");
 
-				if (index_imm == 0) {
-					OPTIMIZER_LOG(i, "elided array access to first element");
-
-					n->type = TB_PASS;
-					n->pass.value = n->array_access.base;
-					changes++;
-				}
+				n->type = TB_PASS;
+				n->pass.value = n->array_access.base;
+				changes++;
 			} else if (index->type == TB_MUL) {
 				TB_Node* potential_constant = &f->nodes.data[index->i_arith.b];
 
-				if (potential_constant->type == TB_SIGNED_CONST ||
-					potential_constant->type == TB_UNSIGNED_CONST) {
-					OPTIMIZER_LOG(i, "folded multiply into array access");
+				if (potential_constant->type == TB_INTEGER_CONST && potential_constant->integer.num_words == 1) {
+					// don't worry it doesn't loop i just needed to have 'break' support
+					do {
+						uint64_t factor = potential_constant->integer.single_word;
+						if (factor >= UINT32_MAX) {
+							OPTIMIZER_LOG(i, "FAILURE multiply cannot fold into array access because too big");
+							break;
+						}
 
-					n->array_access.index = index->i_arith.a;
-					n->array_access.stride *= potential_constant->uint.value;
-					changes++;
+						uint64_t res = n->array_access.stride * factor;
+						if (res >= UINT32_MAX) {
+							OPTIMIZER_LOG(i, "FAILURE multiply cannot fold into array access without overflow");
+							break;
+						}
+
+						// success!
+						OPTIMIZER_LOG(i, "folded multiply into array access");
+						n->array_access.index = index->i_arith.a;
+						n->array_access.stride = res;
+						changes++;
+					} while (0);
 				}
 			} else if (index->type == TB_ADD) {
 				// (array A (add B O) C) => (member (array A B C) O*C)
 				TB_Node* potential_constant = &f->nodes.data[index->i_arith.b];
 
-				if (potential_constant->type == TB_SIGNED_CONST ||
-					potential_constant->type == TB_UNSIGNED_CONST) {
-					OPTIMIZER_LOG(i, "converted add into member access");
-					TB_Reg new_array_reg = tb_function_insert_after(f, n->array_access.index);
-
-					TB_Reg a = n->array_access.base;
-					TB_Reg b = index->i_arith.a;
+				if (potential_constant->type == TB_INTEGER_CONST && potential_constant->integer.num_words == 1) {
 					TB_CharUnits c = n->array_access.stride;
+					uint64_t res = potential_constant->integer.single_word * c;
 
-					n->type = TB_MEMBER_ACCESS;
-					n->dt = TB_TYPE_PTR;
-					n->member_access.base = new_array_reg;
-					n->member_access.offset = potential_constant->uint.value * c;
+					if (res < UINT32_MAX) {
+						OPTIMIZER_LOG(i, "converted add into member access");
+						TB_Reg new_array_reg = tb_function_insert_after(f, n->array_access.index);
 
-					TB_Node* new_array = &f->nodes.data[new_array_reg];
-					new_array->type = TB_ARRAY_ACCESS;
-					new_array->dt = TB_TYPE_PTR;
-					new_array->array_access.base = a;
-					new_array->array_access.index = b;
-					new_array->array_access.stride = c;
-					changes++;
+						TB_Reg a = n->array_access.base;
+						TB_Reg b = index->i_arith.a;
+
+						n->type = TB_MEMBER_ACCESS;
+						n->dt = TB_TYPE_PTR;
+						n->member_access.base = new_array_reg;
+						n->member_access.offset = potential_constant->integer.single_word * c;
+
+						TB_Node* new_array = &f->nodes.data[new_array_reg];
+						new_array->type = TB_ARRAY_ACCESS;
+						new_array->dt = TB_TYPE_PTR;
+						new_array->array_access.base = a;
+						new_array->array_access.index = b;
+						new_array->array_access.stride = c;
+						changes++;
+					}
 				}
 			}
 		} else if (type == TB_INT2PTR) {
 			TB_Node* src = &f->nodes.data[n->unary.src];
 
-			if (src->type == TB_SIGNED_CONST || src->type == TB_UNSIGNED_CONST) {
+			if (src->type == TB_INTEGER_CONST && src->integer.num_words == 1) {
 				OPTIMIZER_LOG(i, "constant int2ptr removed.");
 
-				uint64_t imm = src->uint.value;
+				uint64_t imm = src->integer.single_word;
 
-				n->type = TB_UNSIGNED_CONST;
-				n->dt = TB_TYPE_PTR;
-				n->uint.value = imm;
-				changes++;
-			}
-		} else if (type == TB_TRUNCATE) {
-			TB_Node* src = &f->nodes.data[n->unary.src];
-
-			if (src->type == TB_SIGNED_CONST || src->type == TB_UNSIGNED_CONST) {
-				OPTIMIZER_LOG(i, "constant truncate removed.");
-
-				uint64_t imm = src->uint.value;
-
-				uint64_t shift = 64 - (8 << (src->dt.type - TB_I8));
-				uint64_t mask = (~0ull) >> shift;
-
-				TB_DataType dt = src->dt;
-
-				n->type = TB_UNSIGNED_CONST;
-				n->dt = dt;
-				n->uint.value = imm & mask;
+				n->type = TB_INTEGER_CONST;
+				// preserve the int2ptr's pointer type
+				n->integer.num_words = 1;
+				n->integer.single_word = imm;
 				changes++;
 			}
 		} else if (type == TB_IF) {
 			TB_Node* cond = &f->nodes.data[n->if_.cond];
 
-			if (cond->type == TB_CMP_NE && tb_node_is_constant_int(f, cond->cmp.b, 0)) {
+			if (cond->type == TB_CMP_NE && tb_node_is_constant_zero(f, cond->cmp.b)) {
 				// (if (cmpne A 0) B C) => (if A B C)
 				OPTIMIZER_LOG(i, "removed redundant compare-to-zero on if node");
 
@@ -229,7 +231,7 @@ bool tb_opt_canonicalize(TB_Function* f) {
 				n->dt = dt;
 				n->if_.cond = cond->cmp.a;
 				changes++;
-			} else if (cond->type == TB_CMP_EQ && tb_node_is_constant_int(f, cond->cmp.b, 0)) {
+			} else if (cond->type == TB_CMP_EQ && tb_node_is_constant_zero(f, cond->cmp.b)) {
 				// (if (cmpeq A 0) B C) => (if A C B)
 				OPTIMIZER_LOG(i, "removed redundant compare-to-zero on if node");
 
@@ -274,6 +276,61 @@ bool tb_opt_canonicalize(TB_Function* f) {
 			n->type = TB_PASS;
 			n->pass.value = reg;
 			changes++;
+		} else if (n->type == TB_LABEL) {
+			TB_Node* end = &f->nodes.data[0];
+			TB_Reg bb_start = 0;
+
+			// Find sequence of labels
+			int count = 0;
+			{
+				TB_Node* seq = n;
+				do {
+					seq = &f->nodes.data[seq->next];
+					count += 1;
+				} while (seq->type == TB_LABEL && seq != end);
+
+				bb_start = (seq - f->nodes.data);
+			}
+
+			if (count > 1) {
+				OPTIMIZER_LOG(i, "merge labels");
+				TB_Label label = n->label.id;
+
+				TB_Node* seq = &f->nodes.data[n->next];
+				do {
+					// replace all by-label references
+					TB_Label old_label = seq->label.id;
+					tb_murder_node(f, seq);
+
+					TB_FOR_EACH_NODE(m, f) {
+						if (m->type == TB_GOTO) {
+							if (m->goto_.label == old_label) m->goto_.label = label;
+						} else if (m->type == TB_IF) {
+							if (m->if_.if_true == old_label) m->if_.if_true = label;
+							if (m->if_.if_false == old_label) m->if_.if_false = label;
+						} else if (m->type == TB_SWITCH) {
+							size_t entry_start = m->switch_.entries_start;
+							size_t entry_count = (m->switch_.entries_end - m->switch_.entries_start) / 2;
+
+							for (size_t j = 0; j < entry_count; j++) {
+								TB_SwitchEntry* e = (TB_SwitchEntry*)&f->vla.data[entry_start + (j * 2)];
+								if (e->value == old_label) e->value = label;
+							}
+
+							if (m->switch_.default_label == old_label) m->switch_.default_label = label;
+						}
+					}
+
+					// replace any by-register references
+					TB_Reg j = seq - f->nodes.data;
+					tb_function_find_replace_reg(f, j, i);
+
+					seq = &f->nodes.data[seq->next];
+				} while (seq->type == TB_LABEL && seq != end);
+
+				n->next = bb_start;
+				changes++;
+			}
 		}
 	}
 

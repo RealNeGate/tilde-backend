@@ -97,8 +97,8 @@ static TB_Reg read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_Label
     } else if (c->pred_count[block] == 0) {
         // TODO(NeGate): Idk how to handle this ngl, i
         // don't think it's possible tho
-        abort();
-    } else if (c->pred_count[block] == 1) {
+        //abort();
+	} else if (c->pred_count[block] == 1) {
         // Optimize the common case of one predecessor: No phi needed
         val = read_variable(c, var, c->preds[block][0]);
     } else {
@@ -116,8 +116,7 @@ static TB_Reg add_phi_operands(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg p
     // Determine operands from predecessors
     loop(i, c->pred_count[block]) {
         TB_Reg val = read_variable(c, var, c->preds[block][i]);
-
-        add_phi_operand(c, c->f, phi_reg, c->preds[block][i], val);
+		if (val) add_phi_operand(c, c->f, phi_reg, c->preds[block][i], val);
     }
 
     return try_remove_trivial_phi(c, c->f, phi_reg);
@@ -198,8 +197,9 @@ static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_
     if (phi_node->type == TB_NULL) {
         phi_node->type = TB_PHI1;
         phi_node->dt   = f->nodes.data[reg].dt;
-        phi_node->phi1 =
-		(struct TB_NodePhi1) { .a_label = tb_find_reg_from_label(f, label), .a = reg };
+        phi_node->phi1 = (struct TB_NodePhi1) {
+			.a_label = tb_find_reg_from_label(f, label), .a = reg
+		};
     } else if (phi_node->type == TB_PHI1) {
         TB_Reg a_label = phi_node->phi1.a_label;
         TB_Reg a       = phi_node->phi1.a;
@@ -209,9 +209,30 @@ static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_
         phi_node->phi2 = (struct TB_NodePhi2) {
             .a_label = a_label, .a = a, .b_label = tb_find_reg_from_label(f, label), .b = reg
         };
+    } else if (phi_node->type == TB_PHI2) {
+        TB_Reg a_label = phi_node->phi2.a_label;
+        TB_Reg a = phi_node->phi2.a;
+        TB_Reg b_label = phi_node->phi2.b_label;
+        TB_Reg b = phi_node->phi2.b;
+
+        phi_node->type = TB_PHIN;
+        phi_node->dt = f->nodes.data[a].dt;
+		phi_node->phi.count = 3;
+		phi_node->phi.inputs = tb_platform_heap_alloc(3 * sizeof(TB_PhiInput));
+		phi_node->phi.inputs[0] = (TB_PhiInput){ a_label, a };
+		phi_node->phi.inputs[1] = (TB_PhiInput){ b_label, b };
+		phi_node->phi.inputs[2] = (TB_PhiInput){ tb_find_reg_from_label(f, label), reg };
+    } else if (phi_node->type == TB_PHIN) {
+		size_t index = phi_node->phi.count++;
+		phi_node->phi.inputs = tb_platform_heap_realloc(phi_node->phi.inputs, phi_node->phi.count * sizeof(TB_PhiInput));
+		if (phi_node->phi.inputs == NULL) {
+			tb_panic("Out of memory!\n");
+		}
+
+		phi_node->phi.inputs[index] = (TB_PhiInput) { tb_find_reg_from_label(f, label), reg };
     } else {
-        tb_panic("Setup PHIN nodes");
-    }
+		tb_panic("Huh?");
+	}
 }
 
 // Algorithm 4: Handling incomplete CFGs

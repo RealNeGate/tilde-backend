@@ -335,7 +335,7 @@ inline static void builder_compile_msvc(BuildMode mode, size_t count, const char
 		cmd_append(output_path);
 		cmd_append(" build\\*.obj ");
 		cmd_append(extra_libraries);
-		
+
 		printf("CMD: %s\n", command_buffer);
 		cmd_dump(cmd_run());
 	}
@@ -359,7 +359,7 @@ inline static void builder_compile_cc(BuildMode mode, size_t count, const char* 
 		}
 
 		if (ON_CLANG) {
-			cmd_append("-Wno-gnu-designator -Wno-microsoft-anon-tag ");
+			cmd_append("-Wno-gnu-designator -Wno-microsoft-anon-tag -ferror-limit=10 -fno-spell-checking ");
 			if (USE_DA_ASAN) cmd_append("-fsanitize=address ");
 		}
 

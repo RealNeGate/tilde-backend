@@ -23,6 +23,7 @@
 #endif
 
 #include "tb_platform.h"
+#include "bigint/BigInt.h"
 
 // ***********************************
 // Atomics
@@ -56,16 +57,16 @@ size_t tb_atomic_size_store(size_t* dst, size_t src);
 #define CODE_REGION_BUFFER_SIZE (128 * 1024 * 1024)
 
 typedef struct TB_Emitter {
-    size_t   capacity, count;
+    size_t capacity, count;
     uint8_t* data;
 } TB_Emitter;
 
-#define TB_DATA_TYPE_EQUALS(a, b) tb_data_type_match(&(a), &(b))
+#define TB_DATA_TYPE_EQUALS(a, b) ((a).raw == (b).raw)
+#define TB_DT_EQUALS(a, b) ((a).raw == (b).raw)
 
 // first is the null register, then the entry
 // label, then parameters, then everything else
 #define TB_FIRST_PARAMETER_REG 2
-
 #define TB_NEXT_INST(node, f) (&(f)->nodes.data[(node)->next])
 
 #define TB_FOR_EACH_NODE(elem, f) \
@@ -81,8 +82,7 @@ elem = &f->nodes.data[elem->next])
 
 #define TB_FOR_EACH_REG_IN_NODE(macro)                                                    \
 case TB_NULL:                                                                         \
-case TB_SIGNED_CONST:                                                                 \
-case TB_UNSIGNED_CONST:                                                               \
+case TB_INTEGER_CONST:                                                                \
 case TB_FLOAT_CONST:                                                                  \
 case TB_STRING_CONST:                                                                 \
 case TB_LOCAL:                                                                        \
@@ -92,8 +92,7 @@ case TB_LINE_INFO:                                                              
 case TB_FUNC_ADDRESS:                                                                 \
 case TB_EXTERN_ADDRESS:                                                               \
 case TB_GLOBAL_ADDRESS:                                                               \
-case TB_DEBUGBREAK:                                                                   \
-case TB_RESTRICT: break;                                                              \
+case TB_DEBUGBREAK: break;                                                            \
 case TB_LABEL: macro(n->label.terminator); break;                                     \
 case TB_INITIALIZE: macro(n->init.addr); break;                                       \
 case TB_KEEPALIVE:                                                                    \
@@ -139,6 +138,12 @@ macro(n->phi2.a);                                                               
 macro(n->phi2.b);                                                                     \
 macro(n->phi2.a_label);                                                               \
 macro(n->phi2.b_label);                                                               \
+break;                                                                                \
+case TB_PHIN:                                                                         \
+loop(i, n->phi.count) {                                                               \
+macro(n->phi.inputs[i].label);                                                    \
+macro(n->phi.inputs[i].val);                                                      \
+}                                                                                     \
 break;                                                                                \
 case TB_LOAD: macro(n->load.address); break;                                          \
 case TB_STORE:                                                                        \
@@ -466,7 +471,11 @@ typedef struct {
 #define PROEPI_BUFFER 256
 
 typedef struct {
-    void (*emit_call_patches)(TB_Module* m, uint32_t* func_layout);
+	// what does CHAR_BIT mean on said platform
+    int minimum_addressable_size, pointer_size;
+
+	void (*get_data_type_size)(TB_DataType dt, TB_CharUnits* out_size, TB_CharUnits* out_align);
+	void (*emit_call_patches)(TB_Module* m, uint32_t* func_layout);
 
     size_t (*get_prologue_length)(uint64_t saved, uint64_t stack_usage);
     size_t (*get_epilogue_length)(uint64_t saved, uint64_t stack_usage);
@@ -482,7 +491,6 @@ typedef struct {
 	const char* name;
 
 	bool (*supported_target)(TB_Module* m);
-
 	int (*number_of_debug_sections)(TB_Module* m);
 
 	// functions are laid out linearly based on their function IDs and
@@ -553,10 +561,10 @@ abort();                              \
 } while (0)
 #endif
 
-#define tb_arrlen(a) (sizeof(a) / sizeof(a[0]))
+#define TB_ARRLEN(...) (sizeof(__VA_ARGS__) / sizeof((__VA_ARGS__)[0]))
 
 #ifndef COUNTOF
-#define COUNTOF(a) (sizeof(a) / sizeof(a[0]))
+#define COUNTOF(...) (sizeof(__VA_ARGS__) / sizeof((__VA_ARGS__)[0]))
 #endif
 
 #define loop(iterator, count) \
@@ -694,6 +702,10 @@ void tb_function_reserve_nodes(TB_Function* f, size_t extra);
 TB_Reg tb_insert_copy_ops(TB_Function* f, const TB_Reg* params, TB_Reg at, const TB_Function* src_func, TB_Reg src_base, int count);
 TB_Reg tb_function_insert_after(TB_Function* f, TB_Reg at);
 
+inline static void tb_murder_node(TB_Function* f, TB_Node* n) {
+	n->type = TB_NULL;
+}
+
 inline static void tb_kill_op(TB_Function* f, TB_Reg at) {
 	f->nodes.data[at].type = TB_NULL;
 }
@@ -705,6 +717,21 @@ inline static uint64_t align_up(uint64_t a, uint64_t b) {
 // NOTE(NeGate): Considers 0 as a power of two
 inline static bool tb_is_power_of_two(uint64_t x) {
 	return (x & (x - 1)) == 0;
+}
+
+// gets the next biggest number to 'v' in the sorted array
+// if 'v' is too big, then it'll return false, if not it's
+// true and 'result' will store the number we got
+#define TB_NEXT_BIGGEST(result, v, ...) \
+tb_next_biggest(result, v, COUNTOF((int[]) { __VA_ARGS__ }), (int[]) { __VA_ARGS__ })
+
+inline static bool tb_next_biggest(int* result, int v, size_t n, const int* arr) {
+	loop(i, n) if (v <= arr[i]) {
+		*result = arr[i];
+		return true;
+	}
+
+	return false;
 }
 
 ////////////////////////////////
@@ -721,6 +748,7 @@ inline static bool tb_is_power_of_two(uint64_t x) {
 // NOTE(NeGate): clean this up
 #if 1
 #define OPTIMIZER_LOG(at, ...) ((TB_Reg) (at))
+#define LOGGING_OPTS 0
 #else
 #define OPTIMIZER_LOG(at, ...)                     \
 do {                                           \
@@ -728,6 +756,7 @@ printf("%s:r%d: ", f->name, (TB_Reg)(at)); \
 printf(__VA_ARGS__);                       \
 printf(" (part of %s)\n", __FUNCTION__);   \
 } while (0)
+#define LOGGING_OPTS 1
 #endif
 
 #define CALL_NODE_PARAM_COUNT(n) (n->call.param_end - n->call.param_start)

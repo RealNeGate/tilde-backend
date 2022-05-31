@@ -38,9 +38,13 @@ TB_API bool tb_node_is_terminator(TB_Function* f, TB_Reg r) {
 		f->nodes.data[r].type == TB_RET || f->nodes.data[r].type == TB_LABEL;
 }
 
-TB_API bool tb_node_is_label(TB_Function* f, TB_Reg r) { return f->nodes.data[r].type == TB_LABEL; }
+TB_API bool tb_node_is_label(TB_Function* f, TB_Reg r) {
+	return f->nodes.data[r].type == TB_LABEL;
+}
 
-TB_API TB_Reg tb_node_get_last_register(TB_Function* f) { return f->nodes.count - 1; }
+TB_API TB_Reg tb_node_get_last_register(TB_Function* f) {
+	return f->nodes.count - 1;
+}
 
 TB_API TB_Reg tb_node_load_get_address(TB_Function* f, TB_Reg r) {
     tb_assume(f->nodes.data[r].type == TB_LOAD);
@@ -73,24 +77,29 @@ TB_API TB_Reg tb_node_arith_get_right(TB_Function* f, TB_Reg r) {
 }
 
 TB_API bool tb_node_is_constant_int(TB_Function* f, TB_Reg r, uint64_t imm) {
-    if (f->nodes.data[r].type == TB_UNSIGNED_CONST || f->nodes.data[r].type == TB_SIGNED_CONST) {
-        return (f->nodes.data[r].uint.value == imm);
+    if (f->nodes.data[r].type == TB_INTEGER_CONST && f->nodes.data[r].integer.num_words == 1) {
+        return (f->nodes.data[r].integer.single_word == imm);
     }
 
     return false;
 }
 
-TB_API bool tb_node_get_constant_int(TB_Function* f, TB_Reg r, uint64_t* imm, bool* is_signed) {
+TB_API bool tb_node_is_constant_zero(TB_Function* f, TB_Reg r) {
     TB_Node* restrict n = &f->nodes.data[r];
 
-    if (n->type == TB_UNSIGNED_CONST || n->type == TB_SIGNED_CONST) {
-        *imm = n->uint.value;
+	if (n->type == TB_INTEGER_CONST) {
+		if (n->integer.num_words == 1) {
+			if (n->integer.single_word == 0) {
+				return true;
+			}
+		} else {
+			if (BigInt_is_zero(n->integer.num_words, n->integer.words)) {
+				return true;
+			}
+		}
+	}
 
-        if (is_signed) { *is_signed = n->type == TB_SIGNED_CONST; }
-        return true;
-    }
-
-    return false;
+	return false;
 }
 
 static TB_Reg tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
@@ -222,24 +231,27 @@ TB_API TB_Reg tb_inst_ptr2int(TB_Function* f, TB_Reg src, TB_DataType dt) {
     return r;
 }
 
-TB_API TB_Reg tb_inst_int2float(TB_Function* f, TB_Reg src, TB_DataType dt) {
+TB_API TB_Reg tb_inst_int2float(TB_Function* f, TB_Reg src, TB_DataType dt, bool is_signed) {
     tb_assume(f->nodes.data[src].dt.width == dt.width);
 
-    if (f->nodes.data[src].type == TB_SIGNED_CONST) {
-        return tb_inst_float(f, dt, f->nodes.data[src].sint.value);
-    } else if (f->nodes.data[src].type == TB_UNSIGNED_CONST) {
-        return tb_inst_float(f, dt, f->nodes.data[src].uint.value);
+    if (f->nodes.data[src].type == TB_INTEGER_CONST &&
+		f->nodes.data[src].integer.num_words == 1) {
+        double x;
+		if (is_signed) x = (int64_t) f->nodes.data[src].integer.single_word;
+		else x = (uint64_t) f->nodes.data[src].integer.single_word;
+
+		return tb_inst_float(f, dt, x);
     }
 
-    TB_Reg r = tb_make_reg(f, TB_INT2FLOAT, dt);
+    TB_Reg r = tb_make_reg(f, is_signed ? TB_INT2FLOAT : TB_UINT2FLOAT, dt);
     f->nodes.data[r].unary.src = src;
     return r;
 }
 
-TB_API TB_Reg tb_inst_float2int(TB_Function* f, TB_Reg src, TB_DataType dt) {
+TB_API TB_Reg tb_inst_float2int(TB_Function* f, TB_Reg src, TB_DataType dt, bool is_signed) {
     tb_assume(f->nodes.data[src].dt.width == dt.width);
 
-    TB_Reg r = tb_make_reg(f, TB_FLOAT2INT, dt);
+    TB_Reg r = tb_make_reg(f, is_signed ? TB_FLOAT2INT : TB_FLOAT2UINT, dt);
     f->nodes.data[r].unary.src = src;
     return r;
 }
@@ -283,12 +295,12 @@ TB_API TB_Reg tb_inst_param(TB_Function* f, int param_id) {
 TB_API TB_Reg tb_inst_param_addr(TB_Function* f, int param_id) {
     tb_assume(param_id < f->prototype->param_count);
 
-    TB_Reg param      = 2 + param_id;
-    int    param_size = f->nodes.data[param].param.size;
+    TB_Reg param = 2 + param_id;
+    int param_size = f->nodes.data[param].param.size;
 
     TB_Reg r = tb_make_reg(f, TB_PARAM_ADDR, TB_TYPE_PTR);
-    f->nodes.data[r].param_addr.param     = param;
-    f->nodes.data[r].param_addr.size      = param_size;
+    f->nodes.data[r].param_addr.param = param;
+    f->nodes.data[r].param_addr.size = param_size;
     f->nodes.data[r].param_addr.alignment = param_size;
     return r;
 }
@@ -303,7 +315,9 @@ TB_API void tb_inst_debugbreak(TB_Function* f) {
 
 TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line) {
     tb_assume(line >= 0);
-    if (f->nodes.data[f->nodes.count - 1].type == TB_LINE_INFO) { return; }
+    if (f->nodes.data[f->nodes.count - 1].type == TB_LINE_INFO) {
+		return;
+	}
 
     TB_Reg r = tb_make_reg(f, TB_LINE_INFO, TB_TYPE_VOID);
     f->nodes.data[r].line_info.file = file;
@@ -316,12 +330,8 @@ TB_API TB_Reg tb_inst_local(TB_Function* f, uint32_t size, TB_CharUnits alignmen
 
     TB_Reg r = tb_make_reg(f, TB_LOCAL, TB_TYPE_PTR);
     f->nodes.data[r].local.alignment = alignment;
-    f->nodes.data[r].local.size      = size;
+    f->nodes.data[r].local.size = size;
     return r;
-}
-
-TB_API TB_Reg tb_inst_restrict(TB_Function* f, TB_Reg value) {
-    return tb_make_reg(f, TB_RESTRICT, TB_TYPE_PTR);
 }
 
 TB_API TB_Reg tb_inst_load(TB_Function* f, TB_DataType dt, TB_Reg addr, TB_CharUnits alignment) {
@@ -367,30 +377,37 @@ TB_API void tb_inst_initialize_mem(TB_Function* f, TB_Reg addr, TB_InitializerID
 }
 
 TB_API TB_Reg tb_inst_bool(TB_Function* f, bool imm) {
-    TB_Reg r = tb_make_reg(f, TB_UNSIGNED_CONST, TB_TYPE_BOOL);
-    f->nodes.data[r].uint.value = imm;
+    TB_Reg r = tb_make_reg(f, TB_INTEGER_CONST, TB_TYPE_BOOL);
+	f->nodes.data[r].integer.num_words = 1;
+	f->nodes.data[r].integer.single_word = imm;
     return r;
 }
 
 TB_API TB_Reg tb_inst_ptr(TB_Function* f, uint64_t imm) {
-    TB_Reg r = tb_make_reg(f, TB_UNSIGNED_CONST, TB_TYPE_PTR);
-    f->nodes.data[r].uint.value = imm;
+    TB_Reg r = tb_make_reg(f, TB_INTEGER_CONST, TB_TYPE_PTR);
+	f->nodes.data[r].integer.num_words = 1;
+	f->nodes.data[r].integer.single_word = imm;
     return r;
 }
 
 TB_API TB_Reg tb_inst_uint(TB_Function* f, TB_DataType dt, uint64_t imm) {
-    tb_assume(dt.type == TB_BOOL || dt.type == TB_PTR || (dt.type >= TB_I8 && dt.type <= TB_I64));
+    tb_assume(TB_IS_POINTER_TYPE(dt) || TB_IS_INTEGER_TYPE(dt));
 
-    TB_Reg r = tb_make_reg(f, TB_UNSIGNED_CONST, dt);
-    f->nodes.data[r].uint.value = imm;
+    TB_Reg r = tb_make_reg(f, TB_INTEGER_CONST, dt);
+	f->nodes.data[r].integer.num_words = 1;
+	f->nodes.data[r].integer.single_word = imm;
     return r;
 }
 
 TB_API TB_Reg tb_inst_sint(TB_Function* f, TB_DataType dt, int64_t imm) {
-    tb_assume(dt.type == TB_BOOL || dt.type == TB_PTR || (dt.type >= TB_I8 && dt.type <= TB_I64));
+	tb_assume(TB_IS_POINTER_TYPE(dt) || (TB_IS_INTEGER_TYPE(dt) && (dt.data <= 64)));
 
-    TB_Reg r = tb_make_reg(f, TB_SIGNED_CONST, dt);
-    f->nodes.data[r].sint.value = imm;
+    TB_Reg r = tb_make_reg(f, TB_INTEGER_CONST, dt);
+	f->nodes.data[r].integer.num_words = 1;
+	f->nodes.data[r].integer.single_word = imm;
+
+	uint64_t mask = ~UINT64_C(0) >> (64 - dt.data);
+	f->nodes.data[r].integer.single_word &= mask;
     return r;
 }
 
@@ -406,7 +423,7 @@ TB_API TB_Reg tb_inst_cstring(TB_Function* f, const char* str) {
     memcpy(newstr, str, len);
     newstr[len] = '\0';
 
-    TB_Reg r                = tb_make_reg(f, TB_STRING_CONST, TB_TYPE_PTR);
+    TB_Reg r = tb_make_reg(f, TB_STRING_CONST, TB_TYPE_PTR);
     f->nodes.data[r].string = (struct TB_NodeString) { .length = len + 1, .data = newstr };
     return r;
 }
@@ -534,13 +551,19 @@ TB_API TB_Reg tb_inst_not(TB_Function* f, TB_Reg n) {
 TB_API TB_Reg tb_inst_neg(TB_Function* f, TB_Reg n) {
     TB_DataType dt = f->nodes.data[n].dt;
 
-    if (f->nodes.data[n].type == TB_SIGNED_CONST) {
-        return tb_inst_sint(f, dt, -f->nodes.data[n].sint.value);
+    if (f->nodes.data[n].type == TB_INTEGER_CONST && f->nodes.data[n].integer.num_words == 1) {
+		uint64_t src = f->nodes.data[n].integer.single_word;
+		uint64_t mask = ~UINT64_C(0) >> (64 - dt.data);
+
+		// two's complement negate is just invert and add 1
+		uint64_t negated = (~src + 1) & mask;
+
+		return tb_inst_sint(f, dt, negated);
     } else if (f->nodes.data[n].type == TB_FLOAT_CONST) {
         return tb_inst_float(f, dt, -f->nodes.data[n].flt.value);
     }
 
-    TB_Reg r               = tb_make_reg(f, TB_NEG, dt);
+    TB_Reg r = tb_make_reg(f, TB_NEG, dt);
     f->nodes.data[r].unary = (struct TB_NodeUnary) { n };
     return r;
 }
@@ -554,9 +577,10 @@ TB_API TB_Reg tb_inst_or(TB_Function* f, TB_Reg a, TB_Reg b) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes.data[a].dt, f->nodes.data[b].dt));
     TB_DataType dt = f->nodes.data[a].dt;
 
-    if ((f->nodes.data[a].type == TB_SIGNED_CONST || f->nodes.data[a].type == TB_UNSIGNED_CONST) &&
-        (f->nodes.data[b].type == TB_SIGNED_CONST || f->nodes.data[b].type == TB_UNSIGNED_CONST)) {
-        return tb_inst_sint(f, dt, f->nodes.data[a].uint.value | f->nodes.data[b].uint.value);
+    if (f->nodes.data[a].type == TB_INTEGER_CONST && f->nodes.data[b].type == TB_INTEGER_CONST) {
+        if (f->nodes.data[a].integer.single_word == 1 && f->nodes.data[b].integer.single_word == 1) {
+			return tb_inst_uint(f, dt, f->nodes.data[a].integer.single_word | f->nodes.data[b].integer.single_word);
+		}
     }
 
     return tb_bin_arith(f, TB_OR, TB_ASSUME_NUW, a, b);
@@ -571,34 +595,25 @@ TB_API TB_Reg tb_inst_select(TB_Function* f, TB_Reg cond, TB_Reg a, TB_Reg b) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes.data[a].dt, f->nodes.data[b].dt));
     TB_DataType dt = f->nodes.data[a].dt;
 
-    TB_Reg r                = tb_make_reg(f, TB_SELECT, dt);
+    TB_Reg r = tb_make_reg(f, TB_SELECT, dt);
     f->nodes.data[r].select = (struct TB_NodeSelect) { a, b, cond };
     return r;
 }
 
-TB_API TB_Reg tb_inst_add(
-						  TB_Function* f, TB_Reg a, TB_Reg b, TB_ArithmaticBehavior arith_behavior) {
+TB_API TB_Reg tb_inst_add(TB_Function* f, TB_Reg a, TB_Reg b, TB_ArithmaticBehavior arith_behavior) {
     return tb_bin_arith(f, TB_ADD, arith_behavior, a, b);
 }
 
-TB_API TB_Reg tb_inst_sub(
-						  TB_Function* f, TB_Reg a, TB_Reg b, TB_ArithmaticBehavior arith_behavior) {
+TB_API TB_Reg tb_inst_sub(TB_Function* f, TB_Reg a, TB_Reg b, TB_ArithmaticBehavior arith_behavior) {
     return tb_bin_arith(f, TB_SUB, arith_behavior, a, b);
 }
 
-TB_API TB_Reg tb_inst_mul(
-						  TB_Function* f, TB_Reg a, TB_Reg b, TB_ArithmaticBehavior arith_behavior) {
+TB_API TB_Reg tb_inst_mul(TB_Function* f, TB_Reg a, TB_Reg b, TB_ArithmaticBehavior arith_behavior) {
     return tb_bin_arith(f, TB_MUL, arith_behavior, a, b);
 }
 
 TB_API TB_Reg tb_inst_div(TB_Function* f, TB_Reg a, TB_Reg b, bool signedness) {
-    if (f->nodes.data[b].type == TB_SIGNED_CONST && f->nodes.data[b].sint.value == 1) {
-        return a;
-    } else if (f->nodes.data[b].type == TB_UNSIGNED_CONST && f->nodes.data[b].uint.value == 1) {
-        return a;
-    }
-
-    // division can't wrap or overflow
+	// division can't wrap or overflow
     return tb_bin_arith(f, signedness ? TB_SDIV : TB_UDIV, TB_ASSUME_NUW, a, b);
 }
 
@@ -607,8 +622,7 @@ TB_API TB_Reg tb_inst_mod(TB_Function* f, TB_Reg a, TB_Reg b, bool signedness) {
     return tb_bin_arith(f, signedness ? TB_SMOD : TB_UMOD, TB_ASSUME_NUW, a, b);
 }
 
-TB_API TB_Reg tb_inst_shl(
-						  TB_Function* f, TB_Reg a, TB_Reg b, TB_ArithmaticBehavior arith_behavior) {
+TB_API TB_Reg tb_inst_shl(TB_Function* f, TB_Reg a, TB_Reg b, TB_ArithmaticBehavior arith_behavior) {
     return tb_bin_arith(f, TB_SHL, arith_behavior, a, b);
 }
 
@@ -616,19 +630,19 @@ TB_API TB_Reg tb_inst_shl(
 // Atomics
 ////////////////////////////////
 TB_API TB_Reg tb_inst_atomic_test_and_set(TB_Function* f, TB_Reg addr, TB_MemoryOrder order) {
-    TB_Reg r                       = tb_make_reg(f, TB_ATOMIC_TEST_AND_SET, TB_TYPE_BOOL);
-    f->nodes.data[r].atomic.addr   = addr;
-    f->nodes.data[r].atomic.src    = TB_NULL_REG;
-    f->nodes.data[r].atomic.order  = order;
+    TB_Reg r = tb_make_reg(f, TB_ATOMIC_TEST_AND_SET, TB_TYPE_BOOL);
+    f->nodes.data[r].atomic.addr = addr;
+    f->nodes.data[r].atomic.src = TB_NULL_REG;
+    f->nodes.data[r].atomic.order = order;
     f->nodes.data[r].atomic.order2 = TB_MEM_ORDER_SEQ_CST;
     return r;
 }
 
 TB_API TB_Reg tb_inst_atomic_clear(TB_Function* f, TB_Reg addr, TB_MemoryOrder order) {
-    TB_Reg r                       = tb_make_reg(f, TB_ATOMIC_CLEAR, TB_TYPE_BOOL);
-    f->nodes.data[r].atomic.addr   = addr;
-    f->nodes.data[r].atomic.src    = TB_NULL_REG;
-    f->nodes.data[r].atomic.order  = order;
+    TB_Reg r = tb_make_reg(f, TB_ATOMIC_CLEAR, TB_TYPE_BOOL);
+    f->nodes.data[r].atomic.addr = addr;
+    f->nodes.data[r].atomic.src = TB_NULL_REG;
+    f->nodes.data[r].atomic.order = order;
     f->nodes.data[r].atomic.order2 = TB_MEM_ORDER_SEQ_CST;
     return r;
 }
@@ -636,10 +650,10 @@ TB_API TB_Reg tb_inst_atomic_clear(TB_Function* f, TB_Reg addr, TB_MemoryOrder o
 TB_API TB_Reg tb_inst_atomic_xchg(TB_Function* f, TB_Reg addr, TB_Reg src, TB_MemoryOrder order) {
     TB_DataType dt = f->nodes.data[src].dt;
 
-    TB_Reg r                       = tb_make_reg(f, TB_ATOMIC_XCHG, dt);
-    f->nodes.data[r].atomic.addr   = addr;
-    f->nodes.data[r].atomic.src    = src;
-    f->nodes.data[r].atomic.order  = order;
+    TB_Reg r = tb_make_reg(f, TB_ATOMIC_XCHG, dt);
+    f->nodes.data[r].atomic.addr = addr;
+    f->nodes.data[r].atomic.src = src;
+    f->nodes.data[r].atomic.order = order;
     f->nodes.data[r].atomic.order2 = TB_MEM_ORDER_SEQ_CST;
     return r;
 }
@@ -647,10 +661,10 @@ TB_API TB_Reg tb_inst_atomic_xchg(TB_Function* f, TB_Reg addr, TB_Reg src, TB_Me
 TB_API TB_Reg tb_inst_atomic_add(TB_Function* f, TB_Reg addr, TB_Reg src, TB_MemoryOrder order) {
     TB_DataType dt = f->nodes.data[src].dt;
 
-    TB_Reg r                       = tb_make_reg(f, TB_ATOMIC_ADD, dt);
-    f->nodes.data[r].atomic.addr   = addr;
-    f->nodes.data[r].atomic.src    = src;
-    f->nodes.data[r].atomic.order  = order;
+    TB_Reg r = tb_make_reg(f, TB_ATOMIC_ADD, dt);
+    f->nodes.data[r].atomic.addr = addr;
+    f->nodes.data[r].atomic.src = src;
+    f->nodes.data[r].atomic.order = order;
     f->nodes.data[r].atomic.order2 = TB_MEM_ORDER_SEQ_CST;
     return r;
 }
@@ -658,10 +672,10 @@ TB_API TB_Reg tb_inst_atomic_add(TB_Function* f, TB_Reg addr, TB_Reg src, TB_Mem
 TB_API TB_Reg tb_inst_atomic_sub(TB_Function* f, TB_Reg addr, TB_Reg src, TB_MemoryOrder order) {
     TB_DataType dt = f->nodes.data[src].dt;
 
-    TB_Reg r                       = tb_make_reg(f, TB_ATOMIC_SUB, dt);
-    f->nodes.data[r].atomic.addr   = addr;
-    f->nodes.data[r].atomic.src    = src;
-    f->nodes.data[r].atomic.order  = order;
+    TB_Reg r = tb_make_reg(f, TB_ATOMIC_SUB, dt);
+    f->nodes.data[r].atomic.addr = addr;
+    f->nodes.data[r].atomic.src = src;
+    f->nodes.data[r].atomic.order = order;
     f->nodes.data[r].atomic.order2 = TB_MEM_ORDER_SEQ_CST;
     return r;
 }
@@ -669,10 +683,10 @@ TB_API TB_Reg tb_inst_atomic_sub(TB_Function* f, TB_Reg addr, TB_Reg src, TB_Mem
 TB_API TB_Reg tb_inst_atomic_and(TB_Function* f, TB_Reg addr, TB_Reg src, TB_MemoryOrder order) {
     TB_DataType dt = f->nodes.data[src].dt;
 
-    TB_Reg r                       = tb_make_reg(f, TB_ATOMIC_AND, dt);
-    f->nodes.data[r].atomic.addr   = addr;
-    f->nodes.data[r].atomic.src    = src;
-    f->nodes.data[r].atomic.order  = order;
+    TB_Reg r = tb_make_reg(f, TB_ATOMIC_AND, dt);
+    f->nodes.data[r].atomic.addr = addr;
+    f->nodes.data[r].atomic.src = src;
+    f->nodes.data[r].atomic.order = order;
     f->nodes.data[r].atomic.order2 = TB_MEM_ORDER_SEQ_CST;
     return r;
 }
@@ -680,10 +694,10 @@ TB_API TB_Reg tb_inst_atomic_and(TB_Function* f, TB_Reg addr, TB_Reg src, TB_Mem
 TB_API TB_Reg tb_inst_atomic_xor(TB_Function* f, TB_Reg addr, TB_Reg src, TB_MemoryOrder order) {
     TB_DataType dt = f->nodes.data[src].dt;
 
-    TB_Reg r                       = tb_make_reg(f, TB_ATOMIC_XOR, dt);
-    f->nodes.data[r].atomic.addr   = addr;
-    f->nodes.data[r].atomic.src    = src;
-    f->nodes.data[r].atomic.order  = order;
+    TB_Reg r = tb_make_reg(f, TB_ATOMIC_XOR, dt);
+    f->nodes.data[r].atomic.addr = addr;
+    f->nodes.data[r].atomic.src = src;
+    f->nodes.data[r].atomic.order = order;
     f->nodes.data[r].atomic.order2 = TB_MEM_ORDER_SEQ_CST;
     return r;
 }
@@ -691,16 +705,15 @@ TB_API TB_Reg tb_inst_atomic_xor(TB_Function* f, TB_Reg addr, TB_Reg src, TB_Mem
 TB_API TB_Reg tb_inst_atomic_or(TB_Function* f, TB_Reg addr, TB_Reg src, TB_MemoryOrder order) {
     TB_DataType dt = f->nodes.data[src].dt;
 
-    TB_Reg r                       = tb_make_reg(f, TB_ATOMIC_OR, dt);
-    f->nodes.data[r].atomic.addr   = addr;
-    f->nodes.data[r].atomic.src    = src;
-    f->nodes.data[r].atomic.order  = order;
+    TB_Reg r = tb_make_reg(f, TB_ATOMIC_OR, dt);
+    f->nodes.data[r].atomic.addr = addr;
+    f->nodes.data[r].atomic.src = src;
+    f->nodes.data[r].atomic.order = order;
     f->nodes.data[r].atomic.order2 = TB_MEM_ORDER_SEQ_CST;
     return r;
 }
 
-TB_API TB_CmpXchgResult tb_inst_atomic_cmpxchg(TB_Function* f, TB_Reg addr, TB_Reg expected,
-											   TB_Reg desired, TB_MemoryOrder succ, TB_MemoryOrder fail) {
+TB_API TB_CmpXchgResult tb_inst_atomic_cmpxchg(TB_Function* f, TB_Reg addr, TB_Reg expected, TB_Reg desired, TB_MemoryOrder succ, TB_MemoryOrder fail) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes.data[desired].dt, f->nodes.data[expected].dt));
     TB_DataType dt = f->nodes.data[desired].dt;
 
@@ -708,14 +721,14 @@ TB_API TB_CmpXchgResult tb_inst_atomic_cmpxchg(TB_Function* f, TB_Reg addr, TB_R
     TB_Reg r2 = tb_make_reg(f, TB_ATOMIC_CMPXCHG2, dt);
 
     tb_assume(r + 1 == r2);
-    f->nodes.data[r].atomic.addr   = addr;
-    f->nodes.data[r].atomic.src    = expected;
-    f->nodes.data[r].atomic.order  = succ;
+    f->nodes.data[r].atomic.addr = addr;
+    f->nodes.data[r].atomic.src = expected;
+    f->nodes.data[r].atomic.order = succ;
     f->nodes.data[r].atomic.order2 = fail;
 
-    f->nodes.data[r2].atomic.addr   = addr;
-    f->nodes.data[r2].atomic.src    = desired;
-    f->nodes.data[r2].atomic.order  = succ;
+    f->nodes.data[r2].atomic.addr = addr;
+    f->nodes.data[r2].atomic.src = desired;
+    f->nodes.data[r2].atomic.order = succ;
     f->nodes.data[r2].atomic.order2 = fail;
     return (TB_CmpXchgResult) { .success = r, .old_value = r2 };
 }
@@ -751,7 +764,7 @@ TB_API TB_Reg tb_inst_fdiv(TB_Function* f, TB_Reg a, TB_Reg b) {
 TB_API TB_Reg tb_inst_va_start(TB_Function* f, TB_Reg a) {
     assert(f->nodes.data[a].type == TB_PARAM_ADDR);
 
-    TB_Reg r               = tb_make_reg(f, TB_VA_START, TB_TYPE_PTR);
+    TB_Reg r = tb_make_reg(f, TB_VA_START, TB_TYPE_PTR);
     f->nodes.data[r].unary = (struct TB_NodeUnary) { a };
     return r;
 }
@@ -759,7 +772,7 @@ TB_API TB_Reg tb_inst_va_start(TB_Function* f, TB_Reg a) {
 TB_API TB_Reg tb_inst_x86_sqrt(TB_Function* f, TB_Reg a) {
     TB_DataType dt = f->nodes.data[a].dt;
 
-    TB_Reg r               = tb_make_reg(f, TB_X86INTRIN_SQRT, dt);
+    TB_Reg r = tb_make_reg(f, TB_X86INTRIN_SQRT, dt);
     f->nodes.data[r].unary = (struct TB_NodeUnary) { a };
     return r;
 }
@@ -767,7 +780,7 @@ TB_API TB_Reg tb_inst_x86_sqrt(TB_Function* f, TB_Reg a) {
 TB_API TB_Reg tb_inst_x86_rsqrt(TB_Function* f, TB_Reg a) {
     TB_DataType dt = f->nodes.data[a].dt;
 
-    TB_Reg r               = tb_make_reg(f, TB_X86INTRIN_RSQRT, dt);
+    TB_Reg r = tb_make_reg(f, TB_X86INTRIN_RSQRT, dt);
     f->nodes.data[r].unary = (struct TB_NodeUnary) { a };
     return r;
 }
@@ -776,7 +789,7 @@ TB_API TB_Reg tb_inst_cmp_eq(TB_Function* f, TB_Reg a, TB_Reg b) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes.data[a].dt, f->nodes.data[b].dt));
     TB_DataType dt = f->nodes.data[a].dt;
 
-    TB_Reg r                = tb_make_reg(f, TB_CMP_EQ, TB_TYPE_BOOL);
+    TB_Reg r = tb_make_reg(f, TB_CMP_EQ, TB_TYPE_BOOL);
     f->nodes.data[r].cmp.a  = a;
     f->nodes.data[r].cmp.b  = b;
     f->nodes.data[r].cmp.dt = dt;
@@ -785,9 +798,9 @@ TB_API TB_Reg tb_inst_cmp_eq(TB_Function* f, TB_Reg a, TB_Reg b) {
 
 TB_API TB_Reg tb_inst_cmp_ne(TB_Function* f, TB_Reg a, TB_Reg b) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes.data[a].dt, f->nodes.data[b].dt));
-    TB_DataType dt = f->nodes.data[a].dt;
+	TB_DataType dt = f->nodes.data[a].dt;
 
-    TB_Reg r                = tb_make_reg(f, TB_CMP_NE, TB_TYPE_BOOL);
+    TB_Reg r = tb_make_reg(f, TB_CMP_NE, TB_TYPE_BOOL);
     f->nodes.data[r].cmp.a  = a;
     f->nodes.data[r].cmp.b  = b;
     f->nodes.data[r].cmp.dt = dt;
@@ -796,10 +809,10 @@ TB_API TB_Reg tb_inst_cmp_ne(TB_Function* f, TB_Reg a, TB_Reg b) {
 
 TB_API TB_Reg tb_inst_cmp_ilt(TB_Function* f, TB_Reg a, TB_Reg b, bool signedness) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes.data[a].dt, f->nodes.data[b].dt));
-    tb_assume(TB_IS_INTEGER_TYPE(f->nodes.data[a].dt.type) || f->nodes.data[a].dt.type == TB_PTR);
+	tb_assume(TB_IS_INTEGER_TYPE(f->nodes.data[a].dt) || TB_IS_POINTER_TYPE(f->nodes.data[a].dt));
     TB_DataType dt = f->nodes.data[a].dt;
 
-    TB_Reg r                = tb_make_reg(f, signedness ? TB_CMP_SLT : TB_CMP_ULT, TB_TYPE_BOOL);
+    TB_Reg r = tb_make_reg(f, signedness ? TB_CMP_SLT : TB_CMP_ULT, TB_TYPE_BOOL);
     f->nodes.data[r].cmp.a  = a;
     f->nodes.data[r].cmp.b  = b;
     f->nodes.data[r].cmp.dt = dt;
@@ -808,10 +821,10 @@ TB_API TB_Reg tb_inst_cmp_ilt(TB_Function* f, TB_Reg a, TB_Reg b, bool signednes
 
 TB_API TB_Reg tb_inst_cmp_ile(TB_Function* f, TB_Reg a, TB_Reg b, bool signedness) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes.data[a].dt, f->nodes.data[b].dt));
-    tb_assume(TB_IS_INTEGER_TYPE(f->nodes.data[a].dt.type) || f->nodes.data[a].dt.type == TB_PTR);
+	tb_assume(TB_IS_INTEGER_TYPE(f->nodes.data[a].dt) || TB_IS_POINTER_TYPE(f->nodes.data[a].dt));
     TB_DataType dt = f->nodes.data[a].dt;
 
-    TB_Reg r                = tb_make_reg(f, signedness ? TB_CMP_SLE : TB_CMP_ULE, TB_TYPE_BOOL);
+    TB_Reg r = tb_make_reg(f, signedness ? TB_CMP_SLE : TB_CMP_ULE, TB_TYPE_BOOL);
     f->nodes.data[r].cmp.a  = a;
     f->nodes.data[r].cmp.b  = b;
     f->nodes.data[r].cmp.dt = dt;
@@ -820,10 +833,10 @@ TB_API TB_Reg tb_inst_cmp_ile(TB_Function* f, TB_Reg a, TB_Reg b, bool signednes
 
 TB_API TB_Reg tb_inst_cmp_igt(TB_Function* f, TB_Reg a, TB_Reg b, bool signedness) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes.data[a].dt, f->nodes.data[b].dt));
-    tb_assume(TB_IS_INTEGER_TYPE(f->nodes.data[a].dt.type) || f->nodes.data[a].dt.type == TB_PTR);
+	tb_assume(TB_IS_INTEGER_TYPE(f->nodes.data[a].dt) || TB_IS_POINTER_TYPE(f->nodes.data[a].dt));
     TB_DataType dt = f->nodes.data[a].dt;
 
-    TB_Reg r                = tb_make_reg(f, signedness ? TB_CMP_SLT : TB_CMP_ULT, TB_TYPE_BOOL);
+    TB_Reg r = tb_make_reg(f, signedness ? TB_CMP_SLT : TB_CMP_ULT, TB_TYPE_BOOL);
     f->nodes.data[r].cmp.a  = b;
     f->nodes.data[r].cmp.b  = a;
     f->nodes.data[r].cmp.dt = dt;
@@ -832,10 +845,10 @@ TB_API TB_Reg tb_inst_cmp_igt(TB_Function* f, TB_Reg a, TB_Reg b, bool signednes
 
 TB_API TB_Reg tb_inst_cmp_ige(TB_Function* f, TB_Reg a, TB_Reg b, bool signedness) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes.data[a].dt, f->nodes.data[b].dt));
-    tb_assume(TB_IS_INTEGER_TYPE(f->nodes.data[a].dt.type) || f->nodes.data[a].dt.type == TB_PTR);
+	tb_assume(TB_IS_INTEGER_TYPE(f->nodes.data[a].dt) || TB_IS_POINTER_TYPE(f->nodes.data[a].dt));
     TB_DataType dt = f->nodes.data[a].dt;
 
-    TB_Reg r                = tb_make_reg(f, signedness ? TB_CMP_SLE : TB_CMP_ULE, TB_TYPE_BOOL);
+    TB_Reg r = tb_make_reg(f, signedness ? TB_CMP_SLE : TB_CMP_ULE, TB_TYPE_BOOL);
     f->nodes.data[r].cmp.a  = b;
     f->nodes.data[r].cmp.b  = a;
     f->nodes.data[r].cmp.dt = dt;
@@ -844,10 +857,10 @@ TB_API TB_Reg tb_inst_cmp_ige(TB_Function* f, TB_Reg a, TB_Reg b, bool signednes
 
 TB_API TB_Reg tb_inst_cmp_flt(TB_Function* f, TB_Reg a, TB_Reg b) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes.data[a].dt, f->nodes.data[b].dt));
-    tb_assume(TB_IS_FLOAT_TYPE(f->nodes.data[a].dt.type));
+    tb_assume(TB_IS_FLOAT_TYPE(f->nodes.data[a].dt));
     TB_DataType dt = f->nodes.data[a].dt;
 
-    TB_Reg r                = tb_make_reg(f, TB_CMP_FLT, TB_TYPE_BOOL);
+    TB_Reg r = tb_make_reg(f, TB_CMP_FLT, TB_TYPE_BOOL);
     f->nodes.data[r].cmp.a  = a;
     f->nodes.data[r].cmp.b  = b;
     f->nodes.data[r].cmp.dt = dt;
@@ -856,10 +869,10 @@ TB_API TB_Reg tb_inst_cmp_flt(TB_Function* f, TB_Reg a, TB_Reg b) {
 
 TB_API TB_Reg tb_inst_cmp_fle(TB_Function* f, TB_Reg a, TB_Reg b) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes.data[a].dt, f->nodes.data[b].dt));
-    tb_assume(TB_IS_FLOAT_TYPE(f->nodes.data[a].dt.type));
+    tb_assume(TB_IS_FLOAT_TYPE(f->nodes.data[a].dt));
     TB_DataType dt = f->nodes.data[a].dt;
 
-    TB_Reg r                = tb_make_reg(f, TB_CMP_FLE, TB_TYPE_BOOL);
+    TB_Reg r = tb_make_reg(f, TB_CMP_FLE, TB_TYPE_BOOL);
     f->nodes.data[r].cmp.a  = a;
     f->nodes.data[r].cmp.b  = b;
     f->nodes.data[r].cmp.dt = dt;
@@ -868,10 +881,10 @@ TB_API TB_Reg tb_inst_cmp_fle(TB_Function* f, TB_Reg a, TB_Reg b) {
 
 TB_API TB_Reg tb_inst_cmp_fgt(TB_Function* f, TB_Reg a, TB_Reg b) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes.data[a].dt, f->nodes.data[b].dt));
-    tb_assume(TB_IS_FLOAT_TYPE(f->nodes.data[a].dt.type));
+    tb_assume(TB_IS_FLOAT_TYPE(f->nodes.data[a].dt));
     TB_DataType dt = f->nodes.data[a].dt;
 
-    TB_Reg r                = tb_make_reg(f, TB_CMP_FLT, TB_TYPE_BOOL);
+    TB_Reg r = tb_make_reg(f, TB_CMP_FLT, TB_TYPE_BOOL);
     f->nodes.data[r].cmp.a  = b;
     f->nodes.data[r].cmp.b  = a;
     f->nodes.data[r].cmp.dt = dt;
@@ -880,10 +893,10 @@ TB_API TB_Reg tb_inst_cmp_fgt(TB_Function* f, TB_Reg a, TB_Reg b) {
 
 TB_API TB_Reg tb_inst_cmp_fge(TB_Function* f, TB_Reg a, TB_Reg b) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes.data[a].dt, f->nodes.data[b].dt));
-    tb_assume(TB_IS_FLOAT_TYPE(f->nodes.data[a].dt.type));
+    tb_assume(TB_IS_FLOAT_TYPE(f->nodes.data[a].dt));
     TB_DataType dt = f->nodes.data[a].dt;
 
-    TB_Reg r                = tb_make_reg(f, TB_CMP_FLE, TB_TYPE_BOOL);
+    TB_Reg r = tb_make_reg(f, TB_CMP_FLE, TB_TYPE_BOOL);
     f->nodes.data[r].cmp.a  = b;
     f->nodes.data[r].cmp.b  = a;
     f->nodes.data[r].cmp.dt = dt;
@@ -894,24 +907,28 @@ TB_API TB_Reg tb_inst_phi2(TB_Function* f, TB_Label a_label, TB_Reg a, TB_Label 
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes.data[a].dt, f->nodes.data[b].dt));
     TB_DataType dt = f->nodes.data[a].dt;
 
-    TB_Reg r                      = tb_make_reg(f, TB_PHI2, dt);
+    TB_Reg r = tb_make_reg(f, TB_PHI2, dt);
     f->nodes.data[r].phi2.a_label = tb_find_reg_from_label(f, a_label);
-    f->nodes.data[r].phi2.a       = a;
+    f->nodes.data[r].phi2.a = a;
     f->nodes.data[r].phi2.b_label = tb_find_reg_from_label(f, b_label);
-    f->nodes.data[r].phi2.b       = b;
+    f->nodes.data[r].phi2.b = b;
 
     return r;
 }
 
-TB_API TB_Label tb_inst_new_label_id(TB_Function* f) { return f->label_count++; }
+TB_API TB_Label tb_inst_new_label_id(TB_Function* f) {
+	return f->label_count++;
+}
 
 TB_API TB_Reg tb_inst_label(TB_Function* f, TB_Label id) {
     tb_assume(id >= 1 && id < f->label_count);
 
-    TB_Reg r               = tb_make_reg(f, TB_LABEL, TB_TYPE_PTR);
+    TB_Reg r = tb_make_reg(f, TB_LABEL, TB_TYPE_PTR);
     f->nodes.data[r].label = (struct TB_NodeLabel) { .id = id };
 
-    if (f->current_label) { f->nodes.data[f->current_label].label.terminator = r; }
+    if (f->current_label) {
+		f->nodes.data[f->current_label].label.terminator = r;
+	}
 
     f->current_label = r;
     return r;
@@ -929,31 +946,30 @@ TB_API void tb_inst_goto(TB_Function* f, TB_Label id) {
         return;
     }
 
-    TB_Reg r                     = tb_make_reg(f, TB_GOTO, TB_TYPE_VOID);
+    TB_Reg r = tb_make_reg(f, TB_GOTO, TB_TYPE_VOID);
     f->nodes.data[r].goto_.label = id;
 
     tb_assume(f->current_label);
     f->nodes.data[f->current_label].label.terminator = r;
-    f->current_label                                 = TB_NULL_REG;
+    f->current_label = TB_NULL_REG;
 }
 
 TB_API TB_Reg tb_inst_if(TB_Function* f, TB_Reg cond, TB_Label if_true, TB_Label if_false) {
-    TB_Reg r                      = tb_make_reg(f, TB_IF, TB_TYPE_VOID);
-    f->nodes.data[r].if_.cond     = cond;
-    f->nodes.data[r].if_.if_true  = if_true;
+    TB_Reg r = tb_make_reg(f, TB_IF, TB_TYPE_VOID);
+    f->nodes.data[r].if_.cond = cond;
+    f->nodes.data[r].if_.if_true = if_true;
     f->nodes.data[r].if_.if_false = if_false;
 
     tb_assume(f->current_label);
     f->nodes.data[f->current_label].label.terminator = r;
-    f->current_label                                 = TB_NULL_REG;
+    f->current_label = TB_NULL_REG;
     return r;
 }
 
-TB_API void tb_inst_switch(TB_Function* f, TB_DataType dt, TB_Reg key, TB_Label default_label,
-						   size_t entry_count, const TB_SwitchEntry* entries) {
+TB_API void tb_inst_switch(TB_Function* f, TB_DataType dt, TB_Reg key, TB_Label default_label, size_t entry_count, const TB_SwitchEntry* entries) {
     // the switch entries are 2 slots each
     size_t param_count = entry_count * 2;
-    int    param_start = f->vla.count;
+    int param_start = f->vla.count;
 
     TB_Reg* vla = tb_vla_reserve(f, param_count);
     memcpy(vla, entries, param_count * sizeof(TB_Reg));
@@ -961,26 +977,24 @@ TB_API void tb_inst_switch(TB_Function* f, TB_DataType dt, TB_Reg key, TB_Label 
 
     int param_end = f->vla.count;
 
-    TB_Reg r                               = tb_make_reg(f, TB_SWITCH, dt);
-    f->nodes.data[r].switch_.key           = key;
+    TB_Reg r = tb_make_reg(f, TB_SWITCH, dt);
+    f->nodes.data[r].switch_.key = key;
     f->nodes.data[r].switch_.default_label = default_label;
     f->nodes.data[r].switch_.entries_start = param_start;
-    f->nodes.data[r].switch_.entries_end   = param_end;
+    f->nodes.data[r].switch_.entries_end = param_end;
 
     tb_assume(f->current_label);
     f->nodes.data[f->current_label].label.terminator = r;
-    f->current_label                                 = TB_NULL_REG;
+    f->current_label = TB_NULL_REG;
 }
 
 TB_API void tb_inst_ret(TB_Function* f, TB_Reg value) {
-	if (value) assert(f->nodes.data[value].dt.type);
-
-    TB_Reg r                   = tb_make_reg(f, TB_RET, f->prototype->return_dt);
+    TB_Reg r = tb_make_reg(f, TB_RET, f->prototype->return_dt);
     f->nodes.data[r].ret.value = value;
 
     tb_assume(f->current_label);
     f->nodes.data[f->current_label].label.terminator = r;
-    f->current_label                                 = TB_NULL_REG;
+    f->current_label = TB_NULL_REG;
 }
 
 #if !TB_STRIP_LABELS

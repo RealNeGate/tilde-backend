@@ -23,83 +23,30 @@ typedef union {
 } Cvt_F64U64;
 
 typedef enum {
-    O,
-    NO,
-    B,
-    NB,
-    E,
-    NE,
-    BE,
-    A,
-    S,
-    NS,
-    P,
-    NP,
-    L,
-    GE,
-    LE,
-    G,
+    O, NO, B, NB, E, NE, BE, A,
+    S, NS, P, NP, L, GE, LE, G
 } Cond;
 
 typedef enum {
-    RAX,
-    RCX,
-    RDX,
-    RBX,
-    RSP,
-    RBP,
-    RSI,
-    RDI,
-    R8,
-    R9,
-    R10,
-    R11,
-    R12,
-    R13,
-    R14,
-    R15,
+    RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI,
+    R8,  R9,  R10, R11, R12, R13, R14, R15,
 
     GPR_NONE = -1
 } GPR;
 
 typedef enum {
-    XMM0,
-    XMM1,
-    XMM2,
-    XMM3,
-    XMM4,
-    XMM5,
-    XMM6,
-    XMM7,
-    XMM8,
-    XMM9,
-    XMM10,
-    XMM11,
-    XMM12,
-    XMM13,
-    XMM14,
-    XMM15,
+    XMM0, XMM1, XMM2,  XMM3,  XMM4,  XMM5,  XMM6,  XMM7,
+    XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, XMM15,
 
     XMM_NONE = -1
 } XMM;
 
 typedef enum {
-    VAL_NONE,
-
-    VAL_IMM,
-    VAL_MEM,
-    VAL_GPR,
-    VAL_XMM,
-
-    VAL_GLOBAL,
-    VAL_FLAGS
+    VAL_NONE, VAL_IMM, VAL_MEM, VAL_GPR, VAL_XMM, VAL_GLOBAL, VAL_FLAGS
 } ValType;
 
 typedef enum {
-    SCALE_X1,
-    SCALE_X2,
-    SCALE_X4,
-    SCALE_X8
+    SCALE_X1, SCALE_X2, SCALE_X4, SCALE_X8
 } Scale;
 
 enum {
@@ -115,8 +62,8 @@ typedef enum Inst2FPFlags {
 } Inst2FPFlags;
 
 typedef struct Val {
-    uint8_t     type;
-    bool        is_spill;
+    uint8_t type;
+    bool is_spill;
     TB_DataType dt;
 
     union {
@@ -139,57 +86,31 @@ typedef struct Val {
         int32_t imm;
     };
 } Val;
-
 static_assert(offsetof(Val, gpr) == offsetof(Val, xmm), "Val::gpr and Val::xmm must alias!");
-
-static_assert(offsetof(Val, global.is_rvalue) == offsetof(Val, mem.is_rvalue),
-			  "Val::mem.is_rvalue and Val::global.is_rvalue must alias!");
+static_assert(offsetof(Val, global.is_rvalue) == offsetof(Val, mem.is_rvalue), "Val::mem.is_rvalue and Val::global.is_rvalue must alias!");
 
 // We really only need the position where to patch
 // it since it's all internal and the target is implicit.
 typedef uint32_t ReturnPatch;
 
 typedef struct LabelPatch {
-    int      pos;
+    int pos;
     TB_Label target_lbl;
 } LabelPatch;
 
 typedef enum Inst2Type {
     // Integer data processing
-    ADD,
-    AND,
-    OR,
-    SUB,
-    XOR,
-    CMP,
-    MOV,
-    TEST,
-    LEA,
-    IMUL,
-    XCHG,
-    XADD,
-
-    MOVSXB,
-    MOVSXW,
-    MOVSXD,
-    MOVZXB,
-    MOVZXW
+    ADD, AND, OR, SUB, XOR, CMP, MOV,
+	// weird ones
+	TEST, LEA, IMUL, XCHG, XADD,
+	// casts
+    MOVSXB, MOVSXW, MOVSXD, MOVZXB, MOVZXW
 } Inst2Type;
 
 typedef enum Inst2FPType {
-    FP_MOV,
-    FP_ADD,
-    FP_SUB,
-    FP_MUL,
-    FP_DIV,
-    FP_CMP,
-    FP_UCOMI,
-    FP_CVT, // cvtss2sd or cvtsd2ss
-    FP_SQRT,
-    FP_RSQRT,
-    FP_AND,
-    FP_OR,
-    FP_XOR
+    FP_MOV, FP_ADD, FP_SUB, FP_MUL, FP_DIV, FP_CMP, FP_UCOMI,
+    FP_SQRT, FP_RSQRT, FP_AND, FP_OR, FP_XOR,
+	FP_CVT, // cvtss2sd or cvtsd2ss
 } Inst2FPType;
 
 typedef enum ExtMode {
@@ -221,7 +142,7 @@ typedef struct {
     uint8_t* out;
     uint8_t* start_out;
 
-    size_t       function_id;
+    size_t function_id;
     TB_Function* f;
 
     // Used to allocate spills
@@ -235,13 +156,12 @@ typedef struct {
     uint32_t label_patch_count;
     uint32_t ret_patch_count;
 
-    uint32_t*    labels;
-    LabelPatch*  label_patches;
+    uint32_t* labels;
+    LabelPatch* label_patches;
     ReturnPatch* ret_patches;
 } X64_CtxHeader;
 
 static const GPR WIN64_GPR_PARAMETERS[4] = { RCX, RDX, R8, R9 };
-
 static const GPR SYSV_GPR_PARAMETERS[6] = { RDI, RSI, RDX, RCX, R8, R9 };
 
 typedef enum Inst1 {
@@ -286,8 +206,8 @@ static const uint16_t SYSV_ABI_CALLER_SAVED = (1u << RAX) | (1u << RDI) | (1u <<
 #define SYSV_ABI_CALLEE_SAVED ~SYSV_ABI_CALLER_SAVED
 
 // GPRs can only ever be scalar
-inline static Val val_gpr(int dt_type, GPR g) {
-    return (Val) { .type = VAL_GPR, .dt.width = 0, .dt.type = (uint8_t)dt_type, .gpr = g };
+inline static Val val_gpr(TB_DataType dt, GPR g) {
+    return (Val) { .type = VAL_GPR, .dt = dt, .gpr = g };
 }
 
 inline static Val val_xmm(TB_DataType dt, XMM x) {
@@ -323,11 +243,19 @@ inline static Val val_base_disp(TB_DataType dt, GPR b, int d) {
 }
 
 inline static Val val_base_index(TB_DataType dt, GPR b, GPR i, Scale s) {
-    return (Val) { .type = VAL_MEM, .dt = dt, .mem = { .base = b, .index = i, .scale = s } };
+    return (Val) {
+		.type = VAL_MEM,
+		.dt = dt,
+		.mem = { .base = b, .index = i, .scale = s }
+	};
 }
 
 inline static Val val_base_index_disp(TB_DataType dt, GPR b, GPR i, Scale s, int d) {
-    return (Val) { .type = VAL_MEM, .dt = dt, .mem = { .base = b, .index = i, .scale = s, .disp = d } };
+    return (Val) {
+		.type = VAL_MEM,
+		.dt = dt,
+		.mem = { .base = b, .index = i, .scale = s, .disp = d }
+	};
 }
 
 inline static bool is_value_mem(const Val* v) {

@@ -93,9 +93,14 @@ void inst1(X64_CtxHeader* restrict ctx, Inst1 op, const Val* r) {
         tb_unreachable();
 }
 
-void inst2(X64_CtxHeader* restrict ctx, Inst2Type op, const Val* a, const Val* b, int dt_type) {
+void inst2(X64_CtxHeader* restrict ctx, Inst2Type op, const Val* a, const Val* b, TB_DataType dt) {
     assert(op < (sizeof(inst2_tbl) / sizeof(inst2_tbl[0])));
-    const Inst2* inst = &inst2_tbl[op];
+	assert(dt.type == TB_INT || dt.type == TB_PTR);
+
+	int bits_in_type = dt.type == TB_PTR ? 64 : dt.data;
+	assert(bits_in_type == 8 || bits_in_type == 16 || bits_in_type == 32 || bits_in_type == 64);
+
+	const Inst2* inst = &inst2_tbl[op];
 
     bool dir = b->type == VAL_MEM || b->type == VAL_GLOBAL;
     if (dir || inst->op == 0x63 || inst->op == 0xAF || inst->ext == EXT_DEF2) {
@@ -103,12 +108,11 @@ void inst2(X64_CtxHeader* restrict ctx, Inst2Type op, const Val* a, const Val* b
     }
 
     // operand size
-    uint8_t sz = (dt_type != TB_I8);
+    uint8_t sz = (bits_in_type != 8);
 
     // uses an immediate value that works as
     // a sign extended 8 bit number
-    bool short_imm =
-	(dt_type != TB_I8 && b->type == VAL_IMM && b->imm == (int8_t)b->imm && inst->op_i == 0x80);
+    bool short_imm = (bits_in_type != 8 && b->type == VAL_IMM && b->imm == (int8_t)b->imm && inst->op_i == 0x80);
 
     // All instructions that go through here are
     // based on the ModRxRm encoding so we do need
@@ -116,14 +120,14 @@ void inst2(X64_CtxHeader* restrict ctx, Inst2Type op, const Val* a, const Val* b
     uint8_t base = 0;
     uint8_t rx = 0xFF;
     if (inst->ext == EXT_NONE || inst->ext == EXT_DEF || inst->ext == EXT_DEF2) {
-        assert(dt_type == TB_I8 || dt_type == TB_I16 || dt_type == TB_I32 || dt_type == TB_I64 || dt_type == TB_PTR);
-
         // the destination can only be a GPR, no direction flag
         bool is_gpr_only_dst = (inst->op & 1);
         bool dir_flag = (dir != is_gpr_only_dst);
 
         // Address size prefix
-        if (dt_type == TB_I16 && inst->ext != EXT_DEF2) { EMIT(0x66); }
+        if (bits_in_type == 16 && inst->ext != EXT_DEF2) {
+			EMIT(0x66);
+		}
 
         // RX
         if (b->type == VAL_GPR) rx = b->gpr;
@@ -131,14 +135,13 @@ void inst2(X64_CtxHeader* restrict ctx, Inst2Type op, const Val* a, const Val* b
         else tb_unreachable();
 
         // RM & REX
-        bool is_64bit = (dt_type == TB_I64 || dt_type == TB_PTR);
-
+        bool is_64bit = (bits_in_type == 64);
         if (a->type == VAL_GPR) {
             base = a->gpr;
 
             if (base >= 8 || rx >= 8 || is_64bit) {
 				EMIT(rex(is_64bit, rx, base, 0));
-			} else if (dt_type == TB_I8 && (base >= 4 || rx >= 4)) {
+			} else if (bits_in_type == 8 && (base >= 4 || rx >= 4)) {
 				EMIT(rex(false, rx, base, 0));
 			}
         } else if (a->type == VAL_MEM) {
@@ -147,14 +150,14 @@ void inst2(X64_CtxHeader* restrict ctx, Inst2Type op, const Val* a, const Val* b
             uint8_t rex_index = (a->mem.index != GPR_NONE ? a->mem.index : 0);
             if (base >= 8 || rx >= 8 || rex_index >= 8 || is_64bit) {
                 EMIT(rex(is_64bit, rx, base, rex_index));
-            } else if (dt_type == TB_I8 && (base >= 4 || rx >= 4 || rex_index >= 4)) {
+            } else if (bits_in_type == 8 && (base >= 4 || rx >= 4 || rex_index >= 4)) {
 				EMIT(rex(false, rx, base, 0));
 			}
         } else if (a->type == VAL_GLOBAL) {
             base = RBP;
             if (rx >= 8 || is_64bit) {
 				EMIT(rex(is_64bit, rx, base, 0));
-			} else if (dt_type == TB_I8) {
+			} else if (bits_in_type == 8) {
 				EMIT(rex(false, rx, base, 0));
 			}
         } else tb_unreachable();
@@ -183,22 +186,30 @@ void inst2(X64_CtxHeader* restrict ctx, Inst2Type op, const Val* a, const Val* b
     emit_memory_operand(ctx, rx, a);
 
     if (b->type == VAL_IMM) {
-        if (dt_type == TB_I8 || short_imm) {
-            if (a->type == VAL_GLOBAL) RELOC4((ctx->out - ctx->start_out) - 4, -1);
+        if (bits_in_type <= 8 || short_imm) {
+            if (a->type == VAL_GLOBAL) {
+				RELOC4((ctx->out - ctx->start_out) - 4, -1);
+			}
 
-            if (short_imm) assert(b->imm == (int8_t)b->imm);
+            if (short_imm) {
+				assert(b->imm == (int8_t)b->imm);
+			}
+
             EMIT((int8_t)b->imm);
-        } else if (dt_type == TB_I16) {
-            if (a->type == VAL_GLOBAL) RELOC4((ctx->out - ctx->start_out) - 4, -2);
+        } else if (bits_in_type <= 16) {
+            if (a->type == VAL_GLOBAL) {
+				RELOC4((ctx->out - ctx->start_out) - 4, -2);
+			}
 
             uint32_t imm = b->imm;
             assert((imm & 0xFFFF0000) == 0xFFFF0000 || (imm & 0xFFFF0000) == 0);
 
             EMIT2(imm);
         } else {
-            if (a->type == VAL_GLOBAL) RELOC4((ctx->out - ctx->start_out) - 4, -4);
+            if (a->type == VAL_GLOBAL) {
+				RELOC4((ctx->out - ctx->start_out) - 4, -4);
+			}
 
-            assert(dt_type == TB_I32 || dt_type == TB_I64 || dt_type == TB_PTR);
             EMIT4((int32_t)b->imm);
         }
     }

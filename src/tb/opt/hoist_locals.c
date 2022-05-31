@@ -15,7 +15,7 @@ bool tb_opt_hoist_locals(TB_Function* f) {
 
     // place to start putting all the locals
     // must go after the parameters
-    TB_Reg local_basepoint  = 1;
+    TB_Reg local_basepoint = 1;
     bool is_past_entry_bb = false;
 
     // keep moving locals until we run out

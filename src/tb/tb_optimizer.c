@@ -5,18 +5,30 @@
 #define strtok_r(a, b, c) strtok_s(a, b, c)
 #endif
 
+#define OPT(x) { #x, tb_opt_ ## x }
+static TB_FunctionPass opts[] = {
+	OPT(dead_expr_elim),
+	OPT(remove_pass_node),
+	OPT(subexpr_elim),
+	OPT(hoist_invariants),
+	OPT(fold),
+	OPT(load_elim),
+	OPT(strength_reduction),
+	OPT(copy_elision),
+	OPT(canonicalize),
+	OPT(mem2reg),
+	OPT(dead_block_elim),
+	OPT(deshort_circuit),
+	OPT(compact_dead_regs)
+};
+enum {
+	OPTIMIZATION_COUNT = TB_ARRLEN(opts)
+};
+#undef OPT
+
 #if LOGGING_OPTS
 #define OPT(x) \
 if (tb_opt_##x(f)) { \
-char* oldstr = &big_boy[in_use ? 0 : 65536]; \
-char* newstr = &big_boy[in_use ? 65536 : 0]; \
-*newstr = 0; \
-tb_function_print(f, print_to_buffer, newstr); \
-char* tmp = strdup(newstr); \
-print_diff(#x, oldstr, tmp); \
-free(tmp); \
-in_use = (in_use + 1) & 1; \
-changes = true; \
 goto repeat_opt; \
 }
 #else
@@ -92,21 +104,31 @@ TB_API bool tb_function_optimize(TB_Function* f) {
 	printf("INITIAL\n%s\n\n\n", big_boy);
 #endif
 
-	repeat_opt: {
-		// Passive optimizations
-		OPT(dead_expr_elim);
-		OPT(remove_pass_node);
-		OPT(subexpr_elim);
-		OPT(hoist_invariants);
-		OPT(fold);
-		OPT(load_elim);
-		OPT(strength_reduction);
-		OPT(copy_elision);
-		OPT(canonicalize);
-		OPT(mem2reg);
-		OPT(dead_block_elim);
-		OPT(deshort_circuit);
-		OPT(compact_dead_regs);
+	int current = 0;
+	while (current < OPTIMIZATION_COUNT) {
+		if (opts[current].execute(f)) {
+#if LOGGING_OPTS
+			// double buffering amirite
+			char* oldstr = &big_boy[in_use ? 0 : 65536];
+			char* newstr = &big_boy[in_use ? 65536 : 0];
+
+			// Reset then write IR dump into newstr
+			*newstr = 0;
+			tb_function_print(f, print_to_buffer, newstr);
+
+			char* tmp = strdup(newstr);
+			print_diff(opts[current].name, oldstr, tmp);
+			free(tmp);
+
+			in_use = (in_use + 1) & 1;
+#endif
+
+			changes = true;
+			current = 0;
+			continue;
+		}
+
+		current += 1;
 	}
 
 #if LOGGING_OPTS

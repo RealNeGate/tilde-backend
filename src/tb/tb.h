@@ -983,6 +983,11 @@ extern "C" {
 	////////////////////////////////
 	// Optimizer
 	////////////////////////////////
+	typedef struct {
+		const char* name;
+		bool (*execute)(TB_Function* f);
+	} TB_FunctionPass;
+
 	// Applies single function optimizations until it runs out
 	TB_API bool tb_function_optimize(TB_Function* f);
 

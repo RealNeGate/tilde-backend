@@ -746,7 +746,7 @@ inline static bool tb_next_biggest(int* result, int v, size_t n, const int* arr)
 #endif
 
 // NOTE(NeGate): clean this up
-#if 1
+#if 0
 #define OPTIMIZER_LOG(at, ...) ((TB_Reg) (at))
 #define LOGGING_OPTS 0
 #else

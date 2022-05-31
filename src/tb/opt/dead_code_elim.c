@@ -18,6 +18,7 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
 				case TB_INITIALIZE:
 				case TB_PHI1:
 				case TB_PHI2:
+				case TB_PHIN:
 				case TB_GOTO:
 				case TB_IF:
 				case TB_RET:

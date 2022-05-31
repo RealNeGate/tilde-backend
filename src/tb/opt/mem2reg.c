@@ -2,8 +2,7 @@
 // https://pp.info.uni-karlsruhe.de/uploads/publikationen/braun13cc.pdf
 #include "../tb_internal.h"
 
-typedef enum
-{
+typedef enum {
     COHERENCY_GOOD,
 
     // failure states
@@ -54,12 +53,12 @@ static int get_variable_id(Mem2Reg_Ctx* restrict c, TB_Reg r) {
 //
 // This doesn't really generate a PHI node, it just produces a NULL node which will
 // be mutated into a PHI node by the rest of the code.
-static TB_Reg new_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Label block, TB_DataType dt) {
+static TB_Reg new_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, int var, TB_Label block, TB_DataType dt) {
     TB_Reg label_reg = tb_find_reg_from_label(f, block);
 
     TB_Reg new_phi_reg = tb_function_insert_after(f, label_reg);
     OPTIMIZER_LOG(new_phi_reg, "Insert new PHI node");
-    f->nodes.data[new_phi_reg].dt = dt;
+	f->nodes.data[new_phi_reg].dt = dt;
 
     return new_phi_reg;
 }
@@ -92,7 +91,7 @@ static TB_Reg read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_Label
 
     if (!c->sealed_blocks[block]) {
         // incomplete CFG
-        val = new_phi(c, c->f, block, c->f->nodes.data[c->to_promote[var]].dt);
+        val = new_phi(c, c->f, var, block, c->f->nodes.data[c->to_promote[var]].dt);
         c->incomplete_phis[(block * c->to_promote_count) + var] = val;
     } else if (c->pred_count[block] == 0) {
         // TODO(NeGate): Idk how to handle this ngl, i
@@ -103,7 +102,7 @@ static TB_Reg read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_Label
         val = read_variable(c, var, c->preds[block][0]);
     } else {
         // Break potential cycles with operandless phi
-        val = new_phi(c, c->f, block, c->f->nodes.data[c->to_promote[var]].dt);
+        val = new_phi(c, c->f, var, block, c->f->nodes.data[c->to_promote[var]].dt);
         write_variable(c, var, block, val);
         val = add_phi_operands(c, c->f, val, block, var);
     }
@@ -237,12 +236,22 @@ static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_
 
 // Algorithm 4: Handling incomplete CFGs
 static void seal_block(Mem2Reg_Ctx* restrict c, TB_Label block) {
-    loop(i, c->to_promote_count) {
+	printf("SEAL_BLOCK L%d\n", block);
+
+	loop(i, c->to_promote_count) {
         TB_Reg phi_reg = c->incomplete_phis[(block * c->to_promote_count) + i];
         if (phi_reg) add_phi_operands(c, c->f, phi_reg, block, i);
     }
 
     c->sealed_blocks[block] = true;
+}
+
+static void try_seal_block(Mem2Reg_Ctx* restrict c, TB_Label block, int* seal_counter) {
+	int remaining = --seal_counter[block];
+	if (remaining == 0) {
+		assert(c->sealed_blocks[block] == false);
+		seal_block(c, block);
+	}
 }
 
 // NOTE(NeGate): All locals were moved into the first basic block by
@@ -314,6 +323,9 @@ bool tb_opt_mem2reg(TB_Function* f) {
     c.sealed_blocks = tb_tls_push(tls, c.label_count * sizeof(bool));
     memset(c.sealed_blocks, 0, c.label_count * sizeof(bool));
 
+	// counts how many blocks must be completed until we can seal a block
+	//int* seal_counter = tb_tls_push(tls, c.label_count * sizeof(int));
+
     // Calculate all the immediate predecessors
     // First BB has no predecessors
     {
@@ -324,10 +336,14 @@ bool tb_opt_mem2reg(TB_Function* f) {
         c.pred_count[0] = 0;
         c.preds[0] = NULL;
 
+		//seal_counter[0] = 1;
+
         loop_range(j, 1, c.label_count) {
             c.preds[j] = (TB_Label*)tb_tls_push(tls, 0);
             tb_calculate_immediate_predeccessors(f, tls, j, &c.pred_count[j]);
-        }
+
+			//seal_counter[j] = c.pred_count[j];
+		}
     }
 
     TB_Label block = 0;
@@ -376,8 +392,9 @@ bool tb_opt_mem2reg(TB_Function* f) {
         }
     }
 
-    loop(j, c.label_count) {
+    loop_range(j, 1, c.label_count) {
 		seal_block(&c, j);
+		//assert(c.sealed_blocks[j]);
 	}
 
     return true;

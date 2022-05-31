@@ -46,19 +46,33 @@ static void print_diff(const char* description, char* oldstr, char* newstr) {
 	char *new_ctx, *new_line = strtok_r(newstr, "\n", &new_ctx);
 
 	printf("  %s\n", description);
-	for (; old_line != NULL && new_line != NULL;
+	for (; old_line != NULL || new_line != NULL;
 		 old_line = strtok_r(NULL, "\n", &old_ctx),
 		 new_line = strtok_r(NULL, "\n", &new_ctx)) {
-		// just compare them
-		if (strcmp(old_line, new_line) == 0) {
-			printf("  %s\n", new_line);
+		if (new_line == NULL) {
+			printf("\x1b[32m" "%-40s"
+				   "\x1b[0m"  "|"
+				   "\x1b[31m" "%-40s\n"
+				   "\x1b[0m", "", old_line);
+		} else if (old_line == NULL) {
+			printf("\x1b[32m" "%-40s"
+				   "\x1b[0m"  "|"
+				   "\x1b[31m" "%-40s\n"
+				   "\x1b[0m", new_line, "");
 		} else {
-			printf("\x1b[31m- %s\n"
-				   "\x1b[32m+ %s\n"
-				   "\x1b[0m", old_line, new_line);
+			// just compare them
+			if (strcmp(old_line, new_line) == 0) {
+				printf("%-40s|\n", new_line);
+			} else {
+				printf("\x1b[32m" "%-40s"
+					   "\x1b[0m"  "|"
+					   "\x1b[31m" "%-40s\n"
+					   "\x1b[0m", new_line, old_line);
+			}
 		}
 	}
 
+	printf("\n\n\n");
 	//__debugbreak();
 }
 
@@ -67,6 +81,7 @@ TB_API bool tb_function_optimize(TB_Function* f) {
 
 	// only needs to run once
 	changes |= tb_opt_hoist_locals(f);
+	changes |= tb_opt_merge_rets(f);
 
 #if LOGGING_OPTS
 	char* big_boy = malloc(2*65536);

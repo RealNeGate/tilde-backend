@@ -597,8 +597,8 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 	TB_DataType dt = n->dt;
 
 	switch (type) {
-		case TB_NULL: callback(user_data, "	 NOP"); break;
-		case TB_DEBUGBREAK: callback(user_data, " DEBUGBREAK"); break;
+		case TB_NULL: callback(user_data, "  NOP"); break;
+		case TB_DEBUGBREAK: callback(user_data, "  DEBUGBREAK"); break;
 		case TB_INTEGER_CONST: {
 			if (n->integer.num_words == 1) {
 				callback(user_data, "  r%-8u = ", i);
@@ -917,7 +917,7 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 			TB_PhiInput* inputs = n->phi.inputs;
 			loop(i, n->phi.count) {
 				if (i) callback(user_data, ", ");
-				callback(user_data, "L%d:r%u", inputs[i].label, inputs[i].val);
+				callback(user_data, "L%d:r%u", f->nodes.data[inputs[i].label].label.id, inputs[i].val);
 			}
 			break;
 		}

@@ -28,6 +28,7 @@ static const char* INPUT_FILES[] = {
 
 	// Optimizer
 	"src/tb/tb_optimizer.c",
+	"src/tb/opt/merge_ret.c",
 	"src/tb/opt/canonical.c",
 	"src/tb/opt/const_fold.c",
 	"src/tb/opt/copy_elision.c",

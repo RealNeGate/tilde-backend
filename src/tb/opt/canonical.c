@@ -1,5 +1,34 @@
 #include "../tb_internal.h"
 
+static void replace_label(TB_Function* f, TB_Node* seq, TB_Label label, TB_Reg label_reg) {
+	// replace all by-label references
+	TB_Label old_label = seq->label.id;
+	tb_murder_node(f, seq);
+
+	TB_FOR_EACH_NODE(m, f) {
+		if (m->type == TB_GOTO) {
+			if (m->goto_.label == old_label) m->goto_.label = label;
+		} else if (m->type == TB_IF) {
+			if (m->if_.if_true == old_label) m->if_.if_true = label;
+			if (m->if_.if_false == old_label) m->if_.if_false = label;
+		} else if (m->type == TB_SWITCH) {
+			size_t entry_start = m->switch_.entries_start;
+			size_t entry_count = (m->switch_.entries_end - m->switch_.entries_start) / 2;
+
+			for (size_t j = 0; j < entry_count; j++) {
+				TB_SwitchEntry* e = (TB_SwitchEntry*)&f->vla.data[entry_start + (j * 2)];
+				if (e->value == old_label) e->value = label;
+			}
+
+			if (m->switch_.default_label == old_label) m->switch_.default_label = label;
+		}
+	}
+
+	// replace any by-register references
+	TB_Reg j = seq - f->nodes.data;
+	tb_function_find_replace_reg(f, j, label_reg);
+}
+
 bool tb_opt_compact_dead_regs(TB_Function* f) {
 	int changes = 0;
 
@@ -277,59 +306,44 @@ bool tb_opt_canonicalize(TB_Function* f) {
 			n->pass.value = reg;
 			changes++;
 		} else if (n->type == TB_LABEL) {
-			TB_Node* end = &f->nodes.data[0];
-			TB_Reg bb_start = 0;
+			if (f->nodes.data[n->next].type == TB_GOTO) {
+				TB_Label label = f->nodes.data[n->next].goto_.label;
+				TB_Reg reg = tb_find_reg_from_label(f, label);
 
-			// Find sequence of labels
-			int count = 0;
-			{
-				TB_Node* seq = n;
-				do {
-					seq = &f->nodes.data[seq->next];
-					count += 1;
-				} while (seq->type == TB_LABEL && seq != end);
+				replace_label(f, n, label, reg);
+				tb_murder_node(f, &f->nodes.data[n->next]);
+			} else {
+				TB_Node* end = &f->nodes.data[0];
+				TB_Reg bb_start = 0;
+				TB_Reg bb_end = 0;
 
-				bb_start = (seq - f->nodes.data);
-			}
-
-			if (count > 1) {
-				OPTIMIZER_LOG(i, "merge labels");
-				TB_Label label = n->label.id;
-
-				TB_Node* seq = &f->nodes.data[n->next];
-				do {
-					// replace all by-label references
-					TB_Label old_label = seq->label.id;
-					tb_murder_node(f, seq);
-
-					TB_FOR_EACH_NODE(m, f) {
-						if (m->type == TB_GOTO) {
-							if (m->goto_.label == old_label) m->goto_.label = label;
-						} else if (m->type == TB_IF) {
-							if (m->if_.if_true == old_label) m->if_.if_true = label;
-							if (m->if_.if_false == old_label) m->if_.if_false = label;
-						} else if (m->type == TB_SWITCH) {
-							size_t entry_start = m->switch_.entries_start;
-							size_t entry_count = (m->switch_.entries_end - m->switch_.entries_start) / 2;
-
-							for (size_t j = 0; j < entry_count; j++) {
-								TB_SwitchEntry* e = (TB_SwitchEntry*)&f->vla.data[entry_start + (j * 2)];
-								if (e->value == old_label) e->value = label;
-							}
-
-							if (m->switch_.default_label == old_label) m->switch_.default_label = label;
-						}
+				// Find sequence of labels
+				int count = 0;
+				{
+					TB_Node* seq = n;
+					while (seq = &f->nodes.data[seq->next],
+						   seq->type == TB_LABEL && seq != end) {
+						bb_end = seq->label.terminator;
+						count += 1;
 					}
 
-					// replace any by-register references
-					TB_Reg j = seq - f->nodes.data;
-					tb_function_find_replace_reg(f, j, i);
+					bb_start = (seq - f->nodes.data);
+				}
 
-					seq = &f->nodes.data[seq->next];
-				} while (seq->type == TB_LABEL && seq != end);
+				if (count > 0) {
+					OPTIMIZER_LOG(i, "merge labels");
+					TB_Label label = n->label.id;
 
-				n->next = bb_start;
-				changes++;
+					TB_Node* seq = &f->nodes.data[n->next];
+					do {
+						replace_label(f, seq, label, i);
+						seq = &f->nodes.data[seq->next];
+					} while (seq->type == TB_LABEL && seq != end);
+
+					n->next = bb_start;
+					n->label.terminator = bb_end;
+					changes++;
+				}
 			}
 		}
 	}

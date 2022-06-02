@@ -6,7 +6,7 @@
 #include <emmintrin.h>
 #endif
 
-static thread_local uint8_t tb_thread_storage[TB_TEMPORARY_STORAGE_SIZE];
+static thread_local uint8_t* tb_thread_storage;
 static thread_local int tid;
 
 static tb_atomic_int total_tid;
@@ -471,7 +471,21 @@ TB_API TB_Label tb_inst_get_current_label(TB_Function* f) {
 // making any heap allocations when possible to there's a preallocated
 // block per thread that can run TB.
 //
+void tb_free_thread_resources(void) {
+	if (tb_thread_storage != NULL) {
+		tb_platform_vfree(tb_thread_storage, TB_TEMPORARY_STORAGE_SIZE);
+		tb_thread_storage = NULL;
+	}
+}
+
 TB_TemporaryStorage* tb_tls_allocate() {
+	if (tb_thread_storage == NULL) {
+		tb_thread_storage = tb_platform_valloc(TB_TEMPORARY_STORAGE_SIZE);
+		if (tb_thread_storage == NULL) {
+			tb_panic("out of memory");
+		}
+	}
+
 	TB_TemporaryStorage* store = (TB_TemporaryStorage*)tb_thread_storage;
 	store->used = 0;
 	return store;
@@ -647,7 +661,8 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 		}
 		case TB_ARRAY_ACCESS: {
 			callback(user_data, "  r%-8u = array ", i);
-			callback(user_data, "r%u, r%u, %d", n->array_access.base, n->array_access.index, n->array_access.stride);
+			callback(user_data, "r%u, r%u, %d // ", n->array_access.base, n->array_access.index, n->array_access.stride);
+			callback(user_data, "r%u + r%u*%d", n->array_access.base, n->array_access.index, n->array_access.stride);
 			break;
 		}
 		case TB_ATOMIC_XCHG:
@@ -899,23 +914,16 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 		callback(user_data, " r%u", n->pass);
 		break;
 		case TB_PHI1:
-		callback(user_data, "  r%-8u = phi.", i);
-		tb_print_type(dt, callback, user_data);
-		callback(user_data, " L%d:r%u", f->nodes.data[n->phi1.a_label].label.id, n->phi1.a);
-		break;
 		case TB_PHI2:
-		callback(user_data, "  r%-8u = phi.", i);
-		tb_print_type(dt, callback, user_data);
-		callback(user_data, " L%d:r%u, L%d:r%u", f->nodes.data[n->phi2.a_label].label.id, n->phi2.a,
-				 f->nodes.data[n->phi2.b_label].label.id, n->phi2.b);
-		break;
 		case TB_PHIN: {
+			int count = tb_node_get_phi_width(f, i);
+			TB_PhiInput* inputs = tb_node_get_phi_inputs(f, i);
+
 			callback(user_data, "  r%-8u = phi.", i);
 			tb_print_type(dt, callback, user_data);
 			callback(user_data, " ");
 
-			TB_PhiInput* inputs = n->phi.inputs;
-			loop(i, n->phi.count) {
+			loop(i, count) {
 				if (i) callback(user_data, ", ");
 				callback(user_data, "L%d:r%u", f->nodes.data[inputs[i].label].label.id, inputs[i].val);
 			}

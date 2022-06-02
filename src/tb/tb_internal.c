@@ -144,9 +144,13 @@ TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStora
 			}
 
 			case TB_RET: label = end->next; break;
-        }
+
+			case TB_NULL: goto done;
+			default: tb_todo();
+		}
     } while (label);
 
+	done:
     *dst_count = count;
     return preds;
 }

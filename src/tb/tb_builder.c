@@ -29,6 +29,36 @@ TB_API void tb_get_function_get_local_info(TB_Function* f, TB_Reg r, int* size, 
     *align = f->nodes.data[r].local.alignment;
 }
 
+TB_API bool tb_node_is_phi_node(TB_Function* f, TB_Reg r) {
+    return f->nodes.data[r].type == TB_PHI1 ||
+		f->nodes.data[r].type == TB_PHI2 ||
+		f->nodes.data[r].type == TB_PHIN;
+}
+
+TB_API int tb_node_get_phi_width(TB_Function* f, TB_Reg r) {
+	switch (f->nodes.data[r].type) {
+		case TB_PHI1: return 1;
+		case TB_PHI2: return 2;
+		case TB_PHIN: return f->nodes.data[r].phi.count;
+
+		default:
+		tb_unreachable();
+		return 0;
+	}
+}
+
+TB_API TB_PhiInput* tb_node_get_phi_inputs(TB_Function* f, TB_Reg r) {
+	switch (f->nodes.data[r].type) {
+		case TB_PHI1: return f->nodes.data[r].phi1.inputs;
+		case TB_PHI2: return f->nodes.data[r].phi2.inputs;
+		case TB_PHIN: return f->nodes.data[r].phi.inputs;
+
+		default:
+		tb_unreachable();
+		return NULL;
+	}
+}
+
 TB_API bool tb_node_is_conditional(TB_Function* f, TB_Reg r) {
     return f->nodes.data[r].type == TB_IF;
 }
@@ -908,11 +938,12 @@ TB_API TB_Reg tb_inst_phi2(TB_Function* f, TB_Label a_label, TB_Reg a, TB_Label 
     TB_DataType dt = f->nodes.data[a].dt;
 
     TB_Reg r = tb_make_reg(f, TB_PHI2, dt);
-    f->nodes.data[r].phi2.a_label = tb_find_reg_from_label(f, a_label);
-    f->nodes.data[r].phi2.a = a;
-    f->nodes.data[r].phi2.b_label = tb_find_reg_from_label(f, b_label);
-    f->nodes.data[r].phi2.b = b;
-
+    f->nodes.data[r].phi2.inputs[0] = (TB_PhiInput){
+		tb_find_reg_from_label(f, a_label), a
+	};
+    f->nodes.data[r].phi2.inputs[1] = (TB_PhiInput){
+		tb_find_reg_from_label(f, b_label), b
+	};
     return r;
 }
 

@@ -130,14 +130,14 @@ break;                                                                          
 case TB_PARAM_ADDR: macro(n->param_addr.param); break;                                \
 case TB_PASS: macro(n->pass.value); break;                                            \
 case TB_PHI1:                                                                         \
-macro(n->phi1.a);                                                                     \
-macro(n->phi1.a_label);                                                               \
+macro(n->phi1.inputs[0].label);                                                       \
+macro(n->phi1.inputs[0].val);                                                         \
 break;                                                                                \
 case TB_PHI2:                                                                         \
-macro(n->phi2.a);                                                                     \
-macro(n->phi2.b);                                                                     \
-macro(n->phi2.a_label);                                                               \
-macro(n->phi2.b_label);                                                               \
+macro(n->phi2.inputs[0].label);                                                       \
+macro(n->phi2.inputs[0].val);                                                         \
+macro(n->phi2.inputs[1].label);                                                       \
+macro(n->phi2.inputs[1].val);                                                         \
 break;                                                                                \
 case TB_PHIN:                                                                         \
 loop(i, n->phi.count) {                                                               \
@@ -512,6 +512,8 @@ b = temp;        \
 #define TB_DEBUG_BUILD 0
 #endif
 
+#define TB_FITS_INTO(T,x) ((x) == (T)(x))
+
 // tb_todo means it's something we fill in later
 // tb_unreachable means it's logically impossible to reach
 // tb_assume means we assume some expression cannot be false
@@ -746,7 +748,7 @@ inline static bool tb_next_biggest(int* result, int v, size_t n, const int* arr)
 #endif
 
 // NOTE(NeGate): clean this up
-#if 1
+#if 0
 #define OPTIMIZER_LOG(at, ...) ((TB_Reg) (at))
 #define LOGGING_OPTS 0
 #else

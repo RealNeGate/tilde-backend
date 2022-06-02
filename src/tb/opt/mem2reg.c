@@ -123,9 +123,6 @@ static TB_Reg add_phi_operands(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg p
 
 // Algorithm 3: Detect and recursively remove a trivial phi function
 static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg) {
-    int op_count;
-    TB_Reg operands[2];
-
     // Walk past any pass nodes
     while (f->nodes.data[phi_reg].type == TB_PASS) {
         phi_reg = f->nodes.data[phi_reg].pass.value;
@@ -133,30 +130,22 @@ static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB
 
     // Get operands
     TB_Node* phi_node = &f->nodes.data[phi_reg];
-    if (phi_node->type == TB_NULL) {
-        return phi_reg;
-    } else if (phi_node->type == TB_PHI1) {
-        op_count = 1;
-        operands[0] = phi_node->phi1.a;
-    } else if (phi_node->type == TB_PHI2) {
-        OPTIMIZER_LOG(phi_reg, "  removing PHI (no divergence)");
+	if (!tb_node_is_phi_node(f, phi_reg)) {
+		return phi_reg;
+	}
 
-        op_count = 2;
-        operands[0] = phi_node->phi2.a;
-        operands[1] = phi_node->phi2.b;
-    } else {
-        return phi_reg;
-    }
+	int count = tb_node_get_phi_width(f, phi_reg);
+	TB_PhiInput* inputs = tb_node_get_phi_inputs(f, phi_reg);
 
-    TB_Reg same = TB_NULL_REG;
-    loop(i, op_count) {
+	TB_Reg same = TB_NULL_REG;
+    loop(i, count) {
         // Unique value or self−reference
-        if (operands[i] == phi_reg || operands[i] == same) continue;
+        if (inputs[i].val == phi_reg || inputs[i].val == same) continue;
 
         // The phi merges at least two values: not trivial
         if (same != TB_NULL_REG) return phi_reg;
 
-        same = operands[i];
+        same = inputs[i].val;
     }
 
     if (same == TB_NULL_REG) {
@@ -191,37 +180,32 @@ static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_
 
     // we're using NULL nodes as the baseline PHI0
     OPTIMIZER_LOG(phi_reg, "  adding r%d to PHI", reg);
-    TB_Node* phi_node = &f->nodes.data[phi_reg];
+    TB_DataType dt = f->nodes.data[reg].dt;
 
-    if (phi_node->type == TB_NULL) {
+	TB_Node* phi_node = &f->nodes.data[phi_reg];
+	phi_node->dt = dt;
+
+	if (phi_node->type == TB_NULL) {
         phi_node->type = TB_PHI1;
-        phi_node->dt   = f->nodes.data[reg].dt;
-        phi_node->phi1 = (struct TB_NodePhi1) {
-			.a_label = tb_find_reg_from_label(f, label), .a = reg
-		};
-    } else if (phi_node->type == TB_PHI1) {
-        TB_Reg a_label = phi_node->phi1.a_label;
-        TB_Reg a       = phi_node->phi1.a;
+        phi_node->phi2.inputs[0] = (TB_PhiInput){ tb_find_reg_from_label(f, label), reg };
+		return;
+	}
 
-        phi_node->type = TB_PHI2;
-        phi_node->dt   = f->nodes.data[a].dt;
-        phi_node->phi2 = (struct TB_NodePhi2) {
-            .a_label = a_label, .a = a, .b_label = tb_find_reg_from_label(f, label), .b = reg
-        };
-    } else if (phi_node->type == TB_PHI2) {
-        TB_Reg a_label = phi_node->phi2.a_label;
-        TB_Reg a = phi_node->phi2.a;
-        TB_Reg b_label = phi_node->phi2.b_label;
-        TB_Reg b = phi_node->phi2.b;
+	int count = tb_node_get_phi_width(f, phi_reg);
+	TB_PhiInput* inputs = tb_node_get_phi_inputs(f, phi_reg);
 
+	if (count == 1) {
+		phi_node->type = TB_PHI2;
+		phi_node->phi2.inputs[0] = inputs[0];
+        phi_node->phi2.inputs[1] = (TB_PhiInput){ tb_find_reg_from_label(f, label), reg };
+	} else if (count == 2) {
         phi_node->type = TB_PHIN;
-        phi_node->dt = f->nodes.data[a].dt;
 		phi_node->phi.count = 3;
 		phi_node->phi.inputs = tb_platform_heap_alloc(3 * sizeof(TB_PhiInput));
-		phi_node->phi.inputs[0] = (TB_PhiInput){ a_label, a };
-		phi_node->phi.inputs[1] = (TB_PhiInput){ b_label, b };
+		phi_node->phi.inputs[0] = inputs[0];
+		phi_node->phi.inputs[1] = inputs[1];
 		phi_node->phi.inputs[2] = (TB_PhiInput){ tb_find_reg_from_label(f, label), reg };
-    } else if (phi_node->type == TB_PHIN) {
+    } else {
 		size_t index = phi_node->phi.count++;
 		phi_node->phi.inputs = tb_platform_heap_realloc(phi_node->phi.inputs, phi_node->phi.count * sizeof(TB_PhiInput));
 		if (phi_node->phi.inputs == NULL) {
@@ -229,9 +213,7 @@ static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_
 		}
 
 		phi_node->phi.inputs[index] = (TB_PhiInput) { tb_find_reg_from_label(f, label), reg };
-    } else {
-		tb_panic("Huh?");
-	}
+    }
 }
 
 // Algorithm 4: Handling incomplete CFGs

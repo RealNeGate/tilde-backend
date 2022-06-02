@@ -1922,33 +1922,43 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 }
 
 static void fast_eval_terminator_phis(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg from, TB_Reg from_terminator, TB_Reg to, TB_Reg to_terminator) {
-    TB_FOR_EACH_NODE_RANGE(n, f, to, to_terminator) if (n->type == TB_PHI2) {
-        TB_Reg r  = n - f->nodes.data;
-        TB_DataType dt = n->dt;
+    TB_FOR_EACH_NODE_RANGE(n, f, to, to_terminator) {
+        TB_Reg r = n - f->nodes.data;
 
-        TB_Reg src = (n->phi2.a_label   == from ? n->phi2.a
-                      : n->phi2.b_label == from ? n->phi2.b
-					  : 0);
+		if (tb_node_is_phi_node(f, r)) {
+			TB_DataType dt = n->dt;
 
-        Val dst;
-        if (ctx->addresses[r].type == ADDRESS_DESC_NONE) {
-            int size = get_data_type_size(dt);
-            int pos  = STACK_ALLOC(size, size);
+			int count = tb_node_get_phi_width(f, r);
+			TB_PhiInput* inputs = tb_node_get_phi_inputs(f, r);
 
-            dst = val_stack(dt, pos);
-            fast_def_spill(ctx, f, r, pos, dt);
-        } else {
-            assert(ctx->addresses[r].type == ADDRESS_DESC_SPILL);
-            dst = val_stack(dt, ctx->addresses[r].spill);
-        }
+			loop(j, count) {
+				if (inputs[j].label == from) {
+					TB_Reg src = inputs[j].val;
 
-        if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
-            // TODO(NeGate): Handle vector and float types
-            tb_todo();
-        } else {
-            fast_folded_op(ctx, f, MOV, &dst, src);
-        }
-    }
+					Val dst;
+					if (ctx->addresses[r].type == ADDRESS_DESC_NONE) {
+						int size = get_data_type_size(dt);
+						int pos  = STACK_ALLOC(size, size);
+
+						dst = val_stack(dt, pos);
+						fast_def_spill(ctx, f, r, pos, dt);
+					} else {
+						assert(ctx->addresses[r].type == ADDRESS_DESC_SPILL);
+						dst = val_stack(dt, ctx->addresses[r].spill);
+					}
+
+					if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
+						// TODO(NeGate): Handle vector and float types
+						tb_todo();
+					} else {
+						fast_folded_op(ctx, f, MOV, &dst, src);
+					}
+				}
+			}
+
+			tb_unreachable();
+		}
+	}
 }
 
 static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {

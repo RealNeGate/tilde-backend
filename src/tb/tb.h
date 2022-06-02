@@ -515,14 +515,10 @@ extern "C" {
 				TB_Reg value;
 			} pass;
 			struct TB_NodePhi1 {
-				TB_Reg a_label;
-				TB_Reg a;
+				TB_PhiInput inputs[1];
 			} phi1;
 			struct TB_NodePhi2 {
-				TB_Reg a_label;
-				TB_Reg a;
-				TB_Reg b_label;
-				TB_Reg b;
+				TB_PhiInput inputs[2];
 			} phi2;
 			struct TB_NodePhi {
 				size_t count;
@@ -748,6 +744,13 @@ extern "C" {
 
 	TB_API TB_ExternalID tb_extern_create(TB_Module* m, const char* name);
 	TB_API TB_FileID     tb_file_create(TB_Module* m, const char* path);
+
+	// Called once you're done with TB operations on a thread (or i guess when it's
+	// about to be killed :p), not calling it can only result in leaks on that thread
+	// and calling it too early will result in TB potentially reallocating it but there's
+	// should be no crashes from this, just potential slowdown or higher than expected memory
+	// usage.
+	TB_API void tb_free_thread_resources(void);
 
 	////////////////////////////////
 	// Function Prototypes
@@ -1033,6 +1036,10 @@ extern "C" {
 	// Returns the size and alignment of a LOCAL node, both must
 	// be valid addresses
 	TB_API void tb_get_function_get_local_info(TB_Function* f, TB_Reg r, int* size, int* align);
+
+	TB_API bool tb_node_is_phi_node(TB_Function* f, TB_Reg r);
+	TB_API int tb_node_get_phi_width(TB_Function* f, TB_Reg r);
+	TB_API TB_PhiInput* tb_node_get_phi_inputs(TB_Function* f, TB_Reg r);
 
 	// is an IF node?
 	TB_API bool tb_node_is_conditional(TB_Function* f, TB_Reg r);

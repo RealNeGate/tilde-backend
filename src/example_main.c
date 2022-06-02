@@ -652,8 +652,7 @@ print_function_as_html(out, f, #x); \
 goto repeat_opt;                    \
 }
 
-void visualize_tests(
-					 const char* output_path, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
+void visualize_tests(const char* output_path, TB_Arch arch, TB_System system, const TB_FeatureSet* features) {
     TB_Module* m = tb_module_create(arch, system, features);
 
     test_external1 = tb_extern_create(m, "GetModuleHandleA");

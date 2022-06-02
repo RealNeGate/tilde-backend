@@ -30,19 +30,6 @@ enum {
 };
 #undef OPT
 
-#if LOGGING_OPTS
-#define OPT(x) \
-if (tb_opt_##x(f)) { \
-goto repeat_opt; \
-}
-#else
-#define OPT(x) \
-if (tb_opt_##x(f)) { \
-changes = true; \
-goto repeat_opt; \
-}
-#endif
-
 static void print_to_buffer(void* user_data, const char* fmt, ...) {
 	char* buffer = (char*) user_data;
 	size_t len = strlen(buffer);
@@ -66,23 +53,23 @@ static void print_diff(const char* description, char* oldstr, char* newstr) {
 		 old_line = strtok_r(NULL, "\n", &old_ctx),
 		 new_line = strtok_r(NULL, "\n", &new_ctx)) {
 		if (new_line == NULL) {
-			printf("\x1b[32m" "%-40s"
+			printf("\x1b[32m" "%-80s"
 				   "\x1b[0m"  "|"
-				   "\x1b[31m" "%-40s\n"
+				   "\x1b[31m" "%-80s\n"
 				   "\x1b[0m", "", old_line);
 		} else if (old_line == NULL) {
-			printf("\x1b[32m" "%-40s"
+			printf("\x1b[32m" "%-80s"
 				   "\x1b[0m"  "|"
-				   "\x1b[31m" "%-40s\n"
+				   "\x1b[31m" "%-80s\n"
 				   "\x1b[0m", new_line, "");
 		} else {
 			// just compare them
 			if (strcmp(old_line, new_line) == 0) {
-				printf("%-40s|\n", new_line);
+				printf("%-80s|\n", new_line);
 			} else {
-				printf("\x1b[32m" "%-40s"
+				printf("\x1b[32m" "%-80s"
 					   "\x1b[0m"  "|"
-					   "\x1b[31m" "%-40s\n"
+					   "\x1b[31m" "%-80s\n"
 					   "\x1b[0m", new_line, old_line);
 			}
 		}
@@ -148,4 +135,3 @@ TB_API bool tb_function_optimize(TB_Function* f) {
 TB_API bool tb_module_optimize(TB_Module* m) {
 	return false;
 }
-#undef OPT

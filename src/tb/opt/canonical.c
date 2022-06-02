@@ -73,6 +73,8 @@ bool tb_opt_remove_pass_node(TB_Function* f) {
 }
 
 bool tb_opt_canonicalize(TB_Function* f) {
+	TB_TemporaryStorage* tls = tb_tls_allocate();
+
 	int changes = 0;
 	TB_FOR_EACH_NODE(n, f) {
 		TB_Reg i = (n - f->nodes.data);
@@ -161,19 +163,52 @@ bool tb_opt_canonicalize(TB_Function* f) {
 				}
 			}
 		} else if (type == TB_MEMBER_ACCESS) {
-			int32_t offset = n->member_access.offset;
+			TB_Node* base = &f->nodes.data[n->member_access.base];
 
-			if (offset == 0) {
-				OPTIMIZER_LOG(i, "elided member access to first element");
+			if (base->type == TB_MEMBER_ACCESS) {
+				uint32_t offset = n->member_access.offset;
+				offset += base->member_access.offset;
 
-				n->type = TB_PASS;
-				n->pass.value = n->member_access.base;
-				changes++;
+				if (!TB_FITS_INTO(int32_t, offset)) {
+					OPTIMIZER_LOG(i, "FAILURE cannot fold into member access without overflow");
+				} else {
+					TB_Reg base_base = base->member_access.base;
+
+					n->member_access.base = base_base;
+					n->member_access.offset = offset;
+					changes++;
+				}
+			} else {
+				int32_t offset = n->member_access.offset;
+
+				if (offset == 0) {
+					OPTIMIZER_LOG(i, "elided member access to first element");
+
+					n->type = TB_PASS;
+					n->pass.value = n->member_access.base;
+					changes++;
+				}
 			}
 		} else if (type == TB_ARRAY_ACCESS) {
 			TB_Node* index = &f->nodes.data[n->array_access.index];
 
-			if (tb_node_is_constant_zero(f, n->array_access.index)) {
+			if (index->type == TB_INTEGER_CONST && index->integer.num_words == 1) {
+				uint64_t index_imm = index->integer.single_word;
+
+				uint64_t res = n->array_access.stride * index_imm;
+				if (!TB_FITS_INTO(int32_t, res)) {
+					OPTIMIZER_LOG(i, "FAILURE cannot fold into array access without overflow");
+				} else {
+					// success!
+					OPTIMIZER_LOG(i, "folded constant array access");
+					TB_Reg base_reg = n->array_access.base;
+
+					n->type = TB_MEMBER_ACCESS;
+					n->member_access.base = base_reg;
+					n->member_access.offset = res;
+					changes++;
+				}
+			} else if (tb_node_is_constant_zero(f, n->array_access.index)) {
 				OPTIMIZER_LOG(i, "elided array access to first element");
 
 				n->type = TB_PASS;
@@ -186,13 +221,13 @@ bool tb_opt_canonicalize(TB_Function* f) {
 					// don't worry it doesn't loop i just needed to have 'break' support
 					do {
 						uint64_t factor = potential_constant->integer.single_word;
-						if (factor >= UINT32_MAX) {
+						if (!TB_FITS_INTO(int32_t, factor)) {
 							OPTIMIZER_LOG(i, "FAILURE multiply cannot fold into array access because too big");
 							break;
 						}
 
 						uint64_t res = n->array_access.stride * factor;
-						if (res >= UINT32_MAX) {
+						if (!TB_FITS_INTO(int32_t, res)) {
 							OPTIMIZER_LOG(i, "FAILURE multiply cannot fold into array access without overflow");
 							break;
 						}
@@ -271,40 +306,60 @@ bool tb_opt_canonicalize(TB_Function* f) {
 				tb_swap(TB_Label, n->if_.if_true, n->if_.if_false);
 				changes++;
 			}
-		} else if (type == TB_PHI2) {
-			// remove useless phi
-			TB_Reg a = n->phi2.a;
-			TB_Reg b = n->phi2.b;
+		} else if (tb_node_is_phi_node(f, i)) {
+			int count = tb_node_get_phi_width(f, i);
+			TB_PhiInput* inputs = tb_node_get_phi_inputs(f, i);
 
-			// trivial phi
-			if (a == b) {
+			if (count == 1) {
 				OPTIMIZER_LOG(i, "removed trivial phi");
 
+				// remove useless phi
 				n->type = TB_PASS;
-				n->pass.value = a;
+				n->pass.value = inputs[i].val;
 				changes++;
-			} else if (i == b) {
-				OPTIMIZER_LOG(i, "removed trivial phi");
 
-				n->type = TB_PASS;
-				n->pass.value = a;
-				changes++;
-			} else if (i == a) {
-				OPTIMIZER_LOG(i, "removed trivial phi");
+				tb_platform_heap_free(inputs);
+			} else {
+				// Check for any duplicate inputs
+				assert(n->phi.count > 0);
 
-				n->type = TB_PASS;
-				n->pass.value = b;
-				changes++;
+				size_t new_length = 0;
+				TB_PhiInput* new_inputs = tb_tls_push(tls, 0);
+
+				loop(i, count) {
+					TB_Reg a = inputs[i].val;
+					TB_Reg b = inputs[i].label;
+
+					bool duplicate = false;
+					loop_range(j, 0, i) {
+						if (inputs[j].val == a) {
+							duplicate = true;
+							break;
+						}
+					}
+
+					if (!duplicate) {
+						tb_tls_push(tls, sizeof(TB_PhiInput));
+						new_inputs[new_length++] = (TB_PhiInput){ .label = b, .val = a };
+					}
+				}
+
+				if (new_length != n->phi.count) {
+					// Pass it off to more permanent storage
+					OPTIMIZER_LOG(i, "Deduplicated PHI node entries");
+
+					TB_PhiInput* more_permanent_store = tb_platform_heap_alloc(new_length * sizeof(TB_PhiInput));
+					memcpy(more_permanent_store, new_inputs, new_length * sizeof(TB_PhiInput));
+
+					n->type = TB_PHIN;
+					n->phi.count = new_length;
+					n->phi.inputs = new_inputs;
+					changes++;
+
+					free(inputs);
+				}
+				tb_tls_restore(tls, new_inputs);
 			}
-		} else if (n->type == TB_PHI1) {
-			OPTIMIZER_LOG(i, "removed trivial phi");
-
-			// remove useless phi
-			TB_Reg reg = n->phi1.a;
-
-			n->type = TB_PASS;
-			n->pass.value = reg;
-			changes++;
 		} else if (n->type == TB_LABEL) {
 			if (f->nodes.data[n->next].type == TB_GOTO) {
 				TB_Label label = f->nodes.data[n->next].goto_.label;

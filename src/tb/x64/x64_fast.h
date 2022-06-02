@@ -1394,11 +1394,15 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 					// just doesn't do anything really
 					tb_todo();
 				} else {
+					int bits_in_type = 64;
+					if (dt.type == TB_INT) bits_in_type = dt.data;
+					else if (src.dt.type == TB_INT) bits_in_type = src.dt.data;
+
 					// movd/q
 					*ctx->header.out++ = 0x66;
 
 					Val val;
-					bool is_64bit = dt_size > 32;
+					bool is_64bit = bits_in_type > 32;
 					bool int2float = is_src_int && !is_dst_int;
 					if (int2float) {
 						// int -> float
@@ -1413,7 +1417,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 					}
 
 					if (is_64bit || val.xmm >= 8 || src.gpr >= 8) {
-						*ctx->header.out++ = rex(false, src.gpr, val.xmm, 0);
+						*ctx->header.out++ = rex(is_64bit, src.gpr, val.gpr, 0);
 					}
 
 					*ctx->header.out++ = 0x0F;
@@ -1955,8 +1959,6 @@ static void fast_eval_terminator_phis(X64_FastCtx* restrict ctx, TB_Function* f,
 					}
 				}
 			}
-
-			tb_unreachable();
 		}
 	}
 }

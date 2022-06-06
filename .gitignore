@@ -1,5 +1,6 @@
 .vs/
 build/
+negate/
 
 *.swp
 *.out

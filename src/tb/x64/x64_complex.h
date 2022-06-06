@@ -611,7 +611,7 @@ TB_FunctionOutput x64_complex_compile_function(TB_FunctionID id, TB_Function* re
 		ctx->vgpr_count = 1;
 		ctx->vxmm_count = 1;
 
-		ctx->is_sysv = EITHER2(f->module->target_system, TB_SYSTEM_LINUX, TB_SYSTEM_MACOS);
+        ctx->is_sysv = (f->module->target_abi == TB_ABI_SYSTEMV);
 
 		f->line_count = 0;
 		f->lines = tb_platform_arena_alloc(tally.line_info_count * sizeof(TB_Line));

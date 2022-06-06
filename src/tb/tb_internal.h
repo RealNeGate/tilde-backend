@@ -393,6 +393,7 @@ typedef struct {
 struct TB_Module {
     int max_threads;
 
+    TB_ABI target_abi;
     TB_Arch target_arch;
     TB_System target_system;
     TB_DebugFormat debug_fmt;
@@ -405,10 +406,6 @@ struct TB_Module {
     // Convert this into a dynamic memory arena... maybe
     tb_atomic_size_t prototypes_arena_size;
     uint64_t* prototypes_arena;
-
-#if !TB_STRIP_LABELS
-    DynArray(TB_LabelSymbol) label_symbols;
-#endif
 
 	// TODO(NeGate): I should probably re-organize these to avoid
     // false sharing
@@ -748,7 +745,7 @@ inline static bool tb_next_biggest(int* result, int v, size_t n, const int* arr)
 #endif
 
 // NOTE(NeGate): clean this up
-#if 0
+#if 1
 #define OPTIMIZER_LOG(at, ...) ((TB_Reg) (at))
 #define LOGGING_OPTS 0
 #else
@@ -782,10 +779,6 @@ uint32_t tb_emit_const_patch(TB_Module* m, TB_Function* source, size_t pos, cons
 void tb_emit_global_patch(TB_Module* m, TB_Function* source, size_t pos, TB_GlobalID global, size_t local_thread_id);
 void tb_emit_call_patch(TB_Module* m, TB_Function* source, uint32_t target_id, size_t pos, size_t local_thread_id);
 void tb_emit_ecall_patch(TB_Module* m, TB_Function* source, TB_ExternalID target_id, size_t pos, size_t local_thread_id);
-
-#if !TB_STRIP_LABELS
-void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, size_t pos);
-#endif
 
 TB_Reg* tb_vla_reserve(TB_Function* f, size_t count);
 

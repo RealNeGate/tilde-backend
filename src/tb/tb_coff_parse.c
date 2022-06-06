@@ -57,8 +57,8 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
 
 		size_t string_table_pos = 8 + (symbol_count * sizeof(uint32_t));
 		assert(first_content_length >= string_table_pos);
-		
-		/*string_table = (TB_Slice){ 
+
+		/*string_table = (TB_Slice){
 			.length = first_content_length - string_table_pos,
 			.data   = &first->contents[string_table_pos]
 		};*/
@@ -128,7 +128,7 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
 
 			for (size_t i = 0; i < long_mode->section_count; i++) {
 				TB_ObjectSection* sec = &long_mode->sections[i];
-					
+
 				if (sec->name.length >= sizeof(".idata")-1 &&
 					memcmp(sec->name.data, ".idata", sizeof(".idata")-1) == 0) {
 					if (matching_idata) {
@@ -150,7 +150,7 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
 					if (matching_idata) break;
 				}
 			}
-		
+
 			if (idata_length) {
 				// iterate all import directories and extract imports
 				COFF_ImportDirectory* dirs = (COFF_ImportDirectory*) idata;
@@ -163,7 +163,7 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
 					printf("    Forwarder chain:     0x%x\n", dirs[i].forwarder_chain);
 					printf("    Name RVA:            0x%x\n", dirs[i].name);
 					printf("    Import adress table: 0x%x\n", dirs[i].import_address_table);
-				
+
 					if (dirs[i].import_lookup_table) {
 						// NOTE(NeGate): PE32+ uses 64bit entries and PE32 uses 32bit, we'll
 						// be assuming 64bit for now
@@ -179,7 +179,7 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
 			}
 
 			tb_object_free(long_mode);
-			//archive->object_files[archive->object_file_count++] = 
+			//archive->object_files[archive->object_file_count++] =
 		}
 	}
 
@@ -192,17 +192,16 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
 TB_ObjectFile* tb_object_parse_coff(const TB_Slice file) {
     COFF_FileHeader* header = (COFF_FileHeader*) &file.data[0];
 
-    TB_ObjectFile* obj_file =
-        malloc(sizeof(TB_ObjectFile) + (header->num_sections * sizeof(TB_ObjectSection)));
+    TB_ObjectFile* obj_file = malloc(sizeof(TB_ObjectFile) + (header->num_sections * sizeof(TB_ObjectSection)));
 
 	// not using calloc since i only really wanna clear the header
     memset(obj_file, 0, sizeof(TB_ObjectFile));
     obj_file->type = TB_OBJECT_FILE_COFF;
 
     switch (header->machine) {
-    case COFF_MACHINE_AMD64: obj_file->arch = TB_ARCH_X86_64; break;
-    case COFF_MACHINE_ARM64: obj_file->arch = TB_ARCH_AARCH64; break;
-    default: obj_file->arch = TB_ARCH_UNKNOWN; break;
+        case COFF_MACHINE_AMD64: obj_file->arch = TB_ARCH_X86_64; break;
+        case COFF_MACHINE_ARM64: obj_file->arch = TB_ARCH_AARCH64; break;
+        default: obj_file->arch = TB_ARCH_UNKNOWN; break;
 	}
 
     size_t string_table_pos = header->symbol_table + (header->symbol_count * sizeof(COFF_Symbol));
@@ -213,7 +212,7 @@ TB_ObjectFile* tb_object_parse_coff(const TB_Slice file) {
 		.data   = &file.data[string_table_pos]
 	};
 
-    obj_file->symbols      = malloc(header->symbol_count * sizeof(TB_ObjectSymbol));
+    obj_file->symbols = malloc(header->symbol_count * sizeof(TB_ObjectSymbol));
     obj_file->symbol_count = 0;
 
     size_t sym_id = 0;
@@ -222,7 +221,7 @@ TB_ObjectFile* tb_object_parse_coff(const TB_Slice file) {
         COFF_Symbol* sym = (COFF_Symbol*) &file.data[symbol_offset];
 
         TB_ObjectSymbol* out_sym = &obj_file->symbols[obj_file->symbol_count++];
-        *out_sym                 = (TB_ObjectSymbol) { 0 };
+        *out_sym = (TB_ObjectSymbol) { 0 };
 
         // Parse string table name stuff
         if (sym->long_name[0] == 0) {
@@ -233,7 +232,7 @@ TB_ObjectFile* tb_object_parse_coff(const TB_Slice file) {
         } else {
             // normal inplace string
 			size_t len = strlen((const char*) sym->short_name);
-			out_sym->name = (TB_Slice){ len, sym->short_name }; 
+			out_sym->name = (TB_Slice){ len, sym->short_name };
         }
 
         // Process aux symbols

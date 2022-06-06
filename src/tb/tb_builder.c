@@ -1027,12 +1027,3 @@ TB_API void tb_inst_ret(TB_Function* f, TB_Reg value) {
     f->nodes.data[f->current_label].label.terminator = r;
     f->current_label = TB_NULL_REG;
 }
-
-#if !TB_STRIP_LABELS
-void tb_emit_label_symbol(TB_Module* m, uint32_t func_id, uint32_t label_id, size_t pos) {
-    tb_assume(pos < UINT32_MAX);
-    TB_LabelSymbol sym = { .func_id = func_id, .label_id = label_id, .pos = pos };
-
-    arrput(m->label_symbols, sym);
-}
-#endif

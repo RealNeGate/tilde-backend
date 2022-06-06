@@ -2072,7 +2072,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
 
         ctx->gpr_available = 14;
         ctx->xmm_available = 16;
-        ctx->is_sysv       = EITHER2(f->module->target_system, TB_SYSTEM_LINUX, TB_SYSTEM_MACOS);
+        ctx->is_sysv       = (f->module->target_abi == TB_ABI_SYSTEMV);
         memset(ctx->addresses, 0, f->nodes.count * sizeof(AddressDesc));
     }
 
@@ -2193,12 +2193,6 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         // Define label position
         TB_Label label_id = start->label.id;
         ctx->header.labels[label_id] = GET_CODE_POS();
-
-#if !TB_STRIP_LABELS
-        if (label_id) {
-            tb_emit_label_symbol(f->module, ctx->function_id, label_id, GET_CODE_POS());
-        }
-#endif
 
 		// Generate instructions
         fast_eval_basic_block(ctx, f, bb, bb_end);

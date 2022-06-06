@@ -58,7 +58,7 @@ int main(int argc, char* argv[]) {
 	}
 
 	builder_init();
-	builder_compile(BUILD_MODE_STATIC_LIB, INPUT_FILE_COUNT, INPUT_FILES, output_lib_path, "external/tbbmalloc.lib");
+	builder_compile(BUILD_MODE_STATIC_LIB, INPUT_FILE_COUNT, INPUT_FILES, output_lib_path, ON_WINDOWS ? "external/tbbmalloc.lib" : "");
 
 #if defined(NEGATE)
 	// personal crap

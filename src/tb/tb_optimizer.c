@@ -1,4 +1,5 @@
 #include "tb_internal.h"
+#include <stdarg.h>
 
 #ifdef _WIN32
 #define strdup(s) _strdup(s)
@@ -90,7 +91,7 @@ TB_API bool tb_function_optimize(TB_Function* f) {
 	}
 
 #if LOGGING_OPTS
-	char* big_boy = malloc(2*65536);
+	char* big_boy = tb_platform_heap_alloc(2*65536);
 	int in_use = 1;
 
 	big_boy[0] = 0;
@@ -126,7 +127,7 @@ TB_API bool tb_function_optimize(TB_Function* f) {
 	}
 
 #if LOGGING_OPTS
-	free(big_boy);
+	tb_platform_heap_free(big_boy);
 #endif
 
 	return changes;

@@ -89,7 +89,8 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
 	memset(m, 0, sizeof(TB_Module));
 
 	m->max_threads = TB_MAX_THREADS;
-	m->target_arch = target_arch;
+    m->target_abi = (target_system == TB_SYSTEM_WINDOWS) ? TB_ABI_WIN64 : TB_ABI_SYSTEMV;
+    m->target_arch = target_arch;
 	m->target_system = target_system;
 	m->debug_fmt = debug_fmt;
 	m->features = *features;
@@ -189,10 +190,7 @@ TB_API void tb_module_destroy(TB_Module* m) {
 
 	tb_platform_vfree(m->prototypes_arena, PROTOTYPES_ARENA_SIZE * sizeof(uint64_t));
 
-#if !TB_STRIP_LABELS
-	arrfree(m->label_symbols);
-#endif
-	tb_platform_heap_free(m->files.data);
+    tb_platform_heap_free(m->files.data);
 	tb_platform_heap_free(m->functions.data);
 	tb_platform_heap_free(m);
 }

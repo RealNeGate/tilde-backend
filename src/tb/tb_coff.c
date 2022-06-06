@@ -151,11 +151,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 		loop(i, m->max_threads) {
 			header.symbol_count += arrlen(m->globals[i]);
 		}
-
-#if !TB_STRIP_LABELS
-		header.symbol_count += arrlen(m->label_symbols);
-#endif
-	}
+    }
 
 	// relocation
 	{
@@ -646,28 +642,6 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
             fwrite(&sym, sizeof(sym), 1, f);
         }
     }
-
-#if !TB_STRIP_LABELS
-    loop(i, arrlen(m->label_symbols)) {
-        TB_LabelSymbol* l = &m->label_symbols[i];
-        TB_FunctionOutput* out_f = &m->compiled_functions.data[l->func_id];
-
-        uint64_t meta = out_f->prologue_epilogue_metadata;
-        uint64_t stack_usage = out_f->stack_usage;
-
-        size_t actual_pos = func_layout[l->func_id] + code_gen->get_prologue_length(meta, stack_usage) + l->pos;
-
-        COFF_Symbol sym = {
-            .value = actual_pos,
-			.section_number = 1,
-			.storage_class = IMAGE_SYM_CLASS_LABEL
-        };
-
-        assert(l->label_id < 65536);
-        sprintf((char*)&sym.short_name[0], ".L%x", l->label_id);
-        fwrite(&sym, sizeof(sym), 1, f);
-    }
-#endif
 
     // String table
     // First 4 bytes are the size of the string table

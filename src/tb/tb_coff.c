@@ -389,9 +389,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
             TB_Global* g = &m->globals[i][j];
 
             TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-            TB_Initializer*  init =
-			(TB_Initializer*)&m
-				->initializers[g->init / per_thread_stride][g->init % per_thread_stride];
+            TB_Initializer*  init = (TB_Initializer*)&m->initializers[g->init / per_thread_stride][g->init % per_thread_stride];
 
             loop(k, init->obj_count) {
                 size_t actual_pos = g->pos + init->objects[k].offset;

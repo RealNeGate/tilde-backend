@@ -417,7 +417,7 @@ static void builder_compile_cc(BuildMode mode, size_t count, const char* filepat
 
             cmd_append(filepaths[i+j]);
 	    
-            printf("Compiling '%s'... %s\n", filepaths[i+j], command_buffer);
+            //printf("Compiling '%s'... %s\n", filepaths[i+j], command_buffer);
             streams[j] = cmd_run();
         }
 

@@ -310,29 +310,32 @@ bool tb_opt_canonicalize(TB_Function* f) {
 			int count = tb_node_get_phi_width(f, i);
 			TB_PhiInput* inputs = tb_node_get_phi_inputs(f, i);
 
-			if (count == 1) {
+			if (count == 0) {
+                tb_murder_node(f, n);
+            } else if (count == 1) {
 				OPTIMIZER_LOG(i, "removed trivial phi");
+
+                TB_Reg r = inputs[0].val;
+                assert(r > 0 && r < f->nodes.count);
+
+                if (n->type == TB_PHIN) tb_platform_heap_free(inputs);
 
 				// remove useless phi
 				n->type = TB_PASS;
-				n->pass.value = inputs[i].val;
+				n->pass.value = r;
 				changes++;
-
-				tb_platform_heap_free(inputs);
 			} else {
 				// Check for any duplicate inputs
-				assert(n->phi.count > 0);
-
 				size_t new_length = 0;
 				TB_PhiInput* new_inputs = tb_tls_push(tls, 0);
 
-				loop(i, count) {
-					TB_Reg a = inputs[i].val;
-					TB_Reg b = inputs[i].label;
+				loop(j, count) {
+					TB_Reg a = inputs[j].val;
+					TB_Reg b = inputs[j].label;
 
 					bool duplicate = false;
-					loop_range(j, 0, i) {
-						if (inputs[j].val == a) {
+					loop_range(k, 0, j) {
+						if (inputs[k].val == a) {
 							duplicate = true;
 							break;
 						}
@@ -348,60 +351,64 @@ bool tb_opt_canonicalize(TB_Function* f) {
 					// Pass it off to more permanent storage
 					OPTIMIZER_LOG(i, "Deduplicated PHI node entries");
 
-					TB_PhiInput* more_permanent_store = tb_platform_heap_alloc(new_length * sizeof(TB_PhiInput));
+					if (n->type == TB_PHIN) {
+                        tb_platform_heap_free(inputs);
+                    }
+
+                    TB_PhiInput* more_permanent_store = tb_platform_heap_alloc(new_length * sizeof(TB_PhiInput));
 					memcpy(more_permanent_store, new_inputs, new_length * sizeof(TB_PhiInput));
 
 					n->type = TB_PHIN;
 					n->phi.count = new_length;
-					n->phi.inputs = new_inputs;
+					n->phi.inputs = more_permanent_store;
 					changes++;
-
-					free(inputs);
 				}
 				tb_tls_restore(tls, new_inputs);
 			}
-		} else if (n->type == TB_LABEL) {
-			if (f->nodes.data[n->next].type == TB_GOTO) {
-				TB_Label label = f->nodes.data[n->next].goto_.label;
-				TB_Reg reg = tb_find_reg_from_label(f, label);
+        } else if (n->type == TB_GOTO) {
+            TB_Label label = n->goto_.label;
+            TB_Reg target_reg = tb_find_reg_from_label(f, label);
+            TB_Node* target = &f->nodes.data[target_reg];
 
-				replace_label(f, n, label, reg);
-				tb_murder_node(f, &f->nodes.data[n->next]);
-			} else {
-				TB_Node* end = &f->nodes.data[0];
-				TB_Reg bb_start = 0;
-				TB_Reg bb_end = 0;
+			if (f->nodes.data[target->next].type == TB_GOTO) {
+                OPTIMIZER_LOG(i, "jump threading");
+                n->goto_.label = f->nodes.data[target->next].goto_.label;
+                changes++;
+            }
+        } else if (n->type == TB_LABEL) {
+            TB_Node* end = &f->nodes.data[0];
+            TB_Reg bb_start = 0;
+            TB_Reg bb_end = 0;
 
-				// Find sequence of labels
-				int count = 0;
-				{
-					TB_Node* seq = n;
-					while (seq = &f->nodes.data[seq->next],
-						   seq->type == TB_LABEL && seq != end) {
-						bb_end = seq->label.terminator;
-						count += 1;
-					}
+            // Find sequence of labels
+            int count = 0;
+            {
+                TB_Node* seq = n;
+                while (seq = &f->nodes.data[seq->next],
+                       seq->type == TB_LABEL && seq != end) {
+                    bb_end = seq->label.terminator;
+                    count += 1;
+                }
 
-					bb_start = (seq - f->nodes.data);
-				}
+                bb_start = (seq - f->nodes.data);
+            }
 
-				if (count > 0) {
-					OPTIMIZER_LOG(i, "merge labels");
-					TB_Label label = n->label.id;
+            if (count > 0) {
+                TB_Label label = n->label.id;
 
-					TB_Node* seq = &f->nodes.data[n->next];
-					do {
-						replace_label(f, seq, label, i);
-						seq = &f->nodes.data[seq->next];
-					} while (seq->type == TB_LABEL && seq != end);
+                TB_Node* seq = &f->nodes.data[n->next];
+                do {
+                    OPTIMIZER_LOG(i, "merge labels r%d", (TB_Reg)(seq - f->nodes.data));
+                    replace_label(f, seq, label, i);
+                    seq = &f->nodes.data[seq->next];
+                } while (seq->type == TB_LABEL && seq != end);
 
-					n->next = bb_start;
-					n->label.terminator = bb_end;
-					changes++;
-				}
-			}
-		}
-	}
+                n->next = bb_start;
+                n->label.terminator = bb_end;
+                changes++;
+            }
+        }
+    }
 
-	return (changes > 0);
+    return (changes > 0);
 }

@@ -1000,7 +1000,10 @@ extern "C" {
 		const char* name;
 		bool (*execute)(TB_Function* f);
 
-		bool run_once;
+        bool run_once;
+
+        // it doesn't matter if it passes or fails, it'll continue
+        bool silent;
 	} TB_FunctionPass;
 
 	// Applies single function optimizations until it runs out

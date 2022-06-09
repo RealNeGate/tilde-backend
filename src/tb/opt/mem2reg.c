@@ -150,7 +150,7 @@ static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB
 
     if (same == TB_NULL_REG) {
         // The phi is unreachable or in the start block
-        return same;
+        return 0;
     }
 
     TB_Reg* uses = tb_tls_push(c->tls, f->nodes.count * sizeof(TB_Reg));
@@ -160,6 +160,7 @@ static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB
     tb_tls_restore(c->tls, &uses[use_count]);
 
     // replace all references
+    OPTIMIZER_LOG(phi_reg, "  renamed trivial PHI with PASS r%d", same);
     assert(same != TB_NULL_REG);
     phi_node->type = TB_PASS;
     phi_node->pass.value = same;
@@ -200,11 +201,14 @@ static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_
         phi_node->phi2.inputs[1] = (TB_PhiInput){ tb_find_reg_from_label(f, label), reg };
 	} else if (count == 2) {
         phi_node->type = TB_PHIN;
-		phi_node->phi.count = 3;
-		phi_node->phi.inputs = tb_platform_heap_alloc(3 * sizeof(TB_PhiInput));
-		phi_node->phi.inputs[0] = inputs[0];
-		phi_node->phi.inputs[1] = inputs[1];
-		phi_node->phi.inputs[2] = (TB_PhiInput){ tb_find_reg_from_label(f, label), reg };
+
+        TB_PhiInput* new_inputs = tb_platform_heap_alloc(3 * sizeof(TB_PhiInput));
+		new_inputs[0] = inputs[0];
+		new_inputs[1] = inputs[1];
+		new_inputs[2] = (TB_PhiInput){ tb_find_reg_from_label(f, label), reg };
+
+        phi_node->phi.count = 3;
+		phi_node->phi.inputs = new_inputs;
     } else {
 		size_t index = phi_node->phi.count++;
 		phi_node->phi.inputs = tb_platform_heap_realloc(phi_node->phi.inputs, phi_node->phi.count * sizeof(TB_PhiInput));

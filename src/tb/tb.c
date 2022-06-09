@@ -856,9 +856,9 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 			for (size_t j = 0; j < entry_count; j++) {
 				TB_SwitchEntry* e = (TB_SwitchEntry*)&f->vla.data[entry_start + (j * 2)];
 
-				callback(user_data, "\t\t\t%u -> L%d,\n", e->key, e->value);
+				callback(user_data, "    %u -> L%d,\n", e->key, e->value);
 			}
-			callback(user_data, "\t\t\tdefault -> L%d)", n->switch_.default_label);
+			callback(user_data, "    default -> L%d)", n->switch_.default_label);
 			break;
 		}
 		case TB_FUNC_ADDRESS: {
@@ -921,9 +921,9 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 			tb_print_type(dt, callback, user_data);
 			callback(user_data, " ");
 
-			loop(i, count) {
-				if (i) callback(user_data, ", ");
-				callback(user_data, "L%d:r%u", f->nodes.data[inputs[i].label].label.id, inputs[i].val);
+			loop(j, count) {
+				if (j) callback(user_data, ", ");
+				callback(user_data, "L%d:r%u", f->nodes.data[inputs[j].label].label.id, inputs[j].val);
 			}
 			break;
 		}

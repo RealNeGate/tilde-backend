@@ -6,6 +6,8 @@
 #define strtok_r(a, b, c) strtok_s(a, b, c)
 #endif
 
+#define DIFF_BUFFER_SIZE 131072
+
 #define OPT(x) { #x, tb_opt_ ## x, false }
 #define OPT_RUN_ONCE(x) { #x, tb_opt_ ## x, true }
 #define OPT_SILENT(x) { #x, tb_opt_ ## x, false, true }
@@ -38,10 +40,10 @@ static void print_to_buffer(void* user_data, const char* fmt, ...) {
 
     va_list ap;
     va_start(ap, fmt);
-    int result = vsnprintf(buffer + len, 65536 - len, fmt, ap);
+    int result = vsnprintf(buffer + len, DIFF_BUFFER_SIZE - len, fmt, ap);
     va_end(ap);
 
-    if (result < 0 || result >= (65536 - len)) {
+    if (result < 0 || result >= (DIFF_BUFFER_SIZE - len)) {
         tb_panic("Ran out of space in my internal buffer");
     }
 }
@@ -113,7 +115,7 @@ TB_API bool tb_function_optimize(TB_Function* f) {
     }
 
 #if LOGGING_OPTS
-    char* big_boy = tb_platform_heap_alloc(2*65536);
+    char* big_boy = tb_platform_heap_alloc(2*DIFF_BUFFER_SIZE);
     int in_use = 1;
 
     big_boy[0] = 0;
@@ -129,8 +131,8 @@ TB_API bool tb_function_optimize(TB_Function* f) {
         if (success) {
 #if LOGGING_OPTS
             // double buffering amirite
-            char* oldstr = &big_boy[in_use ? 0 : 65536];
-            char* newstr = &big_boy[in_use ? 65536 : 0];
+            char* oldstr = &big_boy[in_use ? 0 : DIFF_BUFFER_SIZE];
+            char* newstr = &big_boy[in_use ? DIFF_BUFFER_SIZE : 0];
 
             // Reset then write IR dump into newstr
             *newstr = 0;

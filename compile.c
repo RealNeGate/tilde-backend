@@ -8,6 +8,7 @@ static const char* INPUT_FILES[] = {
     "src/tb/tb_builder.c",
     "src/tb/tb_internal.c",
     "src/tb/tb_jit.c",
+    "src/tb/ir_printer.c",
     "src/tb/hash.c",
     "src/tb/bigint/BigInt.c",
 

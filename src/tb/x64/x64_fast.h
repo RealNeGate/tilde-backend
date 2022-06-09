@@ -680,7 +680,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 			case TB_NULL:
 			case TB_PARAM:
 			case TB_PHI1:
-			case TB_PHI2:
+            case TB_PHI2:
+            case TB_PHIN:
 			case TB_GLOBAL_ADDRESS:
 			case TB_PARAM_ADDR:
 			case TB_LOCAL:
@@ -1939,25 +1940,27 @@ static void fast_eval_terminator_phis(X64_FastCtx* restrict ctx, TB_Function* f,
 				if (inputs[j].label == from) {
 					TB_Reg src = inputs[j].val;
 
-					Val dst;
-					if (ctx->addresses[r].type == ADDRESS_DESC_NONE) {
-						int size = get_data_type_size(dt);
-						int pos  = STACK_ALLOC(size, size);
+                    if (src != TB_NULL_REG) {
+                        Val dst;
+                        if (ctx->addresses[r].type == ADDRESS_DESC_NONE) {
+                            int size = get_data_type_size(dt);
+                            int pos  = STACK_ALLOC(size, size);
 
-						dst = val_stack(dt, pos);
-						fast_def_spill(ctx, f, r, pos, dt);
-					} else {
-						assert(ctx->addresses[r].type == ADDRESS_DESC_SPILL);
-						dst = val_stack(dt, ctx->addresses[r].spill);
-					}
+                            dst = val_stack(dt, pos);
+                            fast_def_spill(ctx, f, r, pos, dt);
+                        } else {
+                            assert(ctx->addresses[r].type == ADDRESS_DESC_SPILL);
+                            dst = val_stack(dt, ctx->addresses[r].spill);
+                        }
 
-					if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
-						// TODO(NeGate): Handle vector and float types
-						tb_todo();
-					} else {
-						fast_folded_op(ctx, f, MOV, &dst, src);
-					}
-				}
+                        if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
+                            // TODO(NeGate): Handle vector and float types
+                            tb_todo();
+                        } else {
+                            fast_folded_op(ctx, f, MOV, &dst, src);
+                        }
+                    }
+                }
 			}
 		}
 	}

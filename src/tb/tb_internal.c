@@ -69,88 +69,67 @@ TB_Reg tb_function_insert_after(TB_Function* f, TB_Reg at) {
 //
 // TODO(NeGate): Move this out of this file once it's relevant
 // TODO(NeGate): Implement multiple return statements, VLA insertion, and proper labels
-TB_Reg tb_insert_copy_ops(TB_Function* f, const TB_Reg* params, TB_Reg at,
-						  const TB_Function* src_func, TB_Reg src_base, int count) {
+TB_Reg tb_insert_copy_ops(TB_Function* f, const TB_Reg* params, TB_Reg at, const TB_Function* src_func, TB_Reg src_base, int count) {
     tb_panic("TODO: implement tb_insert_copy_ops");
     return 0;
 }
 
+#define APPEND_TO_REG_LIST(x) (*((TB_Reg*)tb_tls_push(tls, sizeof(TB_Reg))) = id, count += 1);
 TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count) {
     size_t count = 0;
     TB_Label* preds = tb_tls_push(tls, 0);
 
     TB_Node* nodes = f->nodes.data;
     TB_Reg label = 1;
-    do {
+    while (label != TB_NULL_REG) {
         TB_Node* start = &nodes[label];
+        assert(start->type == TB_LABEL);
+
         TB_Reg terminator = start->label.terminator;
         TB_Label id = start->label.id;
 
         TB_Node* end = &nodes[terminator];
-        if (start == end) break;
+        switch (end->type) {
+            case TB_LABEL: {
+                if (l == end->label.id) APPEND_TO_REG_LIST(id);
 
-		switch (end->type) {
-			case TB_LABEL: {
-				if (l == end->label.id) {
-					*((TB_Reg*)tb_tls_push(tls, sizeof(TB_Reg))) = id;
-					count++;
-				}
+                label = terminator;
+                break;
+            }
+            case TB_IF: {
+                if (l == end->if_.if_true) APPEND_TO_REG_LIST(id);
+                if (l == end->if_.if_false) APPEND_TO_REG_LIST(id);
 
-				label = terminator;
-				break;
-			}
-			case TB_IF: {
-				if (l == end->if_.if_true) {
-					*((TB_Reg*)tb_tls_push(tls, sizeof(TB_Reg))) = id;
-					count++;
-				}
+                label = end->next;
+                break;
+            }
+            case TB_GOTO: {
+                if (l == end->goto_.label) APPEND_TO_REG_LIST(id);
 
-				if (l == end->if_.if_false) {
-					*((TB_Reg*)tb_tls_push(tls, sizeof(TB_Reg))) = id;
-					count++;
-				}
-
-				label = end->next;
-				break;
-			}
-			case TB_GOTO: {
-				if (l == end->goto_.label) {
-					*((TB_Reg*)tb_tls_push(tls, sizeof(TB_Reg))) = id;
-					count++;
-				}
-
-				label = end->next;
-				break;
-			}
-			case TB_SWITCH: {
+                label = end->next;
+                break;
+            }
+            case TB_SWITCH: {
 				size_t entry_count = (end->switch_.entries_end - end->switch_.entries_start) / 2;
-				loop(i, entry_count) {
-					TB_SwitchEntry* entry =
-                    (TB_SwitchEntry*)&f->vla.data[end->switch_.entries_start + (i * 2)];
+                TB_SwitchEntry* entries = (TB_SwitchEntry*) &f->vla.data[end->switch_.entries_start];
 
-					if (l == entry->key) {
-						*((TB_Reg*)tb_tls_push(tls, sizeof(TB_Reg))) = id;
-						count++;
-					}
+                loop(i, entry_count) {
+					if (l == entries[i].key) APPEND_TO_REG_LIST(id);
 				}
 
-				if (l == end->switch_.default_label) {
-					*((TB_Reg*)tb_tls_push(tls, sizeof(TB_Reg))) = id;
-					count++;
-				}
+                if (l == end->switch_.default_label) APPEND_TO_REG_LIST(id);
 
 				label = end->next;
 				break;
 			}
+            case TB_RET: label = end->next; break;
+            default: tb_todo();
+        }
 
-			case TB_RET: label = end->next; break;
+        // Skip until we reach a label again
+        while (label && nodes[label].type != TB_LABEL) label = nodes[label].next;
+    }
 
-			case TB_NULL: goto done;
-			default: tb_todo();
-		}
-    } while (label);
-
-	done:
     *dst_count = count;
     return preds;
 }

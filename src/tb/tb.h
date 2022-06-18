@@ -364,7 +364,9 @@ extern "C" {
 		TB_VA_START,
 
 		// x86 intrinsics
-		TB_X86INTRIN_SQRT,
+        TB_X86INTRIN_LDMXCSR,
+        TB_X86INTRIN_STMXCSR,
+        TB_X86INTRIN_SQRT,
 		TB_X86INTRIN_RSQRT,
 	} TB_NodeTypeEnum;
 	typedef uint8_t TB_NodeType;
@@ -738,10 +740,13 @@ extern "C" {
 	// dont and the tls_index is used, it'll crash
 	TB_API void tb_module_set_tls_index(TB_Module* m, TB_ExternalID e);
 
-	// Exports an object file with all the machine code and symbols generated.
+	// Exports an relocatable object file
 	TB_API bool tb_module_export(TB_Module* m, const char* path);
 
-	// For isel_mode, TB_ISEL_FAST will compile faster but worse codegen
+    // Exports an fully linked executable file
+	TB_API bool tb_module_export_exec(TB_Module* m, const char* path);
+
+    // For isel_mode, TB_ISEL_FAST will compile faster but worse codegen
 	// TB_ISEL_COMPLEX will compile slower but better codegen
 	TB_API void tb_module_export_jit(TB_Module* m, TB_ISelMode isel_mode);
 
@@ -977,7 +982,9 @@ extern "C" {
 	TB_API TB_Reg tb_inst_va_start(TB_Function* f, TB_Reg a);
 
 	// x86 Intrinsics
-	TB_API TB_Reg tb_inst_x86_sqrt(TB_Function* f, TB_Reg a);
+    TB_API TB_Reg tb_inst_x86_ldmxcsr(TB_Function* f, TB_Reg a);
+    TB_API TB_Reg tb_inst_x86_stmxcsr(TB_Function* f);
+    TB_API TB_Reg tb_inst_x86_sqrt(TB_Function* f, TB_Reg a);
 	TB_API TB_Reg tb_inst_x86_rsqrt(TB_Function* f, TB_Reg a);
 
 	// Control flow

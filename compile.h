@@ -266,7 +266,7 @@ static struct subprocess_s cmd_run() {
         for (int i = 0; i < cmd_length-1; i++) {
             fprintf(stderr, "[%d] = '%s'\n", i, cmds[i]);
         }
-	exit(1);
+        exit(1);
     }
 
     command_buffer[0] = 0;
@@ -387,7 +387,7 @@ static void builder_compile_cc(BuildMode mode, size_t count, const char* filepat
             cmd_append(" -march=haswell -maes -Werror -Wall -Wno-trigraphs -Wno-unused-function -Wno-missing-declarations ");
 
             if (RELEASE_BUILD) {
-                cmd_append("-O2 -DNDEBUG ");
+                cmd_append("-O2 -DNDEBUG -flto ");
             }
 
             if (ON_CLANG) {
@@ -416,7 +416,7 @@ static void builder_compile_cc(BuildMode mode, size_t count, const char* filepat
 #endif
 
             cmd_append(filepaths[i+j]);
-	    
+
             //printf("Compiling '%s'... %s\n", filepaths[i+j], command_buffer);
             streams[j] = cmd_run();
         }
@@ -459,9 +459,9 @@ static void builder_compile_cc(BuildMode mode, size_t count, const char* filepat
             cmd_append(" ");
 
             if (ON_WINDOWS) {
-                cmd_append("tildebackend.lib build/*.obj -lole32 -lAdvapi32 -lOleAut32 -lDbgHelp ");
+                cmd_append("build/*.obj -lole32 -lAdvapi32 -lOleAut32 -lDbgHelp ");
             } else {
-                cmd_append("./tildebackend.a build/*.o -lc -lm -lpthread ");
+                cmd_append("build/*.o -lc -lm -lpthread ");
             }
 
             cmd_append(extra_libraries);

@@ -1,4 +1,4 @@
-#include "tb_macho.h"
+#include "macho.h"
 
 void tb_export_macho(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt) {
     //TB_TemporaryStorage* tls = tb_tls_allocate();

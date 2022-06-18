@@ -1,5 +1,5 @@
-#include "tb_internal.h"
-#include "scalable_allocator.h"
+#include "../tb_internal.h"
+#include "../scalable_allocator.h"
 
 void* tb_platform_valloc(size_t size) {
     return VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);

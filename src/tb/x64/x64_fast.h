@@ -1384,9 +1384,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 				assert(dt.width == 0 && "TODO: Implement vector bitcast");
 
 				Val src = fast_eval(ctx, f, n->unary.src);
-
-				int dt_size = get_data_type_size(dt);
-				assert(dt_size == get_data_type_size(src.dt));
+				assert(get_data_type_size(dt) == get_data_type_size(src.dt));
 
 				bool is_src_int = src.dt.type == TB_INT || src.dt.type == TB_PTR;
 				bool is_dst_int = dt.type == TB_INT || dt.type == TB_PTR;

@@ -1,5 +1,5 @@
 // imma shorten Mach-O into MO
-#include "tb_internal.h"
+#include "../tb_internal.h"
 
 typedef struct {
     uint32_t magic;

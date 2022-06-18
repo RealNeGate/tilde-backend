@@ -16,10 +16,13 @@ static const char* INPUT_FILES[] = {
     "src/tb/codegen/tree.c",
 
     // Object file formats
-    "src/tb/tb_coff.c",
-    "src/tb/tb_coff_parse.c",
-    "src/tb/tb_elf64.c",
-    "src/tb/tb_macho.c",
+    "src/tb/objects/coff.c",
+    "src/tb/objects/coff_parse.c",
+    "src/tb/objects/elf64.c",
+    "src/tb/objects/macho.c",
+
+    // Executable formats
+    "src/tb/objects/pe.c",
 
     // Targets go here
     "src/tb/x64/x64.c",
@@ -43,9 +46,9 @@ static const char* INPUT_FILES[] = {
 
     // Platform specific
 #if defined(_WIN32)
-    "src/tb/tb_win32.c"
+    "src/tb/system/win32.c"
 #else
-    "src/tb/tb_posix.c"
+    "src/tb/system/posix.c"
 #endif
 };
 enum { INPUT_FILE_COUNT = sizeof(INPUT_FILES) / sizeof(INPUT_FILES[0]) };

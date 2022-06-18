@@ -232,14 +232,6 @@ static void seal_block(Mem2Reg_Ctx* restrict c, TB_Label block) {
     c->sealed_blocks[block] = true;
 }
 
-static void try_seal_block(Mem2Reg_Ctx* restrict c, TB_Label block, int* seal_counter) {
-	int remaining = --seal_counter[block];
-	if (remaining == 0) {
-		assert(c->sealed_blocks[block] == false);
-		seal_block(c, block);
-	}
-}
-
 // NOTE(NeGate): All locals were moved into the first basic block by
 // opt_hoist_locals earlier
 bool tb_opt_mem2reg(TB_Function* f) {
@@ -309,9 +301,6 @@ bool tb_opt_mem2reg(TB_Function* f) {
     c.sealed_blocks = tb_tls_push(tls, c.label_count * sizeof(bool));
     memset(c.sealed_blocks, 0, c.label_count * sizeof(bool));
 
-	// counts how many blocks must be completed until we can seal a block
-	//int* seal_counter = tb_tls_push(tls, c.label_count * sizeof(int));
-
     // Calculate all the immediate predecessors
     // First BB has no predecessors
     {
@@ -322,13 +311,9 @@ bool tb_opt_mem2reg(TB_Function* f) {
         c.pred_count[0] = 0;
         c.preds[0] = NULL;
 
-		//seal_counter[0] = 1;
-
         loop_range(j, 1, c.label_count) {
             c.preds[j] = (TB_Label*)tb_tls_push(tls, 0);
             tb_calculate_immediate_predeccessors(f, tls, j, &c.pred_count[j]);
-
-			//seal_counter[j] = c.pred_count[j];
 		}
     }
 
@@ -362,8 +347,8 @@ bool tb_opt_mem2reg(TB_Function* f) {
 					TB_Reg value = read_variable(&c, var, block);
 					assert(value);
 
-					n->type = TB_PASS;
-					n->pass.value = value;
+					f->nodes.data[i].type = TB_PASS;
+					f->nodes.data[i].pass.value = value;
 				}
 				break;
 			}

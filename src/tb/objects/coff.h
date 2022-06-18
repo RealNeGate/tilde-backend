@@ -1,5 +1,4 @@
-#include "tb_internal.h"
-
+#include "../tb_internal.h"
 #include <sys/stat.h>
 
 #ifdef _WIN32

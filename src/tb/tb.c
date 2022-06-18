@@ -164,6 +164,18 @@ TB_API bool tb_module_export(TB_Module* m, const char* path) {
 	return true;
 }
 
+TB_API bool tb_module_export_exec(TB_Module* m, const char* path) {
+	const ICodeGen* restrict code_gen = tb_find_code_generator(m);
+	const IDebugFormat* restrict debug_fmt = tb_find_debug_format(m);
+
+	switch (m->target_system) {
+		case TB_SYSTEM_WINDOWS: tb_export_pe(m, code_gen, path, debug_fmt); break;
+		default:                tb_panic("TinyBackend error: Unknown system!\n");
+	}
+
+	return true;
+}
+
 TB_API void tb_module_destroy(TB_Module* m) {
 	tb_platform_arena_free();
 	tb_platform_string_free();

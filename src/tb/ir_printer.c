@@ -23,8 +23,8 @@ static void tb_print_type(TB_DataType dt, TB_PrintCallback callback, void* user_
 			break;
 		}
 		case TB_FLOAT: {
-			if (dt.data == 32) callback(user_data, "f32");
-			if (dt.data == 64) callback(user_data, "f64");
+			if (dt.data == TB_FLT_32) callback(user_data, "f32");
+			if (dt.data == TB_FLT_64) callback(user_data, "f64");
 			break;
 		}
 		default: tb_todo();
@@ -144,7 +144,18 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 			}
 			tb_print_type(dt, callback, user_data);
 			callback(user_data, " r%u, r%u", n->i_arith.a, n->i_arith.b);
-			break;
+
+            switch (n->i_arith.arith_behavior) {
+                case TB_ASSUME_NSW: callback(user_data, " # no signed wrap"); break;
+                case TB_ASSUME_NUW: callback(user_data, " # no signed wrap"); break;
+                case TB_CAN_WRAP: callback(user_data, " # can wrap"); break;
+                case TB_SIGNED_TRAP_ON_WRAP: callback(user_data, " # signed trap on wrap"); break;
+                case TB_UNSIGNED_TRAP_ON_WRAP: callback(user_data, " # unsigned trap on wrap"); break;
+                case TB_SATURATED_UNSIGNED: callback(user_data, " # saturated unsigned"); break;
+                case TB_SATURATED_SIGNED: callback(user_data, " # saturated signed"); break;
+                default: tb_todo();
+            }
+            break;
 		}
 		case TB_FADD:
 		case TB_FSUB:
@@ -174,12 +185,12 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 		switch (type) {
 			case TB_CMP_NE: callback(user_data, "cmp.ne."); break;
 			case TB_CMP_EQ: callback(user_data, "cmp.eq."); break;
-			case TB_CMP_ULT: callback(user_data, "icmp.ult."); break;
-			case TB_CMP_ULE: callback(user_data, "icmp.sle."); break;
-			case TB_CMP_SLT: callback(user_data, "icmp.slt."); break;
-			case TB_CMP_SLE: callback(user_data, "icmp.sle."); break;
-			case TB_CMP_FLT: callback(user_data, "fcmp.lt."); break;
-			case TB_CMP_FLE: callback(user_data, "fcmp.le."); break;
+			case TB_CMP_ULT: callback(user_data, "cmp.ult."); break;
+			case TB_CMP_ULE: callback(user_data, "cmp.sle."); break;
+			case TB_CMP_SLT: callback(user_data, "cmp.slt."); break;
+			case TB_CMP_SLE: callback(user_data, "cmp.sle."); break;
+			case TB_CMP_FLT: callback(user_data, "cmp.lt."); break;
+			case TB_CMP_FLE: callback(user_data, "cmp.le."); break;
 			default: tb_todo();
 		}
 		tb_print_type(n->cmp.dt, callback, user_data);

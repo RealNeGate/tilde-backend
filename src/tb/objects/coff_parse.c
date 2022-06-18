@@ -1,4 +1,4 @@
-#include "tb_coff.h"
+#include "coff.h"
 
 // section related crap likes to be sorted in lexical order :p
 static int compare_sections(const void* a, const void* b) {
@@ -57,6 +57,7 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
 
 		size_t string_table_pos = 8 + (symbol_count * sizeof(uint32_t));
 		assert(first_content_length >= string_table_pos);
+        ((void)string_table_pos);
 
 		/*string_table = (TB_Slice){
 			.length = first_content_length - string_table_pos,

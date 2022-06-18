@@ -658,9 +658,13 @@ void* tb_tls_pop(TB_TemporaryStorage* store, size_t size);
 void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance);
 bool tb_tls_can_fit(TB_TemporaryStorage* store, size_t size);
 
+// object file output
 void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt);
 void tb_export_macho(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt);
 void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt);
+
+// executable file format
+void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt);
 
 uint8_t* tb_out_reserve(TB_Emitter* o, size_t count);
 // The return value is the start of the empty region after
@@ -745,7 +749,7 @@ inline static bool tb_next_biggest(int* result, int v, size_t n, const int* arr)
 #endif
 
 // NOTE(NeGate): clean this up
-#if 1
+#if 0
 #define OPTIMIZER_LOG(at, ...) ((TB_Reg) (at))
 #define LOGGING_OPTS 0
 #else

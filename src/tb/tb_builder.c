@@ -799,6 +799,18 @@ TB_API TB_Reg tb_inst_va_start(TB_Function* f, TB_Reg a) {
     return r;
 }
 
+TB_API TB_Reg tb_inst_x86_ldmxcsr(TB_Function* f, TB_Reg a) {
+    assert(f->nodes.data[a].dt.type == TB_INT && f->nodes.data[a].dt.data == 32);
+
+    TB_Reg r = tb_make_reg(f, TB_X86INTRIN_SQRT, TB_TYPE_I32);
+    f->nodes.data[r].unary = (struct TB_NodeUnary) { a };
+    return r;
+}
+
+TB_API TB_Reg tb_inst_x86_stmxcsr(TB_Function* f) {
+    return tb_make_reg(f, TB_X86INTRIN_STMXCSR, TB_TYPE_I32);
+}
+
 TB_API TB_Reg tb_inst_x86_sqrt(TB_Function* f, TB_Reg a) {
     TB_DataType dt = f->nodes.data[a].dt;
 

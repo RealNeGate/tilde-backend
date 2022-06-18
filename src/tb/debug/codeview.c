@@ -1,4 +1,4 @@
-#include "../tb_coff.h"
+#include "../objects/coff.h"
 
 // constant sized "hash map" which is used to
 // deduplicate types in the codeview

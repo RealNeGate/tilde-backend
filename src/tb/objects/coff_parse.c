@@ -109,12 +109,12 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
 			case 1: printf("IMPORT_DATA  ");  break;
 			case 2: printf("IMPORT_CONST "); break;
 			default: printf("??\n");          break;
-			}*/
+			}
 
 			const char* imported_symbol = (const char*) &sym->contents[sizeof(COFF_ImportHeader)];
 			const char* dll_path = (const char*) &sym->contents[sizeof(COFF_ImportHeader) + strlen(imported_symbol) + 1];
 
-			printf("%s : %s\n", dll_path, imported_symbol);
+			printf("%s : %s\n", dll_path, imported_symbol);*/
 		} else {
 			TB_ObjectFile* long_mode = tb_object_parse_coff((TB_Slice){ len, sym->contents });
 
@@ -133,11 +133,11 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
 				if (sec->name.length >= sizeof(".idata")-1 &&
 					memcmp(sec->name.data, ".idata", sizeof(".idata")-1) == 0) {
 					if (matching_idata) {
-						printf("\n\nLong mode:\n");
+						//printf("\n\nLong mode:\n");
 					}
 					matching_idata = true;
 
-					printf("  Joining %.*s\n", (int)sec->name.length, sec->name.data);
+					//printf("  Joining %.*s\n", (int)sec->name.length, sec->name.data);
 
 					// Join onto the idata stream
 					idata = realloc(idata, idata_length + sec->raw_data.length);
@@ -154,7 +154,7 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
 
 			if (idata_length) {
 				// iterate all import directories and extract imports
-				COFF_ImportDirectory* dirs = (COFF_ImportDirectory*) idata;
+				/*COFF_ImportDirectory* dirs = (COFF_ImportDirectory*) idata;
 
 				size_t i = 0;
 				for (; dirs[i].import_lookup_table != 0; i++) {
@@ -176,7 +176,7 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
 							printf("      0x%016llx\n", (long long)import_lookup_table[j]);
 						}
 					}
-				}
+				}*/
 			}
 
 			tb_object_free(long_mode);
@@ -245,8 +245,7 @@ TB_ObjectFile* tb_object_parse_coff(const TB_Slice file) {
     }
 
     // trim the symbol table
-    obj_file->symbols =
-        realloc(obj_file->symbols, obj_file->symbol_count * sizeof(TB_ObjectSymbol));
+    obj_file->symbols = realloc(obj_file->symbols, obj_file->symbol_count * sizeof(TB_ObjectSymbol));
 
     obj_file->section_count = header->num_sections;
     loop(i, header->num_sections) {
@@ -254,8 +253,8 @@ TB_ObjectFile* tb_object_parse_coff(const TB_Slice file) {
         size_t section_offset = sizeof(COFF_FileHeader) + (i * sizeof(COFF_SectionHeader));
         COFF_SectionHeader* sec = (COFF_SectionHeader*) &file.data[section_offset];
 
-        TB_ObjectSection* out_sec = &obj_file->sections[i];
-        *out_sec                  = (TB_ObjectSection) { 0 };
+        TB_ObjectSection* restrict out_sec = &obj_file->sections[i];
+        *out_sec = (TB_ObjectSection) { 0 };
 
         // Parse string table name stuff
         uint32_t long_name[2];
@@ -269,9 +268,47 @@ TB_ObjectFile* tb_object_parse_coff(const TB_Slice file) {
             out_sec->name = (TB_Slice){ len, (uint8_t*) sec->name };
         }
 
+        // Parse relocations
+        if (sec->num_reloc > 0) {
+            out_sec->relocation_count = sec->num_reloc;
+            COFF_ImageReloc* src_relocs = (COFF_ImageReloc*) &file.data[sec->pointer_to_reloc];
+
+            TB_ObjectReloc* dst_relocs = malloc(sec->num_reloc * sizeof(TB_ObjectReloc));
+            loop(j, sec->num_reloc) {
+                dst_relocs[j] = (TB_ObjectReloc){ 0 };
+                switch (src_relocs[j].Type) {
+                    case IMAGE_REL_AMD64_ADDR32NB: dst_relocs[j].type = TB_OBJECT_RELOC_ADDR32NB; break;
+                    case IMAGE_REL_AMD64_ADDR32:   dst_relocs[j].type = TB_OBJECT_RELOC_ADDR32; break;
+                    case IMAGE_REL_AMD64_ADDR64:   dst_relocs[j].type = TB_OBJECT_RELOC_ADDR64; break;
+                    case IMAGE_REL_AMD64_SECREL:   dst_relocs[j].type = TB_OBJECT_RELOC_SECREL; break;
+                    case IMAGE_REL_AMD64_SECTION:  dst_relocs[j].type = TB_OBJECT_RELOC_SECTION; break;
+
+                    case IMAGE_REL_AMD64_REL32:
+                    case IMAGE_REL_AMD64_REL32_1:
+                    case IMAGE_REL_AMD64_REL32_2:
+                    case IMAGE_REL_AMD64_REL32_3:
+                    case IMAGE_REL_AMD64_REL32_4:
+                    case IMAGE_REL_AMD64_REL32_5:
+                    dst_relocs[j].type = TB_OBJECT_RELOC_REL32;
+                    break;
+
+                    default: tb_todo();
+                }
+
+                if (src_relocs[j].Type >= IMAGE_REL_AMD64_REL32 && src_relocs[j].Type <= IMAGE_REL_AMD64_REL32_5) {
+                    dst_relocs[j].addend = src_relocs[j].Type - IMAGE_REL_AMD64_REL32;
+                }
+
+                dst_relocs[j].symbol_index = src_relocs[j].SymbolTableIndex;
+                dst_relocs[j].virtual_address = src_relocs[j].VirtualAddress;
+            }
+
+            out_sec->relocations = dst_relocs;
+        }
+
         // Parse virtual region
         out_sec->virtual_address = sec->virtual_address;
-        out_sec->virtual_size    = sec->misc.virtual_size;
+        out_sec->virtual_size = sec->misc.virtual_size;
 
         // Read raw data (if applies)
         if (sec->raw_data_size) {

@@ -38,7 +38,7 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 	TB_DataType dt = n->dt;
 
 	switch (type) {
-		case TB_NULL: callback(user_data, "  NOP"); break;
+		case TB_NULL: callback(user_data, "  r%-8u = NOP", i); break;
 		case TB_DEBUGBREAK: callback(user_data, "  DEBUGBREAK"); break;
 		case TB_INTEGER_CONST: {
 			if (n->integer.num_words == 1) {

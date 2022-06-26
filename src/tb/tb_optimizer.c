@@ -8,30 +8,41 @@
 
 #define DIFF_BUFFER_SIZE 131072
 
-#define OPT(x) { #x, tb_opt_ ## x, false }
-#define OPT_RUN_ONCE(x) { #x, tb_opt_ ## x, true }
-#define OPT_SILENT(x) { #x, tb_opt_ ## x, false, true }
+#define OPT(x) { #x, tb_opt_ ## x }
 static TB_FunctionPass opts[] = {
-    OPT_RUN_ONCE(hoist_locals),
-    OPT_RUN_ONCE(merge_rets),
+    // canonicalization
+    OPT(hoist_locals),
+    OPT(merge_rets),
 
-    OPT(dead_expr_elim),
-    OPT(remove_pass_node),
-    OPT(subexpr_elim),
-    OPT(hoist_invariants),
-    OPT(fold),
-    OPT(load_elim),
-    OPT(strength_reduction),
-    OPT(copy_elision),
-    OPT_SILENT(compact_dead_regs),
+    // real optimizations
+    // TODO(NeGate): CSE should go here
     OPT(canonicalize),
     OPT(mem2reg),
-    OPT(dead_block_elim),
-    OPT(deshort_circuit)
+    OPT(canonicalize),
+    OPT(remove_pass_node),
+
+    /*OPT(subexpr_elim),
+    OPT(hoist_invariants),
+    OPT(fold),
+
+    OPT(remove_pass_node),
+    OPT(load_elim),
+
+    OPT(strength_reduction),
+    OPT(copy_elision),
+
+    OPT(remove_pass_node),
+    OPT(canonicalize),
+    OPT(remove_pass_node),
+
+    OPT(deshort_circuit),
+
+    OPT(dead_expr_elim),
+    OPT(dead_block_elim),*/
+
+    OPT(compact_dead_regs),
 };
-enum {
-    OPTIMIZATION_COUNT = TB_ARRLEN(opts)
-};
+enum { OPTIMIZATION_COUNT = TB_ARRLEN(opts) };
 #undef OPT
 
 static void print_to_buffer(void* user_data, const char* fmt, ...) {
@@ -65,30 +76,30 @@ static void print_diff(const char* description, char* oldstr, char* newstr) {
 
     fprintf(debug_file, "  %s\n", description);
     for (; old_line != NULL || new_line != NULL;
-         old_line = strtok_r(NULL, "\n", &old_ctx),
-         new_line = strtok_r(NULL, "\n", &new_ctx)) {
+        old_line = strtok_r(NULL, "\n", &old_ctx),
+        new_line = strtok_r(NULL, "\n", &new_ctx)) {
         if (new_line == NULL) {
             fprintf(debug_file,
-                    GREEN_TEXT  "%-80s"
-                    RESET_TEXT  "|"
-                    RED_TEXT    "%-80s\n"
-                    RESET_TEXT, "", old_line);
+                GREEN_TEXT  "%-80s"
+                RESET_TEXT  "|"
+                RED_TEXT    "%-80s\n"
+                RESET_TEXT, "", old_line);
         } else if (old_line == NULL) {
             fprintf(debug_file,
-                    GREEN_TEXT "%-80s"
-                    RESET_TEXT "|"
-                    RED_TEXT   "%-80s\n"
-                    RESET_TEXT, new_line, "");
+                GREEN_TEXT "%-80s"
+                RESET_TEXT "|"
+                RED_TEXT   "%-80s\n"
+                RESET_TEXT, new_line, "");
         } else {
             // just compare them
             if (strcmp(old_line, new_line) == 0) {
                 fprintf(debug_file, "%-80s|\n", new_line);
             } else {
                 fprintf(debug_file,
-                        GREEN_TEXT "%-80s"
-                        RESET_TEXT "|"
-                        RED_TEXT   "%-80s\n"
-                        RESET_TEXT, new_line, old_line);
+                    GREEN_TEXT "%-80s"
+                    RESET_TEXT "|"
+                    RED_TEXT   "%-80s\n"
+                    RESET_TEXT, new_line, old_line);
             }
         }
     }
@@ -105,31 +116,21 @@ TB_API bool tb_function_optimize(TB_Function* f) {
         debug_file = stdout;
     }
 
-    bool changes = false;
 
-    // only needs to run once
-    for (int i = 0; i < OPTIMIZATION_COUNT; i++) {
-        if (opts[i].run_once) {
-            changes |= opts[i].execute(f);
-        }
-    }
-
-#if LOGGING_OPTS
+    #if LOGGING_OPTS
     char* big_boy = tb_platform_heap_alloc(2*DIFF_BUFFER_SIZE);
     int in_use = 1;
 
     big_boy[0] = 0;
     tb_function_print(f, print_to_buffer, big_boy);
     printf("INITIAL\n%s\n\n\n", big_boy);
-#endif
+    #endif
 
-    int current = 0;
-    while (current < OPTIMIZATION_COUNT) {
-        bool success = !opts[current].run_once && opts[current].execute(f);
-        if (opts[current].silent) success = true;
-
+    bool changes = false;
+    for (int i = 0; i < OPTIMIZATION_COUNT; i++) {
+        bool success = opts[i].execute(f);
         if (success) {
-#if LOGGING_OPTS
+            #if LOGGING_OPTS
             // double buffering amirite
             char* oldstr = &big_boy[in_use ? 0 : DIFF_BUFFER_SIZE];
             char* newstr = &big_boy[in_use ? DIFF_BUFFER_SIZE : 0];
@@ -139,27 +140,19 @@ TB_API bool tb_function_optimize(TB_Function* f) {
             tb_function_print(f, print_to_buffer, newstr);
 
             char* tmp = strdup(newstr);
-            print_diff(opts[current].name, oldstr, tmp);
+            print_diff(opts[i].name, oldstr, tmp);
             free(tmp);
 
             in_use = (in_use + 1) & 1;
-#endif
+            #endif
 
-            if (opts[current].silent) {
-                current += 1;
-            } else {
-                changes = true;
-                current = 0;
-            }
-            continue;
+            changes = true;
         }
-
-        current += 1;
     }
 
-#if LOGGING_OPTS
+    #if LOGGING_OPTS
     tb_platform_heap_free(big_boy);
-#endif
+    #endif
 
     return changes;
 }

@@ -132,8 +132,8 @@ bool tb_opt_canonicalize(TB_Function* f) {
                 changes++;
             }
         } else if (type == TB_ADD || type == TB_MUL ||
-                   type == TB_AND || type == TB_XOR ||
-                   type == TB_CMP_NE || type == TB_CMP_EQ) {
+            type == TB_AND || type == TB_XOR ||
+            type == TB_CMP_NE || type == TB_CMP_EQ) {
             // NOTE(NeGate): compares alias the operands with i_arith so it's
             // alright to group them here.
             TB_Node* a = &f->nodes.data[n->i_arith.a];
@@ -390,14 +390,18 @@ bool tb_opt_canonicalize(TB_Function* f) {
                     TB_Reg b = inputs[j].label;
 
                     bool duplicate = false;
-                    loop_range(k, 0, j) {
-                        if (inputs[k].val == i) {
-                            duplicate = true;
-                            break;
-                        } else if (inputs[k].val == a) {
-                            duplicate = true;
-                            break;
-                        }
+                    if (f->nodes.data[a].type != TB_NULL) {
+	                    loop_range(k, 0, j) {
+	                        if (inputs[k].val == i) {
+	                            duplicate = true;
+	                            break;
+	                        } else if (inputs[k].val == a) {
+	                            duplicate = true;
+	                            break;
+	                        }
+	                    }
+                    } else {
+                        duplicate = true;
                     }
 
                     if (!duplicate) {
@@ -412,19 +416,23 @@ bool tb_opt_canonicalize(TB_Function* f) {
 
                 if (new_length != n->phi.count) {
                     // Pass it off to more permanent storage
-                    OPTIMIZER_LOG(i, "Deduplicated PHI node entries");
-
                     if (n->type == TB_PHIN) {
                         tb_platform_heap_free(inputs);
                     }
 
-                    TB_PhiInput* more_permanent_store = tb_platform_heap_alloc(new_length * sizeof(TB_PhiInput));
-                    memcpy(more_permanent_store, new_inputs, new_length * sizeof(TB_PhiInput));
+                    if (new_length == 0) {
+                        OPTIMIZER_LOG(i, "Deduplicated away the PHI node");
+                        n->type = TB_NULL;
+                    } else {
+                        OPTIMIZER_LOG(i, "Deduplicated PHI node entries");
+                        TB_PhiInput* more_permanent_store = tb_platform_heap_alloc(new_length * sizeof(TB_PhiInput));
+                        memcpy(more_permanent_store, new_inputs, new_length * sizeof(TB_PhiInput));
 
-                    n->type = TB_PHIN;
-                    n->phi.count = new_length;
-                    n->phi.inputs = more_permanent_store;
-                    changes++;
+                        n->type = TB_PHIN;
+                        n->phi.count = new_length;
+                        n->phi.inputs = more_permanent_store;
+                        changes++;
+                    }
                 }
                 tb_tls_restore(tls, new_inputs);
             }
@@ -506,7 +514,7 @@ bool tb_opt_canonicalize(TB_Function* f) {
             {
                 TB_Node* seq = n;
                 while (seq = &f->nodes.data[seq->next],
-                       seq->type == TB_LABEL && seq != end) {
+                    seq->type == TB_LABEL && seq != end) {
                     bb_end = seq->label.terminator;
                     count += 1;
                 }

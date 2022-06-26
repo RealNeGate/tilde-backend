@@ -57,7 +57,7 @@ static TB_Reg new_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, int var, TB_Label
     TB_Reg label_reg = tb_find_reg_from_label(f, block);
 
     TB_Reg new_phi_reg = tb_function_insert_after(f, label_reg);
-    OPTIMIZER_LOG(new_phi_reg, "Insert new PHI node");
+    OPTIMIZER_LOG(new_phi_reg, "Insert new PHI node (after r%d)", label_reg);
 	f->nodes.data[new_phi_reg].dt = dt;
 
     return new_phi_reg;
@@ -139,7 +139,7 @@ static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB
 
 	TB_Reg same = TB_NULL_REG;
     loop(i, count) {
-        // Unique value or self−reference
+        // Unique value or self-reference
         if (inputs[i].val == phi_reg || inputs[i].val == same) continue;
 
         // The phi merges at least two values: not trivial
@@ -186,9 +186,10 @@ static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_
 	TB_Node* phi_node = &f->nodes.data[phi_reg];
 	phi_node->dt = dt;
 
+    TB_Reg label_reg = tb_find_reg_from_label(f, label);
 	if (phi_node->type == TB_NULL) {
         phi_node->type = TB_PHI1;
-        phi_node->phi2.inputs[0] = (TB_PhiInput){ tb_find_reg_from_label(f, label), reg };
+        phi_node->phi2.inputs[0] = (TB_PhiInput){ label_reg, reg };
 		return;
 	}
 
@@ -198,14 +199,14 @@ static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_
 	if (count == 1) {
 		phi_node->type = TB_PHI2;
 		phi_node->phi2.inputs[0] = inputs[0];
-        phi_node->phi2.inputs[1] = (TB_PhiInput){ tb_find_reg_from_label(f, label), reg };
+        phi_node->phi2.inputs[1] = (TB_PhiInput){ label_reg, reg };
 	} else if (count == 2) {
         phi_node->type = TB_PHIN;
 
         TB_PhiInput* new_inputs = tb_platform_heap_alloc(3 * sizeof(TB_PhiInput));
 		new_inputs[0] = inputs[0];
 		new_inputs[1] = inputs[1];
-		new_inputs[2] = (TB_PhiInput){ tb_find_reg_from_label(f, label), reg };
+		new_inputs[2] = (TB_PhiInput){ label_reg, reg };
 
         phi_node->phi.count = 3;
 		phi_node->phi.inputs = new_inputs;
@@ -216,7 +217,7 @@ static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_
 			tb_panic("Out of memory!\n");
 		}
 
-		phi_node->phi.inputs[index] = (TB_PhiInput) { tb_find_reg_from_label(f, label), reg };
+		phi_node->phi.inputs[index] = (TB_PhiInput) { label_reg, reg };
     }
 }
 
@@ -379,15 +380,15 @@ static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_
     // and thus we can't mem2reg
     int use_count = 0;
 
-#define X(reg) \
-if (reg == address) use_count += 1;
+    #define X(reg) \
+    if (reg == address) use_count += 1;
     TB_FOR_EACH_NODE(n, f) {
         switch (n->type) {
             TB_FOR_EACH_REG_IN_NODE(X);
 			default: tb_todo();
         }
     }
-#undef X
+    #undef X
 
     int value_based_use_count = 0;
 
@@ -396,7 +397,7 @@ if (reg == address) use_count += 1;
     bool initialized = false;
     for (TB_Node* n = &f->nodes.data[address]; n != &f->nodes.data[0]; n = &f->nodes.data[n->next]) {
         static_assert(offsetof(TB_Node, load.address) == offsetof(TB_Node, store.address),
-					  "TB_Node::load.address == TB_Node::store.address");
+            "TB_Node::load.address == TB_Node::store.address");
 
         if ((n->type == TB_LOAD || n->type == TB_STORE) && n->load.address == address) {
             value_based_use_count += 1;

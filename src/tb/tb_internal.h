@@ -74,11 +74,11 @@ for (TB_Node* elem = &f->nodes.data[1]; elem != &f->nodes.data[0]; elem = &f->no
 
 #define TB_FOR_EACH_NODE_BB(elem, f, start)                                                                          \
 for (TB_Node* elem = &f->nodes.data[f->nodes.data[start].next], *end__ = &f->nodes.data[0]; elem != end__ && elem->type != TB_LABEL; \
-elem = &f->nodes.data[elem->next])
+    elem = &f->nodes.data[elem->next])
 
 #define TB_FOR_EACH_NODE_RANGE(elem, f, start, end)                                          \
 for (TB_Node* elem = &f->nodes.data[start], *end__ = &f->nodes.data[end]; elem != end__; \
-elem = &f->nodes.data[elem->next])
+    elem = &f->nodes.data[elem->next])
 
 #define TB_FOR_EACH_REG_IN_NODE(macro)                                                    \
 case TB_NULL:                                                                         \
@@ -141,8 +141,8 @@ macro(n->phi2.inputs[1].val);                                                   
 break;                                                                                \
 case TB_PHIN:                                                                         \
 loop(i, n->phi.count) {                                                               \
-macro(n->phi.inputs[i].label);                                                    \
-macro(n->phi.inputs[i].val);                                                      \
+    macro(n->phi.inputs[i].label);                                                    \
+    macro(n->phi.inputs[i].val);                                                      \
 }                                                                                     \
 break;                                                                                \
 case TB_LOAD: macro(n->load.address); break;                                          \
@@ -190,14 +190,14 @@ break;                                                                          
 case TB_VCALL:                                                                        \
 macro(n->vcall.target);                                                               \
 for (size_t slot__ = n->call.param_start; slot__ < n->call.param_end; slot__++) {     \
-macro(f->vla.data[slot__]);                                                       \
+    macro(f->vla.data[slot__]);                                                       \
 }                                                                                     \
 break;                                                                                \
 case TB_CALL:                                                                         \
 case TB_ICALL:                                                                        \
 case TB_ECALL:                                                                        \
 for (size_t slot__ = n->call.param_start; slot__ < n->call.param_end; slot__++) {     \
-macro(f->vla.data[slot__]);                                                       \
+    macro(f->vla.data[slot__]);                                                       \
 }                                                                                     \
 break;                                                                                \
 case TB_SWITCH: macro(n->switch_.key); break;                                         \
@@ -497,10 +497,10 @@ typedef struct {
 
 // Macro enjoyer
 #define tb_swap(T, a, b) \
-do {                 \
-T temp = a;      \
-a = b;           \
-b = temp;        \
+do {                     \
+    T temp = a;          \
+    a = b;               \
+    b = temp;            \
 } while (0)
 
 #ifndef NDEBUG
@@ -539,24 +539,24 @@ b = temp;        \
 #endif
 
 #define tb_assert(condition, ...) \
-do {                          \
-if (!(condition)) {       \
-printf(__VA_ARGS__);  \
-abort();              \
-}                         \
+do {                              \
+    if (!(condition)) {           \
+        printf(__VA_ARGS__);      \
+        abort();                  \
+    }                             \
 } while (0)
 
 #ifdef _WIN32
-#define tb_panic(...)                         \
+#define tb_panic(...)                     \
 do {                                      \
-printf(__VA_ARGS__);                  \
-__fastfail(FAST_FAIL_FATAL_APP_EXIT); \
+    printf(__VA_ARGS__);                  \
+    __fastfail(FAST_FAIL_FATAL_APP_EXIT); \
 } while (0)
 #else
-#define tb_panic(...)                         \
+#define tb_panic(...)                     \
 do {                                      \
-printf(__VA_ARGS__);                  \
-abort();                              \
+    printf(__VA_ARGS__);                  \
+    abort();                              \
 } while (0)
 #endif
 
@@ -749,15 +749,15 @@ inline static bool tb_next_biggest(int* result, int v, size_t n, const int* arr)
 #endif
 
 // NOTE(NeGate): clean this up
-#if 0
+#if 1
 #define OPTIMIZER_LOG(at, ...) ((TB_Reg) (at))
 #define LOGGING_OPTS 0
 #else
-#define OPTIMIZER_LOG(at, ...)                     \
+#define OPTIMIZER_LOG(at, ...)                 \
 do {                                           \
-printf("%s:r%d: ", f->name, (TB_Reg)(at)); \
-printf(__VA_ARGS__);                       \
-printf(" (part of %s)\n", __FUNCTION__);   \
+    printf("%s:r%d: ", f->name, (TB_Reg)(at)); \
+    printf(__VA_ARGS__);                       \
+    printf(" (part of %s)\n", __FUNCTION__);   \
 } while (0)
 #define LOGGING_OPTS 1
 #endif

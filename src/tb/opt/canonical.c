@@ -113,23 +113,32 @@ bool tb_opt_canonicalize(TB_Function* f) {
         // TODO(NeGate): Maybe we should have a proper function/macro
         // for detecting integer compares like this
         if (type >= TB_CMP_EQ && type <= TB_CMP_ULE) {
-            // Sometimes we promote some types up when we don't need to
             TB_Node* a = &f->nodes.data[n->cmp.a];
             TB_Node* b = &f->nodes.data[n->cmp.b];
 
-            // (cmp (sxt/zxt A) (int B))
-            // VVV
-            // (cmp A (int B))
-            if (a->type == TB_SIGN_EXT && b->type == TB_INTEGER_CONST) {
-                OPTIMIZER_LOG(i, "removed unnecessary zero extension for compare against constants");
+            // (cmpeq (cmpeq a 0) 0) => a
+            if (type == TB_CMP_EQ && tb_node_is_constant_zero(f, n->cmp.b) &&
+                a->type == TB_CMP_EQ && tb_node_is_constant_zero(f, a->cmp.b)) {
+                OPTIMIZER_LOG(i, "removed redundant comparisons");
 
-                n->cmp.a = a->unary.src;
-                changes++;
-            } else if (a->type == TB_ZERO_EXT && b->type == TB_INTEGER_CONST) {
-                OPTIMIZER_LOG(i, "removed unnecessary zero extension for compare against constants");
+                n->type = TB_PASS;
+                n->pass.value = a->cmp.a;
+            } else {
+                // Sometimes we promote some types up when we don't need to
+                // (cmp (sxt/zxt A) (int B))
+                // VVV
+                // (cmp A (int B))
+                if (a->type == TB_SIGN_EXT && b->type == TB_INTEGER_CONST) {
+                    OPTIMIZER_LOG(i, "removed unnecessary sign extension for compare against constants");
 
-                n->cmp.a = a->unary.src;
-                changes++;
+                    n->cmp.a = a->unary.src;
+                    changes++;
+                } else if (a->type == TB_ZERO_EXT && b->type == TB_INTEGER_CONST) {
+                    OPTIMIZER_LOG(i, "removed unnecessary zero extension for compare against constants");
+
+                    n->cmp.a = a->unary.src;
+                    changes++;
+                }
             }
         } else if (type == TB_ADD || type == TB_MUL ||
             type == TB_AND || type == TB_XOR ||
@@ -487,7 +496,13 @@ bool tb_opt_canonicalize(TB_Function* f) {
                             }
 
                             // remove swap amirite
-                            if (count > 0) {
+                            if (count == 1) {
+                                OPTIMIZER_LOG(match, "due to jump threading, PHI node became PASS due to only having a single pred");
+                                TB_Reg src = inputs[input_slot].val;
+
+                                f->nodes.data[match].type = TB_PASS;
+                                f->nodes.data[match].pass.value = src;
+                            } else if (count > 1) {
                                 inputs[input_slot] = inputs[count-1];
                             }
 

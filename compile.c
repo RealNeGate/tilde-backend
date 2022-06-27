@@ -105,7 +105,7 @@ int main(int argc, char* argv[]) {
 
     printf("Converting to a library...\n");
     ar_invoke(output_lib_path, 2, (const char*[]) {
-            "bin"SLASH"*.obj",
+            ON_WINDOWS ? "bin"SLASH"*.obj" : "bin"SLASH"*.o",
             ON_WINDOWS ? "external/tbbmalloc.lib" : ""
         });
     cmd_wait_for_all();

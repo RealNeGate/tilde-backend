@@ -1,4 +1,4 @@
-#include "tb_internal.h"
+#include "../tb_internal.h"
 
 void* tb_platform_valloc(size_t size) {
     return mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);

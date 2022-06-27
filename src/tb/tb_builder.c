@@ -87,9 +87,9 @@ TB_API TB_Reg tb_node_arith_get_left(TB_Function* f, TB_Reg r) {
 
     // TODO(NeGate): They share position in the union
     static_assert(offsetof(TB_Node, cmp.a) == offsetof(TB_Node, i_arith.a),
-				  "TB_RegPayload::cmp.a should alias TB_RegPayload::i_arith.a");
+        "TB_RegPayload::cmp.a should alias TB_RegPayload::i_arith.a");
     static_assert(offsetof(TB_Node, f_arith.a) == offsetof(TB_Node, i_arith.a),
-				  "TB_RegPayload::f_arith.a should alias TB_RegPayload::i_arith.a");
+        "TB_RegPayload::f_arith.a should alias TB_RegPayload::i_arith.a");
 
     return f->nodes.data[r].i_arith.a;
 }
@@ -99,9 +99,9 @@ TB_API TB_Reg tb_node_arith_get_right(TB_Function* f, TB_Reg r) {
 
     // TODO(NeGate): They share position in the union
     static_assert(offsetof(TB_Node, cmp.b) == offsetof(TB_Node, i_arith.b),
-				  "TB_RegPayload::cmp.b should alias TB_RegPayload::i_arith.b");
+        "TB_RegPayload::cmp.b should alias TB_RegPayload::i_arith.b");
     static_assert(offsetof(TB_Node, f_arith.b) == offsetof(TB_Node, i_arith.b),
-				  "TB_RegPayload::f_arith.b should alias TB_RegPayload::i_arith.b");
+        "TB_RegPayload::f_arith.b should alias TB_RegPayload::i_arith.b");
 
     return f->nodes.data[r].i_arith.b;
 }
@@ -115,7 +115,10 @@ TB_API bool tb_node_is_constant_int(TB_Function* f, TB_Reg r, uint64_t imm) {
 }
 
 TB_API bool tb_node_is_constant_zero(TB_Function* f, TB_Reg r) {
-    TB_Node* restrict n = &f->nodes.data[r];
+    TB_Node* n = &f->nodes.data[r];
+    while (n->type == TB_PASS) {
+        n = &f->nodes.data[n->pass.value];
+    }
 
 	if (n->type == TB_INTEGER_CONST) {
 		if (n->integer.num_words == 1) {
@@ -541,7 +544,7 @@ TB_API TB_Reg tb_inst_vcall(TB_Function* f, TB_DataType dt, const TB_Reg target,
 }
 
 TB_API TB_Reg tb_inst_ecall(TB_Function* f, TB_DataType dt, const TB_ExternalID target,
-							size_t param_count, const TB_Reg* params) {
+    size_t param_count, const TB_Reg* params) {
     int param_start = f->vla.count;
 
     TB_Reg* vla = tb_vla_reserve(f, param_count);

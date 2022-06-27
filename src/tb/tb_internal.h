@@ -750,7 +750,7 @@ inline static bool tb_next_biggest(int* result, int v, size_t n, const int* arr)
 
 // NOTE(NeGate): clean this up
 #if 1
-#define OPTIMIZER_LOG(at, ...) ((TB_Reg) (at))
+#define OPTIMIZER_LOG(at, ...) ((void) (at))
 #define LOGGING_OPTS 0
 #else
 #define OPTIMIZER_LOG(at, ...)                 \

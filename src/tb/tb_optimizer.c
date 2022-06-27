@@ -13,12 +13,16 @@ static TB_FunctionPass opts[] = {
     // canonicalization
     OPT(hoist_locals),
     OPT(merge_rets),
+    OPT(hoist_invariants),
 
     // real optimizations
-    // TODO(NeGate): CSE should go here
+    OPT(subexpr_elim),
+    OPT(remove_pass_node),
     OPT(canonicalize),
-    OPT(mem2reg),
-    OPT(canonicalize),
+    OPT(subexpr_elim),
+
+    //OPT(mem2reg),
+    //OPT(canonicalize),
     OPT(remove_pass_node),
 
     /*OPT(subexpr_elim),
@@ -35,10 +39,10 @@ static TB_FunctionPass opts[] = {
     OPT(canonicalize),
     OPT(remove_pass_node),
 
-    OPT(deshort_circuit),
+    OPT(deshort_circuit),*/
 
     OPT(dead_expr_elim),
-    OPT(dead_block_elim),*/
+    OPT(dead_block_elim),
 
     OPT(compact_dead_regs),
 };

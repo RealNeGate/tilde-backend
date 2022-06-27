@@ -286,6 +286,7 @@ static void nbuild_init() {
 #endif
 
 static FILE* process_pool[PROCESS_POOL_SIZE];
+static int some_slot = 0;
 
 static void cmd_append(const char* str) {
     size_t l = strlen(str);
@@ -309,12 +310,14 @@ static int cmd_dump(FILE** p) {
 }
 
 static FILE** cmd_run() {
-    cmd_append(" 2>&1");
+    //printf("CMD: %s\n", command_buffer);
+    //cmd_append(" 2>&1");
 
     // Find available slots
     int slot = -1;
     for (int i = 0; i < PROCESS_POOL_SIZE; i++) {
         if (process_pool[i] == NULL) {
+            //printf("Used empty slot! %d\n", i);
             slot = i;
             break;
         }
@@ -322,9 +325,11 @@ static FILE** cmd_run() {
 
     if (slot < 0) {
         // if they're used up... wait
-        for (int i = 0; i < PROCESS_POOL_SIZE; i++) {
+        int end = some_slot + 1 % PROCESS_POOL_SIZE;
+        for (int i = some_slot; i != end; i = (i + 1) % PROCESS_POOL_SIZE) {
             if (process_pool[i] != NULL) {
                 // wait for it to finish
+                //printf("Wait for an empty slot! %d\n", i);
                 int exit_code = cmd_dump(&process_pool[i]);
                 if (exit_code != 0) {
                     fprintf(stderr, "process exited with code %d\n", exit_code);
@@ -337,6 +342,8 @@ static FILE** cmd_run() {
                 break;
             }
         }
+
+        some_slot = (some_slot + 1) % PROCESS_POOL_SIZE;
     }
 
     assert(slot >= 0);

@@ -1,5 +1,5 @@
 .vs/
-build/
+bin/
 negate/
 
 *.swp

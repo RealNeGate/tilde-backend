@@ -14,32 +14,18 @@ static TB_FunctionPass opts[] = {
     OPT(hoist_locals),
     OPT(merge_rets),
     OPT(hoist_invariants),
+    OPT(canonicalize),
 
     // real optimizations
-    OPT(subexpr_elim),
+    OPT(mem2reg),
     OPT(remove_pass_node),
     OPT(canonicalize),
-    OPT(subexpr_elim),
 
-    //OPT(mem2reg),
-    //OPT(canonicalize),
-    OPT(remove_pass_node),
-
-    /*OPT(subexpr_elim),
-    OPT(hoist_invariants),
-    OPT(fold),
-
-    OPT(remove_pass_node),
+    /*
     OPT(load_elim),
-
-    OPT(strength_reduction),
     OPT(copy_elision),
-
-    OPT(remove_pass_node),
-    OPT(canonicalize),
-    OPT(remove_pass_node),
-
-    OPT(deshort_circuit),*/
+    OPT(deshort_circuit),
+    */
 
     OPT(dead_expr_elim),
     OPT(dead_block_elim),

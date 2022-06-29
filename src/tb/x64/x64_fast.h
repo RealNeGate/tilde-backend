@@ -33,11 +33,12 @@ typedef struct {
     bool is_sysv;
 
     TB_Reg*  use_count;
+    int*     ordinal;
     TB_Reg*  phis;
     uint32_t phi_count;
+    int      register_barrier;
 
     uint32_t caller_usage;
-    TB_Reg   register_barrier;
 
     // Peephole to improve tiling
     // of memory operands:
@@ -443,7 +444,9 @@ static void fast_folded_op(X64_FastCtx* ctx, TB_Function* f, Inst2Type op, const
         INST2(op, lhs, &rhs, l.dt);
     }
 
-    if (l.mask) fast_mask_out(ctx, f, l, lhs);
+    if (l.mask && !(op == MOV && rhs.type == VAL_IMM && (rhs.imm & l.mask) == rhs.imm)) {
+        fast_mask_out(ctx, f, l, lhs);
+    }
 }
 
 // OP lhs, eval(rhs)
@@ -580,6 +583,24 @@ static Val fast_get_tile_mapping(X64_FastCtx* restrict ctx, TB_Function* f, TB_R
     };
 }
 
+static void fast_evict_everything(X64_FastCtx* restrict ctx, TB_Function* f) {
+    loop(i, COUNTOF(GPR_PRIORITIES)) {
+        GPR gpr = GPR_PRIORITIES[i];
+
+        if (ctx->gpr_allocator[gpr] != TB_NULL_REG) {
+            // eviction notice lmao
+            fast_evict_gpr(ctx, f, gpr);
+        }
+    }
+
+    loop(xmm, 16) {
+        if (ctx->xmm_allocator[xmm] != TB_NULL_REG) {
+            // eviction notice lmao
+            fast_evict_xmm(ctx, f, xmm);
+        }
+    }
+}
+
 static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Reg bb_end) {
     // first node in the basic block
     bb = f->nodes.data[bb].next;
@@ -594,14 +615,14 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
         // spilling
         if (ctx->gpr_available < 4) {
-            TB_Reg barrier = ctx->register_barrier;
+            int barrier = ctx->register_barrier;
 
             loop(i, COUNTOF(GPR_PRIORITIES)) {
                 GPR gpr = GPR_PRIORITIES[i];
 
                 if (ctx->gpr_allocator[gpr] != TB_NULL_REG &&
                     ctx->gpr_allocator[gpr] != TB_TEMP_REG &&
-                    ctx->gpr_allocator[gpr] < barrier) {
+                    ctx->ordinal[ctx->gpr_allocator[gpr]] < barrier) {
                     assert(ctx->gpr_allocator[gpr] != r);
 
                     // eviction notice lmao
@@ -610,12 +631,12 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 }
             }
         } else if (ctx->xmm_available < 4) {
-            TB_Reg barrier = ctx->register_barrier;
+            int barrier = ctx->register_barrier;
 
             loop(xmm, 16) {
                 if (ctx->xmm_allocator[xmm] != TB_NULL_REG &&
                     ctx->xmm_allocator[xmm] != TB_TEMP_REG &&
-                    ctx->gpr_allocator[xmm] < barrier) {
+                    ctx->ordinal[ctx->xmm_allocator[xmm]] < barrier) {
                     assert(ctx->xmm_allocator[xmm] != r);
 
                     // eviction notice lmao
@@ -638,7 +659,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
         // memory operand tiling
         if (ctx->tile.mapping) {
             bool can_keep_it = false;
-            if (ctx->use_count[r] == 1 && ctx->use_count[ctx->tile.mapping] == 1) {
+            if (ctx->use_count[r] <= 1 && ctx->use_count[ctx->tile.mapping] <= 1) {
                 if (reg_type == TB_LOAD && n->load.address == ctx->tile.mapping) {
                     can_keep_it = true;
                 } else if (reg_type == TB_STORE && n->store.address == ctx->tile.mapping) {
@@ -671,6 +692,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
                 Val dst = val_gpr(TB_TYPE_PTR, dst_gpr);
                 INST2(LEA, &dst, &src, TB_TYPE_PTR);
+
+                printf("%s:r%d: failed to tile value :(\n", f->name, ctx->tile.mapping);
 
                 ctx->tile.mapping = 0;
             }
@@ -707,7 +730,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
             }
             case TB_INTEGER_CONST:
             if (!fits_into_int32(n)) {
-                assert(dt.type < 64);
+                assert(dt.type == TB_PTR || (dt.type == TB_INT && dt.data <= 64));
 
                 GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
                 fast_def_gpr(ctx, f, r, dst_gpr, TB_TYPE_PTR);
@@ -1917,10 +1940,28 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
             default: tb_todo();
         }
 
-        // This only logically makes sense if the IR is unoptimized
-        // which we'll assume here for now (don't worry it'll allow
-        // for BS later on)
-        ctx->register_barrier = r;
+        ctx->register_barrier = ctx->ordinal[r];
+    }
+
+    // tile mapping cannot cross BB boundaries
+    if (ctx->tile.mapping) {
+        Val src = {
+            VAL_MEM,
+            .mem = {
+                .base = ctx->tile.base,
+                .index = ctx->tile.index,
+                .scale = ctx->tile.scale,
+                .disp  = ctx->tile.disp
+            }
+        };
+
+        GPR dst_gpr = fast_alloc_gpr(ctx, f, ctx->tile.mapping);
+        fast_def_gpr(ctx, f, ctx->tile.mapping, dst_gpr, TB_TYPE_PTR);
+
+        Val dst = val_gpr(TB_TYPE_PTR, dst_gpr);
+        INST2(LEA, &dst, &src, TB_TYPE_PTR);
+
+        ctx->tile.mapping = 0;
     }
 }
 
@@ -1993,6 +2034,10 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
     tally += sizeof(X64_FastCtx) + (f->nodes.count * sizeof(AddressDesc));
     tally = (tally + align_mask) & ~align_mask;
 
+    // ordinal
+    tally += f->nodes.count * sizeof(int);
+    tally = (tally + align_mask) & ~align_mask;
+
     // use_count
     tally += f->nodes.count * sizeof(TB_Reg);
     tally = (tally + align_mask) & ~align_mask;
@@ -2049,6 +2094,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
                     .label_patches = tb_platform_heap_alloc(tally.label_patch_count * sizeof(LabelPatch)),
                     .ret_patches   = tb_platform_heap_alloc(tally.return_count * sizeof(ReturnPatch))
                 },
+                .ordinal = tb_platform_heap_alloc(f->nodes.count * sizeof(int)),
                 .use_count = tb_platform_heap_alloc(f->nodes.count * sizeof(TB_Reg))
             };
         } else {
@@ -2061,6 +2107,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
                     .label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch)),
                     .ret_patches   = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch))
                 },
+                .ordinal = tb_tls_push(tls, f->nodes.count * sizeof(int)),
                 .use_count = tb_tls_push(tls, f->nodes.count * sizeof(TB_Reg))
             };
         }
@@ -2079,6 +2126,11 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
 
     // Analyze function for stack, use counts and phi nodes
     tb_function_calculate_use_count(f, ctx->use_count);
+
+    int counter = 0;
+    TB_FOR_EACH_NODE(n, f) {
+        ctx->ordinal[n - f->nodes.data] = counter++;
+    }
 
     // Create phi lookup table for later evaluation stages
     // and calculate the maximum parameter usage for a call
@@ -2156,14 +2208,21 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
             if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
                 tb_todo();
             } else {
+                // don't keep a reference of it in GPR if it's in memory
                 if (ctx->is_sysv && id < 6) {
                     Val dst = val_stack(TB_TYPE_I64, 16 + (id * 8));
                     Val src = val_gpr(TB_TYPE_I64, SYSV_GPR_PARAMETERS[id]);
                     INST2(MOV, &dst, &src, TB_TYPE_I64);
+
+                    ctx->gpr_allocator[SYSV_GPR_PARAMETERS[id]] = TB_NULL_REG;
+                    ctx->gpr_available += 1;
                 } else if (id < 4) {
                     Val dst = val_stack(TB_TYPE_I64, 16 + (id * 8));
                     Val src = val_gpr(TB_TYPE_I64, WIN64_GPR_PARAMETERS[id]);
                     INST2(MOV, &dst, &src, TB_TYPE_I64);
+
+                    ctx->gpr_allocator[WIN64_GPR_PARAMETERS[id]] = TB_NULL_REG;
+                    ctx->gpr_available += 1;
                 }
             }
 
@@ -2238,6 +2297,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
             }
 
             Cond cc = fast_eval_cond(ctx, f, end->if_.cond);
+            fast_evict_everything(ctx, f);
 
             // Reorder the targets to avoid an extra JMP
             TB_Label fallthrough_label = 0;
@@ -2261,6 +2321,8 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
             // save out PHI nodes
             TB_Reg next_terminator = end->label.terminator;
             fast_eval_terminator_phis(ctx, f, bb, bb_end, bb_end, next_terminator);
+
+            fast_evict_everything(ctx, f);
         } else if (end->type == TB_GOTO) {
             // save out PHI nodes
             TB_Label target_label = end->goto_.label;
@@ -2268,6 +2330,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
             TB_Reg target_end = f->nodes.data[target].label.terminator;
 
             fast_eval_terminator_phis(ctx, f, bb, bb_end, target, target_end);
+            fast_evict_everything(ctx, f);
 
             // TODO(NeGate): don't emit jump if we can fallthrough
             JMP(end->goto_.label);
@@ -2293,6 +2356,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
                 TB_Reg target = tb_find_reg_from_label(f, target_label);
                 TB_Reg target_end = f->nodes.data[target].label.terminator;
                 fast_eval_terminator_phis(ctx, f, bb, bb_end, target, target_end);
+                fast_evict_everything(ctx, f);
 
                 TB_Label fallthrough_label = next_bb->label.id;
                 if (fallthrough_label != target) {
@@ -2305,6 +2369,8 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
                 fast_folded_op(ctx, f, MOV, &key, end->switch_.key);
                 if (l.mask) fast_mask_out(ctx, f, l, &key);
                 fast_kill_temp_gpr(ctx, f, key.gpr);
+
+                fast_evict_everything(ctx, f);
 
                 // Shitty if-chain
                 // CMP key, 0
@@ -2323,8 +2389,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
 
                 JMP(end->switch_.default_label);
             }
-        } else
-            tb_todo();
+        } else tb_todo();
 
         // Next Basic block
         bb = next_bb_reg;

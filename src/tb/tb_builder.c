@@ -1001,6 +1001,7 @@ TB_API void tb_inst_goto(TB_Function* f, TB_Label id) {
 }
 
 TB_API TB_Reg tb_inst_if(TB_Function* f, TB_Reg cond, TB_Label if_true, TB_Label if_false) {
+    assert(cond != TB_NULL_REG);
     TB_Reg r = tb_make_reg(f, TB_IF, TB_TYPE_VOID);
     f->nodes.data[r].if_.cond = cond;
     f->nodes.data[r].if_.if_true = if_true;

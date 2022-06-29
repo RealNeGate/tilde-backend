@@ -159,6 +159,93 @@ typedef struct {
 
 #pragma pack(push, 1)
 typedef struct {
+	uint16_t e_magic;    // Magic number
+	uint16_t e_cblp;     // Bytes on last page of file
+	uint16_t e_cp;       // Pages in file
+	uint16_t e_crlc;     // Relocations
+	uint16_t e_cparhdr;  // Size of header in paragraphs
+	uint16_t e_minalloc; // Minimum extra paragraphs needed
+	uint16_t e_maxalloc; // Maximum extra paragraphs needed
+	uint16_t e_ss;       // Initial (relative) SS value
+	uint16_t e_sp;       // Initial SP value
+	uint16_t e_csum;     // Checksum
+	uint16_t e_ip;       // Initial IP value
+	uint16_t e_cs;       // Initial (relative) CS value
+	uint16_t e_lfarlc;   // File address of relocation table
+	uint16_t e_ovno;     // Overlay number
+	uint16_t e_res[4];   // Reserved words
+	uint16_t e_oemid;    // OEM identifier (for e_oeminfo)
+	uint16_t e_oeminfo;  // OEM information; e_oemid specific
+	uint16_t e_res2[10]; // Reserved words
+    uint32_t e_lfanew;   // File address of new exe header
+} PE_DosHeader;
+
+typedef struct {
+	uint32_t magic; // PE\0\0 or 0x00004550
+	uint16_t machine;
+	uint16_t section_count;
+	uint32_t timestamp;
+	uint32_t symbol_table;
+	uint32_t symbol_count;
+	uint16_t size_of_optional_header;
+	uint16_t characteristics;
+} PE_Header;
+
+typedef struct {
+    uint32_t virtual_address;
+    uint32_t size;
+} PE_ImageDataDirectory;
+
+#define IMAGE_NUMBEROF_DIRECTORY_ENTRIES 16
+typedef struct {
+    uint16_t magic;
+    uint8_t major_linker_version;
+    uint8_t minor_linker_version;
+    uint32_t size_of_code;
+    uint32_t size_of_initialized_data;
+    uint32_t size_of_uninitialized_data;
+    uint32_t entrypoint;
+    uint32_t base_of_code;
+    uint64_t image_base;
+    uint32_t section_alignment;
+    uint32_t file_alignment;
+    uint16_t major_os_ver;
+    uint16_t minor_os_ver;
+    uint16_t major_image_ver;
+    uint16_t minor_image_ver;
+    uint16_t major_subsystem_ver;
+    uint16_t minor_subsystem_ver;
+    uint32_t win32_version_value;
+    uint32_t size_of_image;
+    uint32_t size_of_headers;
+    uint32_t checksum;
+    uint16_t subsystem;
+    uint16_t dll_characteristics;
+    uint64_t size_of_stack_reserve;
+    uint64_t size_of_stack_commit;
+    uint64_t size_of_heap_reserve;
+    uint64_t size_of_heap_commit;
+	uint32_t loader_flags;
+	uint32_t rva_size_count;
+    PE_ImageDataDirectory data_directories[IMAGE_NUMBEROF_DIRECTORY_ENTRIES];
+} PE_OptionalHeader64;
+
+typedef struct { // size 40 bytes
+	char name[8];
+	uint32_t virtual_size;
+	uint32_t virtual_address;
+	uint32_t size_of_raw_data;
+	uint32_t pointer_to_raw_data;
+	uint32_t pointer_to_relocs;
+	uint32_t pointer_to_linenos;
+	uint16_t relocation_count;
+    uint16_t linenos_count;
+	uint32_t characteristics;
+} PE_SectionHeader;
+#pragma pack(pop)
+
+#pragma pack(push, 1)
+typedef struct {
     uint16_t len;       // doesn't include itself, so sizeof(T)-2
     uint16_t leaf;      // LF_PROCEDURE
     uint32_t rvtype;    // type index of return value

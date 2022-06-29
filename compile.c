@@ -3,7 +3,7 @@
 #ifdef RELEASE_BUILD
 #define EXTRA_DEFINES_FOR_NEGATE "-DRELEASE_BUILD"
 #else
-#define EXTRA_DEFINES_FOR_NEGATE ""
+#define EXTRA_DEFINES_FOR_NEGATE "-DDOING_TB_CRAP"
 #endif
 
 static const char* INPUT_FILES[] = {

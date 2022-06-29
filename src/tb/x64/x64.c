@@ -9,7 +9,7 @@
 #include "x64_proepi.h"
 #include "x64_fast.h"
 
-//#include "x64_complex.h"
+#include "x64_complex.h"
 
 #if 0
 #define DEBUG_LOG(...) printf(__VA_ARGS__)

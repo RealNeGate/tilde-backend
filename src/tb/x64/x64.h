@@ -298,7 +298,7 @@ static const char* GPR_NAMES[] = { "RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RS
 // shorthand macros
 #define STACK_ALLOC(size, align)                                                  \
 (ctx->header.stack_usage = align_up(ctx->header.stack_usage + (size), align), \
--ctx->header.stack_usage)
+    -ctx->header.stack_usage)
 
 #define INST1(op, a)              inst1(&ctx->header, op, a)
 #define INST2(op, a, b, dt)       inst2(&ctx->header, op, a, b, dt)

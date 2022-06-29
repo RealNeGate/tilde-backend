@@ -664,7 +664,7 @@ void tb_export_macho(TB_Module* m, const ICodeGen* restrict code_gen, const char
 void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt);
 
 // executable file format
-void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt);
+void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_LinkerInput* restrict input, const char* path, const IDebugFormat* debug_fmt);
 
 uint8_t* tb_out_reserve(TB_Emitter* o, size_t count);
 // The return value is the start of the empty region after

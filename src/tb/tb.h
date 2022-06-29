@@ -686,12 +686,31 @@ extern "C" {
     } TB_ObjectFile;
 
     typedef struct {
+        const char* libname;
+        const char* name;
+    } TB_ArchiveImport;
+
+    typedef struct {
         size_t  object_file_count;
+
+        // import table
+        size_t import_count;
+        TB_ArchiveImport* imports;
 
         // Name table maps to the object files directly
         char**   object_file_names;
         TB_Slice object_files[];
     } TB_ArchiveFile;
+
+    typedef struct {
+        // list of the object/archive files
+        size_t input_count;
+        const char** inputs;
+
+        // list of the linker search paths
+        size_t search_dir_count;
+        const char** search_dirs;
+    } TB_LinkerInput;
 
     // *******************************
     // Public macros
@@ -752,7 +771,7 @@ extern "C" {
     TB_API bool tb_module_export(TB_Module* m, const char* path);
 
     // Exports an fully linked executable file
-    TB_API bool tb_module_export_exec(TB_Module* m, const char* path);
+    TB_API bool tb_module_export_exec(TB_Module* m, const char* path, const TB_LinkerInput* input);
 
     // For isel_mode, TB_ISEL_FAST will compile faster but worse codegen
     // TB_ISEL_COMPLEX will compile slower but better codegen

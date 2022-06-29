@@ -27,9 +27,6 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
                     case TB_IF:
                     case TB_RET:
                     case TB_STORE:
-                    case TB_CALL:
-                    case TB_VCALL:
-                    case TB_ECALL:
                     case TB_SWITCH:
                     case TB_PARAM:
                     case TB_MEMSET:
@@ -43,7 +40,16 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
                     case TB_ATOMIC_SUB:
                     case TB_ATOMIC_AND:
                     case TB_ATOMIC_XOR:
-                    case TB_ATOMIC_OR: break;
+                    case TB_ATOMIC_OR:
+                    break;
+
+                    case TB_CALL:
+                    case TB_VCALL:
+                    case TB_ECALL: {
+                        // convert it to a void CALL just because
+                        n->dt = TB_TYPE_VOID;
+                        break;
+                    }
                     // don't delete volatile loads
                     case TB_LOAD: {
                         if (n->load.is_volatile) {

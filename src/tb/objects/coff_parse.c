@@ -93,7 +93,11 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
 	TB_ArchiveFile* archive = malloc(sizeof(TB_ArchiveFile) + (symbol_count * sizeof(TB_Slice)));
 	*archive = (TB_ArchiveFile){ 0 };
 
-	for (size_t i = 0; i < symbol_count; i++) {
+    // dynamic array of imports
+    size_t import_capacity = 256, import_count = 0;
+	TB_ArchiveImport* imports = malloc(import_capacity * sizeof(TB_ArchiveImport));
+
+    for (size_t i = 0; i < symbol_count; i++) {
 		COFF_ArchiveMemberHeader* sym = (COFF_ArchiveMemberHeader*) &file.data[read32be((uint8_t*) &symbols[i])];
 		uint32_t len = parse_decimal_int(sizeof(sym->size), sym->size);
 
@@ -105,17 +109,27 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
 			}
 
 			/*switch (import->type) {
-			case 0: printf("IMPORT_CODE  ");  break;
-			case 1: printf("IMPORT_DATA  ");  break;
-			case 2: printf("IMPORT_CONST "); break;
-			default: printf("??\n");          break;
-			}
+                case 0: printf("IMPORT_CODE  ");  break;
+                case 1: printf("IMPORT_DATA  ");  break;
+                case 2: printf("IMPORT_CONST "); break;
+                default: printf("??\n");          break;
+			}*/
 
 			const char* imported_symbol = (const char*) &sym->contents[sizeof(COFF_ImportHeader)];
 			const char* dll_path = (const char*) &sym->contents[sizeof(COFF_ImportHeader) + strlen(imported_symbol) + 1];
 
-			printf("%s : %s\n", dll_path, imported_symbol);*/
-		} else {
+            // add import
+            if (import_count + 1 > import_capacity) {
+                import_capacity = (import_count + 1) * 2;
+                imports = realloc(imports, import_capacity * sizeof(TB_ArchiveImport));
+                if (imports == NULL) tb_panic("out of memory!");
+            }
+
+            imports[import_count++] = (TB_ArchiveImport){
+                .libname = dll_path, .name = imported_symbol
+            };
+			//printf("%s : %s\n", dll_path, imported_symbol);
+		} else if (0) {
 			TB_ObjectFile* long_mode = tb_object_parse_coff((TB_Slice){ len, sym->contents });
 
 			// Sort by lexical order
@@ -183,6 +197,9 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
 			//archive->object_files[archive->object_file_count++] =
 		}
 	}
+
+    archive->import_count = import_count;
+    archive->imports = imports;
 
 	archive = realloc(archive, sizeof(TB_ArchiveFile) + (archive->object_file_count * sizeof(TB_Slice)));
 	return archive;

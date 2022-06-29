@@ -102,7 +102,7 @@ bool tb_opt_remove_pass_node(TB_Function* f) {
     return changes;
 }
 
-bool tb_opt_canonicalize(TB_Function* f) {
+static bool tb_opt_canonicalize_phase1(TB_Function* f) {
     TB_TemporaryStorage* tls = tb_tls_allocate();
 
     int changes = 0;
@@ -555,4 +555,22 @@ bool tb_opt_canonicalize(TB_Function* f) {
     }
 
     return (changes > 0);
+}
+
+TB_API bool tb_opt_canonicalize(TB_Function* f) {
+    bool changes = false;
+    while (true) {
+        bool iteration_changes = false;
+
+        iteration_changes |= tb_opt_canonicalize_phase1(f);
+        iteration_changes |= tb_opt_subexpr_elim(f);
+        iteration_changes |= tb_opt_remove_pass_node(f);
+        iteration_changes |= tb_opt_fold(f);
+        iteration_changes |= tb_opt_strength_reduction(f);
+
+        if (iteration_changes) changes = true;
+        else break;
+    }
+
+    return changes;
 }

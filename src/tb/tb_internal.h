@@ -103,6 +103,8 @@ case TB_X86INTRIN_SQRT:                                                         
 case TB_X86INTRIN_RSQRT:                                                              \
 case TB_INT2PTR:                                                                      \
 case TB_PTR2INT:                                                                      \
+case TB_UINT2FLOAT:                                                                   \
+case TB_FLOAT2UINT:                                                                   \
 case TB_INT2FLOAT:                                                                    \
 case TB_FLOAT2INT:                                                                    \
 case TB_TRUNCATE:                                                                     \

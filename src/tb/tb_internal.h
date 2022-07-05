@@ -72,15 +72,15 @@ typedef struct TB_Emitter {
 #define TB_FOR_EACH_NODE(elem, f) \
 for (TB_Node* elem = &f->nodes.data[1]; elem != &f->nodes.data[0]; elem = &f->nodes.data[elem->next])
 
-#define TB_FOR_EACH_NODE_BB(elem, f, start)                                                                          \
+#define TB_FOR_EACH_NODE_BB(elem, f, start) \
 for (TB_Node* elem = &f->nodes.data[f->nodes.data[start].next], *end__ = &f->nodes.data[0]; elem != end__ && elem->type != TB_LABEL; \
     elem = &f->nodes.data[elem->next])
 
-#define TB_FOR_EACH_NODE_RANGE(elem, f, start, end)                                          \
+#define TB_FOR_EACH_NODE_RANGE(elem, f, start, end)                                      \
 for (TB_Node* elem = &f->nodes.data[start], *end__ = &f->nodes.data[end]; elem != end__; \
     elem = &f->nodes.data[elem->next])
 
-#define TB_FOR_EACH_REG_IN_NODE(macro)                                                    \
+#define TB_FOR_EACH_REG_IN_NODE(macro)                                                \
 case TB_NULL:                                                                         \
 case TB_INTEGER_CONST:                                                                \
 case TB_FLOAT_CONST:                                                                  \

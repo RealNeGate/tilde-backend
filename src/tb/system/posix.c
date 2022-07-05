@@ -9,7 +9,7 @@ void* tb_platform_valloc_guard(size_t size) {
 }
 
 void tb_platform_vfree(void* ptr, size_t size) {
-	munmap(ptr, size);
+    munmap(ptr, size);
 }
 
 bool tb_platform_vprotect(void* ptr, size_t size, bool execute) {
@@ -17,15 +17,15 @@ bool tb_platform_vprotect(void* ptr, size_t size, bool execute) {
 }
 
 void* tb_platform_heap_alloc(size_t size) {
-	return malloc(size);
+    return malloc(size);
 }
 
 void* tb_platform_heap_realloc(void* ptr, size_t size) {
-	return realloc(ptr, size);
+    return realloc(ptr, size);
 }
 
 void tb_platform_heap_free(void* ptr) {
-	free(ptr);
+    free(ptr);
 }
 
 static char* string_buffer;
@@ -73,7 +73,7 @@ void tb_platform_arena_init() {
 void* tb_platform_arena_alloc(size_t size) {
     // align to max_align
     size_t align_mask = _Alignof(max_align_t) - 1;
-    size              = (size + align_mask) & align_mask;
+    size = (size + align_mask) & ~align_mask;
 
     // If this ever happens... literally how...
     assert(size < ARENA_SEGMENT_SIZE);

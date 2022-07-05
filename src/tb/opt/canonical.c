@@ -4,30 +4,18 @@ static bool try_jump_thread(TB_Function* f, TB_Label label, TB_Label* new_label)
     TB_Reg target_reg = tb_find_reg_from_label(f, label);
     TB_Node* target = &f->nodes.data[target_reg];
 
+    // skip any NULL slots
+    while (f->nodes.data[target->next].type == TB_NULL) {
+        target_reg = target->next;
+        target = &f->nodes.data[target_reg];
+    }
+
     if (f->nodes.data[target->next].type == TB_GOTO) {
         *new_label = f->nodes.data[target->next].goto_.label;
         return true;
     }
 
     return false;
-}
-
-static void try_garbage_collect(TB_Function* f, TB_TemporaryStorage* tls, TB_Label label) {
-    int pred_count;
-    TB_Label* preds = tb_tls_push(tls, 0);
-    tb_calculate_immediate_predeccessors(f, tls, label, &pred_count);
-
-    if (pred_count == 0) {
-        TB_Reg label_reg = tb_find_reg_from_label(f, label);
-        OPTIMIZER_LOG(label_reg, "Killed unused BB");
-
-        // just murder every node in the BB and we should be good
-        TB_FOR_EACH_NODE_BB(n, f, label_reg) {
-            tb_murder_node(f, n);
-        }
-    }
-
-    tb_tls_restore(tls, preds);
 }
 
 static void replace_label(TB_Function* f, TB_Node* seq, TB_Label label, TB_Reg label_reg) {
@@ -128,19 +116,23 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
                 // (cmp (sxt/zxt A) (int B))
                 // VVV
                 // (cmp A (int B))
-                if (a->type == TB_SIGN_EXT && b->type == TB_INTEGER_CONST) {
+                if (a->type == TB_SIGN_EXT && b->type == TB_INTEGER_CONST && TB_DATA_TYPE_EQUALS(f->nodes.data[a->unary.src].dt, b->dt)) {
                     OPTIMIZER_LOG(i, "removed unnecessary sign extension for compare against constants");
 
                     n->cmp.a = a->unary.src;
                     changes++;
-                } else if (a->type == TB_ZERO_EXT && b->type == TB_INTEGER_CONST) {
+                    continue;
+                } else if (a->type == TB_ZERO_EXT && b->type == TB_INTEGER_CONST && TB_DATA_TYPE_EQUALS(f->nodes.data[a->unary.src].dt, b->dt)) {
                     OPTIMIZER_LOG(i, "removed unnecessary zero extension for compare against constants");
 
                     n->cmp.a = a->unary.src;
                     changes++;
+                    continue;
                 }
             }
-        } else if (type == TB_ADD || type == TB_MUL ||
+        }
+
+        if (type == TB_ADD || type == TB_MUL ||
             type == TB_AND || type == TB_XOR ||
             type == TB_CMP_NE || type == TB_CMP_EQ) {
             // NOTE(NeGate): compares alias the operands with i_arith so it's
@@ -325,7 +317,15 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
         } else if (type == TB_IF) {
             TB_Node* cond = &f->nodes.data[n->if_.cond];
 
-            if (cond->type == TB_INTEGER_CONST) {
+            if (cond->type == TB_STRING_CONST) {
+                // (if str B C) => (goto B)
+                TB_Label new_target = n->if_.if_true;
+
+                n->type = TB_GOTO;
+                n->dt = TB_TYPE_VOID;
+                n->goto_.label = new_target;
+                changes++;
+            } else if (cond->type == TB_INTEGER_CONST) {
                 // (if A B C) => (goto X) where X = A ? B : C
                 TB_Label new_target = !tb_node_is_constant_zero(f, n->if_.cond) ?
                     n->if_.if_true : n->if_.if_false;
@@ -358,16 +358,12 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
                 if (try_jump_thread(f, n->if_.if_true, &new_label)) {
                     OPTIMIZER_LOG(i, "jump threading");
                     n->if_.if_true = new_label;
-
-                    try_garbage_collect(f, tls, n->if_.if_true);
                     changes++;
                 }
 
                 if (try_jump_thread(f, n->if_.if_false, &new_label)) {
                     OPTIMIZER_LOG(i, "jump threading");
                     n->if_.if_false = new_label;
-
-                    try_garbage_collect(f, tls, n->if_.if_false);
                     changes++;
                 }
             }
@@ -450,8 +446,6 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
             if (try_jump_thread(f, n->goto_.label, &new_label)) {
                 OPTIMIZER_LOG(i, "jump threading");
                 n->goto_.label = new_label;
-
-                try_garbage_collect(f, tls, n->goto_.label);
                 changes++;
             }
         } else if (n->type == TB_LABEL) {
@@ -567,6 +561,8 @@ TB_API bool tb_opt_canonicalize(TB_Function* f) {
         iteration_changes |= tb_opt_remove_pass_node(f);
         iteration_changes |= tb_opt_fold(f);
         iteration_changes |= tb_opt_strength_reduction(f);
+        iteration_changes |= tb_opt_dead_expr_elim(f);
+        iteration_changes |= tb_opt_dead_block_elim(f);
 
         if (iteration_changes) changes = true;
         else break;

@@ -67,6 +67,11 @@ typedef uint32_t Elf64_Word;
 typedef uint64_t Elf64_Lword;
 typedef uint64_t Elf64_Xword;
 
+// ST_INFO
+#define ELF64_STB_LOCAL  0
+#define ELF64_STB_GLOBAL 1
+#define ELF64_STB_WEAK   2
+
 /* Macros for accessing the fields of st_info. */
 #define ELF64_ST_BIND(info) ((info) >> 4)
 #define ELF64_ST_TYPE(info) ((info) & 0xf)
@@ -133,24 +138,24 @@ typedef struct {
 } Elf64_Rel;
 
 static void put_symbol(TB_Emitter* strtbl, TB_Emitter* stab, const char* name, uint8_t sym_info, Elf64_Half section_index, Elf64_Addr value, Elf64_Xword size) {
-	// Fill up the symbol's string table
-	size_t name_len = strlen(name);
-	size_t name_pos = strtbl->count;
+    // Fill up the symbol's string table
+    size_t name_len = strlen(name);
+    size_t name_pos = strtbl->count;
 
-	tb_out_reserve(strtbl, name_len + 1);
-	tb_outs_UNSAFE(strtbl, name_len + 1, (uint8_t*)name);
+    tb_out_reserve(strtbl, name_len + 1);
+    tb_outs_UNSAFE(strtbl, name_len + 1, (uint8_t*)name);
 
-	// Emit symbol
-	Elf64_Sym sym = {
-		.st_name  = name_pos,
-		.st_info  = sym_info,
-		.st_shndx = section_index,
-		.st_value = value,
-		.st_size  = size
-	};
+    // Emit symbol
+    Elf64_Sym sym = {
+        .st_name  = name_pos,
+        .st_info  = sym_info,
+        .st_shndx = section_index,
+        .st_value = value,
+        .st_size  = size
+    };
 
-	tb_out_reserve(stab, sizeof(Elf64_Sym));
-	tb_outs_UNSAFE(stab, sizeof(Elf64_Sym), (uint8_t*)&sym);
+    tb_out_reserve(stab, sizeof(Elf64_Sym));
+    tb_outs_UNSAFE(stab, sizeof(Elf64_Sym), (uint8_t*)&sym);
 }
 
 void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt) {
@@ -161,42 +166,42 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
 
     // Buffer stores all the positions of each
     // function relative to the .text section start.
-    uint32_t* func_layout = tb_platform_heap_alloc(m->functions.compiled_count * sizeof(uint32_t));
+    uint32_t* func_layout = tb_platform_heap_alloc((m->functions.count+1) * sizeof(uint32_t));
 
     uint32_t* external_symbol_relative_id = tb_tls_push(tls, TB_MAX_THREADS * sizeof(uint32_t));
     size_t symbol_id_counter = 0;
 
-	// generate a mapping between external symbols and the symbol ids
-	loop(i, m->max_threads) {
+    // generate a mapping between external symbols and the symbol ids
+    loop(i, m->max_threads) {
         external_symbol_relative_id[i] = symbol_id_counter;
 
         size_t external_len = arrlen(m->externals[i]);
         symbol_id_counter += external_len ? external_len - 1 : 0;
     }
 
-	uint16_t machine;
+    uint16_t machine;
     switch (m->target_arch) {
-		case TB_ARCH_X86_64: machine = EM_X86_64; break;
-		case TB_ARCH_AARCH64: machine = EM_AARCH64; break;
-		default: tb_todo();
+        case TB_ARCH_X86_64: machine = EM_X86_64; break;
+        case TB_ARCH_AARCH64: machine = EM_AARCH64; break;
+        default: tb_todo();
     }
 
     // Generate the header structs
     const int  number_of_sections = 8;
     Elf64_Ehdr header = {
-		.e_ident = {
-			[EI_MAG0]          = 0x7F, // magic number
-			[EI_MAG1]          = 'E',
-			[EI_MAG2]          = 'L',
-			[EI_MAG3]          = 'F',
-			[EI_CLASS]         = 2, // 64bit ELF file
-			[EI_DATA]          = 1, // little-endian
-			[EI_VERSION]       = 1, // 1.0
-			[EI_OSABI]         = 0,
-			[EI_ABIVERSION]    = 0
-		},
-		.e_type = ET_REL, // relocatable
-		.e_version = 1,
+        .e_ident = {
+            [EI_MAG0]          = 0x7F, // magic number
+            [EI_MAG1]          = 'E',
+            [EI_MAG2]          = 'L',
+            [EI_MAG3]          = 'F',
+            [EI_CLASS]         = 2, // 64bit ELF file
+            [EI_DATA]          = 1, // little-endian
+            [EI_VERSION]       = 1, // 1.0
+            [EI_OSABI]         = 0,
+            [EI_ABIVERSION]    = 0
+        },
+        .e_type = ET_REL, // relocatable
+        .e_version = 1,
         .e_machine = machine,
         .e_entry = 0,
 
@@ -210,55 +215,55 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
         .e_shentsize = sizeof(Elf64_Shdr),
         .e_shnum     = number_of_sections,
         .e_shstrndx  = 1
-	};
+    };
 
     Elf64_Shdr null_section = { 0 };
 
     Elf64_Shdr strtab_section = {
-		.sh_type = SHT_STRTAB,
-		.sh_flags = 0,
-		.sh_addralign = 1
-	};
+        .sh_type = SHT_STRTAB,
+        .sh_flags = 0,
+        .sh_addralign = 1
+    };
 
     Elf64_Shdr code_section = {
-		.sh_type = SHT_PROGBITS,
-		.sh_flags = SHF_EXECINSTR | SHF_ALLOC,
-		.sh_addralign = 16
-	};
+        .sh_type = SHT_PROGBITS,
+        .sh_flags = SHF_EXECINSTR | SHF_ALLOC,
+        .sh_addralign = 16
+    };
 
     Elf64_Shdr code_reloc_section = {
-		.sh_type = SHT_RELA,
-		.sh_flags = SHF_INFO_LINK,
-		.sh_link = 7,
-		.sh_info = 2,
-		.sh_addralign = 16,
-		.sh_entsize = sizeof(Elf64_Rela)
-	};
+        .sh_type = SHT_RELA,
+        .sh_flags = SHF_INFO_LINK,
+        .sh_link = 7,
+        .sh_info = 2,
+        .sh_addralign = 16,
+        .sh_entsize = sizeof(Elf64_Rela)
+    };
 
     Elf64_Shdr data_section = {
-		.sh_type = SHT_PROGBITS,
-		.sh_flags = SHF_ALLOC | SHF_WRITE,
-		.sh_addralign = 16
-	};
+        .sh_type = SHT_PROGBITS,
+        .sh_flags = SHF_ALLOC | SHF_WRITE,
+        .sh_addralign = 16
+    };
 
-	Elf64_Shdr rodata_section = {
-		.sh_type = SHT_PROGBITS,
-		.sh_flags = SHF_ALLOC,
-		.sh_addralign = 16
-	};
+    Elf64_Shdr rodata_section = {
+        .sh_type = SHT_PROGBITS,
+        .sh_flags = SHF_ALLOC,
+        .sh_addralign = 16
+    };
 
     Elf64_Shdr bss_section = {
-		.sh_type = SHT_NOBITS,
-		.sh_flags = SHF_ALLOC | SHF_WRITE,
-		.sh_addralign = 16
-	};
+        .sh_type = SHT_NOBITS,
+        .sh_flags = SHF_ALLOC | SHF_WRITE,
+        .sh_addralign = 16
+    };
 
-	Elf64_Shdr stab_section = {
-		.sh_type = SHT_SYMTAB,
-		.sh_flags = 0, .sh_addralign = 1,
-		.sh_link = 1, .sh_info = number_of_sections + 1,
-		.sh_entsize = sizeof(Elf64_Sym)
-	};
+    Elf64_Shdr stab_section = {
+        .sh_type = SHT_SYMTAB,
+        .sh_flags = 0, .sh_addralign = 1,
+        .sh_link = 1, .sh_info = number_of_sections,
+        .sh_entsize = sizeof(Elf64_Sym)
+    };
 
     // Calculate some section content sizes, it's important that we can
     // generate the final result with minimal effort so if everything
@@ -286,7 +291,7 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
         tb_outstr_UNSAFE(&strtbl, ".data");
         tb_out1b_UNSAFE(&strtbl, 0);
 
-		rodata_section.sh_name = strtbl.count;
+        rodata_section.sh_name = strtbl.count;
         tb_outstr_UNSAFE(&strtbl, ".rodata");
         tb_out1b_UNSAFE(&strtbl, 0);
 
@@ -300,30 +305,32 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
     }
 
     // Code section:
+    code_section.sh_size = 0;
     loop(i, m->functions.count) {
         TB_FunctionOutput* out_f = m->functions.data[i].output;
-        func_layout[i]           = code_section.sh_size;
+        func_layout[i] = code_section.sh_size;
         if (!out_f) continue;
 
-        uint64_t meta        = out_f->prologue_epilogue_metadata;
+        uint64_t meta = out_f->prologue_epilogue_metadata;
         uint64_t stack_usage = out_f->stack_usage;
 
         size_t code_size = out_f->code_size;
-        size_t prologue  = code_gen->get_prologue_length(meta, stack_usage);
-        size_t epilogue  = code_gen->get_epilogue_length(meta, stack_usage);
+        size_t prologue = code_gen->get_prologue_length(meta, stack_usage);
+        size_t epilogue = code_gen->get_epilogue_length(meta, stack_usage);
         assert(prologue + epilogue < PROEPI_BUFFER);
 
         code_section.sh_size += prologue;
         code_section.sh_size += epilogue;
         code_section.sh_size += code_size;
     }
+    func_layout[m->functions.count] = code_section.sh_size;
 
-	loop(i, m->max_threads) {
+    loop(i, m->max_threads) {
         code_reloc_section.sh_size += arrlen(m->ecall_patches[i]) * sizeof(Elf64_Rela);
-    	code_reloc_section.sh_size += arrlen(m->const_patches[i]) * sizeof(Elf64_Rela);
-	}
+        code_reloc_section.sh_size += arrlen(m->const_patches[i]) * sizeof(Elf64_Rela);
+    }
 
-	// Target specific: resolve internal call patches
+    // Target specific: resolve internal call patches
     code_gen->emit_call_patches(m, func_layout);
     TB_Emitter stab = { 0 };
 
@@ -335,31 +342,28 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
         tb_outs_UNSAFE(&stab, sizeof(Elf64_Sym), (uint8_t*)&null_sym);
     }
 
-	static const char* SECTION_NAMES[] = {
-		NULL, ".strtab", ".text", ".rela.text", ".data", ".rodata", ".bss", ".symtab"
-	};
+    static const char* SECTION_NAMES[] = {
+        NULL, ".strtab", ".text", ".rela.text", ".data", ".rodata", ".bss", ".symtab"
+    };
 
-	loop_range(i, 1, number_of_sections) {
-		put_symbol(&strtbl, &stab, SECTION_NAMES[i], ELF64_ST_INFO(0, 3), i, 0, 0);
-	}
+    loop_range(i, 1, number_of_sections) {
+        put_symbol(&strtbl, &stab, SECTION_NAMES[i], ELF64_ST_INFO(ELF64_STB_LOCAL, 3), i, 0, 0);
+    }
 
-	loop(i, m->functions.count) {
+    loop(i, m->functions.count) {
         TB_FunctionOutput* out_f = m->functions.data[i].output;
         if (!out_f) continue;
 
-		// calculate size
-		size_t next_func = code_section.sh_size;
-		if (i + 1 < m->functions.count) { next_func = func_layout[i + 1]; }
-		size_t func_size = next_func - func_layout[i];
-
-		put_symbol(&strtbl, &stab, m->functions.data[i].name, ELF64_ST_INFO(1, 2), 2, func_layout[i], func_size);
+        // calculate size
+        size_t func_size = func_layout[i + 1] - func_layout[i];
+        put_symbol(&strtbl, &stab, m->functions.data[i].name, ELF64_ST_INFO(ELF64_STB_GLOBAL, 2), 2, func_layout[i], func_size);
     }
 
-	loop(i, m->max_threads) {
+    loop(i, m->max_threads) {
         loop_range(j, 1, arrlen(m->externals[i])) {
             const TB_External* restrict e = &m->externals[i][j];
 
-			put_symbol(&strtbl, &stab, e->name, ELF64_ST_INFO(1, 0), 0, 0, 0);
+            put_symbol(&strtbl, &stab, e->name, ELF64_ST_INFO(ELF64_STB_GLOBAL, 0), 0, 0, 0);
         }
     }
 
@@ -386,10 +390,10 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
     FILE* f = fopen(path, "wb");
     fwrite(&header, sizeof(header), 1, f);
 
-	assert(ftell(f) == strtab_section.sh_offset);
+    assert(ftell(f) == strtab_section.sh_offset);
     fwrite(strtbl.data, strtbl.count, 1, f);
 
-	assert(ftell(f) == code_section.sh_offset);
+    assert(ftell(f) == code_section.sh_offset);
     loop(i, m->functions.count) {
         TB_FunctionOutput* out_f = m->functions.data[i].output;
         if (!out_f) continue;
@@ -405,24 +409,23 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
         uint8_t* epilogue = proepi_buffer + prologue_len;
         size_t epilogue_len = code_gen->emit_epilogue(epilogue, meta, stack_usage);
 
-		printf("%s: %zu %zu %zu\n", m->functions.data[i].name, prologue_len, epilogue_len, code_size);
         fwrite(prologue, prologue_len, 1, f);
         fwrite(code, code_size, 1, f);
         fwrite(epilogue, epilogue_len, 1, f);
     }
 
-	assert(ftell(f) == code_reloc_section.sh_offset);
-	uint64_t external_symbol_baseline = number_of_sections + m->functions.count;
-	loop(i, m->max_threads) {
+    assert(ftell(f) == code_reloc_section.sh_offset);
+    uint64_t external_symbol_baseline = number_of_sections + m->functions.count;
+    loop(i, m->max_threads) {
         loop(j, arrlen(m->ecall_patches[i])) {
             TB_ExternFunctionPatch* p = &m->ecall_patches[i][j];
-            TB_FunctionOutput* out_f  = p->source->output;
+            TB_FunctionOutput* out_f = p->source->output;
 
             uint64_t meta = out_f->prologue_epilogue_metadata;
             uint64_t stack_usage = out_f->stack_usage;
 
             size_t actual_pos = func_layout[p->source - m->functions.data] +
-				code_gen->get_prologue_length(meta, stack_usage) + p->pos;
+                code_gen->get_prologue_length(meta, stack_usage) + p->pos;
 
             TB_ExternalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
 
@@ -432,38 +435,38 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
             uint64_t local_id = (p->target_id % per_thread_stride);
             if (local_id) local_id--;
             symbol_id += local_id;
-			symbol_id += external_symbol_baseline;
+            symbol_id += external_symbol_baseline;
 
-			Elf64_Rela rela = {
-				.r_offset = actual_pos,
-				.r_info   = ELF64_R_INFO(symbol_id, R_X86_64_PLT32),
-				.r_addend = -4
-			};
+            Elf64_Rela rela = {
+                .r_offset = actual_pos,
+                .r_info   = ELF64_R_INFO(symbol_id, R_X86_64_PLT32),
+                .r_addend = -4
+            };
             fwrite(&rela, sizeof(rela), 1, f);
         }
     }
 
-	loop(i, m->max_threads) {
+    loop(i, m->max_threads) {
         loop(j, arrlen(m->const_patches[i])) {
-            TB_ConstPoolPatch* p     = &m->const_patches[i][j];
+            TB_ConstPoolPatch* p = &m->const_patches[i][j];
             TB_FunctionOutput* out_f = p->source->output;
 
-            uint64_t meta        = out_f->prologue_epilogue_metadata;
+            uint64_t meta = out_f->prologue_epilogue_metadata;
             uint64_t stack_usage = out_f->stack_usage;
 
             size_t actual_pos = func_layout[p->source - m->functions.data] +
-				code_gen->get_prologue_length(meta, stack_usage) + p->pos;
+                code_gen->get_prologue_length(meta, stack_usage) + p->pos;
 
-			Elf64_Rela rela = {
-				.r_offset = actual_pos,
-				.r_info   = ELF64_R_INFO(5, R_X86_64_PLT32), /* 5 is .rodata section */
-				.r_addend = -4
-			};
+            Elf64_Rela rela = {
+                .r_offset = actual_pos,
+                .r_info   = ELF64_R_INFO(5, R_X86_64_PLT32), /* 5 is .rodata section */
+                .r_addend = -4
+            };
             fwrite(&rela, sizeof(rela), 1, f);
         }
     }
 
-	assert(ftell(f) == data_section.sh_offset);
+    assert(ftell(f) == data_section.sh_offset);
     if (m->data_region_size) {
         // TODO(NeGate): Optimize this for size and speed, sometimes
         // there's huge sections will be filled with just empty regions
@@ -471,10 +474,10 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
         // buffer.
         char* data = tb_platform_heap_alloc(m->data_region_size);
 
-		loop(i, m->max_threads) {
+        loop(i, m->max_threads) {
             loop(j, arrlen(m->globals[i])) {
                 TB_Global* g = &m->globals[i][j];
-				if (g->storage != TB_STORAGE_DATA) continue;
+                if (g->storage != TB_STORAGE_DATA) continue;
 
                 TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
                 TB_Initializer*  init = (TB_Initializer*)&m->initializers[g->init / per_thread_stride][g->init % per_thread_stride];
@@ -492,12 +495,12 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
         tb_platform_heap_free(data);
     }
 
-	assert(ftell(f) == rodata_section.sh_offset);
+    assert(ftell(f) == rodata_section.sh_offset);
     {
         char* rdata = tb_platform_heap_alloc(m->rdata_region_size);
 
-		// we reserve the first 16 bytes... for literally no reason
-		memset(rdata, 0, 16);
+        // we reserve the first 16 bytes... for literally no reason
+        memset(rdata, 0, 16);
 
         loop(i, m->max_threads) {
             loop(j, arrlen(m->const_patches[i])) {

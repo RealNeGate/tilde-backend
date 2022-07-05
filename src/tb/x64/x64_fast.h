@@ -4,6 +4,7 @@ typedef enum {
     ADDRESS_DESC_GPR,
     ADDRESS_DESC_XMM,
     ADDRESS_DESC_FLAGS,
+    ADDRESS_DESC_STACK,
     ADDRESS_DESC_SPILL
 } AddressDescType;
 
@@ -37,6 +38,7 @@ typedef struct {
     TB_Reg*  phis;
     uint32_t phi_count;
     int      register_barrier;
+    GPR      temp_load_reg; // sometimes we need a register to do a double-deref
 
     uint32_t caller_usage;
 
@@ -279,6 +281,10 @@ static void fast_def_spill(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r, 
     ctx->addresses[r] = (AddressDesc) { .type = ADDRESS_DESC_SPILL, .dt = dt, .spill = spill };
 }
 
+static void fast_def_stack(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r, int spill, TB_DataType dt) {
+    ctx->addresses[r] = (AddressDesc) { .type = ADDRESS_DESC_STACK, .dt = dt, .spill = spill };
+}
+
 static void fast_def_flags(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r, Cond cc, TB_DataType dt) {
     ctx->addresses[r] = (AddressDesc) { .type = ADDRESS_DESC_FLAGS, .dt = dt, .flags = cc };
 }
@@ -317,11 +323,12 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
             case ADDRESS_DESC_XMM:
             return val_xmm(dt, ctx->addresses[r].xmm);
 
+            case ADDRESS_DESC_STACK:
             case ADDRESS_DESC_SPILL:
             return (Val) {
                 .type = VAL_MEM,
                 .dt = dt,
-                .is_spill = !EITHER2(n->type, TB_LOCAL, TB_PARAM_ADDR),
+                .is_spill = (ctx->addresses[r].type == ADDRESS_DESC_SPILL),
                 .mem = {
                     .base = RBP,
                     .index = GPR_NONE,
@@ -487,7 +494,6 @@ static Cond fast_eval_cond(X64_FastCtx* ctx, TB_Function* f, TB_Reg src_reg) {
         fast_kill_temp_gpr(ctx, f, tmp.gpr);
     }
 
-    // TODO(NeGate): regalloc
     if (is_value_mem(&src)) {
         Val imm = val_imm(TB_TYPE_I32, 0);
         INST2(CMP, &src, &imm, l.dt);
@@ -519,11 +525,13 @@ static Val fast_eval_address(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
 
     if (address.type == VAL_GPR) {
         return val_base_disp(TB_TYPE_PTR, address.gpr, 0);
-    } else if (is_value_mem(&address) && n->type == TB_LOAD) {
-        // TODO(NeGate): regalloc
-        Val tmp = val_gpr(TB_TYPE_PTR, R15);
+    } else if (is_value_mem(&address) && address.is_spill) {
+        // reload
+        Val tmp = val_gpr(dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+        ctx->temp_load_reg = tmp.gpr;
         INST2(MOV, &tmp, &address, dt);
-        return tmp;
+
+        return val_base_disp(dt, tmp.gpr, 0);
     } else {
         return address;
     }
@@ -584,6 +592,7 @@ static Val fast_get_tile_mapping(X64_FastCtx* restrict ctx, TB_Function* f, TB_R
 }
 
 static void fast_evict_everything(X64_FastCtx* restrict ctx, TB_Function* f) {
+    #if 1
     loop(i, COUNTOF(GPR_PRIORITIES)) {
         GPR gpr = GPR_PRIORITIES[i];
 
@@ -599,6 +608,7 @@ static void fast_evict_everything(X64_FastCtx* restrict ctx, TB_Function* f) {
             fast_evict_xmm(ctx, f, xmm);
         }
     }
+    #endif
 }
 
 static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Reg bb_end) {
@@ -693,7 +703,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 Val dst = val_gpr(TB_TYPE_PTR, dst_gpr);
                 INST2(LEA, &dst, &src, TB_TYPE_PTR);
 
-                printf("%s:r%d: failed to tile value :(\n", f->name, ctx->tile.mapping);
+                //printf("%s:r%d: failed to tile value :(\n", f->name, ctx->tile.mapping);
 
                 ctx->tile.mapping = 0;
             }
@@ -1822,6 +1832,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     Val target = fast_eval_address(ctx, f, n->vcall.target);
 
                     // call r/m64
+                    assert(target.type == VAL_MEM && target.mem.index == GPR_NONE && target.mem.disp == 0);
+                    target = val_gpr(TB_TYPE_PTR, target.mem.base);
                     INST1(CALL_RM, &target);
 
                     fast_kill_reg(ctx, f, n->vcall.target);
@@ -1940,6 +1952,10 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
             default: tb_todo();
         }
 
+        if (ctx->temp_load_reg != GPR_NONE) {
+            fast_kill_temp_gpr(ctx, f, ctx->temp_load_reg);
+            ctx->temp_load_reg = GPR_NONE;
+        }
         ctx->register_barrier = ctx->ordinal[r];
     }
 
@@ -1982,11 +1998,22 @@ static void fast_eval_terminator_phis(X64_FastCtx* restrict ctx, TB_Function* f,
                     if (src != TB_NULL_REG) {
                         Val dst;
                         if (ctx->addresses[r].type == ADDRESS_DESC_NONE) {
+                            // TODO(NeGate): Fix up PHI node spill slot recycling
+                            /*if (ctx->use_count[src] == 1 && ctx->addresses[src].type == ADDRESS_DESC_SPILL) {
+                                //printf("%s:r%u: recycle!\n", f->name, r);
+
+                                ctx->addresses[r] = ctx->addresses[src];
+                                ctx->addresses[src].type = ADDRESS_DESC_NONE;
+
+                                dst = fast_eval(ctx, f, r);
+                                continue;
+                            } else {*/
                             int size = get_data_type_size(dt);
                             int pos  = STACK_ALLOC(size, size);
 
                             dst = val_stack(dt, pos);
                             fast_def_spill(ctx, f, r, pos, dt);
+                            //}
                         } else {
                             assert(ctx->addresses[r].type == ADDRESS_DESC_SPILL);
                             dst = val_stack(dt, ctx->addresses[r].spill);
@@ -2120,6 +2147,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
 
         ctx->gpr_available = 14;
         ctx->xmm_available = 16;
+        ctx->temp_load_reg = GPR_NONE;
         ctx->is_sysv       = (f->module->target_abi == TB_ABI_SYSTEMV);
         memset(ctx->addresses, 0, f->nodes.count * sizeof(AddressDesc));
     }
@@ -2161,7 +2189,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
                 ctx->xmm_allocator[(XMM)i] = r;
                 ctx->xmm_available -= 1;
             } else
-                fast_def_spill(ctx, f, r, 16 + (i * 8), dt);
+                fast_def_stack(ctx, f, r, 16 + (i * 8), dt);
         } else {
             // gpr parameters
             if (ctx->is_sysv && i < 6) {
@@ -2173,7 +2201,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
                 ctx->gpr_allocator[(GPR)WIN64_GPR_PARAMETERS[i]] = r;
                 ctx->gpr_available -= 1;
             } else {
-                fast_def_spill(ctx, f, r, 16 + (i * 8), dt);
+                fast_def_stack(ctx, f, r, 16 + (i * 8), dt);
             }
         }
     }
@@ -2226,13 +2254,13 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
                 }
             }
 
-            fast_def_spill(ctx, f, r, 16 + (id * 8), n->dt);
+            fast_def_stack(ctx, f, r, 16 + (id * 8), n->dt);
         } else if (n->type == TB_LOCAL) {
             uint32_t size  = n->local.size;
             uint32_t align = n->local.alignment;
             int pos = STACK_ALLOC(size, align);
 
-            fast_def_spill(ctx, f, r, pos, n->dt);
+            fast_def_stack(ctx, f, r, pos, n->dt);
         }
     }
 
@@ -2332,8 +2360,11 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
             fast_eval_terminator_phis(ctx, f, bb, bb_end, target, target_end);
             fast_evict_everything(ctx, f);
 
-            // TODO(NeGate): don't emit jump if we can fallthrough
-            JMP(end->goto_.label);
+            TB_Label fallthrough_label = 0;
+            if (next_bb != &f->nodes.data[0]) { fallthrough_label = next_bb->label.id; }
+            bool has_fallthrough = fallthrough_label == target_label;
+
+            if (!has_fallthrough) JMP(end->goto_.label);
         } else if (end->type == TB_SWITCH) {
             static_assert(_Alignof(TB_SwitchEntry) == _Alignof(TB_Reg), "We don't want any unaligned accesses");
             TB_Node* switch_key = &f->nodes.data[end->switch_.key];

@@ -6,21 +6,21 @@ void* tb_platform_valloc(size_t size) {
 }
 
 void* tb_platform_valloc_guard(size_t size) {
-	void* ptr = VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE | PAGE_GUARD);
-	if (ptr == NULL) return NULL;
+    void* ptr = VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE | PAGE_GUARD);
+    if (ptr == NULL) return NULL;
 
-	SYSTEM_INFO sys_info;
-	GetSystemInfo(&sys_info);
+    SYSTEM_INFO sys_info;
+    GetSystemInfo(&sys_info);
 
-	// mark the last page as a noaccess, this means it should segfault safely on running out of memory
-	DWORD old_protect;
+    // mark the last page as a noaccess, this means it should segfault safely on running out of memory
+    DWORD old_protect;
     VirtualProtect((char*)ptr + (size - sys_info.dwPageSize), sys_info.dwPageSize, PAGE_NOACCESS, &old_protect);
 
-	return ptr;
+    return ptr;
 }
 
 void tb_platform_vfree(void* ptr, size_t size) {
-	VirtualFree(ptr, 0, MEM_RELEASE);
+    VirtualFree(ptr, 0, MEM_RELEASE);
 }
 
 bool tb_platform_vprotect(void* ptr, size_t size, bool execute) {
@@ -29,17 +29,17 @@ bool tb_platform_vprotect(void* ptr, size_t size, bool execute) {
 }
 
 void* tb_platform_heap_alloc(size_t size) {
-	void* ptr = scalable_malloc(size);
-	if (ptr == NULL) tb_panic("out of memory!");
-	return ptr;
+    void* ptr = scalable_malloc(size);
+    if (ptr == NULL) tb_panic("out of memory!");
+    return ptr;
 }
 
 void* tb_platform_heap_realloc(void* ptr, size_t size) {
-	return scalable_realloc(ptr, size);
+    return scalable_realloc(ptr, size);
 }
 
 void tb_platform_heap_free(void* ptr) {
-	scalable_free(ptr);
+    scalable_free(ptr);
 }
 
 static char*  string_buffer;
@@ -47,8 +47,8 @@ static size_t string_head;
 
 char* tb_platform_string_alloc(const char* str) {
     if (!string_buffer) {
-		string_buffer = tb_platform_valloc(32 << 20);
-	}
+        string_buffer = tb_platform_valloc(32 << 20);
+    }
 
     size_t len = strlen(str);
     size_t pos = tb_atomic_size_add(&string_head, len + 1);

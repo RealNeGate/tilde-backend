@@ -122,5 +122,55 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
 }
 
 bool tb_opt_dead_block_elim(TB_Function* f) {
-	return false;
+    TB_TemporaryStorage* tls = tb_tls_allocate();
+
+    int* pred_count = tb_tls_push(tls, f->label_count * sizeof(int));
+    TB_Label** preds = tb_tls_push(tls, f->label_count * sizeof(TB_Label*));
+
+    // entry label has no predecessors
+    pred_count[0] = 0;
+    preds[0] = NULL;
+
+    loop_range(j, 1, f->label_count) {
+        preds[j] = (TB_Label*)tb_tls_push(tls, 0);
+        tb_calculate_immediate_predeccessors(f, tls, j, &pred_count[j]);
+    }
+
+    bool changes = false;
+    TB_Reg block = 0;
+    TB_FOR_EACH_NODE(n, f) {
+        TB_Reg i = n - f->nodes.data;
+
+        switch (n->type) {
+            case TB_LABEL: {
+                if (n->label.id != 0 && pred_count[n->label.id] == 0) {
+                    OPTIMIZER_LOG(i, "Killed unused BB");
+
+                    TB_Reg old_terminator = f->nodes.data[block].label.terminator;
+                    TB_Reg new_terminator = n->label.terminator;
+                    TB_Reg terminator_next = f->nodes.data[new_terminator].next;
+
+                    // just murder every node in the BB and we should be good
+                    TB_FOR_EACH_NODE_RANGE(m, f, i, terminator_next) {
+                        tb_murder_node(f, m);
+                    }
+
+                    // extend previous label
+                    f->nodes.data[block].label.terminator = new_terminator;
+                    memcpy(&f->nodes.data[new_terminator], &f->nodes.data[old_terminator], sizeof(TB_Node));
+                    f->nodes.data[new_terminator].next = terminator_next;
+
+                    tb_murder_node(f, &f->nodes.data[old_terminator]);
+
+                    tb_function_find_replace_reg(f, i, block);
+                    changes = true;
+                } else {
+                    block = i;
+                }
+                break;
+            }
+        }
+    }
+
+    return changes;
 }

@@ -47,10 +47,6 @@ static int get_variable_id(Mem2Reg_Ctx* restrict c, TB_Reg r) {
     return -1;
 }
 
-// NOTE(NeGate): Be careful when using this function because it will shift over registers
-// it does correct the ones in the context but not any you loaded because... i cant?
-// I just recommend not caching indices across this function.
-//
 // This doesn't really generate a PHI node, it just produces a NULL node which will
 // be mutated into a PHI node by the rest of the code.
 static TB_Reg new_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, int var, TB_Label block, TB_DataType dt) {

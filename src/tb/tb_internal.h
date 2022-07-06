@@ -681,6 +681,9 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
 // executable file format
 void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_LinkerInput* restrict input, const char* path, const IDebugFormat* debug_fmt);
 
+// code generators
+ICodeGen* tb__find_code_generator(TB_Module* m);
+
 uint8_t* tb_out_reserve(TB_Emitter* o, size_t count);
 // The return value is the start of the empty region after
 // the data, this is where you can start appending new data
@@ -768,7 +771,7 @@ inline static bool tb_next_biggest(int* result, int v, size_t n, const int* arr)
 #endif
 
 // NOTE(NeGate): clean this up
-#if 1
+#if 0
 #define OPTIMIZER_LOG(at, ...) ((void) (at))
 #define LOGGING_OPTS 0
 #else

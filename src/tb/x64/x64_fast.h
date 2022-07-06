@@ -1021,6 +1021,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
                 TB_Initializer* i = (TB_Initializer*)&m->initializers[n->init.id / per_thread_stride][n->init.id % per_thread_stride];
 
+                assert(i->obj_count == 0);
                 Val src = val_imm(TB_TYPE_I32, 0);
                 fast_memset_const_size(ctx, f, addr, &src, i->size);
 
@@ -1456,25 +1457,36 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     bool int2float = is_src_int && !is_dst_int;
                     if (int2float) {
                         // int -> float
-                        assert(src.type == VAL_GPR);
+                        assert(src.type == VAL_GPR || src.type == VAL_MEM);
                         val = val_xmm(dt, fast_alloc_xmm(ctx, f, r));
                         fast_def_xmm(ctx, f, r, val.xmm, dt);
                     } else {
                         // float -> int
-                        assert(src.type == VAL_XMM);
+                        assert(src.type == VAL_XMM || src.type == VAL_MEM);
                         val = val_gpr(dt, fast_alloc_gpr(ctx, f, r));
                         fast_def_gpr(ctx, f, r, val.gpr, dt);
                     }
 
-                    if (is_64bit || val.xmm >= 8 || src.gpr >= 8) {
+                    bool src_needs_rex = false;
+                    if (src.type == VAL_GPR || src.type == VAL_XMM) {
+                        src_needs_rex = (src.gpr >= 8);
+                    } else if (src.type == VAL_MEM) {
+                        // index isn't required
+                        if (src.mem.index != GPR_NONE) {
+                            src_needs_rex |= (src.mem.index >= 8);
+                        }
+                        src_needs_rex |= (src.mem.base >= 8);
+                    }
+
+                    if (is_64bit || val.xmm >= 8 || src_needs_rex) {
                         *ctx->header.out++ = rex(is_64bit, src.gpr, val.gpr, 0);
                     }
 
                     *ctx->header.out++ = 0x0F;
-                    *ctx->header.out++ = int2float ? 0x6E : 0x7E;
+                    *ctx->header.out++ = int2float ? 0x7E : 0x6E;
 
                     // val.gpr and val.xmm alias so it's irrelevant which one we pick
-                    emit_memory_operand(&ctx->header, src.gpr, &val);
+                    emit_memory_operand(&ctx->header, val.gpr, &src);
 
                     fast_kill_reg(ctx, f, n->unary.src);
                 }

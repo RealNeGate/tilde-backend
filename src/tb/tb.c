@@ -19,7 +19,7 @@ static const IDebugFormat* tb_find_debug_format(TB_Module* m) {
     }
 }
 
-static ICodeGen* tb_find_code_generator(TB_Module* m) {
+ICodeGen* tb__find_code_generator(TB_Module* m) {
     switch (m->target_arch) {
         case TB_ARCH_X86_64: return &x64_codegen;
         default: return NULL;
@@ -97,7 +97,7 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
 }
 
 TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f, TB_ISelMode isel_mode) {
-    ICodeGen* restrict codegen = tb_find_code_generator(m);
+    ICodeGen* restrict codegen = tb__find_code_generator(m);
 
     // Machine code gen
     int id = get_local_thread_id();
@@ -130,7 +130,7 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f, TB_ISelMode ise
 }
 
 TB_API bool tb_module_export(TB_Module* m, const char* path) {
-    const ICodeGen* restrict code_gen = tb_find_code_generator(m);
+    const ICodeGen* restrict code_gen = tb__find_code_generator(m);
     const IDebugFormat* restrict debug_fmt = tb_find_debug_format(m);
 
     switch (m->target_system) {
@@ -144,7 +144,7 @@ TB_API bool tb_module_export(TB_Module* m, const char* path) {
 }
 
 TB_API bool tb_module_export_exec(TB_Module* m, const char* path, const TB_LinkerInput* input) {
-    const ICodeGen* restrict code_gen = tb_find_code_generator(m);
+    const ICodeGen* restrict code_gen = tb__find_code_generator(m);
     const IDebugFormat* restrict debug_fmt = tb_find_debug_format(m);
 
     switch (m->target_system) {
@@ -269,7 +269,7 @@ TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, co
     f->nodes[0] = (TB_Node) { .next = 1 };
     f->nodes[1] = (TB_Node) { .type = TB_LABEL, .dt = TB_TYPE_PTR, .label = { 0, 0 } };
 
-    const ICodeGen* restrict code_gen = tb_find_code_generator(m);
+    const ICodeGen* restrict code_gen = tb__find_code_generator(m);
     loop(i, p->param_count) {
         TB_DataType dt = p->params[i];
 

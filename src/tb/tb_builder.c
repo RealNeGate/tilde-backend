@@ -405,8 +405,10 @@ TB_API void tb_inst_volatile_store(TB_Function* f, TB_DataType dt, TB_Reg addr, 
 
 TB_API void tb_inst_initialize_mem(TB_Function* f, TB_Reg addr, TB_InitializerID src) {
     TB_Reg r = tb_make_reg(f, TB_INITIALIZE, TB_TYPE_PTR);
-    f->nodes[r].init.addr = addr;
-    f->nodes[r].init.id   = src;
+    f->nodes[r].init = (struct TB_NodeInitialize) {
+        .addr = addr,
+        .id   = src,
+    };
 }
 
 TB_API TB_Reg tb_inst_bool(TB_Function* f, bool imm) {

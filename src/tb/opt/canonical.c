@@ -193,6 +193,39 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
                     changes++;
                 }
             }
+        } else if (type == TB_INITIALIZE) {
+            TB_Reg addr = n->init.addr;
+
+            TB_Module* m = f->module;
+            TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
+            TB_Initializer* init = (TB_Initializer*)&m->initializers[n->init.id / per_thread_stride][n->init.id % per_thread_stride];
+
+            if (init->obj_count == 0) {
+                OPTIMIZER_LOG(i, "Replaced complex initializer with memset");
+
+                TB_Reg imm_reg = tb_function_insert_after(f, addr);
+                f->nodes[imm_reg].type = TB_INTEGER_CONST;
+                f->nodes[imm_reg].dt = TB_TYPE_I8;
+                f->nodes[imm_reg].integer = (struct TB_NodeInt) {
+                    .num_words = 1,
+                    .single_word = 0
+                };
+
+                TB_Reg size_reg = tb_function_insert_after(f, imm_reg);
+                f->nodes[size_reg].type = TB_INTEGER_CONST;
+                f->nodes[size_reg].dt = TB_TYPE_PTR;
+                f->nodes[size_reg].integer = (struct TB_NodeInt) {
+                    .num_words = 1,
+                    .single_word = init->size
+                };
+
+                n->type = TB_MEMSET;
+                n->mem_op.dst = addr;
+                n->mem_op.src = imm_reg;
+                n->mem_op.size = size_reg;
+                n->mem_op.align = init->align;
+                changes++;
+            }
         } else if (type == TB_MEMBER_ACCESS) {
             TB_Node* base = &f->nodes[n->member_access.base];
 

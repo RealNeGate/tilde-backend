@@ -33,7 +33,7 @@ static void tb_print_type(TB_DataType dt, TB_PrintCallback callback, void* user_
 
 static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_data, TB_Node* restrict n) {
     TB_Module* m = f->module;
-    TB_Reg i = n - f->nodes.data;
+    TB_Reg i = TB_GET_REG(n, f);
     TB_NodeTypeEnum type = n->type;
     TB_DataType dt = n->dt;
 
@@ -328,7 +328,7 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
         callback(user_data, " [%u]", n->param.id);
         break;
         case TB_PARAM_ADDR:
-        callback(user_data, "  r%-8u = &params[%u]", i, f->nodes.data[n->param_addr.param].param.id);
+        callback(user_data, "  r%-8u = &params[%u]", i, f->nodes[n->param_addr.param].param.id);
         break;
         case TB_LOAD:
         callback(user_data, "  r%-8u = load.", i);
@@ -365,7 +365,7 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 
             loop(j, count) {
                 if (j) callback(user_data, ", ");
-                callback(user_data, "L%d:r%u", f->nodes.data[inputs[j].label].label.id, inputs[j].val);
+                callback(user_data, "L%d:r%u", f->nodes[inputs[j].label].label.id, inputs[j].val);
             }
             break;
         }

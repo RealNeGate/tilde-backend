@@ -8,11 +8,11 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
     // when objects are murdered such that we change the time complexity of this crap
     do {
         changes = false;
-        int* use_count = tb_tls_push(tls, f->nodes.count * sizeof(int));
+        int* use_count = tb_tls_push(tls, f->node_count * sizeof(int));
         tb_function_calculate_use_count(f, use_count);
 
         TB_FOR_EACH_NODE(n, f) {
-            TB_Reg i = n - f->nodes.data;
+            TB_Reg i = TB_GET_REG(n, f);
 
             if (use_count[i] == 0) {
                 switch (n->type) {
@@ -139,16 +139,16 @@ bool tb_opt_dead_block_elim(TB_Function* f) {
     bool changes = false;
     TB_Reg block = 0;
     TB_FOR_EACH_NODE(n, f) {
-        TB_Reg i = n - f->nodes.data;
+        TB_Reg i = TB_GET_REG(n, f);
 
         switch (n->type) {
             case TB_LABEL: {
                 if (n->label.id != 0 && pred_count[n->label.id] == 0) {
                     OPTIMIZER_LOG(i, "Killed unused BB");
 
-                    TB_Reg old_terminator = f->nodes.data[block].label.terminator;
+                    TB_Reg old_terminator = f->nodes[block].label.terminator;
                     TB_Reg new_terminator = n->label.terminator;
-                    TB_Reg terminator_next = f->nodes.data[new_terminator].next;
+                    TB_Reg terminator_next = f->nodes[new_terminator].next;
 
                     // just murder every node in the BB and we should be good
                     TB_FOR_EACH_NODE_RANGE(m, f, i, terminator_next) {
@@ -156,11 +156,11 @@ bool tb_opt_dead_block_elim(TB_Function* f) {
                     }
 
                     // extend previous label
-                    f->nodes.data[block].label.terminator = new_terminator;
-                    memcpy(&f->nodes.data[new_terminator], &f->nodes.data[old_terminator], sizeof(TB_Node));
-                    f->nodes.data[new_terminator].next = terminator_next;
+                    f->nodes[block].label.terminator = new_terminator;
+                    memcpy(&f->nodes[new_terminator], &f->nodes[old_terminator], sizeof(TB_Node));
+                    f->nodes[new_terminator].next = terminator_next;
 
-                    tb_murder_node(f, &f->nodes.data[old_terminator]);
+                    tb_murder_reg(f, old_terminator);
 
                     tb_function_find_replace_reg(f, i, block);
                     changes = true;

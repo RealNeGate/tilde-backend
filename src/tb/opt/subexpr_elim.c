@@ -4,7 +4,7 @@ bool tb_opt_subexpr_elim(TB_Function* f) {
     bool changes = false;
 
     TB_FOR_EACH_NODE(n, f) {
-        TB_Reg i = (n - f->nodes.data);
+        TB_Reg i = (n - f->nodes);
         TB_NodeTypeEnum type = n->type;
 
         if (type == TB_SIGN_EXT || type == TB_ZERO_EXT ||
@@ -66,7 +66,7 @@ bool tb_opt_hoist_invariants(TB_Function* f) {
 
     TB_FOR_EACH_NODE(n, f) {
         TB_NodeTypeEnum type = n->type;
-        TB_Reg i = (n - f->nodes.data);
+        TB_Reg i = (n - f->nodes);
 
         if (type == TB_SIGN_EXT || type == TB_ZERO_EXT) {
             TB_Reg src = n->unary.src;
@@ -75,7 +75,7 @@ bool tb_opt_hoist_invariants(TB_Function* f) {
             // check if we already exist within the src's basic block
             bool already_in_same_bb = false;
             TB_FOR_EACH_NODE_BB(other, f, src) {
-                TB_Reg j = (other - f->nodes.data);
+                TB_Reg j = (other - f->nodes);
 
                 if (other->type == type && other->unary.src == src &&
                     TB_DATA_TYPE_EQUALS(other->dt, dt)) {
@@ -96,7 +96,7 @@ bool tb_opt_hoist_invariants(TB_Function* f) {
                 OPTIMIZER_LOG(i, "hoist extension operation");
 
                 TB_Reg hoisted_reg = tb_function_insert_after(f, src);
-                TB_Node* hoisted = &f->nodes.data[hoisted_reg];
+                TB_Node* hoisted = &f->nodes[hoisted_reg];
                 hoisted->type = type;
                 hoisted->dt = dt;
                 hoisted->unary.src = src;

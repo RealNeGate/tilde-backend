@@ -17,15 +17,15 @@ bool tb_opt_fold(TB_Function* f) {
         TB_DataType dt = n->dt;
 
         if (n->type >= TB_CMP_EQ && n->type <= TB_CMP_ULE) {
-            TB_Node* a = &f->nodes.data[n->cmp.a];
-            TB_Node* b = &f->nodes.data[n->cmp.b];
+            TB_Node* a = &f->nodes[n->cmp.a];
+            TB_Node* b = &f->nodes[n->cmp.b];
 
             if (dt.type != TB_INT) continue;
             if (a->type != b->type) continue;
             if (a->type != TB_INTEGER_CONST) continue;
 
             if (a->integer.num_words == 1) {
-                OPTIMIZER_LOG(n - f->nodes.data, "constant fold comparisons");
+                OPTIMIZER_LOG(n - f->nodes, "constant fold comparisons");
                 assert(b->integer.num_words == 1);
 
                 // fast path: single word
@@ -53,11 +53,11 @@ bool tb_opt_fold(TB_Function* f) {
                 n->integer.single_word = result;
                 changes++;
             } else {
-                OPTIMIZER_LOG(n - f->nodes.data, "TODO implement large int compares");
+                OPTIMIZER_LOG(n - f->nodes, "TODO implement large int compares");
             }
         } else if (n->type >= TB_AND && n->type <= TB_SDIV) {
-            TB_Node* a = &f->nodes.data[n->i_arith.a];
-            TB_Node* b = &f->nodes.data[n->i_arith.b];
+            TB_Node* a = &f->nodes[n->i_arith.a];
+            TB_Node* b = &f->nodes[n->i_arith.b];
             TB_ArithmaticBehavior ab = n->i_arith.arith_behavior;
 
             if (dt.type != TB_INT) continue;
@@ -65,7 +65,7 @@ bool tb_opt_fold(TB_Function* f) {
             if (a->type != TB_INTEGER_CONST) continue;
 
             if (a->integer.num_words == 1) {
-                OPTIMIZER_LOG(n - f->nodes.data, "constant folded operation");
+                OPTIMIZER_LOG(n - f->nodes, "constant folded operation");
                 assert(b->integer.num_words == 1);
 
                 // fast path: single word
@@ -134,7 +134,7 @@ bool tb_opt_fold(TB_Function* f) {
                     case TB_UDIV:
                     case TB_SDIV: {
                         if (bi == 0) {
-                            OPTIMIZER_LOG(n - f->nodes.data, "division by zero converted to poison");
+                            OPTIMIZER_LOG(n - f->nodes, "division by zero converted to poison");
                             n->type = TB_POISON;
                             goto skip_normal_const;
                         }
@@ -175,10 +175,10 @@ bool tb_opt_fold(TB_Function* f) {
                 skip_normal_const:
                 changes++;
             } else {
-                OPTIMIZER_LOG(n - f->nodes.data, "TODO constant folding on big integers");
+                OPTIMIZER_LOG(n - f->nodes, "TODO constant folding on big integers");
             }
         } else if (n->type == TB_SIGN_EXT) {
-            TB_Node* src = &f->nodes.data[n->unary.src];
+            TB_Node* src = &f->nodes[n->unary.src];
 
             if (src->type == TB_INTEGER_CONST) {
                 assert(src->dt.type == TB_INT && src->dt.data > 0);
@@ -220,7 +220,7 @@ bool tb_opt_fold(TB_Function* f) {
                 changes++;
             }
         } else if (n->type == TB_ZERO_EXT) {
-            TB_Node* src = &f->nodes.data[n->unary.src];
+            TB_Node* src = &f->nodes[n->unary.src];
 
             if (src->type == TB_INTEGER_CONST) {
                 assert(src->dt.type == TB_INT && src->dt.data > 0);
@@ -260,7 +260,7 @@ bool tb_opt_fold(TB_Function* f) {
                 changes++;
             }
         } else if (n->type == TB_TRUNCATE) {
-            TB_Node* src = &f->nodes.data[n->unary.src];
+            TB_Node* src = &f->nodes[n->unary.src];
 
             if (src->type == TB_INTEGER_CONST) {
                 assert(src->dt.type == TB_INT && src->dt.data > 0);

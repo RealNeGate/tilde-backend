@@ -114,7 +114,7 @@ static uint8_t legalize_float(TB_DataType dt) {
 }
 
 static bool is_address_node(TB_Function* f, TB_Reg r) {
-    switch (f->nodes.data[r].type) {
+    switch (f->nodes[r].type) {
         case TB_LOCAL:
         case TB_PARAM_ADDR:
         case TB_EXTERN_ADDRESS:
@@ -154,7 +154,7 @@ static void fast_evict_gpr(X64_FastCtx* restrict ctx, TB_Function* f, GPR gpr) {
         return;
     }
 
-    LegalInt l = legalize_int(f->nodes.data[r].dt);
+    LegalInt l = legalize_int(f->nodes[r].dt);
 
     // printf("%s: Evicted r%d from %s\n", f->name, r, GPR_NAMES[gpr]);
     ctx->gpr_allocator[gpr] = TB_NULL_REG;
@@ -190,7 +190,7 @@ static void fast_evict_xmm(X64_FastCtx* restrict ctx, TB_Function* f, XMM xmm) {
         return;
     }
 
-    TB_DataType dt = f->nodes.data[r].dt;
+    TB_DataType dt = f->nodes[r].dt;
 
     // printf("%s: Evicted r%d from %s\n", f->name, r, GPR_NAMES[gpr]);
     ctx->xmm_allocator[xmm] = TB_NULL_REG;
@@ -310,7 +310,7 @@ static void fast_kill_reg(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r) {
 }
 
 static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
-    TB_Node* restrict n = &f->nodes.data[r];
+    TB_Node* restrict n = &f->nodes[r];
     TB_DataType dt = n->dt;
 
     ctx->use_count[r] -= 1;
@@ -418,7 +418,7 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
 static void fast_folded_op(X64_FastCtx* ctx, TB_Function* f, Inst2Type op, const Val* lhs, TB_Reg rhs_reg) {
     Val rhs = fast_eval(ctx, f, rhs_reg);
 
-    TB_Node* restrict n = &f->nodes.data[rhs_reg];
+    TB_Node* restrict n = &f->nodes[rhs_reg];
     LegalInt l = legalize_int(n->dt);
     //assert(l.mask == 0 && "TODO");
 
@@ -466,7 +466,7 @@ static void fast_folded_op(X64_FastCtx* ctx, TB_Function* f, Inst2Type op, const
 static void fast_folded_op_sse(X64_FastCtx* ctx, TB_Function* f, Inst2FPType op, const Val* lhs, TB_Reg rhs_reg) {
     Val rhs = fast_eval(ctx, f, rhs_reg);
 
-    TB_Node* restrict n = &f->nodes.data[rhs_reg];
+    TB_Node* restrict n = &f->nodes[rhs_reg];
     TB_DataType dt = n->dt;
 
     uint8_t flags = legalize_float(dt);
@@ -486,7 +486,7 @@ static void fast_folded_op_sse(X64_FastCtx* ctx, TB_Function* f, Inst2FPType op,
 static Cond fast_eval_cond(X64_FastCtx* ctx, TB_Function* f, TB_Reg src_reg) {
     Val src = fast_eval(ctx, f, src_reg);
 
-    TB_Node* restrict n = &f->nodes.data[src_reg];
+    TB_Node* restrict n = &f->nodes[src_reg];
     LegalInt l = legalize_int(n->dt);
     //assert(l.mask == 0);
 
@@ -526,7 +526,7 @@ static Cond fast_eval_cond(X64_FastCtx* ctx, TB_Function* f, TB_Reg src_reg) {
 static Val fast_eval_address(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
     Val address = fast_eval(ctx, f, r);
 
-    TB_Node* restrict n = &f->nodes.data[r];
+    TB_Node* restrict n = &f->nodes[r];
     TB_DataType dt = n->dt;
 
     if (address.type == VAL_GPR) {
@@ -619,13 +619,13 @@ static void fast_evict_everything(X64_FastCtx* restrict ctx, TB_Function* f) {
 
 static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Reg bb_end) {
     // first node in the basic block
-    bb = f->nodes.data[bb].next;
+    bb = f->nodes[bb].next;
     if (bb == bb_end) return;
 
     TB_FOR_EACH_NODE_RANGE(n, f, bb, bb_end) {
-        TB_Reg r = n - f->nodes.data;
+        TB_Reg r = n - f->nodes;
 
-        TB_Node* restrict n = &f->nodes.data[r];
+        TB_Node* restrict n = &f->nodes[r];
         TB_NodeTypeEnum reg_type = n->type;
         TB_DataType dt = n->dt;
 
@@ -685,8 +685,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
             if (reg_type == TB_SIGN_EXT) {
                 TB_Reg potential_load = n->unary.src;
-                if (f->nodes.data[potential_load].type == TB_LOAD &&
-                    f->nodes.data[potential_load].load.address == ctx->tile.mapping &&
+                if (f->nodes[potential_load].type == TB_LOAD &&
+                    f->nodes[potential_load].load.address == ctx->tile.mapping &&
                     ctx->use_count[potential_load] == 1) {
                     can_keep_it = true;
                 }
@@ -969,8 +969,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 Val addr;
                 if (ctx->tile.mapping == n->load.address) {
                     // if we can defer the LOAD into a SIGN_EXT that's kinda better
-                    if (f->nodes.data[n->next].type == TB_SIGN_EXT &&
-                        f->nodes.data[n->next].unary.src == r) {
+                    if (f->nodes[n->next].type == TB_SIGN_EXT &&
+                        f->nodes[n->next].unary.src == r) {
                         break;
                     }
                     addr = fast_get_tile_mapping(ctx, f, n->load.address);
@@ -1033,9 +1033,9 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 TB_Reg size_reg = n->mem_op.size;
 
                 // memset on constant size
-                if (f->nodes.data[size_reg].type == TB_INTEGER_CONST &&
-                    f->nodes.data[size_reg].integer.num_words == 1) {
-                    int64_t sz = f->nodes.data[size_reg].integer.single_word;
+                if (f->nodes[size_reg].type == TB_INTEGER_CONST &&
+                    f->nodes[size_reg].integer.num_words == 1) {
+                    int64_t sz = f->nodes[size_reg].integer.single_word;
                     assert(sz <= 0 && "Cannot memset on negative numbers or zero");
 
                     {
@@ -1247,9 +1247,9 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
                 fast_folded_op(ctx, f, MOV, &dst, n->i_arith.a);
 
-                if (f->nodes.data[n->i_arith.b].type == TB_INTEGER_CONST &&
-                    f->nodes.data[n->i_arith.b].integer.num_words == 1) {
-                    uint64_t imm = f->nodes.data[n->i_arith.b].integer.single_word;
+                if (f->nodes[n->i_arith.b].type == TB_INTEGER_CONST &&
+                    f->nodes[n->i_arith.b].integer.num_words == 1) {
+                    uint64_t imm = f->nodes[n->i_arith.b].integer.single_word;
                     assert(imm < 64);
 
                     // C1 /4       shl r/m, imm
@@ -1351,8 +1351,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 // if (cmp XX (a, b)) should return a FLAGS because the IF
                 // will handle it properly
                 bool returns_flags = ctx->use_count[r] == 1 &&
-                    f->nodes.data[n->next].type == TB_IF &&
-                    f->nodes.data[n->next].if_.cond == r;
+                    f->nodes[n->next].type == TB_IF &&
+                    f->nodes[n->next].if_.cond == r;
 
                 Val temp = val_gpr(cmp_dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
 
@@ -1388,7 +1388,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 } else {
                     cmp_dt = legalize_int(cmp_dt).dt;
 
-                    bool invert = (f->nodes.data[n->i_arith.a].type == TB_INTEGER_CONST);
+                    bool invert = (f->nodes[n->i_arith.a].type == TB_INTEGER_CONST);
                     if (invert) {
                         fast_folded_op(ctx, f, MOV, &temp, n->i_arith.b);
                         fast_folded_op(ctx, f, CMP, &temp, n->i_arith.a);
@@ -1484,7 +1484,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
             case TB_FLOAT2UINT: {
                 assert(dt.width == 0 && "TODO: Implement vector float2int");
 
-                TB_DataType src_dt = f->nodes.data[n->unary.src].dt;
+                TB_DataType src_dt = f->nodes[n->unary.src].dt;
                 assert(src_dt.type == TB_FLOAT);
 
                 Val src = val_xmm(src_dt, fast_alloc_xmm(ctx, f, TB_TEMP_REG));
@@ -1532,7 +1532,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
             case TB_UINT2FLOAT:
             case TB_INT2FLOAT: {
                 assert(dt.width == 0 && "TODO: Implement vector int2float");
-                TB_DataType src_dt = f->nodes.data[n->unary.src].dt;
+                TB_DataType src_dt = f->nodes[n->unary.src].dt;
 
                 Val src = val_gpr(src_dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
                 fast_folded_op(ctx, f, MOV, &src, n->unary.src);
@@ -1665,7 +1665,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
             }
             case TB_PTR2INT: {
                 assert(dt.width == 0 && "TODO: Implement vector zero extend");
-                // TB_DataType src_dt = f->nodes.data[n->unary.src].dt;
+                // TB_DataType src_dt = f->nodes[n->unary.src].dt;
                 // bool sign_ext = (reg_type == TB_SIGN_EXT);
 
                 GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
@@ -1685,7 +1685,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
             case TB_SIGN_EXT:
             case TB_ZERO_EXT: {
                 assert(dt.width == 0 && "TODO: Implement vector zero extend");
-                TB_DataType src_dt = f->nodes.data[n->unary.src].dt;
+                TB_DataType src_dt = f->nodes[n->unary.src].dt;
                 bool sign_ext = (reg_type == TB_SIGN_EXT);
 
                 GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
@@ -1722,8 +1722,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 }
 
                 TB_Reg src = n->unary.src;
-                if (f->nodes.data[src].type == TB_LOAD &&
-                    f->nodes.data[src].load.address == ctx->tile.mapping) {
+                if (f->nodes[src].type == TB_LOAD &&
+                    f->nodes[src].load.address == ctx->tile.mapping) {
                     Val addr = fast_get_tile_mapping(ctx, f, ctx->tile.mapping);
 
                     INST2(op, &val, &addr, dt);
@@ -1765,7 +1765,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 // evaluate parameters
                 loop(j, param_count) {
                     TB_Reg      param_reg = f->vla.data[param_start + j];
-                    TB_DataType param_dt  = f->nodes.data[param_reg].dt;
+                    TB_DataType param_dt  = f->nodes[param_reg].dt;
 
                     if (TB_IS_FLOAT_TYPE(param_dt) || param_dt.width) {
                         if (j < 4) {
@@ -2004,7 +2004,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
 static void fast_eval_terminator_phis(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg from, TB_Reg from_terminator, TB_Reg to, TB_Reg to_terminator) {
     TB_FOR_EACH_NODE_RANGE(n, f, to, to_terminator) {
-        TB_Reg r = n - f->nodes.data;
+        TB_Reg r = n - f->nodes;
 
         if (tb_node_is_phi_node(f, r)) {
             TB_DataType dt = n->dt;
@@ -2079,19 +2079,19 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
     size_t tally      = 0;
 
     // context
-    tally += sizeof(X64_FastCtx) + (f->nodes.count * sizeof(AddressDesc));
+    tally += sizeof(X64_FastCtx) + (f->node_count * sizeof(AddressDesc));
     tally = (tally + align_mask) & ~align_mask;
 
     // ordinal
-    tally += f->nodes.count * sizeof(int);
+    tally += f->node_count * sizeof(int);
     tally = (tally + align_mask) & ~align_mask;
 
     // use_count
-    tally += f->nodes.count * sizeof(TB_Reg);
+    tally += f->node_count * sizeof(TB_Reg);
     tally = (tally + align_mask) & ~align_mask;
 
     // intervals
-    tally += f->nodes.count * sizeof(TB_Reg);
+    tally += f->node_count * sizeof(TB_Reg);
     tally = (tally + align_mask) & ~align_mask;
 
     // labels
@@ -2131,7 +2131,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         FunctionTallySimple tally = tally_memory_usage_simple(f);
         is_ctx_heap_allocated     = !tb_tls_can_fit(tls, tally.memory_usage);
 
-        size_t ctx_size = sizeof(X64_FastCtx) + (f->nodes.count * sizeof(AddressDesc));
+        size_t ctx_size = sizeof(X64_FastCtx) + (f->node_count * sizeof(AddressDesc));
         if (is_ctx_heap_allocated) {
             ctx  = tb_platform_heap_alloc(ctx_size);
             *ctx = (X64_FastCtx) {
@@ -2142,8 +2142,8 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
                     .label_patches = tb_platform_heap_alloc(tally.label_patch_count * sizeof(LabelPatch)),
                     .ret_patches   = tb_platform_heap_alloc(tally.return_count * sizeof(ReturnPatch))
                 },
-                .ordinal = tb_platform_heap_alloc(f->nodes.count * sizeof(int)),
-                .use_count = tb_platform_heap_alloc(f->nodes.count * sizeof(TB_Reg))
+                .ordinal = tb_platform_heap_alloc(f->node_count * sizeof(int)),
+                .use_count = tb_platform_heap_alloc(f->node_count * sizeof(TB_Reg))
             };
         } else {
             ctx  = tb_tls_push(tls, ctx_size);
@@ -2155,8 +2155,8 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
                     .label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch)),
                     .ret_patches   = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch))
                 },
-                .ordinal = tb_tls_push(tls, f->nodes.count * sizeof(int)),
-                .use_count = tb_tls_push(tls, f->nodes.count * sizeof(TB_Reg))
+                .ordinal = tb_tls_push(tls, f->node_count * sizeof(int)),
+                .use_count = tb_tls_push(tls, f->node_count * sizeof(TB_Reg))
             };
         }
 
@@ -2170,7 +2170,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         ctx->xmm_available = 16;
         ctx->temp_load_reg = GPR_NONE;
         ctx->is_sysv       = (f->module->target_abi == TB_ABI_SYSTEMV);
-        memset(ctx->addresses, 0, f->nodes.count * sizeof(AddressDesc));
+        memset(ctx->addresses, 0, f->node_count * sizeof(AddressDesc));
     }
 
     // Analyze function for stack, use counts and phi nodes
@@ -2178,7 +2178,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
 
     int counter = 0;
     TB_FOR_EACH_NODE(n, f) {
-        ctx->ordinal[n - f->nodes.data] = counter++;
+        ctx->ordinal[n - f->nodes] = counter++;
     }
 
     // Create phi lookup table for later evaluation stages
@@ -2248,7 +2248,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
     // Just the splitting point between parameters
     // and locals in the stack.
     TB_FOR_EACH_NODE(n, f) {
-        TB_Reg r = n - f->nodes.data;
+        TB_Reg r = n - f->nodes;
 
         if (n->type == TB_PARAM_ADDR) {
             int id = n->param_addr.param - TB_FIRST_PARAMETER_REG;
@@ -2295,11 +2295,11 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
     // Evaluate basic blocks
     TB_Reg bb = 1;
     do {
-        assert(f->nodes.data[bb].type == TB_LABEL);
-        TB_Node* start = &f->nodes.data[bb];
+        assert(f->nodes[bb].type == TB_LABEL);
+        TB_Node* start = &f->nodes[bb];
 
         TB_Reg bb_end = start->label.terminator;
-        TB_Node* end = &f->nodes.data[bb_end];
+        TB_Node* end = &f->nodes[bb_end];
 
         // Define label position
         TB_Label label_id = start->label.id;
@@ -2311,8 +2311,8 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         // Evaluate the terminator
         TB_Node* next_bb = end;
 
-        if (end->type != TB_LABEL) next_bb = &f->nodes.data[next_bb->next];
-        TB_Reg next_bb_reg = next_bb - f->nodes.data;
+        if (end->type != TB_LABEL) next_bb = &f->nodes[next_bb->next];
+        TB_Reg next_bb_reg = next_bb - f->nodes;
 
         if (end->type == TB_RET) {
             TB_DataType dt = end->dt;
@@ -2328,7 +2328,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
             }
 
             // Only jump if we aren't literally about to end the function
-            if (next_bb != &f->nodes.data[0]) {
+            if (next_bb != f->nodes) {
                 RET_JMP();
             }
         } else if (end->type == TB_IF) {
@@ -2340,8 +2340,8 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
                 TB_Reg if_true_reg = tb_find_reg_from_label(f, if_true);
                 TB_Reg if_false_reg = tb_find_reg_from_label(f, if_false);
 
-                TB_Reg if_true_reg_end = f->nodes.data[if_true_reg].label.terminator;
-                TB_Reg if_false_reg_end = f->nodes.data[if_false_reg].label.terminator;
+                TB_Reg if_true_reg_end = f->nodes[if_true_reg].label.terminator;
+                TB_Reg if_false_reg_end = f->nodes[if_false_reg].label.terminator;
 
                 fast_eval_terminator_phis(ctx, f, bb, bb_end, if_true_reg, if_true_reg_end);
                 fast_eval_terminator_phis(ctx, f, bb, bb_end, if_false_reg, if_false_reg_end);
@@ -2352,7 +2352,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
 
             // Reorder the targets to avoid an extra JMP
             TB_Label fallthrough_label = 0;
-            if (next_bb != &f->nodes.data[0]) { fallthrough_label = next_bb->label.id; }
+            if (next_bb != f->nodes) { fallthrough_label = next_bb->label.id; }
             bool has_fallthrough = fallthrough_label == if_false;
 
             // flip the condition and the labels if
@@ -2378,19 +2378,19 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
             // save out PHI nodes
             TB_Label target_label = end->goto_.label;
             TB_Reg target = tb_find_reg_from_label(f, target_label);
-            TB_Reg target_end = f->nodes.data[target].label.terminator;
+            TB_Reg target_end = f->nodes[target].label.terminator;
 
             fast_eval_terminator_phis(ctx, f, bb, bb_end, target, target_end);
             fast_evict_everything(ctx, f);
 
             TB_Label fallthrough_label = 0;
-            if (next_bb != &f->nodes.data[0]) { fallthrough_label = next_bb->label.id; }
+            if (next_bb != f->nodes) { fallthrough_label = next_bb->label.id; }
             bool has_fallthrough = fallthrough_label == target_label;
 
             if (!has_fallthrough) JMP(end->goto_.label);
         } else if (end->type == TB_SWITCH) {
             static_assert(_Alignof(TB_SwitchEntry) == _Alignof(TB_Reg), "We don't want any unaligned accesses");
-            TB_Node* switch_key = &f->nodes.data[end->switch_.key];
+            TB_Node* switch_key = &f->nodes[end->switch_.key];
 
             if (switch_key->type == TB_INTEGER_CONST &&
                 switch_key->integer.num_words == 1) {
@@ -2408,7 +2408,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
                 }
 
                 TB_Reg target = tb_find_reg_from_label(f, target_label);
-                TB_Reg target_end = f->nodes.data[target].label.terminator;
+                TB_Reg target_end = f->nodes[target].label.terminator;
                 fast_eval_terminator_phis(ctx, f, bb, bb_end, target, target_end);
                 fast_evict_everything(ctx, f);
 

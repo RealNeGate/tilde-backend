@@ -46,35 +46,14 @@ static TB_CodeRegion* get_or_allocate_code_region(TB_Module* m, int tid) {
     return m->code_regions[tid];
 }
 
-TB_API TB_Function* tb_function_clone(TB_Module* m, TB_Function* source_func, const char* name) {
-    size_t i = tb_atomic_size_add(&m->functions.count, 1);
-    assert(i < TB_MAX_FUNCTIONS);
-
-    TB_Function* f = &m->functions.data[i];
-    *f = (TB_Function) {
-        .module = m,
-        .prototype = f->prototype,
-        .name = tb_platform_string_alloc(name),
-        .nodes.count = source_func->nodes.count,
-        .label_count = source_func->label_count,
-        .current_label = source_func->current_label
-    };
-
-    f->nodes.capacity = f->nodes.count < 16 ? 16 : tb_next_pow2(f->nodes.count);
-    f->nodes.data = tb_platform_heap_alloc(f->nodes.capacity * sizeof(TB_Node));
-
-    memcpy(f->nodes.data, source_func->nodes.data, f->nodes.count * sizeof(uint8_t));
-    return f;
-}
-
 // TODO(NeGate): Doesn't free the name, it's kept forever
 TB_API void tb_function_free(TB_Function* f) {
-    if (f->nodes.data == NULL) return;
+    if (f->nodes == NULL) return;
 
-    tb_platform_heap_free(f->nodes.data);
+    tb_platform_heap_free(f->nodes);
     tb_platform_heap_free(f->vla.data);
 
-    f->nodes.data = NULL;
+    f->nodes = NULL;
     f->vla.data = NULL;
 }
 
@@ -226,11 +205,11 @@ TB_API TB_FileID tb_file_create(TB_Module* m, const char* path) {
 }
 
 void tb_function_reserve_nodes(TB_Function* f, size_t extra) {
-    if (f->nodes.count + extra >= f->nodes.capacity) {
-        f->nodes.capacity = (f->nodes.count + extra) * 2;
+    if (f->node_count + extra >= f->node_capacity) {
+        f->node_capacity = (f->node_count + extra) * 2;
 
-        f->nodes.data = tb_platform_heap_realloc(f->nodes.data, sizeof(TB_Node) * f->nodes.capacity);
-        if (f->nodes.data == NULL) tb_panic("Out of memory");
+        f->nodes = tb_platform_heap_realloc(f->nodes, sizeof(TB_Node) * f->node_capacity);
+        if (f->nodes == NULL) tb_panic("Out of memory");
     }
 }
 
@@ -278,17 +257,17 @@ TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, co
         .module = m, .linkage = linkage, .prototype = p, .name = tb_platform_string_alloc(name)
     };
 
-    f->nodes.capacity = 64;
-    f->nodes.count = 2 + p->param_count;
-    f->nodes.data = tb_platform_heap_alloc(f->nodes.capacity * sizeof(TB_Node));
+    f->node_capacity = 64;
+    f->node_count = 2 + p->param_count;
+    f->nodes = tb_platform_heap_alloc(f->node_capacity * sizeof(TB_Node));
 
     f->attrib_pool_capacity = 64;
     f->attrib_pool_count = 1; // 0 is reserved
     f->attrib_pool = tb_platform_heap_alloc(64 * sizeof(TB_Attrib));
 
     // Null slot, Entry label & Parameters
-    f->nodes.data[0] = (TB_Node) { .next = 1 };
-    f->nodes.data[1] = (TB_Node) { .type = TB_LABEL, .dt = TB_TYPE_PTR, .label = { 0, 0 } };
+    f->nodes[0] = (TB_Node) { .next = 1 };
+    f->nodes[1] = (TB_Node) { .type = TB_LABEL, .dt = TB_TYPE_PTR, .label = { 0, 0 } };
 
     const ICodeGen* restrict code_gen = tb_find_code_generator(m);
     loop(i, p->param_count) {
@@ -297,13 +276,13 @@ TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, co
         TB_CharUnits size, align;
         code_gen->get_data_type_size(dt, &size, &align);
 
-        f->nodes.data[1 + i].next = 2 + i;
-        f->nodes.data[2 + i] = (TB_Node) {
+        f->nodes[1 + i].next = 2 + i;
+        f->nodes[2 + i] = (TB_Node) {
             .type = TB_PARAM, .dt = dt, .next = 2, .param = { .id = i, .size = size }
         };
     }
 
-    f->nodes.end = 2 + (p->param_count - 1);
+    f->node_end = 2 + (p->param_count - 1);
     f->label_count = f->current_label = 1;
     return f;
 }
@@ -471,7 +450,7 @@ TB_API void* tb_module_get_jit_func(TB_Module* m, TB_Function* f) {
 TB_API TB_Label tb_inst_get_current_label(TB_Function* f) {
     if (!f->current_label) return 0;
 
-    return f->nodes.data[f->current_label].label.id;
+    return f->nodes[f->current_label].label.id;
 }
 
 //

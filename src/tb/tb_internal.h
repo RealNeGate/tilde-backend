@@ -75,18 +75,24 @@ typedef struct TB_Emitter {
 // first is the null register, then the entry
 // label, then parameters, then everything else
 #define TB_FIRST_PARAMETER_REG 2
-#define TB_NEXT_INST(node, f) (&(f)->nodes.data[(node)->next])
+#define TB_NEXT_INST(node, f) (&(f)->nodes[(node)->next])
+
+// get's the binding id from a TB_Node*
+#define TB_GET_REG(node, f) ((node) - (f)->nodes)
 
 #define TB_FOR_EACH_NODE(elem, f) \
-for (TB_Node* elem = &f->nodes.data[1]; elem != &f->nodes.data[0]; elem = &f->nodes.data[elem->next])
+for (TB_Node *n_ = f->nodes, *elem = &n_[1]; elem != n_; elem = &n_[elem->next])
+
+#define TB_FOR_EACH_NODE_AFTER(elem, start, f) \
+for (TB_Node *n_ = f->nodes, *elem = &n_[(start)->next]; elem != n_; elem = &n_[elem->next])
 
 #define TB_FOR_EACH_NODE_BB(elem, f, start) \
-for (TB_Node* elem = &f->nodes.data[f->nodes.data[start].next], *end__ = &f->nodes.data[0]; elem != end__ && elem->type != TB_LABEL; \
-    elem = &f->nodes.data[elem->next])
+for (TB_Node *n_ = f->nodes, *elem = &n_[n_[start].next]; elem != n_ && elem->type != TB_LABEL; \
+    elem = &n_[elem->next])
 
-#define TB_FOR_EACH_NODE_RANGE(elem, f, start, end)                                      \
-for (TB_Node* elem = &f->nodes.data[start], *end__ = &f->nodes.data[end]; elem != end__; \
-    elem = &f->nodes.data[elem->next])
+#define TB_FOR_EACH_NODE_RANGE(elem, f, start, end) \
+for (TB_Node* elem = &f->nodes[start], *end__ = &f->nodes[end]; elem != end__; \
+    elem = &f->nodes[elem->next])
 
 #define TB_FOR_EACH_REG_IN_NODE(macro)                                                \
 case TB_NULL:                                                                         \
@@ -353,12 +359,11 @@ struct TB_Function {
     const TB_FunctionPrototype* prototype;
     TB_Linkage linkage;
 
-    struct TB_NodeStream {
-        TB_Reg capacity;
-        TB_Reg count;
-        TB_Reg end;
-        TB_Node* data;
-    } nodes;
+    // Nodes array
+    TB_Reg node_capacity;
+    TB_Reg node_count;
+    TB_Reg node_end;
+    TB_Node* nodes;
 
     // Used by the IR building
     TB_AttributeID active_attrib;
@@ -719,8 +724,12 @@ inline static void tb_murder_node(TB_Function* f, TB_Node* n) {
     n->type = TB_NULL;
 }
 
+inline static void tb_murder_reg(TB_Function* f, TB_Reg r) {
+    f->nodes[r].type = TB_NULL;
+}
+
 inline static void tb_kill_op(TB_Function* f, TB_Reg at) {
-    f->nodes.data[at].type = TB_NULL;
+    f->nodes[at].type = TB_NULL;
 }
 
 inline static uint64_t align_up(uint64_t a, uint64_t b) {

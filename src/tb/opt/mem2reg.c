@@ -54,7 +54,7 @@ static TB_Reg new_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, int var, TB_Label
 
     TB_Reg new_phi_reg = tb_function_insert_after(f, label_reg);
     OPTIMIZER_LOG(new_phi_reg, "Insert new PHI node (after r%d)", label_reg);
-	f->nodes.data[new_phi_reg].dt = dt;
+	f->nodes[new_phi_reg].dt = dt;
 
     return new_phi_reg;
 }
@@ -87,7 +87,7 @@ static TB_Reg read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_Label
 
     if (!c->sealed_blocks[block]) {
         // incomplete CFG
-        val = new_phi(c, c->f, var, block, c->f->nodes.data[c->to_promote[var]].dt);
+        val = new_phi(c, c->f, var, block, c->f->nodes[c->to_promote[var]].dt);
         c->incomplete_phis[(block * c->to_promote_count) + var] = val;
     } else if (c->pred_count[block] == 0) {
         // TODO(NeGate): Idk how to handle this ngl, i
@@ -98,7 +98,7 @@ static TB_Reg read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_Label
         val = read_variable(c, var, c->preds[block][0]);
     } else {
         // Break potential cycles with operandless phi
-        val = new_phi(c, c->f, var, block, c->f->nodes.data[c->to_promote[var]].dt);
+        val = new_phi(c, c->f, var, block, c->f->nodes[c->to_promote[var]].dt);
         write_variable(c, var, block, val);
         val = add_phi_operands(c, c->f, val, block, var);
     }
@@ -120,12 +120,12 @@ static TB_Reg add_phi_operands(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg p
 // Algorithm 3: Detect and recursively remove a trivial phi function
 static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg) {
     // Walk past any pass nodes
-    while (f->nodes.data[phi_reg].type == TB_PASS) {
-        phi_reg = f->nodes.data[phi_reg].pass.value;
+    while (f->nodes[phi_reg].type == TB_PASS) {
+        phi_reg = f->nodes[phi_reg].pass.value;
     }
 
     // Get operands
-    TB_Node* phi_node = &f->nodes.data[phi_reg];
+    TB_Node* phi_node = &f->nodes[phi_reg];
 	if (!tb_node_is_phi_node(f, phi_reg)) {
 		return phi_reg;
 	}
@@ -149,7 +149,7 @@ static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB
         return 0;
     }
 
-    TB_Reg* uses = tb_tls_push(c->tls, f->nodes.count * sizeof(TB_Reg));
+    TB_Reg* uses = tb_tls_push(c->tls, f->node_count * sizeof(TB_Reg));
     int use_count = tb_function_find_uses_of_node(f, phi_reg, uses);
 
     // trim the memory to avoid wasting too much
@@ -170,16 +170,13 @@ static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB
 }
 
 static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg, TB_Label label, TB_Reg reg) {
-    assert(reg >= 1 && reg < f->nodes.count);
-    // assert(f->nodes.type[reg] != TB_NULL);
-    // assert(f->nodes.dt[reg].type != TB_VOID);
-    // assert(phi_reg != reg);
+    assert(reg >= 1 && reg < f->node_count);
 
     // we're using NULL nodes as the baseline PHI0
     OPTIMIZER_LOG(phi_reg, "  adding r%d to PHI", reg);
-    TB_DataType dt = f->nodes.data[reg].dt;
+    TB_DataType dt = f->nodes[reg].dt;
 
-	TB_Node* phi_node = &f->nodes.data[phi_reg];
+	TB_Node* phi_node = &f->nodes[phi_reg];
 	phi_node->dt = dt;
 
     TB_Reg label_reg = tb_find_reg_from_label(f, label);
@@ -240,9 +237,9 @@ bool tb_opt_mem2reg(TB_Function* f) {
     size_t to_promote_count = 0;
     TB_Reg* to_promote = tb_tls_push(tls, 0);
 
-    TB_Node* entry_terminator = &f->nodes.data[f->nodes.data[1].label.terminator];
-    for (TB_Node* n = &f->nodes.data[1]; n != entry_terminator; n = &f->nodes.data[n->next]) {
-        TB_Reg i = n - f->nodes.data;
+    TB_Node* entry_terminator = &f->nodes[f->nodes[1].label.terminator];
+    for (TB_Node* n = &f->nodes[1]; n != entry_terminator; n = &f->nodes[n->next]) {
+        TB_Reg i = n - f->nodes;
 
         if (n->type == TB_LOCAL || n->type == TB_PARAM_ADDR) {
             TB_DataType dt;
@@ -316,7 +313,7 @@ bool tb_opt_mem2reg(TB_Function* f) {
 
     TB_Label block = 0;
     TB_FOR_EACH_NODE(n, f) {
-        TB_Reg i = n - f->nodes.data;
+        TB_Reg i = n - f->nodes;
 
         switch (n->type) {
 			case TB_LABEL: {
@@ -344,8 +341,8 @@ bool tb_opt_mem2reg(TB_Function* f) {
 					TB_Reg value = read_variable(&c, var, block);
 					assert(value);
 
-					f->nodes.data[i].type = TB_PASS;
-					f->nodes.data[i].pass.value = value;
+					f->nodes[i].type = TB_PASS;
+					f->nodes[i].pass.value = value;
 				}
 				break;
 			}
@@ -391,7 +388,7 @@ static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_
     // pick the first load/store and use that as the baseline
     TB_DataType dt = TB_TYPE_VOID;
     bool initialized = false;
-    for (TB_Node* n = &f->nodes.data[address]; n != &f->nodes.data[0]; n = &f->nodes.data[n->next]) {
+    for (TB_Node* n = &f->nodes[address]; n != &f->nodes[0]; n = &f->nodes[n->next]) {
         static_assert(offsetof(TB_Node, load.address) == offsetof(TB_Node, store.address),
             "TB_Node::load.address == TB_Node::store.address");
 

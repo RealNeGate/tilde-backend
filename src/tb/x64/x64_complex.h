@@ -125,11 +125,11 @@ static FunctionTallyComplex tally_memory_usage_complex(TB_Function* restrict f) 
     tally = (tally + align_mask) & ~align_mask;
 
     // use_count
-    tally += f->nodes.count * sizeof(TB_Reg);
+    tally += f->node_count * sizeof(TB_Reg);
     tally = (tally + align_mask) & ~align_mask;
 
     // intervals
-    tally += f->nodes.count * sizeof(TB_Reg);
+    tally += f->node_count * sizeof(TB_Reg);
     tally = (tally + align_mask) & ~align_mask;
 
     // phis
@@ -149,7 +149,7 @@ static FunctionTallyComplex tally_memory_usage_complex(TB_Function* restrict f) 
     tally = (tally + align_mask) & ~align_mask;
 
     // insts
-    tally += f->nodes.count * 2 * sizeof(MIR_Inst);
+    tally += f->node_count * 2 * sizeof(MIR_Inst);
     tally = (tally + align_mask) & ~align_mask;
 
     // parameters
@@ -265,7 +265,7 @@ static TreeVReg complex_collapse(X64_ComplexCtx* restrict ctx, TB_Function* f, c
 }
 
 static MIR_Operand complex_isel(X64_ComplexCtx* restrict ctx, TB_Function* f, TreeNode* tree_node) {
-    TB_Node* restrict n = &f->nodes.data[tree_node->reg];
+    TB_Node* restrict n = &f->nodes[tree_node->reg];
     TB_NodeTypeEnum reg_type = n->type;
     TB_DataType dt = n->dt;
 
@@ -490,7 +490,7 @@ static MIR_Operand complex_isel(X64_ComplexCtx* restrict ctx, TB_Function* f, Tr
 }
 
 static void isel_top_level(X64_ComplexCtx* restrict ctx, TB_Function* f, TreeNode* tree_node) {
-    TB_Node* restrict n = &f->nodes.data[tree_node->reg];
+    TB_Node* restrict n = &f->nodes[tree_node->reg];
     TB_NodeTypeEnum reg_type = n->type;
     TB_DataType dt = n->dt;
 
@@ -621,9 +621,9 @@ TB_FunctionOutput x64_complex_compile_function(TB_FunctionID id, TB_Function* re
             ctx->header.label_patches = tb_platform_heap_alloc(tally.label_patch_count * sizeof(LabelPatch));
             ctx->header.ret_patches   = tb_platform_heap_alloc(tally.return_count * sizeof(ReturnPatch));
 
-            ctx->use_count  = tb_platform_heap_alloc(f->nodes.count * sizeof(TB_Reg));
+            ctx->use_count  = tb_platform_heap_alloc(f->node_count * sizeof(TB_Reg));
             ctx->phis       = tb_platform_heap_alloc(tally.phi_count * sizeof(PhiValue));
-            ctx->insts      = tb_platform_heap_alloc(f->nodes.count * 2 * sizeof(MIR_Inst));
+            ctx->insts      = tb_platform_heap_alloc(f->node_count * 2 * sizeof(MIR_Inst));
             ctx->parameters = tb_platform_heap_alloc(f->prototype->param_count * sizeof(TreeVReg));
         } else {
             ctx = tb_tls_push(tls, ctx_size);
@@ -633,9 +633,9 @@ TB_FunctionOutput x64_complex_compile_function(TB_FunctionID id, TB_Function* re
             ctx->header.label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch));
             ctx->header.ret_patches = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch));
 
-            ctx->use_count  = tb_tls_push(tls, f->nodes.count * sizeof(TB_Reg));
+            ctx->use_count  = tb_tls_push(tls, f->node_count * sizeof(TB_Reg));
             ctx->phis       = tb_tls_push(tls, tally.phi_count * sizeof(PhiValue));
-            ctx->insts      = tb_tls_push(tls, f->nodes.count * 2 * sizeof(MIR_Inst));
+            ctx->insts      = tb_tls_push(tls, f->node_count * 2 * sizeof(MIR_Inst));
             ctx->parameters = tb_tls_push(tls, f->prototype->param_count * sizeof(TreeVReg));
         }
 
@@ -643,7 +643,7 @@ TB_FunctionOutput x64_complex_compile_function(TB_FunctionID id, TB_Function* re
         ctx->header.f = f;
         ctx->header.function_id = f - f->module->functions.data;
 
-        ctx->inst_cap = f->nodes.count * 2;
+        ctx->inst_cap = f->node_count * 2;
 
         // virtual registers keep 0 as a NULL slot
         ctx->vgpr_count = 1;
@@ -665,7 +665,7 @@ TB_FunctionOutput x64_complex_compile_function(TB_FunctionID id, TB_Function* re
     size_t caller_usage = 0;
     TB_FOR_EACH_NODE(n, f) {
         if (n->type == TB_PHI2) {
-            ctx->phis[ctx->phi_count++] = (PhiValue) { n - f->nodes.data };
+            ctx->phis[ctx->phi_count++] = (PhiValue) { n - f->nodes };
         } else if (n->type == TB_CALL || n->type == TB_ECALL || n->type == TB_VCALL) {
             int param_usage = CALL_NODE_PARAM_COUNT(n);
             if (caller_usage < param_usage) { caller_usage = param_usage; }
@@ -700,20 +700,20 @@ TB_FunctionOutput x64_complex_compile_function(TB_FunctionID id, TB_Function* re
     TB_Reg bb = 1;
     TreeNodeArena tree = { 0 };
     do {
-        assert(f->nodes.data[bb].type == TB_LABEL);
-        TB_Node* start = &f->nodes.data[bb];
+        assert(f->nodes[bb].type == TB_LABEL);
+        TB_Node* start = &f->nodes[bb];
 
         TB_Reg bb_end = start->label.terminator;
-        TB_Node* end = &f->nodes.data[bb_end];
+        TB_Node* end = &f->nodes[bb_end];
 
         // Generate expression tree
         TreeNode* node = tb_tree_generate(&tree, f, ctx->use_count, bb, bb_end);
 
         // Identify next BB
         TB_Node* next_bb = end;
-        if (end->type != TB_LABEL) next_bb = &f->nodes.data[next_bb->next];
+        if (end->type != TB_LABEL) next_bb = &f->nodes[next_bb->next];
 
-        TB_Reg next_bb_reg = next_bb - f->nodes.data;
+        TB_Reg next_bb_reg = next_bb - f->nodes;
 
         // Instruction selection
         while (node) {

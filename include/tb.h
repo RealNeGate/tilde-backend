@@ -850,7 +850,6 @@ extern "C" {
     // this only allows for power of two vector types
     TB_API TB_DataType tb_vector_type(TB_DataTypeEnum type, int width);
 
-    TB_API TB_Function* tb_function_clone(TB_Module* m, TB_Function* f, const char* name);
     TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* user_data);
 
     // Prints out the IR in the GraphViz format

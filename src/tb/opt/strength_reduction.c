@@ -4,11 +4,11 @@ bool tb_opt_strength_reduction(TB_Function* f) {
     int changes = 0;
 
     TB_FOR_EACH_NODE(n, f) {
-        TB_Reg i = n - f->nodes.data;
+        TB_Reg i = n - f->nodes;
 
         if (n->type == TB_MUL) {
-            TB_Node* a = &f->nodes.data[n->i_arith.a];
-            TB_Node* b = &f->nodes.data[n->i_arith.b];
+            TB_Node* a = &f->nodes[n->i_arith.a];
+            TB_Node* b = &f->nodes[n->i_arith.b];
             TB_DataType dt = n->dt;
 
 			tb_assume(dt.type == TB_INT && dt.data > 0);
@@ -35,20 +35,20 @@ bool tb_opt_strength_reduction(TB_Function* f) {
                     // just slap it right after the label
                     TB_Reg new_op = tb_function_insert_after(f, i);
 
-                    f->nodes.data[new_op].type = TB_INTEGER_CONST;
-                    f->nodes.data[new_op].dt = dt;
-					f->nodes.data[new_op].integer.num_words = 1;
-					f->nodes.data[new_op].integer.single_word = log2;
+                    f->nodes[new_op].type = TB_INTEGER_CONST;
+                    f->nodes[new_op].dt = dt;
+					f->nodes[new_op].integer.num_words = 1;
+					f->nodes[new_op].integer.single_word = log2;
 
                     n->type = TB_SHL;
 					n->dt = dt;
-                    n->i_arith = (struct TB_NodeIArith) { .a = a - f->nodes.data, .b = new_op };
+                    n->i_arith = (struct TB_NodeIArith) { .a = a - f->nodes, .b = new_op };
                     changes++;
                 }
             }
         } else if (n->type == TB_SDIV || n->type == TB_UDIV) {
-            TB_Node* a = &f->nodes.data[n->i_arith.a];
-            TB_Node* b = &f->nodes.data[n->i_arith.b];
+            TB_Node* a = &f->nodes[n->i_arith.a];
+            TB_Node* b = &f->nodes[n->i_arith.b];
             TB_DataType dt = n->dt;
 
 			tb_assume(dt.type == TB_INT && dt.data > 0);
@@ -64,7 +64,7 @@ bool tb_opt_strength_reduction(TB_Function* f) {
 
                 n->type = TB_PASS;
                 n->dt = dt;
-                n->pass.value = a - f->nodes.data;
+                n->pass.value = a - f->nodes;
                 changes++;
             }
         }

@@ -423,15 +423,21 @@ static void fast_folded_op(X64_FastCtx* ctx, TB_Function* f, Inst2Type op, const
     //assert(l.mask == 0 && "TODO");
 
     if (!rhs.is_spill && is_value_mem(&rhs) && n->type != TB_LOAD) {
-        // TODO(NeGate): peephole to remove extra MOV in the op=MOV && lhs=GPR case
-        Val tmp = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+        if (is_value_mem(lhs)) {
+            Val tmp = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
 
-        INST2(LEA, &tmp, &rhs, l.dt);
-        if (!is_value_gpr(lhs, tmp.gpr)) {
+            INST2(LEA, &tmp, &rhs, l.dt);
             INST2(op, lhs, &tmp, l.dt);
-        }
 
-        fast_kill_temp_gpr(ctx, f, tmp.gpr);
+            fast_kill_temp_gpr(ctx, f, tmp.gpr);
+        } else {
+            if (rhs.type == VAL_MEM && rhs.mem.index == GPR_NONE && rhs.mem.disp == 0) {
+                Val tmp = val_gpr(TB_TYPE_PTR, rhs.mem.base);
+                INST2(MOV, lhs, &tmp, l.dt);
+            } else {
+                INST2(LEA, lhs, &rhs, l.dt);
+            }
+        }
     } else if (is_value_mem(lhs) && is_value_mem(&rhs)) {
         Val tmp = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
 
@@ -684,6 +690,18 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     ctx->use_count[potential_load] == 1) {
                     can_keep_it = true;
                 }
+            }
+
+            if (ctx->tile.base == RBP && ctx->tile.index == GPR_NONE) {
+                // it's a RBP relative... it's constant so we good
+                ctx->addresses[ctx->tile.mapping] = (AddressDesc){
+                    .type = ADDRESS_DESC_STACK,
+                    .dt = TB_TYPE_PTR,
+                    .spill = ctx->tile.disp
+                };
+
+                ctx->tile.mapping = 0;
+                can_keep_it = true;
             }
 
             if (!can_keep_it) {
@@ -1766,9 +1784,12 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                         // Win64 has 4 GPR parameters (RCX, RDX, R8, R9)
                         // SysV has 6 of them (RDI, RSI, RDX, RCX, R8, R9)
                         if ((ctx->is_sysv && j < 6) || j < 4) {
-                            // since we evict now we don't need to later
-                            fast_evict_gpr(ctx, f, parameter_gprs[j]);
-                            caller_saved &= ~(1u << parameter_gprs[j]);
+                            // don't evict if the guy in the slot is based
+                            if (ctx->gpr_allocator[parameter_gprs[j]] != param_reg) {
+                                // since we evict now we don't need to later
+                                fast_evict_gpr(ctx, f, parameter_gprs[j]);
+                                caller_saved &= ~(1u << parameter_gprs[j]);
+                            }
 
                             Val dst = val_gpr(param_dt, parameter_gprs[j]);
 
@@ -2265,8 +2286,10 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
     }
 
     #if 0
-    tb_function_print(f, tb_default_print_callback, stdout);
-    printf("\n\n\n");
+    if (strcmp(f->name, "stbi__zbuild_huffman") == 0) {
+        tb_function_print(f, tb_default_print_callback, stdout);
+        printf("\n\n\n");
+    }
     #endif
 
     // Evaluate basic blocks

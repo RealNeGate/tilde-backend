@@ -1,4 +1,11 @@
 #pragma once
+
+// Windows likes it's secure functions, i kinda do too
+// but only sometimes and this isn't one of them
+#if defined(_WIN32) && !defined(_CRT_SECURE_NO_WARNINGS)
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+
 #include "tb.h"
 #include <limits.h>
 #include <time.h>
@@ -11,6 +18,7 @@
 #endif
 
 #ifdef _WIN32
+
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #else
@@ -212,8 +220,8 @@ typedef struct TB_ConstPoolPatch {
 
     size_t rdata_pos;
 
-	size_t length;
-	const void* data;
+    size_t length;
+    const void* data;
 } TB_ConstPoolPatch;
 
 typedef struct TB_GlobalPatch {
@@ -298,7 +306,7 @@ typedef struct TB_Global {
     TB_Linkage linkage;
     TB_InitializerID init;
     uint32_t pos;
-	TB_StorageClass storage;
+    TB_StorageClass storage;
 } TB_Global;
 
 typedef struct TB_Line {
@@ -399,17 +407,17 @@ struct TB_Module {
     TB_Arch target_arch;
     TB_System target_system;
     TB_DebugFormat debug_fmt;
-	TB_FeatureSet features;
+    TB_FeatureSet features;
 
-	// This is a hack for windows since they've got this idea
-	// of a _tls_index
-	TB_ExternalID tls_index_extern;
+    // This is a hack for windows since they've got this idea
+    // of a _tls_index
+    TB_ExternalID tls_index_extern;
 
     // Convert this into a dynamic memory arena... maybe
     tb_atomic_size_t prototypes_arena_size;
     uint64_t* prototypes_arena;
 
-	// TODO(NeGate): I should probably re-organize these to avoid
+    // TODO(NeGate): I should probably re-organize these to avoid
     // false sharing
     DynArray(TB_GlobalPatch) global_patches[TB_MAX_THREADS];
     DynArray(TB_ConstPoolPatch) const_patches[TB_MAX_THREADS];
@@ -419,10 +427,10 @@ struct TB_Module {
     DynArray(TB_FunctionPatch) call_patches[TB_MAX_THREADS];
     DynArray(TB_ExternFunctionPatch) ecall_patches[TB_MAX_THREADS];
 
-	// TODO(NeGate): start migrating all those dyn arrays into this array
-	struct {
-		int empty_for_now;
-	} thread_info[TB_MAX_THREADS];
+    // TODO(NeGate): start migrating all those dyn arrays into this array
+    struct {
+        int empty_for_now;
+    } thread_info[TB_MAX_THREADS];
 
     struct {
         size_t count;
@@ -457,8 +465,8 @@ struct TB_Module {
 };
 
 typedef struct {
-	size_t length;
-	TB_ObjectSection* data;
+    size_t length;
+    TB_ObjectSection* data;
 } TB_SectionGroup;
 
 typedef struct {
@@ -470,11 +478,11 @@ typedef struct {
 #define PROEPI_BUFFER 256
 
 typedef struct {
-	// what does CHAR_BIT mean on said platform
+    // what does CHAR_BIT mean on said platform
     int minimum_addressable_size, pointer_size;
 
-	void (*get_data_type_size)(TB_DataType dt, TB_CharUnits* out_size, TB_CharUnits* out_align);
-	void (*emit_call_patches)(TB_Module* m, uint32_t* func_layout);
+    void (*get_data_type_size)(TB_DataType dt, TB_CharUnits* out_size, TB_CharUnits* out_align);
+    void (*emit_call_patches)(TB_Module* m, uint32_t* func_layout);
 
     size_t (*get_prologue_length)(uint64_t saved, uint64_t stack_usage);
     size_t (*get_epilogue_length)(uint64_t saved, uint64_t stack_usage);
@@ -487,14 +495,14 @@ typedef struct {
 
 // All debug formats i know of boil down to adding some extra sections to the object file
 typedef struct {
-	const char* name;
+    const char* name;
 
-	bool (*supported_target)(TB_Module* m);
-	int (*number_of_debug_sections)(TB_Module* m);
+    bool (*supported_target)(TB_Module* m);
+    int (*number_of_debug_sections)(TB_Module* m);
 
-	// functions are laid out linearly based on their function IDs and
-	// thus function_sym_start tells you what the starting point is in the symbol table
-	TB_SectionGroup (*generate_debug_info)(TB_Module* m, TB_TemporaryStorage* tls, const ICodeGen* code_gen, const char* path, size_t function_sym_start, uint32_t* func_layout);
+    // functions are laid out linearly based on their function IDs and
+    // thus function_sym_start tells you what the starting point is in the symbol table
+    TB_SectionGroup (*generate_debug_info)(TB_Module* m, TB_TemporaryStorage* tls, const ICodeGen* code_gen, const char* path, size_t function_sym_start, uint32_t* func_layout);
 } IDebugFormat;
 
 // Macro enjoyer
@@ -585,11 +593,11 @@ typedef struct TB_MultiplyResult {
 #if defined(_MSC_VER) && !defined(__clang__)
 inline static int tb_ffs(uint32_t x) {
     unsigned long index;
-	return _BitScanForward(&index, x) ? 1 + index : 0;
+    return _BitScanForward(&index, x) ? 1 + index : 0;
 }
 
 inline static int tb_popcount(uint32_t x) {
-	return __popcnt(x);
+    return __popcnt(x);
 }
 
 inline static uint64_t tb_next_pow2(uint64_t x) {
@@ -616,11 +624,11 @@ inline static TB_MultiplyResult tb_mul64x128(uint64_t a, uint64_t b) {
 }
 #else
 inline static int tb_ffs(uint32_t x) {
-	return __builtin_ffs(x);
+    return __builtin_ffs(x);
 }
 
 inline static int tb_popcount(uint32_t x) {
-	return __builtin_popcount(x);
+    return __builtin_popcount(x);
 }
 
 inline static uint64_t tb_next_pow2(uint64_t x) {
@@ -645,9 +653,9 @@ inline static TB_MultiplyResult tb_mul64x128(uint64_t a, uint64_t b) {
 // sometimes you just gotta do it to em'
 // imagine i++ but like i++y or something idk
 inline static size_t tb_post_inc(size_t* a, size_t b) {
-	size_t old = *a;
-	*a = old + b;
-	return old;
+    size_t old = *a;
+    *a = old + b;
+    return old;
 }
 
 bool tb_validate(TB_Function* f);
@@ -708,20 +716,20 @@ TB_Reg tb_insert_copy_ops(TB_Function* f, const TB_Reg* params, TB_Reg at, const
 TB_Reg tb_function_insert_after(TB_Function* f, TB_Reg at);
 
 inline static void tb_murder_node(TB_Function* f, TB_Node* n) {
-	n->type = TB_NULL;
+    n->type = TB_NULL;
 }
 
 inline static void tb_kill_op(TB_Function* f, TB_Reg at) {
-	f->nodes.data[at].type = TB_NULL;
+    f->nodes.data[at].type = TB_NULL;
 }
 
 inline static uint64_t align_up(uint64_t a, uint64_t b) {
-	return a + (b - (a % b)) % b;
+    return a + (b - (a % b)) % b;
 }
 
 // NOTE(NeGate): Considers 0 as a power of two
 inline static bool tb_is_power_of_two(uint64_t x) {
-	return (x & (x - 1)) == 0;
+    return (x & (x - 1)) == 0;
 }
 
 // gets the next biggest number to 'v' in the sorted array
@@ -731,12 +739,12 @@ inline static bool tb_is_power_of_two(uint64_t x) {
 tb_next_biggest(result, v, COUNTOF((int[]) { __VA_ARGS__ }), (int[]) { __VA_ARGS__ })
 
 inline static bool tb_next_biggest(int* result, int v, size_t n, const int* arr) {
-	loop(i, n) if (v <= arr[i]) {
-		*result = arr[i];
-		return true;
-	}
+    loop(i, n) if (v <= arr[i]) {
+        *result = arr[i];
+        return true;
+    }
 
-	return false;
+    return false;
 }
 
 ////////////////////////////////

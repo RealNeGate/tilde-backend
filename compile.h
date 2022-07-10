@@ -39,6 +39,7 @@
 #define WIN32_MEAN_AND_LEAN
 #include <windows.h>
 
+#define strdup _strdup
 #define popen _popen
 #define pclose _pclose
 
@@ -138,15 +139,6 @@ static const char* str_filename(const char* path) {
     }
 
     return slash;
-}
-
-static const char* str_ext(const char* path) {
-    const char* dot = path;
-    for (; *path; path++) {
-        if (*path == '.') dot = path;
-    }
-
-    return dot;
 }
 
 static char* str_no_ext(const char* path) {
@@ -315,7 +307,7 @@ static FILE** cmd_run() {
 
     // Find available slots
     int slot = -1;
-    for (int i = 0; i < PROCESS_POOL_SIZE; i++) {
+    for (size_t i = 0; i < PROCESS_POOL_SIZE; i++) {
         if (process_pool[i] == NULL) {
             //printf("Used empty slot! %d\n", i);
             slot = i;
@@ -326,7 +318,7 @@ static FILE** cmd_run() {
     if (slot < 0) {
         // if they're used up... wait
         int end = some_slot + 1 % PROCESS_POOL_SIZE;
-        for (int i = some_slot; i != end; i = (i + 1) % PROCESS_POOL_SIZE) {
+        for (size_t i = some_slot; i != end; i = (i + 1) % PROCESS_POOL_SIZE) {
             if (process_pool[i] != NULL) {
                 // wait for it to finish
                 //printf("Wait for an empty slot! %d\n", i);
@@ -355,7 +347,7 @@ static FILE** cmd_run() {
 }
 
 void cmd_wait_for_all() {
-    for (int i = 0; i < PROCESS_POOL_SIZE; i++) {
+    for (size_t i = 0; i < PROCESS_POOL_SIZE; i++) {
         if (process_pool[i] != NULL) {
             // wait for it to finish
             int exit_code = cmd_dump(&process_pool[i]);
@@ -372,6 +364,7 @@ void cmd_wait_for_all() {
 ////////////////////////////////
 typedef struct {
     const char* output_dir;
+    const char* extra_options;
 
     enum {
         CC_O0, // no optimizations
@@ -472,10 +465,14 @@ static void cc_invoke(const CC_Options* options, const char* input_path, const c
     }
 
     if (ON_CLANG) cmd_append(" -Wno-microsoft-enum-forward-reference -Wno-microsoft-anon-tag -Wno-gnu-designator");
-    if (options->use_asan) cmd_append(" -fsanitize=address ");
+    if (options->use_asan) cmd_append(" -fsanitize=address");
 
-    cmd_append(" -I src/lib -I include ");
-    if (ON_WINDOWS) cmd_append(" -I deps ");
+    if (options->extra_options) {
+        cmd_append(" ");
+        cmd_append(options->extra_options);
+    }
+
+    cmd_append(" -I deps -I lib -I include");
     cmd_append(" -c -o ");
     cmd_append(options->output_dir);
 
@@ -505,15 +502,19 @@ static void ar_invoke(const char* output_path, size_t count, const char* inputs[
         cmd_append(output_path);
         cmd_append(".lib ");
     } else {
+		#ifndef NO_LLVMAR
         if (ON_CLANG) cmd_append("llvm-ar rc ");
         else cmd_append("ar -rcs ");
+		#else
+		cmd_append("ar -rcs ");
+		#endif
 
         cmd_append(output_path);
         if (ON_WINDOWS) cmd_append(".lib ");
         else cmd_append(".a ");
     }
 
-    for (int i = 0; i < count; i++) {
+    for (size_t i = 0; i < count; i++) {
         cmd_append(inputs[i]);
         cmd_append(" ");
     }
@@ -531,31 +532,52 @@ static void ld_invoke(const char* output_path, size_t count, const char* inputs[
         cmd_append(str_gimme_good_slashes(output_path));
         cmd_append(".exe");
 
-        for (int i = 0; i < external_count; i++) {
+        for (size_t i = 0; i < external_count; i++) {
             cmd_append(" ");
             cmd_append(external_inputs[i]);
         }
 
-        for (int i = 0; i < count; i++) {
+        for (size_t i = 0; i < count; i++) {
             cmd_append(" ");
             cmd_append(inputs[i]);
         }
     } else if (ON_CLANG) {
         // Link with clang instead so it's easier
+		#ifndef NO_LLVMAR
         cmd_append("clang -fuse-ld=lld -flto -O2 -g -o ");
+		#else
+        cmd_append("clang -O2 -g -o ");
+		#endif
         cmd_append(str_gimme_good_slashes(output_path));
-        cmd_append(".exe");
+        if (ON_WINDOWS) cmd_append(".exe");
+        else cmd_append(" -Wl,--export-dynamic");
 
-        for (int i = 0; i < external_count; i++) {
+        for (size_t i = 0; i < external_count; i++) {
             cmd_append(" -l");
             cmd_append(external_inputs[i]);
         }
 
-        for (int i = 0; i < count; i++) {
+        for (size_t i = 0; i < count; i++) {
             cmd_append(" ");
             cmd_append(inputs[i]);
         }
     } else if (ON_GCC) {
+        // TODO(NeGate): Fix this garbage up...
+        cmd_append("gcc -rdynamic -o ");
+        cmd_append(str_gimme_good_slashes(output_path));
+        cmd_append(" -Wl,--export-dynamic ");
+
+        for (size_t i = 0; i < count; i++) {
+            cmd_append(inputs[i]);
+            cmd_append(" ");
+        }
+
+        for (size_t i = 0; i < external_count; i++) {
+            cmd_append("-l");
+            cmd_append(external_inputs[i]);
+            cmd_append(" ");
+        }
+    } else {
         assert(0 && "TODO");
     }
 

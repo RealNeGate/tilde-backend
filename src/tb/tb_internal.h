@@ -9,6 +9,7 @@
 #include "tb.h"
 #include <limits.h>
 #include <time.h>
+#include <stdalign.h>
 
 #if defined(_MSC_VER) && !defined(__clang__)
 #include <immintrin.h>
@@ -18,9 +19,8 @@
 #endif
 
 #ifdef _WIN32
-
 #define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
+#include <windows.h>
 #else
 // NOTE(NeGate): I love how we assume that if it's not windows
 // its just posix, these are the only options i guess
@@ -32,6 +32,9 @@
 
 #include "tb_platform.h"
 #include "bigint/BigInt.h"
+#include "dyn_array.h"
+#include "builtins.h"
+#include "pool.h"
 
 // ***********************************
 // Atomics
@@ -51,15 +54,6 @@ int tb_atomic_int_store(int* dst, int src);
 size_t tb_atomic_size_load(size_t* dst);
 size_t tb_atomic_size_add(size_t* dst, size_t src);
 size_t tb_atomic_size_store(size_t* dst, size_t src);
-
-// ***********************************
-// STB Data structures
-// ***********************************
-#include "stb_ds.h"
-
-// cool part about stb_ds is that the dynamic arrays
-// look and act like normal arrays for access and types.
-#define DynArray(T) T*
 
 #define PROTOTYPES_ARENA_SIZE   (32u << 20u)
 #define CODE_REGION_BUFFER_SIZE (128 * 1024 * 1024)
@@ -233,29 +227,38 @@ typedef struct TB_ConstPoolPatch {
 typedef struct TB_GlobalPatch {
     TB_Function* source;
     uint32_t pos; // relative to the start of the function
-    TB_GlobalID global;
+    const TB_Global* target;
 } TB_GlobalPatch;
 
 typedef struct TB_FunctionPatch {
     TB_Function* source;
-    uint32_t target_id;
     uint32_t pos; // relative to the start of the function
+    const TB_Function* target;
 } TB_FunctionPatch;
 
 typedef struct TB_ExternFunctionPatch {
     TB_Function* source;
-    TB_ExternalID target_id;
     uint32_t pos; // relative to the start of the function
+    const TB_External* target;
 } TB_ExternFunctionPatch;
 
 typedef struct TB_File {
     char* path;
 } TB_File;
 
-typedef struct TB_External {
+struct TB_External {
     char* name;
     void* address;
-} TB_External;
+};
+
+struct TB_Global {
+    char* name;
+    TB_Linkage linkage;
+    TB_Initializer* init;
+    int id;
+    uint32_t pos;
+    TB_StorageClass storage;
+};
 
 // function prototypes are stored
 // in streams as inplace arrays:
@@ -291,13 +294,13 @@ typedef struct TB_InitObj {
             const void* ptr;
         } region;
 
-        TB_ExternalID reloc_extern;
-        TB_FunctionID reloc_function;
-        TB_GlobalID reloc_global;
+        const TB_External* reloc_extern;
+        const TB_Function* reloc_function;
+        const TB_Global* reloc_global;
     };
 } TB_InitObj;
 
-typedef struct TB_Initializer {
+struct TB_Initializer {
     // header
     TB_CharUnits size, align;
     uint32_t obj_capacity;
@@ -305,15 +308,7 @@ typedef struct TB_Initializer {
 
     // payload
     TB_InitObj objects[];
-} TB_Initializer;
-
-typedef struct TB_Global {
-    char* name;
-    TB_Linkage linkage;
-    TB_InitializerID init;
-    uint32_t pos;
-    TB_StorageClass storage;
-} TB_Global;
+};
 
 typedef struct TB_Line {
     TB_FileID file;
@@ -416,25 +411,20 @@ struct TB_Module {
 
     // This is a hack for windows since they've got this idea
     // of a _tls_index
-    TB_ExternalID tls_index_extern;
+    TB_External* tls_index_extern;
 
     // Convert this into a dynamic memory arena... maybe
     tb_atomic_size_t prototypes_arena_size;
     uint64_t* prototypes_arena;
 
-    // TODO(NeGate): I should probably re-organize these to avoid
-    // false sharing
-    DynArray(TB_GlobalPatch) global_patches[TB_MAX_THREADS];
-    DynArray(TB_ConstPoolPatch) const_patches[TB_MAX_THREADS];
-    DynArray(uint64_t) initializers[TB_MAX_THREADS];
-    DynArray(TB_External) externals[TB_MAX_THREADS];
-    DynArray(TB_Global) globals[TB_MAX_THREADS];
-    DynArray(TB_FunctionPatch) call_patches[TB_MAX_THREADS];
-    DynArray(TB_ExternFunctionPatch) ecall_patches[TB_MAX_THREADS];
+    alignas(64) struct {
+        Pool(TB_Global) globals;
+        Pool(TB_External) externals;
 
-    // TODO(NeGate): start migrating all those dyn arrays into this array
-    struct {
-        int empty_for_now;
+        DynArray(TB_GlobalPatch) global_patches;
+        DynArray(TB_ConstPoolPatch) const_patches;
+        DynArray(TB_FunctionPatch) call_patches;
+        DynArray(TB_ExternFunctionPatch) ecall_patches;
     } thread_info[TB_MAX_THREADS];
 
     struct {
@@ -487,7 +477,7 @@ typedef struct {
     int minimum_addressable_size, pointer_size;
 
     void (*get_data_type_size)(TB_DataType dt, TB_CharUnits* out_size, TB_CharUnits* out_align);
-    void (*emit_call_patches)(TB_Module* m, uint32_t* func_layout);
+    void (*emit_call_patches)(TB_Module* restrict m, uint32_t* restrict func_layout);
 
     size_t (*get_prologue_length)(uint64_t saved, uint64_t stack_usage);
     size_t (*get_epilogue_length)(uint64_t saved, uint64_t stack_usage);
@@ -589,71 +579,6 @@ for (size_t iterator = (start), end__ = (count); iterator < end__; ++iterator)
 
 #define loop_reverse(iterator, count) \
 for (size_t iterator = (count); iterator--;)
-
-typedef struct TB_MultiplyResult {
-    uint64_t lo;
-    uint64_t hi;
-} TB_MultiplyResult;
-
-#if defined(_MSC_VER) && !defined(__clang__)
-inline static int tb_ffs(uint32_t x) {
-    unsigned long index;
-    return _BitScanForward(&index, x) ? 1 + index : 0;
-}
-
-inline static int tb_popcount(uint32_t x) {
-    return __popcnt(x);
-}
-
-inline static uint64_t tb_next_pow2(uint64_t x) {
-    return x == 1 ? 1 : 1 << (64 - _lzcnt_u64(x - 1));
-}
-
-inline static bool tb_add_overflow(uint64_t a, uint64_t b, uint64_t* result) {
-    uint64_t c = a + b;
-    *result = c;
-    return c < a;
-}
-
-inline static bool tb_sub_overflow(uint64_t a, uint64_t b, uint64_t* result) {
-    uint64_t c = a - b;
-    *result = c;
-    return c > a;
-}
-
-#pragma intrinsic(_umul128)
-inline static TB_MultiplyResult tb_mul64x128(uint64_t a, uint64_t b) {
-    uint64_t hi;
-    uint64_t lo = _umul128(a, b, &hi);
-    return (TB_MultiplyResult) { lo, hi };
-}
-#else
-inline static int tb_ffs(uint32_t x) {
-    return __builtin_ffs(x);
-}
-
-inline static int tb_popcount(uint32_t x) {
-    return __builtin_popcount(x);
-}
-
-inline static uint64_t tb_next_pow2(uint64_t x) {
-    return x == 1 ? 1 : 1 << (64 - __builtin_clzl(x - 1));
-}
-
-inline static bool tb_add_overflow(uint64_t a, uint64_t b, uint64_t* result) {
-    return __builtin_add_overflow(a, b, result);
-}
-
-inline static bool tb_sub_overflow(uint64_t a, uint64_t b, uint64_t* result) {
-    return __builtin_sub_overflow(a, b, result);
-}
-
-inline static TB_MultiplyResult tb_mul64x128(uint64_t a, uint64_t b) {
-    __uint128_t product = (__uint128_t)a * (__uint128_t)b;
-
-    return (TB_MultiplyResult) { (uint64_t)(product & 0xFFFFFFFFFFFFFFFF), (uint64_t)(product >> 64) };
-}
-#endif
 
 // sometimes you just gotta do it to em'
 // imagine i++ but like i++y or something idk
@@ -771,7 +696,7 @@ inline static bool tb_next_biggest(int* result, int v, size_t n, const int* arr)
 #endif
 
 // NOTE(NeGate): clean this up
-#if 0
+#if 1
 #define OPTIMIZER_LOG(at, ...) ((void) (at))
 #define LOGGING_OPTS 0
 #else
@@ -802,9 +727,9 @@ int tb_function_find_uses_of_node(const TB_Function* f, TB_Reg def, TB_Reg uses[
 TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count);
 
 uint32_t tb_emit_const_patch(TB_Module* m, TB_Function* source, size_t pos, const void* ptr,size_t len, size_t local_thread_id);
-void tb_emit_global_patch(TB_Module* m, TB_Function* source, size_t pos, TB_GlobalID global, size_t local_thread_id);
-void tb_emit_call_patch(TB_Module* m, TB_Function* source, uint32_t target_id, size_t pos, size_t local_thread_id);
-void tb_emit_ecall_patch(TB_Module* m, TB_Function* source, TB_ExternalID target_id, size_t pos, size_t local_thread_id);
+void tb_emit_global_patch(TB_Module* m, TB_Function* source, size_t pos, const TB_Global* target, size_t local_thread_id);
+void tb_emit_call_patch(TB_Module* m, TB_Function* source, const TB_Function* target, size_t pos, size_t local_thread_id);
+void tb_emit_ecall_patch(TB_Module* m, TB_Function* source, const TB_External* target, size_t pos, size_t local_thread_id);
 
 TB_Reg* tb_vla_reserve(TB_Function* f, size_t count);
 

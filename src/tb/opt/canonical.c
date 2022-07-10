@@ -195,10 +195,7 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
             }
         } else if (type == TB_INITIALIZE) {
             TB_Reg addr = n->init.addr;
-
-            TB_Module* m = f->module;
-            TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-            TB_Initializer* init = (TB_Initializer*)&m->initializers[n->init.id / per_thread_stride][n->init.id % per_thread_stride];
+            TB_Initializer* init = n->init.src;
 
             if (init->obj_count == 0) {
                 OPTIMIZER_LOG(i, "Replaced complex initializer with memset");
@@ -428,12 +425,11 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
                     TB_Reg b = inputs[j].label;
 
                     bool duplicate = false;
-                    if (f->nodes[a].type != TB_NULL) {
+                    if (a == i) {
+                        duplicate = true;
+                    } else if (f->nodes[a].type != TB_NULL) {
 	                    loop_range(k, 0, j) {
-	                        if (inputs[k].val == i) {
-	                            duplicate = true;
-	                            break;
-	                        } else if (inputs[k].val == a) {
+	                        if (inputs[k].val == a) {
 	                            duplicate = true;
 	                            break;
 	                        }

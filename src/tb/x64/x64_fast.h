@@ -346,9 +346,8 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
         if (fits_into_int32(n)) {
             return val_imm(n->dt, n->integer.single_word);
         } else if (n->type == TB_GLOBAL_ADDRESS) {
-            TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
             TB_Module* m = f->module;
-            TB_Global* g = &m->globals[n->global.value / per_thread_stride][n->global.value % per_thread_stride];
+            const TB_Global* g = n->global.value;
 
             if (g->storage == TB_STORAGE_TLS) {
                 if (m->tls_index_extern == 0) {
@@ -751,8 +750,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 if (reg_type == TB_EXTERN_ADDRESS) {
                     tb_emit_ecall_patch(f->module, f, n->external.value, GET_CODE_POS() - 4, s_local_thread_id);
                 } else {
-                    int target_func = n->func.value - f->module->functions.data;
-                    tb_emit_call_patch(f->module, f, target_func, GET_CODE_POS() - 4, s_local_thread_id);
+                    tb_emit_call_patch(f->module, f, n->func.value, GET_CODE_POS() - 4, s_local_thread_id);
                 }
                 break;
             }
@@ -1017,9 +1015,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
             case TB_INITIALIZE: {
                 TB_Reg addr = n->mem_op.dst;
 
-                TB_Module* m = f->module;
-                TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-                TB_Initializer* i = (TB_Initializer*)&m->initializers[n->init.id / per_thread_stride][n->init.id % per_thread_stride];
+                TB_Initializer* i = n->init.src;
 
                 assert(i->obj_count == 0);
                 Val src = val_imm(TB_TYPE_I32, 0);
@@ -1844,21 +1840,20 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
                 // CALL instruction and patch
                 if (reg_type == TB_CALL) {
-                    TB_FunctionID target = n->call.target - f->module->functions.data;
-
+                    const TB_Function* target = n->call.target;
                     tb_emit_call_patch(f->module, f, target, GET_CODE_POS() + 1, s_local_thread_id);
 
                     // CALL rel32
-                    ctx->header.out[0]                = 0xE8;
+                    ctx->header.out[0] = 0xE8;
                     *((uint32_t*)&ctx->header.out[1]) = 0x0;
                     ctx->header.out += 5;
                 } else if (reg_type == TB_ECALL) {
-                    TB_ExternalID target = n->ecall.target;
+                    const TB_External* target = n->ecall.target;
 
                     tb_emit_ecall_patch(f->module, f, target, GET_CODE_POS() + 1, s_local_thread_id);
 
                     // CALL rel32
-                    ctx->header.out[0]                = 0xE8;
+                    ctx->header.out[0] = 0xE8;
                     *((uint32_t*)&ctx->header.out[1]) = 0x0;
                     ctx->header.out += 5;
                 } else if (reg_type == TB_VCALL) {

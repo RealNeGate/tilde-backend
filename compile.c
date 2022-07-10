@@ -7,7 +7,6 @@
 #endif
 
 static const char* INPUT_FILES[] = {
-    "src/tb/stb_ds.c",
     "src/tb/tb.c",
     "src/tb/tb_analysis.c",
     "src/tb/tb_atomic.c",
@@ -59,6 +58,33 @@ static const char* INPUT_FILES[] = {
 };
 enum { INPUT_FILE_COUNT = sizeof(INPUT_FILES) / sizeof(INPUT_FILES[0]) };
 
+static int convert_into_c_array(const char* name, const char* in, const char* out) {
+    FILE *fp = fopen(in, "rb");
+    if (!fp) {
+        fprintf(stderr, "Error opening file: %s\n", out);
+        return 1;
+    }
+
+    fseek(fp, 0, SEEK_END);
+    const int fsize = ftell(fp);
+
+    fseek(fp, 0, SEEK_SET);
+    unsigned char *b = malloc(fsize);
+
+    fread(b, fsize, 1, fp);
+    fclose(fp);
+
+    FILE *outf = fopen(out, "wb");
+    fprintf(outf, "enum { %s_SIZE = %d };\n", name, fsize);
+    fprintf(outf, "static const char %s[%d+1] = {\n", name, fsize);
+    for (int i = 0; i < fsize; ++i) {
+        fprintf(outf, "0x%02x%s", b[i], i == fsize-1 ? "" : ((i+1) % 16 == 0 ? ",\n" : ","));
+    }
+    fprintf(outf, "\n};\n");
+    fclose(outf);
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     const char* output_lib_path = NULL;
     if (argc >= 2) {
@@ -69,6 +95,8 @@ int main(int argc, char* argv[]) {
 
     nbuild_init();
     create_dir_if_not_exists("bin"SLASH);
+
+    convert_into_c_array("PRELUDE", "src/tb/opt/prelude.lua", "src/tb/opt/lua_prelude.inc");
 
     #ifdef RELEASE_BUILD
     printf("Compiling a release build!\n");
@@ -104,16 +132,19 @@ int main(int argc, char* argv[]) {
     cmd_wait_for_all();
 
     printf("Converting to a library...\n");
-    ar_invoke(output_lib_path, 2, (const char*[]) {
+    ar_invoke(output_lib_path, 4, (const char*[]) {
             ON_WINDOWS ? "bin"SLASH"*.obj" : "bin"SLASH"*.o",
-            ON_WINDOWS ? "external/tbbmalloc.lib" : ""
+            ON_WINDOWS ? "deps/tbbmalloc.lib" : "",
+            ON_WINDOWS ? "deps/luajit-2.1/lua51.lib" : "/usr/local/lib/libluajit-5.1.a",
+            ON_WINDOWS ? "deps/luajit-2.1/luajit.lib" : ""
         });
+
     cmd_wait_for_all();
     clean("bin"SLASH);
 
     #if defined(NEGATE)
     // personal crap
-    system("cd W:/Workspace/Cuik/ && clang compile.c "EXTRA_DEFINES_FOR_NEGATE" -o compile.exe && compile.exe");
+    system("cd W:/Workspace/Cuik/ && clang compile.c "EXTRA_DEFINES_FOR_NEGATE" && a.exe");
     #endif
 
     return 0;

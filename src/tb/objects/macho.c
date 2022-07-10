@@ -77,12 +77,12 @@ void tb_export_macho(TB_Module* m, const ICodeGen* restrict code_gen, const char
 		symtab_cmd.nsyms += m->functions.compiled_count;
 
 		loop(i, m->max_threads) {
-			size_t external_len = arrlen(m->externals[i]);
+			size_t external_len = pool_popcount(m->thread_info[i].externals);
 			symtab_cmd.nsyms += external_len ? external_len - 1 : 0;
 		}
 
 		loop(i, m->max_threads) {
-			symtab_cmd.nsyms += arrlen(m->globals[i]);
+			symtab_cmd.nsyms += pool_popcount(m->thread_info[i].globals);
 		}
 	}
 

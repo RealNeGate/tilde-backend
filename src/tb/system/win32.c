@@ -76,20 +76,21 @@ typedef struct Segment {
     unsigned char data[];
 } Segment;
 
-static Segment* arena_base;
-static Segment* arena_top;
+typedef struct Arena {
+    Segment *base, *top;
+} Arena;
 
-static CRITICAL_SECTION arena_lock;
+static Arena tb__global_arena;
+static CRITICAL_SECTION tb__global_arena_lock;
 
-void tb_platform_arena_init() {
+void tb__arena_init(Arena* a) {
     Segment* s = (Segment*) tb_platform_valloc(ARENA_SEGMENT_SIZE);
     if (!s) abort();
 
-    arena_base = arena_top = s;
-    InitializeCriticalSection(&arena_lock);
+    a->base = a->top = s;
 }
 
-void* tb_platform_arena_alloc(size_t size) {
+void* tb__arena_alloc(Arena* a, size_t size) {
     // align to max_align
     size_t align_mask = _Alignof(intmax_t) - 1;
     size = (size + align_mask) & ~align_mask;
@@ -97,20 +98,15 @@ void* tb_platform_arena_alloc(size_t size) {
     // If this ever happens... literally how...
     assert(size < ARENA_SEGMENT_SIZE);
 
-    // lock
-    EnterCriticalSection(&arena_lock);
-
     void* ptr;
-    if (arena_top->used + size < ARENA_SEGMENT_SIZE - sizeof(Segment)) {
-        ptr = &arena_top->data[arena_top->used];
-        arena_top->used += size;
+    if (a->top->used + size < ARENA_SEGMENT_SIZE - sizeof(Segment)) {
+        ptr = &a->top->data[a->top->used];
+        a->top->used += size;
     } else {
         // Add new page
         Segment* s = (Segment*) tb_platform_valloc(ARENA_SEGMENT_SIZE);
         if (!s) {
-            printf("Out of memory!\n");
-            LeaveCriticalSection(&arena_lock);
-
+            fprintf(stderr, "Out of memory!\n");
             abort();
         }
 
@@ -119,22 +115,37 @@ void* tb_platform_arena_alloc(size_t size) {
         ptr = s->data;
 
         // Insert to top of nodes
-        arena_top->next = s;
-        arena_top = s;
+        a->top->next = s;
+        a->top = s;
     }
 
     // unlock
-    LeaveCriticalSection(&arena_lock);
     return ptr;
 }
 
-void tb_platform_arena_free() {
-    Segment* c = arena_base;
+void tb__arena_free(Arena* a) {
+    Segment* c = a->base;
     while (c) {
         Segment* next = c->next;
         tb_platform_vfree(c, ARENA_SEGMENT_SIZE);
         c = next;
     }
 
-    arena_base = arena_top = NULL;
+    a->base = a->top = NULL;
+}
+
+void tb_platform_arena_init() {
+    tb__arena_init(&tb__global_arena);
+    InitializeCriticalSection(&tb__global_arena_lock);
+}
+
+void* tb_platform_arena_alloc(size_t size) {
+    EnterCriticalSection(&tb__global_arena_lock);
+    void* r = tb__arena_alloc(&tb__global_arena, size);
+    LeaveCriticalSection(&tb__global_arena_lock);
+    return r;
+}
+
+void tb_platform_arena_free() {
+    tb__arena_free(&tb__global_arena);
 }

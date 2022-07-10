@@ -71,17 +71,17 @@ typedef struct Val {
         XMM  xmm;
         Cond cond;
         struct {
-            bool    is_rvalue;
-            GPR     base : 8;
-            GPR     index : 8;
-            Scale   scale : 8;
+            bool is_rvalue;
+            GPR base : 8;
+            GPR index : 8;
+            Scale scale : 8;
             int32_t disp;
         } mem;
         struct {
             // this should alias with mem.is_rvalue
-            bool        is_rvalue;
-            TB_GlobalID id;
-            int16_t     disp;
+            bool is_rvalue;
+            const TB_Global* g;
+            int16_t disp;
         } global;
         int32_t imm;
     };
@@ -218,8 +218,8 @@ inline static Val val_flags(Cond c) {
     return (Val) { .type = VAL_FLAGS, .dt = TB_TYPE_BOOL, .cond = c };
 }
 
-inline static Val val_global(TB_GlobalID g) {
-    return (Val) { .type = VAL_GLOBAL, .dt = TB_TYPE_PTR, .global.is_rvalue = false, .global.id = g };
+inline static Val val_global(const TB_Global* g) {
+    return (Val) { .type = VAL_GLOBAL, .dt = TB_TYPE_PTR, .global.is_rvalue = false, .global.g = g };
 }
 
 inline static Val val_imm(TB_DataType dt, int32_t imm) {

@@ -32,7 +32,6 @@ static void tb_print_type(TB_DataType dt, TB_PrintCallback callback, void* user_
 }
 
 static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_data, TB_Node* restrict n) {
-    TB_Module* m = f->module;
     TB_Reg i = TB_GET_REG(n, f);
     TB_NodeTypeEnum type = n->type;
     TB_DataType dt = n->dt;
@@ -249,8 +248,7 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
             break;
         }
         case TB_ECALL: {
-            TB_ExternalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-            TB_External* e = &m->externals[n->ecall.target / per_thread_stride][n->ecall.target % per_thread_stride];
+            const TB_External* e = n->ecall.target;
 
             callback(user_data, "  r%-8u = call.", i);
             tb_print_type(dt, callback, user_data);
@@ -308,17 +306,12 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
             break;
         }
         case TB_EXTERN_ADDRESS: {
-            TB_ExternalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-            TB_External*  e	= &m->externals[n->external.value / per_thread_stride]
-            [n->external.value % per_thread_stride];
-
+            const TB_External* e = n->external.value;
             callback(user_data, "  r%-8u = &%s", i, e->name);
             break;
         }
         case TB_GLOBAL_ADDRESS: {
-            TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-            TB_Global* g = &m->globals[n->global.value / per_thread_stride][n->global.value % per_thread_stride];
-
+            const TB_Global* g = n->global.value;
             callback(user_data, "  r%-8u = &%s", i, g->name);
             break;
         }

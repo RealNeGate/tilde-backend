@@ -168,15 +168,17 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
     // function relative to the .text section start.
     uint32_t* func_layout = tb_platform_heap_alloc((m->functions.count+1) * sizeof(uint32_t));
 
-    uint32_t* external_symbol_relative_id = tb_tls_push(tls, TB_MAX_THREADS * sizeof(uint32_t));
-    size_t symbol_id_counter = 0;
-
-    // generate a mapping between external symbols and the symbol ids
+    // mark each with a unique id
+    int unique_id_counter = 0;
     loop(i, m->max_threads) {
-        external_symbol_relative_id[i] = symbol_id_counter;
+        pool_for(TB_External, e, m->thread_info[i].externals) {
+            int id = unique_id_counter++;
+            e->address = (void*) (uintptr_t) id;
+        }
 
-        size_t external_len = arrlen(m->externals[i]);
-        symbol_id_counter += external_len ? external_len - 1 : 0;
+        pool_for(TB_Global, g, m->thread_info[i].globals) {
+            g->id = unique_id_counter++;
+        }
     }
 
     uint16_t machine;
@@ -326,8 +328,8 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
     func_layout[m->functions.count] = code_section.sh_size;
 
     loop(i, m->max_threads) {
-        code_reloc_section.sh_size += arrlen(m->ecall_patches[i]) * sizeof(Elf64_Rela);
-        code_reloc_section.sh_size += arrlen(m->const_patches[i]) * sizeof(Elf64_Rela);
+        code_reloc_section.sh_size += dyn_array_length(m->thread_info[i].ecall_patches) * sizeof(Elf64_Rela);
+        code_reloc_section.sh_size += dyn_array_length(m->thread_info[i].const_patches) * sizeof(Elf64_Rela);
     }
 
     // Target specific: resolve internal call patches
@@ -360,9 +362,7 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
     }
 
     loop(i, m->max_threads) {
-        loop_range(j, 1, arrlen(m->externals[i])) {
-            const TB_External* restrict e = &m->externals[i][j];
-
+        pool_for(TB_External, e, m->thread_info[i].externals) {
             put_symbol(&strtbl, &stab, e->name, ELF64_ST_INFO(ELF64_STB_GLOBAL, 0), 0, 0, 0);
         }
     }
@@ -417,8 +417,8 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
     assert(ftell(f) == code_reloc_section.sh_offset);
     uint64_t external_symbol_baseline = number_of_sections + m->functions.count;
     loop(i, m->max_threads) {
-        loop(j, arrlen(m->ecall_patches[i])) {
-            TB_ExternFunctionPatch* p = &m->ecall_patches[i][j];
+        loop(j, dyn_array_length(m->thread_info[i].ecall_patches)) {
+            TB_ExternFunctionPatch* p = &m->thread_info[i].ecall_patches[j];
             TB_FunctionOutput* out_f = p->source->output;
 
             uint64_t meta = out_f->prologue_epilogue_metadata;
@@ -427,16 +427,7 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
             size_t actual_pos = func_layout[p->source - m->functions.data] +
                 code_gen->get_prologue_length(meta, stack_usage) + p->pos;
 
-            TB_ExternalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-
-            uint64_t symbol_id = external_symbol_relative_id[p->target_id / per_thread_stride];
-
-            // Workaround since each external set has a null slot
-            uint64_t local_id = (p->target_id % per_thread_stride);
-            if (local_id) local_id--;
-            symbol_id += local_id;
-            symbol_id += external_symbol_baseline;
-
+            int symbol_id = external_symbol_baseline + (uintptr_t) p->target->address;
             Elf64_Rela rela = {
                 .r_offset = actual_pos,
                 .r_info   = ELF64_R_INFO(symbol_id, R_X86_64_PLT32),
@@ -447,8 +438,8 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
     }
 
     loop(i, m->max_threads) {
-        loop(j, arrlen(m->const_patches[i])) {
-            TB_ConstPoolPatch* p = &m->const_patches[i][j];
+        loop(j, dyn_array_length(m->thread_info[i].const_patches)) {
+            TB_ConstPoolPatch* p = &m->thread_info[i].const_patches[j];
             TB_FunctionOutput* out_f = p->source->output;
 
             uint64_t meta = out_f->prologue_epilogue_metadata;
@@ -475,12 +466,10 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
         char* data = tb_platform_heap_alloc(m->data_region_size);
 
         loop(i, m->max_threads) {
-            loop(j, arrlen(m->globals[i])) {
-                TB_Global* g = &m->globals[i][j];
+            pool_for(TB_Global, g, m->thread_info[i].globals) {
                 if (g->storage != TB_STORAGE_DATA) continue;
 
-                TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-                TB_Initializer*  init = (TB_Initializer*)&m->initializers[g->init / per_thread_stride][g->init % per_thread_stride];
+                TB_Initializer* init = g->init;
 
                 // clear out space
                 memset(&data[g->pos], 0, init->size);
@@ -503,8 +492,8 @@ void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char
         memset(rdata, 0, 16);
 
         loop(i, m->max_threads) {
-            loop(j, arrlen(m->const_patches[i])) {
-                TB_ConstPoolPatch* p = &m->const_patches[i][j];
+            loop(j, dyn_array_length(m->thread_info[i].const_patches)) {
+                TB_ConstPoolPatch* p = &m->thread_info[i].const_patches[j];
                 memcpy(&rdata[p->rdata_pos], p->data, p->length);
             }
         }

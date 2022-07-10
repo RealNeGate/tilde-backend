@@ -403,11 +403,11 @@ TB_API void tb_inst_volatile_store(TB_Function* f, TB_DataType dt, TB_Reg addr, 
     };
 }
 
-TB_API void tb_inst_initialize_mem(TB_Function* f, TB_Reg addr, TB_InitializerID src) {
+TB_API void tb_inst_initialize_mem(TB_Function* f, TB_Reg addr, TB_Initializer* src) {
     TB_Reg r = tb_make_reg(f, TB_INITIALIZE, TB_TYPE_PTR);
     f->nodes[r].init = (struct TB_NodeInitialize) {
         .addr = addr,
-        .id   = src,
+        .src  = src,
     };
 }
 
@@ -493,13 +493,13 @@ TB_API TB_Reg tb_inst_get_func_address(TB_Function* f, const TB_Function* target
     return r;
 }
 
-TB_API TB_Reg tb_inst_get_extern_address(TB_Function* f, TB_ExternalID target) {
+TB_API TB_Reg tb_inst_get_extern_address(TB_Function* f, const TB_External* target) {
     TB_Reg r = tb_make_reg(f, TB_EXTERN_ADDRESS, TB_TYPE_PTR);
     f->nodes[r].external.value = target;
     return r;
 }
 
-TB_API TB_Reg tb_inst_get_global_address(TB_Function* f, TB_GlobalID target) {
+TB_API TB_Reg tb_inst_get_global_address(TB_Function* f, const TB_Global* target) {
 	TB_Reg r = tb_make_reg(f, TB_GLOBAL_ADDRESS, TB_TYPE_PTR);
     f->nodes[r].global = (struct TB_NodeGlobal) { target };
     return r;
@@ -545,8 +545,7 @@ TB_API TB_Reg tb_inst_vcall(TB_Function* f, TB_DataType dt, const TB_Reg target,
     return r;
 }
 
-TB_API TB_Reg tb_inst_ecall(TB_Function* f, TB_DataType dt, const TB_ExternalID target,
-    size_t param_count, const TB_Reg* params) {
+TB_API TB_Reg tb_inst_ecall(TB_Function* f, TB_DataType dt, const TB_External* target, size_t param_count, const TB_Reg* params) {
     int param_start = f->vla.count;
 
     TB_Reg* vla = tb_vla_reserve(f, param_count);

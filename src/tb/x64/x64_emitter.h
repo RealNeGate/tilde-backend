@@ -46,7 +46,7 @@ inline static void emit_memory_operand(X64_CtxHeader* restrict ctx, uint8_t rx, 
         EMIT(((rx & 7) << 3) | RBP);
         EMIT4(a->global.disp);
 
-        tb_emit_global_patch(ctx->f->module, ctx->f, (ctx->out - ctx->start_out) - 4, a->global.id, s_local_thread_id);
+        tb_emit_global_patch(ctx->f->module, ctx->f, (ctx->out - ctx->start_out) - 4, a->global.g, s_local_thread_id);
     } else {
 		tb_unreachable();
 	}
@@ -88,7 +88,7 @@ void inst1(X64_CtxHeader* restrict ctx, Inst1 op, const Val* r) {
         EMIT(((rx & 7) << 3) | RBP);
         EMIT4(r->global.disp);
 
-        tb_emit_global_patch(ctx->f->module, ctx->f, (ctx->out - ctx->start_out) - 4, r->global.id, s_local_thread_id);
+        tb_emit_global_patch(ctx->f->module, ctx->f, (ctx->out - ctx->start_out) - 4, r->global.g, s_local_thread_id);
     } else
         tb_unreachable();
 }

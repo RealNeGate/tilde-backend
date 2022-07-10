@@ -59,7 +59,6 @@ TB_API void tb_function_free(TB_Function* f) {
 
 TB_API TB_DataType tb_vector_type(TB_DataTypeEnum type, int width) {
     assert(tb_is_power_of_two(width));
-
     return (TB_DataType) { .type = type, .width = tb_ffs(width) - 1 };
 }
 
@@ -85,8 +84,10 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
     m->functions.data = tb_platform_heap_alloc(TB_MAX_FUNCTIONS * sizeof(TB_Function));
 
     loop(i, TB_MAX_THREADS) {
-        TB_External dummy = { 0 };
-        arrput(m->externals[i], dummy);
+        m->thread_info[i].global_patches = dyn_array_create(TB_GlobalPatch);
+        m->thread_info[i].const_patches  = dyn_array_create(TB_ConstPoolPatch);
+        m->thread_info[i].call_patches   = dyn_array_create(TB_FunctionPatch);
+        m->thread_info[i].ecall_patches  = dyn_array_create(TB_ExternFunctionPatch);
     }
 
     // we start a little off the start just because
@@ -173,11 +174,15 @@ TB_API void tb_module_destroy(TB_Module* m) {
         m->jit_region = NULL;
     }
 
-    loop(i, m->max_threads) arrfree(m->initializers[i]);
-    loop(i, m->max_threads) arrfree(m->call_patches[i]);
-    loop(i, m->max_threads) arrfree(m->ecall_patches[i]);
-    loop(i, m->max_threads) arrfree(m->const_patches[i]);
-    loop(i, m->max_threads) arrfree(m->externals[i]);
+    loop(i, m->max_threads) {
+        // TODO(NeGate): free pools
+        //dyn_array_destroy(m->thread_info[i].initializers);
+        //dyn_array_destroy(m->thread_info[i].externals);
+
+        dyn_array_destroy(m->thread_info[i].call_patches);
+        dyn_array_destroy(m->thread_info[i].ecall_patches);
+        dyn_array_destroy(m->thread_info[i].const_patches);
+    }
 
     tb_platform_vfree(m->prototypes_arena, PROTOTYPES_ARENA_SIZE * sizeof(uint64_t));
 
@@ -287,146 +292,108 @@ TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, co
     return f;
 }
 
-TB_API TB_InitializerID tb_initializer_create(TB_Module* m, size_t size, size_t align, size_t max_objects) {
+TB_API TB_Initializer* tb_initializer_create(TB_Module* m, size_t size, size_t align, size_t max_objects) {
     tb_assume(size == (uint32_t)size);
     tb_assume(align == (uint32_t)align);
     tb_assume(max_objects == (uint32_t)max_objects);
-    int tid = get_local_thread_id();
 
     size_t space_needed = (sizeof(TB_Initializer) + (sizeof(uint64_t) - 1)) / sizeof(uint64_t);
     space_needed += ((max_objects * sizeof(TB_InitObj)) + (sizeof(uint64_t) - 1)) / sizeof(uint64_t);
 
-    // each thread gets their own grouping of ids
-    size_t len = arrlen(m->initializers[tid]);
-
-    TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-    TB_InitializerID i = (tid * per_thread_stride) + len;
-    arrsetlen(m->initializers[tid], len + space_needed);
-
-    TB_Initializer* initializer = (TB_Initializer*)&m->initializers[tid][len];
-    initializer->size = size;
-    initializer->align = align;
-    initializer->obj_capacity = max_objects;
-    initializer->obj_count = 0;
-    return i;
+    TB_Initializer* init = tb_platform_heap_alloc(sizeof(TB_Initializer) + (space_needed * sizeof(uint64_t)));
+    init->size = size;
+    init->align = align;
+    init->obj_capacity = max_objects;
+    init->obj_count = 0;
+    return init;
 }
 
-TB_API void* tb_initializer_add_region(TB_Module* m, TB_InitializerID id, size_t offset, size_t size) {
+TB_API void* tb_initializer_add_region(TB_Module* m, TB_Initializer* init, size_t offset, size_t size) {
     assert(offset == (uint32_t)offset);
     assert(size == (uint32_t)size);
-
-    TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-    TB_Initializer* i = (TB_Initializer*)&m->initializers[id / per_thread_stride][id % per_thread_stride];
-
-    assert(i->obj_count + 1 <= i->obj_capacity);
+    assert(init->obj_count + 1 <= init->obj_capacity);
 
     void* ptr = tb_platform_heap_alloc(size);
-    i->objects[i->obj_count++] = (TB_InitObj) {
+    init->objects[init->obj_count++] = (TB_InitObj) {
         .type = TB_INIT_OBJ_REGION, .offset = offset, .region = { .size = size, .ptr = ptr }
     };
 
     return ptr;
 }
 
-TB_API void tb_initializer_add_global(TB_Module* m, TB_InitializerID id, size_t offset, TB_GlobalID global) {
+TB_API void tb_initializer_add_global(TB_Module* m, TB_Initializer* init, size_t offset, const TB_Global* global) {
     assert(offset == (uint32_t)offset);
-
-    TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-    TB_Initializer* i = (TB_Initializer*)&m->initializers[id / per_thread_stride][id % per_thread_stride];
-
-    assert(i->obj_count + 1 <= i->obj_capacity);
-    i->objects[i->obj_count++] = (TB_InitObj) { .type = TB_INIT_OBJ_RELOC_GLOBAL, .offset = offset, .reloc_global = global };
+    assert(init->obj_count + 1 <= init->obj_capacity);
+    init->objects[init->obj_count++] = (TB_InitObj) { .type = TB_INIT_OBJ_RELOC_GLOBAL, .offset = offset, .reloc_global = global };
 }
 
-TB_API void tb_initializer_add_function(TB_Module* m, TB_InitializerID id, size_t offset, TB_FunctionID func) {
+TB_API void tb_initializer_add_function(TB_Module* m, TB_Initializer* init, size_t offset, const TB_Function* func) {
     assert(offset == (uint32_t)offset);
-
-    TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-    TB_Initializer* i = (TB_Initializer*)&m->initializers[id / per_thread_stride][id % per_thread_stride];
-
-    assert(i->obj_count + 1 <= i->obj_capacity);
-    i->objects[i->obj_count++] = (TB_InitObj) {
-        .type = TB_INIT_OBJ_RELOC_FUNCTION, .offset = offset, .reloc_function = func
-    };
+    assert(init->obj_count + 1 <= init->obj_capacity);
+    init->objects[init->obj_count++] = (TB_InitObj) {  .type = TB_INIT_OBJ_RELOC_FUNCTION, .offset = offset, .reloc_function = func };
 }
 
-TB_API void tb_initializer_add_extern(TB_Module* m, TB_InitializerID id, size_t offset, TB_ExternalID external) {
+TB_API void tb_initializer_add_extern(TB_Module* m, TB_Initializer* init, size_t offset, const TB_External* external) {
     assert(offset == (uint32_t)offset);
 
-    TB_InitializerID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-    TB_Initializer* i = (TB_Initializer*)&m->initializers[id / per_thread_stride][id % per_thread_stride];
-
-    assert(i->obj_count + 1 <= i->obj_capacity);
-    i->objects[i->obj_count++] = (TB_InitObj) {
+    assert(init->obj_count + 1 <= init->obj_capacity);
+    init->objects[init->obj_count++] = (TB_InitObj) {
         .type = TB_INIT_OBJ_RELOC_EXTERN, .offset = offset, .reloc_extern = external
     };
 }
 
-TB_API TB_GlobalID tb_global_create(TB_Module* m, const char* name, TB_StorageClass storage, TB_Linkage linkage) {
+TB_API TB_Global* tb_global_create(TB_Module* m, const char* name, TB_StorageClass storage, TB_Linkage linkage) {
     int tid = get_local_thread_id();
 
-    // each thread gets their own grouping of global ids
-    TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-
-    TB_GlobalID i = (tid * per_thread_stride) + arrlen(m->globals[tid]);
-    TB_Global g = {
+    TB_Global* g = pool_put(m->thread_info[tid].globals);
+    *g = (TB_Global){
         .name = tb_platform_string_alloc(name),
         .linkage = linkage,
         .storage = storage
     };
-    arrput(m->globals[tid], g);
 
-    return i;
+    return g;
 }
 
-TB_API void tb_global_set_initializer(TB_Module* m, TB_GlobalID global, TB_InitializerID init) {
-    const TB_GlobalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-    TB_Global* g = &m->globals[global / per_thread_stride][global % per_thread_stride];
-
-    // layout
-    tb_atomic_size_t* region_size = g->storage == TB_STORAGE_TLS ? &m->tls_region_size : &m->data_region_size;
-    TB_Initializer* i = (TB_Initializer*)&m->initializers[init / per_thread_stride][init % per_thread_stride];
-
-    size_t pos = tb_atomic_size_add(region_size, i->size + i->align);
+TB_API void tb_global_set_initializer(TB_Module* m, TB_Global* global, TB_Initializer* init) {
+    tb_atomic_size_t* region_size = global->storage == TB_STORAGE_TLS ? &m->tls_region_size : &m->data_region_size;
+    size_t pos = tb_atomic_size_add(region_size, init->size + init->align);
 
     // TODO(NeGate): Assert on non power of two alignment
-    size_t align_mask = i->align - 1;
+    size_t align_mask = init->align - 1;
     pos = (pos + align_mask) & ~align_mask;
 
     assert(pos < UINT32_MAX && "Cannot fit global into space");
-    assert((pos + i->size) < UINT32_MAX && "Cannot fit global into space");
+    assert((pos + init->size) < UINT32_MAX && "Cannot fit global into space");
 
-    g->pos = pos;
-    g->init = init;
+    global->pos = pos;
+    global->init = init;
 }
 
-TB_API void tb_module_set_tls_index(TB_Module* m, TB_ExternalID e) {
+TB_API void tb_module_set_tls_index(TB_Module* m, TB_External* e) {
     m->tls_index_extern = e;
 }
 
 TB_API bool tb_jit_import(TB_Module* m, const char* name, void* address) {
     // TODO(NeGate): Maybe speed this up but also maybe don't... idk
     loop(i, m->max_threads) {
-        loop_range(j, 1, arrlen(m->externals[i])) if (strcmp(m->externals[i][j].name, name) == 0) {
-            m->externals[i][j].address = address;
-            return true;
+        pool_for(TB_External, e, m->thread_info[i].externals) {
+            if (strcmp(e->name, name) == 0) {
+                e->address = address;
+                return true;
+            }
         }
     }
 
     return false;
 }
 
-TB_API TB_ExternalID tb_extern_create(TB_Module* m, const char* name) {
+TB_API TB_External* tb_extern_create(TB_Module* m, const char* name) {
     int tid = get_local_thread_id();
 
-    // each thread gets their own grouping of external ids
-    TB_ExternalID per_thread_stride = UINT_MAX / TB_MAX_THREADS;
-
-    TB_ExternalID i = (tid * per_thread_stride) + arrlen(m->externals[tid]);
-    TB_External e = { .name = tb_platform_string_alloc(name) };
-    arrput(m->externals[tid], e);
-
-    return i;
+    TB_External* e = pool_put(m->thread_info[tid].externals);
+    *e = (TB_External){ .name = tb_platform_string_alloc(name) };
+    return e;
 }
 
 TB_API void* tb_module_get_jit_func_by_name(TB_Module* m, const char* name) {
@@ -522,18 +489,25 @@ void tb_tls_restore(TB_TemporaryStorage* store, void* ptr) {
     store->used = i;
 }
 
-void tb_emit_call_patch(TB_Module* m, TB_Function* source, uint32_t target_id, size_t pos, size_t local_thread_id) {
+void tb_emit_call_patch(TB_Module* m, TB_Function* source, const TB_Function* target, size_t pos, size_t local_thread_id) {
     assert(pos == (uint32_t)pos);
 
-    TB_FunctionPatch p = { .source = source, .target_id = target_id, .pos = pos };
-    arrput(m->call_patches[local_thread_id], p);
+    TB_FunctionPatch p = { .source = source, .target = target, .pos = pos };
+    dyn_array_put(m->thread_info[local_thread_id].call_patches, p);
 }
 
-void tb_emit_ecall_patch(TB_Module* m, TB_Function* source, TB_ExternalID target_id, size_t pos, size_t local_thread_id) {
+void tb_emit_ecall_patch(TB_Module* m, TB_Function* source, const TB_External* target, size_t pos, size_t local_thread_id) {
     assert(pos == (uint32_t)pos);
 
-    TB_ExternFunctionPatch p = { .source = source, .target_id = target_id, .pos = pos };
-    arrput(m->ecall_patches[local_thread_id], p);
+    TB_ExternFunctionPatch p = { .source = source, .target = target, .pos = pos };
+    dyn_array_put(m->thread_info[local_thread_id].ecall_patches, p);
+}
+
+void tb_emit_global_patch(TB_Module* m, TB_Function* source, size_t pos, const TB_Global* target, size_t local_thread_id) {
+    assert(pos == (uint32_t)pos);
+
+    TB_GlobalPatch p = { .source = source, .pos = pos, .target = target };
+    dyn_array_put(m->thread_info[local_thread_id].global_patches, p);
 }
 
 uint32_t tb_emit_const_patch(TB_Module* m, TB_Function* source, size_t pos, const void* ptr, size_t len, size_t local_thread_id) {
@@ -547,17 +521,10 @@ uint32_t tb_emit_const_patch(TB_Module* m, TB_Function* source, size_t pos, cons
     TB_ConstPoolPatch p = {
         .source = source, .pos = pos, .rdata_pos = rdata_pos, .data = ptr, .length = len
     };
-    arrput(m->const_patches[local_thread_id], p);
+    dyn_array_put(m->thread_info[local_thread_id].const_patches, p);
 
     assert(rdata_pos == (uint32_t)rdata_pos);
     return rdata_pos;
-}
-
-void tb_emit_global_patch(TB_Module* m, TB_Function* source, size_t pos, TB_GlobalID global, size_t local_thread_id) {
-    assert(pos == (uint32_t)pos);
-
-    TB_GlobalPatch p = { .source = source, .pos = pos, .global = global };
-    arrput(m->global_patches[local_thread_id], p);
 }
 
 //

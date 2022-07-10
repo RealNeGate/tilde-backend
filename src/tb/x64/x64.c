@@ -17,12 +17,12 @@
 #define DEBUG_LOG(...) ((void)0)
 #endif
 
-void x64_emit_call_patches(TB_Module* m, uint32_t* func_layout) {
+void x64_emit_call_patches(TB_Module* restrict m, uint32_t* restrict func_layout) {
     loop(i, m->max_threads) {
-        TB_FunctionPatch* patches = m->call_patches[i];
+        TB_FunctionPatch* patches = m->thread_info[i].call_patches;
 
-        loop(j, arrlen(patches)) {
-            TB_FunctionPatch*  p     = &patches[j];
+        loop(j, dyn_array_length(patches)) {
+            TB_FunctionPatch*  p = &patches[j];
             TB_FunctionOutput* out_f = p->source->output;
 			assert(out_f && "Patch cannot be applied to function with no compiled output");
 
@@ -36,7 +36,7 @@ void x64_emit_call_patches(TB_Module* m, uint32_t* func_layout) {
             size_t actual_pos = func_layout[p->source - m->functions.data] +
 				x64_get_prologue_length(meta, stack_usage) + p->pos + 4;
 
-            *((uint32_t*)&code[p->pos]) = func_layout[p->target_id] - actual_pos;
+            *((uint32_t*)&code[p->pos]) = func_layout[p->target - m->functions.data] - actual_pos;
         }
     }
 }

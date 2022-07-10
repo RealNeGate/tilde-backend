@@ -90,7 +90,7 @@ int main(int argc, char* argv[]) {
     if (argc >= 2) {
         output_lib_path = argv[1];
     } else {
-        output_lib_path = "build/tildebackend";
+        output_lib_path = "bin/tildebackend";
     }
 
     nbuild_init();

@@ -172,7 +172,7 @@ TB_API bool tb_function_optimize(TB_Function* f, size_t pass_count, const TB_Fun
         bool success = false;
         if (passes[i].l_state != NULL) {
             // Invokes the pass
-            lua_State* L = passes[i].l_state;
+            lua_State* L = lua_newthread(passes[i].l_state);
 
             lua_getglobal(L, "DA_FUNC");
             lua_pushlightuserdata(L, f);

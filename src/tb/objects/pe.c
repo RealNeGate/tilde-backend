@@ -142,6 +142,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
     }
     func_layout[m->functions.count] = text_section_size;
     assert(entrypoint != SIZE_MAX);
+    (void)entrypoint;
 
     // Target specific: resolve internal call patches
     code_gen->emit_call_patches(m, func_layout);

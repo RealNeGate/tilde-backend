@@ -101,7 +101,7 @@ void tb_export_macho(TB_Module* m, const ICodeGen* restrict code_gen, const char
 
 	}
 
-	fwrite(string_table.data, string_table.count, 1, f);
+	//fwrite(string_table.data, string_table.count, 1, f);
 	fclose(f);
 
 	tb_platform_heap_free(string_table.data);

@@ -1,5 +1,10 @@
 #include "../tb_internal.h"
+
+#ifdef _WIN32
 #define LJ_EXPORT __attribute__((dllexport))
+#else
+#define LJ_EXPORT __attribute__((visibility("default")))
+#endif
 
 typedef struct {
     TB_Function* func;

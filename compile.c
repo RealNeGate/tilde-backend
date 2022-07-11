@@ -51,10 +51,10 @@ static const char* INPUT_FILES[] = {
 
     // Platform specific
     #if defined(_WIN32)
-    "src/tb/system/win32.c"
-        #else
-    "src/tb/system/posix.c"
-        #endif
+    "src/tb/system/win32.c",
+    #else
+    "src/tb/system/posix.c",
+    #endif
 };
 enum { INPUT_FILE_COUNT = sizeof(INPUT_FILES) / sizeof(INPUT_FILES[0]) };
 
@@ -93,6 +93,37 @@ int main(int argc, char* argv[]) {
         output_lib_path = "bin/tildebackend";
     }
 
+    // Clone and compile LuaJIT if not done already
+    bool luajit_build = false;
+    #ifdef _WIN32
+    luajit_build =
+        !file_exists("deps/luajit/src/luajit.lib") ||
+        !file_exists("deps/luajit/src/lua51.lib");
+    #else
+    luajit_build =
+        !file_exists("deps/luajit/src/libluajit.a");
+    #endif
+
+    if (luajit_build) {
+        printf("Compiling LuaJIT...\n");
+        if (!file_exists("deps/luajit")) {
+            cmd_append("git clone --depth 1 https://github.com/LuaJIT/LuaJIT.git deps/luajit");
+            cmd_run();
+            cmd_wait_for_all();
+        }
+
+        // Invoke build script
+        if (ON_WINDOWS) {
+            cmd_append("cd deps/luajit/src && msvcbuild.bat");
+        } else {
+            create_dir_if_not_exists("deps/luajit/lua");
+            cmd_append("cd deps/luajit && make");
+        }
+
+        cmd_run();
+        cmd_wait_for_all();
+    }
+
     nbuild_init();
     create_dir_if_not_exists("bin"SLASH);
 
@@ -102,8 +133,16 @@ int main(int argc, char* argv[]) {
     printf("Compiling a release build!\n");
     #endif
 
+    size_t include_len = 0;
+    const char** includes = NULL;
+    APPEND(include_len, includes, "deps/luajit/src");
+    APPEND(include_len, includes, "include");
+
     CC_Options options = {
         .output_dir = "bin"SLASH,
+
+        .include_len = include_len,
+        .includes = includes,
 
         #ifdef RELEASE_BUILD
         .opt = CC_Ox,
@@ -131,16 +170,32 @@ int main(int argc, char* argv[]) {
 
     cmd_wait_for_all();
 
-    printf("Converting to a library...\n");
-    ar_invoke(output_lib_path, 4, (const char*[]) {
-            ON_WINDOWS ? "bin"SLASH"*.obj" : "bin"SLASH"*.o",
-            ON_WINDOWS ? "deps/tbbmalloc.lib" : "",
-            ON_WINDOWS ? "deps/luajit-2.1/lua51.lib" : "/usr/local/lib/libluajit-5.1.a",
-            ON_WINDOWS ? "deps/luajit-2.1/luajit.lib" : ""
-        });
+    if (!ON_WINDOWS) {
+        // unwrap luajit into object files
+        cmd_append("cd bin/ && ar -x ../deps/luajit/src/libluajit.a");
+        cmd_run();
+        cmd_wait_for_all();
+    }
 
+    printf("Converting to a library...\n");
+
+    size_t ar_input_len = 0;
+    const char** ar_inputs = NULL;
+
+    #if ON_WINDOWS
+    APPEND(ar_input_len, ar_inputs, "bin"SLASH"*.obj");
+    APPEND(ar_input_len, ar_inputs, "deps/tbbmalloc.lib");
+    APPEND(ar_input_len, ar_inputs, "deps/luajit/src/lua51.lib");
+    APPEND(ar_input_len, ar_inputs, "deps/luajit/src/luajit.lib");
+    #else
+    APPEND(ar_input_len, ar_inputs, "bin"SLASH"*.o");
+    #endif
+
+    ar_invoke(output_lib_path, ar_input_len, ar_inputs);
     cmd_wait_for_all();
     clean("bin"SLASH);
+
+    //printf("TB done... %s\n", output_lib_path);
 
     #if defined(NEGATE)
     // personal crap

@@ -1,10 +1,10 @@
 #include "tb_internal.h"
 #include <stdarg.h>
 
-#include <luajit-2.1/lua.h>
-#include <luajit-2.1/lualib.h>
-#include <luajit-2.1/lauxlib.h>
-#include <luajit-2.1/luajit.h>
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+#include <luajit.h>
 
 #include "opt/lua_glue.h"
 #include "opt/lua_prelude.inc"

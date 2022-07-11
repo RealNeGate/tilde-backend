@@ -104,10 +104,12 @@
 #define COUNTOF(...) (sizeof(__VA_ARGS__) / sizeof((__VA_ARGS__)[0]))
 #endif
 
-typedef enum {
-    BUILD_MODE_EXECUTABLE,
-    BUILD_MODE_STATIC_LIB,
-} BuildMode;
+// modifies `arr`, `len`
+// evaluates `value` only once tho
+#define APPEND(len, arr, value) (                         \
+    (arr) = realloc((arr), ((len) + 1) * sizeof(*(arr))), \
+    (arr)[(len)] = (value), (len) += 1, 0                 \
+)
 
 static char command_buffer[4096];
 static size_t command_length = 0;
@@ -235,6 +237,11 @@ static bool file_iter_next(FileIter* iter) {
     return true;
 }
 #endif
+
+static bool file_exists(const char* path) {
+    struct stat sb;
+    return stat(path, &sb) == 0;
+}
 
 #define ITERATE_FILES(_name, _path) \
 for (FileIter _name = file_iter_open(_path); file_iter_next(&_name);)
@@ -366,6 +373,9 @@ typedef struct {
     const char* output_dir;
     const char* extra_options;
 
+    size_t include_len;
+    const char** includes;
+
     enum {
         CC_O0, // no optimizations
         CC_Og, // minimal optimizations, for debugging
@@ -467,12 +477,19 @@ static void cc_invoke(const CC_Options* options, const char* input_path, const c
     if (ON_CLANG) cmd_append(" -Wno-microsoft-enum-forward-reference -Wno-microsoft-anon-tag -Wno-gnu-designator");
     if (options->use_asan) cmd_append(" -fsanitize=address");
 
+    if (ON_WINDOWS) {
+        cmd_append(" -D__inline=\"static __inline\"");
+    }
+
     if (options->extra_options) {
         cmd_append(" ");
         cmd_append(options->extra_options);
     }
 
-    cmd_append(" -I deps -I lib -I include");
+    for (size_t i = 0; i < options->include_len; i++) {
+        cmd_append(" -I ");
+        cmd_append(options->includes[i]);
+    }
     cmd_append(" -c -o ");
     cmd_append(options->output_dir);
 
@@ -492,22 +509,17 @@ static void cc_invoke(const CC_Options* options, const char* input_path, const c
     cmd_append(input_path);
     cmd_run();
     #else
-    #error "TODO"
+    #error "How..."
     #endif
 }
 
 static void ar_invoke(const char* output_path, size_t count, const char* inputs[]) {
-    if (ON_WINDOWS) {
+    if (ON_WINDOWS && !ON_GCC) {
         cmd_append("lib /nologo /out:");
         cmd_append(output_path);
         cmd_append(".lib ");
     } else {
-		#ifndef NO_LLVMAR
-        if (ON_CLANG) cmd_append("llvm-ar rc ");
-        else cmd_append("ar -rcs ");
-		#else
-		cmd_append("ar -rcs ");
-		#endif
+        cmd_append("ar -rcs ");
 
         cmd_append(output_path);
         if (ON_WINDOWS) cmd_append(".lib ");
@@ -527,8 +539,8 @@ static void ar_invoke(const char* output_path, size_t count, const char* inputs[
 }
 
 static void ld_invoke(const char* output_path, size_t count, const char* inputs[], size_t external_count, const char* external_inputs[]) {
-    if (0 /* ON_WINDOWS */) {
-        cmd_append("link /ltcg /defaultlib:libcmt /debug /out:");
+    if (ON_WINDOWS) {
+        cmd_append("link /defaultlib:libcmt /debug /out:");
         cmd_append(str_gimme_good_slashes(output_path));
         cmd_append(".exe");
 
@@ -541,13 +553,12 @@ static void ld_invoke(const char* output_path, size_t count, const char* inputs[
             cmd_append(" ");
             cmd_append(inputs[i]);
         }
-    } else if (ON_CLANG) {
+    } else if (ON_CLANG || ON_GCC) {
         // Link with clang instead so it's easier
-		#ifndef NO_LLVMAR
-        cmd_append("clang -fuse-ld=lld -flto -O2 -g -o ");
-		#else
-        cmd_append("clang -O2 -g -o ");
-		#endif
+        if (ON_CLANG) cmd_append("clang ");
+        else cmd_append("gcc ");
+
+        cmd_append(" -g -o ");
         cmd_append(str_gimme_good_slashes(output_path));
         if (ON_WINDOWS) cmd_append(".exe");
         else cmd_append(" -Wl,--export-dynamic");
@@ -560,22 +571,6 @@ static void ld_invoke(const char* output_path, size_t count, const char* inputs[
         for (size_t i = 0; i < count; i++) {
             cmd_append(" ");
             cmd_append(inputs[i]);
-        }
-    } else if (ON_GCC) {
-        // TODO(NeGate): Fix this garbage up...
-        cmd_append("gcc -rdynamic -o ");
-        cmd_append(str_gimme_good_slashes(output_path));
-        cmd_append(" -Wl,--export-dynamic ");
-
-        for (size_t i = 0; i < count; i++) {
-            cmd_append(inputs[i]);
-            cmd_append(" ");
-        }
-
-        for (size_t i = 0; i < external_count; i++) {
-            cmd_append("-l");
-            cmd_append(external_inputs[i]);
-            cmd_append(" ");
         }
     } else {
         assert(0 && "TODO");

@@ -1,6 +1,7 @@
 .vs/
 bin/
 negate/
+deps/luajit/
 
 *.swp
 *.out

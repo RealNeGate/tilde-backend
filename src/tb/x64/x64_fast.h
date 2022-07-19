@@ -2456,7 +2456,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         }
     }
 
-    #if 1
+    #if 0
     //if (strcmp(f->name, "stbi__zbuild_huffman") == 0) {
     tb_function_print(f, tb_default_print_callback, stdout);
     printf("\n\n\n");

@@ -1,13 +1,14 @@
 #include "coff.h"
 
-#define NL_STRING_MAP_IMPL
-#include "../string_map.h"
+//#define NL_STRING_MAP_INLINE
+//#define NL_STRING_MAP_IMPL
+//#include "../string_map.h"
 
 typedef struct {
     TB_LinkerInput inputs;
 
     // symbol name -> libpath
-    NL_Strmap(TB_Slice) import_nametable;
+    //NL_Strmap(TB_Slice) import_nametable;
 } LinkerCtx;
 
 const static uint8_t dos_stub[] = {
@@ -75,8 +76,8 @@ static void import_archive(LinkerCtx* restrict ctx, TB_ArchiveFile* restrict ar)
     loop(i, ar->import_count) {
         TB_ArchiveImport* restrict import = &ar->imports[i];
 
-        TB_Slice libname = { strlen(import->libname), (uint8_t*) import->libname };
-        nl_strmap_put_cstr(ctx->import_nametable, import->name, libname);
+        //TB_Slice libname = { strlen(import->libname), (uint8_t*) import->libname };
+        //nl_strmap_put_cstr(ctx->import_nametable, import->name, libname);
 
         printf("%s : %s\n", import->libname, import->name);
     }

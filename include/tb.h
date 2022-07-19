@@ -239,6 +239,7 @@ extern "C" {
         TB_ATOMIC_TEST_AND_SET,
         TB_ATOMIC_CLEAR,
 
+        TB_ATOMIC_LOAD,
         TB_ATOMIC_XCHG,
         TB_ATOMIC_ADD,
         TB_ATOMIC_SUB,
@@ -573,22 +574,26 @@ extern "C" {
         TB_Reg old_value;
     } TB_CmpXchgResult;
 
-    typedef struct {
+    typedef struct TB_Loop {
+        // refers to another entry in TB_LoopInfo... unless it's -1
+        ptrdiff_t parent_loop;
+
+        TB_Label header;
+        TB_Label backedge;
+
+        size_t body_count;
+        TB_Label* body;
+    } TB_Loop;
+
+    typedef struct TB_LoopInfo {
         size_t count;
-        struct TB_Loop {
-            int parent_loop;
-
-            // the terminator of the header will exit
-            TB_Register header;
-
-            // this is where the contents of the loop begin
-            TB_Register body;
-
-            // this is not part of the loop but instead where
-            // the loop goes on exit
-            TB_Register exit;
-        } loops[];
+        TB_Loop* loops;
     } TB_LoopInfo;
+
+    typedef struct TB_Predeccesors {
+        int* count;
+        TB_Label** preds;
+    } TB_Predeccesors;
 
     typedef enum {
         TB_OBJECT_RELOC_NONE, // how?
@@ -851,9 +856,7 @@ extern "C" {
     TB_API TB_DataType tb_vector_type(TB_DataTypeEnum type, int width);
 
     TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* user_data);
-
-    // Prints out the IR in the GraphViz format
-    TB_API void tb_function_print_cfg(TB_Function* f, TB_PrintCallback callback, void* user_data);
+    TB_API void tb_function_print2(TB_Function* f, TB_PrintCallback callback, void* user_data, bool display_nops);
     TB_API void tb_function_free(TB_Function* f);
 
     TB_API TB_Label tb_inst_get_current_label(TB_Function* f);
@@ -949,6 +952,9 @@ extern "C" {
     TB_API TB_Reg tb_inst_atomic_test_and_set(TB_Function* f, TB_Reg addr, TB_MemoryOrder order);
     TB_API TB_Reg tb_inst_atomic_clear(TB_Function* f, TB_Reg addr, TB_MemoryOrder order);
 
+    // Must be aligned to the natural alignment of dt
+    TB_API TB_Reg tb_inst_atomic_load(TB_Function* f, TB_Reg addr, TB_DataType dt, TB_MemoryOrder order);
+
     // All atomic operations here return the old value and the operations are
     // performed in the same data type as 'src' with alignment of 'addr' being
     // the natural alignment of 'src'
@@ -1020,6 +1026,17 @@ extern "C" {
         void* l_state;
     } TB_FunctionPass;
 
+    typedef struct {
+        // invoked once before any passes are run in tb_function_optimize
+        void (*start)(void* user_data, TB_Function* f, const TB_FunctionPass* pass);
+
+        // invoked after any pass which is run
+        void (*pass)(void* user_data, TB_Function* f, const TB_FunctionPass* pass, bool success);
+
+        // invoked after all passes are completed in tb_function_optimize
+        void (*stop)(void* user_data, TB_Function* f, const TB_FunctionPass* pass);
+    } TB_OptimizerCallback;
+
     // Applies single function optimizations until it runs out
     TB_API bool tb_function_optimize(TB_Function* f, size_t pass_count, const TB_FunctionPass* passes);
 
@@ -1030,7 +1047,14 @@ extern "C" {
     TB_API void tb_opt_unload_lua_pass(TB_FunctionPass* p);
 
     // analysis
-    TB_API TB_LoopInfo* tb_function_get_loop_info(TB_Function* f);
+    TB_API TB_Predeccesors tb_get_predeccesors(TB_Function* f);
+
+    // if out_doms is NULL it'll only return the dominator array length (it's just the label count really)
+    TB_API size_t tb_get_dominators(TB_Function* f, TB_Predeccesors p, TB_Label* out_doms);
+    TB_API bool tb_is_dominated_by(TB_Label* doms, TB_Label expected_dom, TB_Label bb);
+
+    TB_API TB_LoopInfo tb_get_loop_info(TB_Function* f, TB_Predeccesors preds, TB_Label* doms);
+    TB_API void tb_free_loop_info(TB_LoopInfo loops);
 
     // passes
     TB_API bool tb_opt_merge_rets(TB_Function* f);
@@ -1040,9 +1064,9 @@ extern "C" {
     TB_API bool tb_opt_dead_expr_elim(TB_Function* f);
     TB_API bool tb_opt_dead_block_elim(TB_Function* f);
     TB_API bool tb_opt_fold(TB_Function* f);
+    TB_API bool tb_opt_refinement(TB_Function* f);
     TB_API bool tb_opt_load_elim(TB_Function* f);
     TB_API bool tb_opt_hoist_invariants(TB_Function* f);
-    TB_API bool tb_opt_inline(TB_Function* f);
     TB_API bool tb_opt_hoist_locals(TB_Function* f);
     TB_API bool tb_opt_canonicalize(TB_Function* f);
     TB_API bool tb_opt_deshort_circuit(TB_Function* f);

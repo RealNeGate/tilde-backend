@@ -389,6 +389,7 @@ TB_API bool tb_jit_import(TB_Module* m, const char* name, void* address) {
 }
 
 TB_API TB_External* tb_extern_create(TB_Module* m, const char* name) {
+    assert(name != NULL);
     int tid = get_local_thread_id();
 
     TB_External* e = pool_put(m->thread_info[tid].externals);
@@ -445,6 +446,17 @@ TB_TemporaryStorage* tb_tls_allocate() {
     TB_TemporaryStorage* store = (TB_TemporaryStorage*)tb_thread_storage;
     store->used = 0;
     return store;
+}
+
+TB_TemporaryStorage* tb_tls_steal() {
+    if (tb_thread_storage == NULL) {
+        tb_thread_storage = tb_platform_valloc(TB_TEMPORARY_STORAGE_SIZE);
+        if (tb_thread_storage == NULL) {
+            tb_panic("out of memory");
+        }
+    }
+
+    return (TB_TemporaryStorage*)tb_thread_storage;
 }
 
 bool tb_tls_can_fit(TB_TemporaryStorage* store, size_t size) {

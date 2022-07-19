@@ -27,25 +27,30 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
         }
     }
 
+    int number_of_sections = 3
+        + (m->tls_region_size ? 1 : 0)
+        + (debug_fmt != NULL ? debug_fmt->number_of_debug_sections(m) : 0);
+
     // mark each with a unique id
-    int unique_id_counter = 0;
+    size_t function_sym_start = (number_of_sections * 2);
+    size_t external_sym_start = function_sym_start + m->functions.compiled_count;
+
+    size_t unique_id_counter = 0;
     loop(i, m->max_threads) {
         pool_for(TB_External, e, m->thread_info[i].externals) {
-            int id = unique_id_counter++;
+            int id = external_sym_start + unique_id_counter;
             e->address = (void*) (uintptr_t) id;
+            unique_id_counter += 1;
         }
 
         pool_for(TB_Global, g, m->thread_info[i].globals) {
-            g->id = unique_id_counter++;
+            g->id = external_sym_start + unique_id_counter;
+            unique_id_counter += 1;
         }
     }
     string_table_cap += m->functions.compiled_count;
 
     char** string_table = tb_platform_heap_alloc(string_table_cap * sizeof(const char*));
-
-    int number_of_sections = 3
-        + (m->tls_region_size ? 1 : 0)
-        + (debug_fmt != NULL ? debug_fmt->number_of_debug_sections(m) : 0);
 
     COFF_FileHeader header = {
         .num_sections = number_of_sections,
@@ -102,8 +107,6 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
         text_section.raw_data_size += code_size;
     }
     func_layout[m->functions.count] = text_section.raw_data_size;
-
-    size_t function_sym_start = (number_of_sections * 2);
 
     TB_SectionGroup debug_sections = { 0 };
     COFF_SectionHeader* debug_section_headers = NULL;
@@ -317,7 +320,6 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
         }
     }
 
-    size_t extern_func_sym_start = function_sym_start + m->functions.compiled_count;
     loop(i, m->max_threads) {
         loop(j, dyn_array_length(m->thread_info[i].ecall_patches)) {
             TB_ExternFunctionPatch* p = &m->thread_info[i].ecall_patches[j];
@@ -328,10 +330,11 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 
             size_t actual_pos = func_layout[p->source - m->functions.data] + code_gen->get_prologue_length(meta, stack_usage) + p->pos;
             int symbol_id = (uintptr_t) p->target->address;
+            assert(symbol_id != 0);
 
             fwrite(&(COFF_ImageReloc) {
                     .Type = IMAGE_REL_AMD64_REL32,
-                    .SymbolTableIndex = extern_func_sym_start + symbol_id,
+                    .SymbolTableIndex = symbol_id,
                     .VirtualAddress = actual_pos
                 }, sizeof(COFF_ImageReloc), 1, f
             );
@@ -350,9 +353,11 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
             const TB_Global* global = p->target;
 
             int symbol_id = global->id;
+            assert(symbol_id != 0);
+
             fwrite(&(COFF_ImageReloc) {
                     .Type = global->storage == TB_STORAGE_TLS ? IMAGE_REL_AMD64_SECREL : IMAGE_REL_AMD64_REL32,
-                    .SymbolTableIndex = extern_func_sym_start + symbol_id,
+                    .SymbolTableIndex = symbol_id,
                     .VirtualAddress = actual_pos
                 }, sizeof(COFF_ImageReloc), 1, f
             );
@@ -373,7 +378,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 
                         fwrite(&(COFF_ImageReloc) {
                                 .Type = IMAGE_REL_AMD64_ADDR64,
-                                .SymbolTableIndex = extern_func_sym_start + g->id,
+                                .SymbolTableIndex = g->id,
                                 .VirtualAddress = actual_pos
                             }, sizeof(COFF_ImageReloc), 1, f);
                         break;
@@ -385,7 +390,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
 
                         fwrite(&(COFF_ImageReloc) {
                                 .Type = IMAGE_REL_AMD64_ADDR64,
-                                .SymbolTableIndex = extern_func_sym_start + id,
+                                .SymbolTableIndex = id,
                                 .VirtualAddress = actual_pos
                             }, sizeof(COFF_ImageReloc), 1, f);
                         break;
@@ -520,6 +525,8 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
         fwrite(&aux, sizeof(aux), 1, f);
         section_num += 1;
     }
+
+    assert(ftell(f) == header.symbol_table + (sizeof(COFF_Symbol) * number_of_sections * 2));
 
     loop(i, m->functions.count) {
         TB_FunctionOutput* out_f = m->functions.data[i].output;

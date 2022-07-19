@@ -256,6 +256,10 @@ bool tb_opt_mem2reg(TB_Function* f) {
                     OPTIMIZER_LOG(i, "promoting to IR register");
                     break;
                 }
+                case COHERENCY_UNINITIALIZED: {
+                    OPTIMIZER_LOG(i, "could not mem2reg a stack slot (uninitialized)");
+                    break;
+                }
                 case COHERENCY_VOLATILE: {
                     OPTIMIZER_LOG(i, "could not mem2reg a stack slot (volatile load/store)");
                     break;

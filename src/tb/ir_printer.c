@@ -91,6 +91,19 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
             callback(user_data, "r%u + r%u*%d", n->array_access.base, n->array_access.index, n->array_access.stride);
             break;
         }
+        case TB_ATOMIC_CMPXCHG:
+        tb_assume(f->nodes[n->next].type == TB_ATOMIC_CMPXCHG2);
+        callback(user_data, "  r%-8u = atomic.cmpxchg.", i);
+        tb_print_type(dt, callback, user_data);
+        callback(user_data, " %u, r%u, r%u", n->atomic.addr, n->atomic.src, f->nodes[n->next].atomic.src);
+        break;
+        case TB_ATOMIC_CMPXCHG2: break;
+        case TB_ATOMIC_LOAD: {
+            callback(user_data, "  r%-8u = atomic.load.", i);
+            tb_print_type(dt, callback, user_data);
+            callback(user_data, " r%u, r%u", n->atomic.addr, n->atomic.src);
+            break;
+        }
         case TB_ATOMIC_XCHG:
         case TB_ATOMIC_ADD:
         case TB_ATOMIC_SUB:
@@ -108,7 +121,7 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
                 default: tb_todo();
             }
             tb_print_type(dt, callback, user_data);
-            callback(user_data, "r%u, r%u", n->atomic.addr, n->atomic.src);
+            callback(user_data, " r%u, r%u", n->atomic.addr, n->atomic.src);
             break;
         }
         case TB_AND:
@@ -396,6 +409,22 @@ TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* u
     callback(user_data, "%s():\n", f->name);
 
     TB_FOR_EACH_NODE(n, f) {
+        tb_print_node(f, callback, user_data, n);
+        callback(user_data, "\n");
+    }
+}
+
+TB_API void tb_function_print2(TB_Function* f, TB_PrintCallback callback, void* user_data, bool display_nops) {
+    if (display_nops) {
+        tb_function_print(f, callback, user_data);
+        return;
+    }
+
+    callback(user_data, "%s():\n", f->name);
+
+    TB_FOR_EACH_NODE(n, f) {
+        if (n->type == TB_NULL) continue;
+
         tb_print_node(f, callback, user_data, n);
         callback(user_data, "\n");
     }

@@ -40,9 +40,9 @@ inline static void* pool__alloc_slot(void** ptr, size_t type_size) {
         if (hdr->allocated[i] == UINT64_MAX) continue;
 
         // find some unallocated slot
-        int index = tb_ffs(~hdr->allocated[i]) - 1;
+        int index = tb_ffs64(~hdr->allocated[i]) - 1;
 
-        hdr->allocated[i] |= (1u << index);
+        hdr->allocated[i] |= (1ull << index);
         hdr->used += 1;
 
         return &hdr->data[((i * 64) + index) * type_size];
@@ -56,11 +56,10 @@ inline static size_t pool_popcount(void* ptr) {
     size_t c = 0;
 
     for (PoolHeader* hdr = ((PoolHeader*) ptr) - 1; hdr != NULL; hdr = hdr->next) {
-        for (size_t i = 0; i < MAX_SLOTS; i++) {
-            c += tb_popcount(hdr->allocated[i]);
-        }
+        c += tb_popcount64(hdr->used);
     }
 
+    printf("Popcount: %zu\n", c);
     return c;
 }
 
@@ -70,7 +69,7 @@ inline static size_t pool_popcount(void* ptr) {
 pool__alloc_slot((void**) &(p), sizeof(*(p)))
 
 #define pool_for(T, it, p) \
-for (PoolHeader *p_ = (PoolHeader*)(p), *hdr_ = p_ ? (p_ - 1) : NULL; hdr_ != NULL; hdr_ = hdr_->next) \
+for (PoolHeader *p_ = (PoolHeader*)(p), *hdr_ = p_ ? (p_ - 1) : NULL; hdr_; hdr_ = hdr_->next) \
 for (size_t a_ = 0; a_ < MAX_SLOTS; a_++) \
 if (hdr_->allocated[a_] != 0) \
 for (size_t b_ = 0; b_ < 64; b_++) \

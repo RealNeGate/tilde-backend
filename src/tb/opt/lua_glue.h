@@ -24,5 +24,34 @@ LJ_EXPORT TB_Node* tb__nodes(TB_Function* f) {
 }
 
 LJ_EXPORT void tb__print_func(TB_Function* f) {
-    tb_function_print(f, tb_default_print_callback, stdout);
+    tb_function_print2(f, tb_default_print_callback, stdout, false);
+}
+
+LJ_EXPORT bool tb__is_iconst(TB_Function* f, TB_Reg r, uint64_t imm) {
+    if (f->nodes[r].type == TB_INTEGER_CONST && f->nodes[r].integer.num_words == 1) {
+        return (f->nodes[r].integer.single_word == imm);
+    }
+
+    return false;
+}
+
+LJ_EXPORT bool tb__is_izero(TB_Function* f, TB_Reg r) {
+    TB_Node* n = &f->nodes[r];
+    while (n->type == TB_PASS) {
+        n = &f->nodes[n->pass.value];
+    }
+
+	if (n->type == TB_INTEGER_CONST) {
+		if (n->integer.num_words == 1) {
+			if (n->integer.single_word == 0) {
+				return true;
+			}
+		} else {
+			if (BigInt_is_zero(n->integer.num_words, n->integer.words)) {
+				return true;
+			}
+		}
+	}
+
+	return false;
 }

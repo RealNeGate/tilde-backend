@@ -12,8 +12,17 @@ inline static int tb_ffs(uint32_t x) {
     return _BitScanForward(&index, x) ? 1 + index : 0;
 }
 
+inline static int tb_ffs64(uint64_t x) {
+    unsigned long index;
+    return _BitScanForward64(&index, x) ? 1 + index : 0;
+}
+
 inline static int tb_popcount(uint32_t x) {
     return __popcnt(x);
+}
+
+inline static int tb_popcount64(uint64_t x) {
+    return __popcnt64(x);
 }
 
 inline static uint64_t tb_next_pow2(uint64_t x) {
@@ -43,8 +52,16 @@ inline static int tb_ffs(uint32_t x) {
     return __builtin_ffs(x);
 }
 
+inline static int tb_ffs64(uint64_t x) {
+    return __builtin_ffsll(x);
+}
+
 inline static int tb_popcount(uint32_t x) {
     return __builtin_popcount(x);
+}
+
+inline static int tb_popcount64(uint64_t x) {
+    return __builtin_popcountll(x);
 }
 
 inline static uint64_t tb_next_pow2(uint64_t x) {

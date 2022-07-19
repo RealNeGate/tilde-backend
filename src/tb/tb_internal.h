@@ -100,6 +100,7 @@ case TB_LINE_INFO:                                                              
 case TB_FUNC_ADDRESS:                                                                 \
 case TB_EXTERN_ADDRESS:                                                               \
 case TB_GLOBAL_ADDRESS:                                                               \
+case TB_UNREACHABLE: break;                                                           \
 case TB_DEBUGBREAK: break;                                                            \
 case TB_LABEL: macro(n->label.terminator); break;                                     \
 case TB_INITIALIZE: macro(n->init.addr); break;                                       \
@@ -117,6 +118,9 @@ case TB_INT2FLOAT:                                                              
 case TB_FLOAT2INT:                                                                    \
 case TB_TRUNCATE:                                                                     \
 case TB_BITCAST: macro(n->unary.src); break;                                          \
+case TB_ATOMIC_CMPXCHG: macro(n->atomic.addr); macro(n->atomic.src); break;           \
+case TB_ATOMIC_CMPXCHG2: macro(n->atomic.src); break;                                 \
+case TB_ATOMIC_LOAD:                                                                  \
 case TB_ATOMIC_XCHG:                                                                  \
 case TB_ATOMIC_ADD:                                                                   \
 case TB_ATOMIC_SUB:                                                                   \
@@ -581,7 +585,7 @@ for (size_t iterator = (start), end__ = (count); iterator < end__; ++iterator)
 for (size_t iterator = (count); iterator--;)
 
 // sometimes you just gotta do it to em'
-// imagine i++ but like i++y or something idk
+// imagine i++ but like i++y (more like ((i += y) - y)) or something idk
 inline static size_t tb_post_inc(size_t* a, size_t b) {
     size_t old = *a;
     *a = old + b;
@@ -589,6 +593,9 @@ inline static size_t tb_post_inc(size_t* a, size_t b) {
 }
 
 bool tb_validate(TB_Function* f);
+
+// NOTE(NeGate): if you steal it you should restore the used amount back to what it was before
+TB_TemporaryStorage* tb_tls_steal();
 
 TB_TemporaryStorage* tb_tls_allocate();
 void* tb_tls_push(TB_TemporaryStorage* store, size_t size);
@@ -698,7 +705,6 @@ inline static bool tb_next_biggest(int* result, int v, size_t n, const int* arr)
 // NOTE(NeGate): clean this up
 #if 1
 #define OPTIMIZER_LOG(at, ...) ((void) (at))
-#define LOGGING_OPTS 0
 #else
 #define OPTIMIZER_LOG(at, ...)                 \
 do {                                           \
@@ -706,7 +712,6 @@ do {                                           \
     printf(__VA_ARGS__);                       \
     printf(" (part of %s)\n", __FUNCTION__);   \
 } while (0)
-#define LOGGING_OPTS 1
 #endif
 
 #define CALL_NODE_PARAM_COUNT(n) (n->call.param_end - n->call.param_start)
@@ -724,7 +729,10 @@ uint64_t tb_fold_div(TB_DataType dt, uint64_t a, uint64_t b);
 ////////////////////////////////
 void tb_function_calculate_use_count(const TB_Function* f, int use_count[]);
 int tb_function_find_uses_of_node(const TB_Function* f, TB_Reg def, TB_Reg uses[]);
+
+// if tls is NULL then the return value is heap allocated
 TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count);
+TB_Predeccesors tb_get_temp_predeccesors(TB_Function* f, TB_TemporaryStorage* tls);
 
 uint32_t tb_emit_const_patch(TB_Module* m, TB_Function* source, size_t pos, const void* ptr,size_t len, size_t local_thread_id);
 void tb_emit_global_patch(TB_Module* m, TB_Function* source, size_t pos, const TB_Global* target, size_t local_thread_id);

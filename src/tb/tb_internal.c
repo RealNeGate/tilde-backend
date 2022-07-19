@@ -74,10 +74,13 @@ TB_Reg tb_insert_copy_ops(TB_Function* f, const TB_Reg* params, TB_Reg at, const
     return 0;
 }
 
-#define APPEND_TO_REG_LIST(x) (*((TB_Reg*)tb_tls_push(tls, sizeof(TB_Reg))) = id, count += 1);
+#define APPEND_TO_REG_LIST(x) (count >= f->label_count ? abort() : (void)0, preds[count++] = id)
 TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count) {
     size_t count = 0;
-    TB_Label* preds = tb_tls_push(tls, 0);
+
+    TB_Label* preds;
+    if (tls) preds = tb_tls_push(tls, f->label_count * sizeof(TB_Label));
+    else preds = tb_platform_heap_alloc(f->label_count * sizeof(TB_Label));
 
     TB_Node* nodes = f->nodes;
     TB_Reg label = 1;
@@ -129,6 +132,10 @@ TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStora
         // Skip until we reach a label again
         while (label && nodes[label].type != TB_LABEL) label = nodes[label].next;
     }
+
+    // trim the fat
+    if (tls) tb_tls_restore(tls, &preds[count]);
+    else preds = tb_platform_heap_realloc(preds, count * sizeof(TB_Label));
 
     *dst_count = count;
     return preds;

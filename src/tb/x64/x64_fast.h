@@ -561,12 +561,15 @@ static void fast_mask_out(X64_FastCtx* restrict ctx, TB_Function* f, const Legal
     }
 }
 
-static void fast_memset_const_size(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg addr, const Val* src, size_t sz) {
+// you can read, we at least need the src to be either a GPR or i32
+static void fast_memset_const_size(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg addr, const Val* src, size_t sz, bool allow_8byte_set) {
     Val dst = fast_eval_address(ctx, f, addr);
     assert(is_value_mem(&dst));
 
-    for (; sz >= 8; sz -= 8, dst.mem.disp += 8) {
-        INST2(MOV, &dst, src, TB_TYPE_I64);
+    if (allow_8byte_set) {
+        for (; sz >= 8; sz -= 8, dst.mem.disp += 8) {
+            INST2(MOV, &dst, src, TB_TYPE_I64);
+        }
     }
 
     for (; sz >= 4; sz -= 4, dst.mem.disp += 4) {
@@ -584,6 +587,7 @@ static void fast_memset_const_size(X64_FastCtx* restrict ctx, TB_Function* f, TB
 
 static Val fast_get_tile_mapping(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r) {
     assert(ctx->tile.mapping == r);
+    printf("TILE USED UP! r%u\n", r);
     ctx->tile.mapping = 0;
 
     return (Val) { VAL_MEM,
@@ -722,6 +726,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
                 //printf("%s:r%d: failed to tile value :(\n", f->name, ctx->tile.mapping);
 
+                printf("TILE FAILURE! r%u\n", ctx->tile.mapping);
                 ctx->tile.mapping = 0;
             }
         }
@@ -894,9 +899,17 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 // because of the codegen quality...
                 uint32_t stride = n->array_access.stride;
 
-                Val val = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, r));
-                fast_folded_op(ctx, f, MOV, &val, n->array_access.index);
-                fast_kill_reg(ctx, f, n->array_access.index);
+                Val val;
+                bool recycled_index = false;
+                if (ctx->use_count[n->array_access.index] == 1 &&
+                    ctx->addresses[n->array_access.index].type == ADDRESS_DESC_GPR) {
+                    val = fast_eval(ctx, f, n->array_access.index);
+                    recycled_index = true;
+                } else {
+                    val = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, r));
+                    fast_folded_op(ctx, f, MOV, &val, n->array_access.index);
+                    fast_kill_reg(ctx, f, n->array_access.index);
+                }
 
                 // if it's an LEA index*stride
                 // then stride > 0, if not it's free
@@ -937,29 +950,40 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
                 // Resolve base (if it's not already in a register)
                 if (stride_as_shift) {
-                    // TODO(NeGate): Maybe i should couple these bad boys
-                    Val temp = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
-                    fast_folded_op(ctx, f, MOV, &temp, n->array_access.base);
+                    if (ctx->use_count[n->array_access.base] == 1 &&
+                        ctx->addresses[n->array_access.base].type == ADDRESS_DESC_GPR) {
+                        Val src = fast_eval(ctx, f, n->array_access.base);
 
-                    #if 1
-                    assert(ctx->tile.mapping == 0);
+                        assert(ctx->tile.mapping == 0);
+                        ctx->tile.mapping = r;
+                        ctx->tile.base    = src.gpr;
+                        ctx->tile.index   = index_reg;
+                        ctx->tile.scale   = stride_as_shift;
+                        ctx->tile.disp    = 0;
+                    } else {
+                        Val temp = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+                        fast_folded_op(ctx, f, MOV, &temp, n->array_access.base);
 
-                    ctx->tile.mapping = r;
-                    ctx->tile.base    = temp.gpr;
-                    ctx->tile.index   = index_reg;
-                    ctx->tile.scale   = stride_as_shift;
-                    ctx->tile.disp    = 0;
-                    #else
-                    Val arith = val_base_index(TB_TYPE_PTR, temp.gpr, index_reg, stride_as_shift);
-                    INST2(LEA, &val, &arith, TB_TYPE_PTR);
-                    #endif
-                    fast_kill_temp_gpr(ctx, f, temp.gpr);
+                        assert(ctx->tile.mapping == 0);
+                        ctx->tile.mapping = r;
+                        ctx->tile.base    = temp.gpr;
+                        ctx->tile.index   = index_reg;
+                        ctx->tile.scale   = stride_as_shift;
+                        ctx->tile.disp    = 0;
+
+                        fast_kill_temp_gpr(ctx, f, temp.gpr);
+                    }
                 } else {
                     fast_folded_op(ctx, f, ADD, &val, n->array_access.base);
                 }
 
                 assert(val.type == VAL_GPR);
                 fast_def_gpr(ctx, f, r, val.gpr, TB_TYPE_PTR);
+
+                if (recycled_index) {
+                    fast_kill_reg(ctx, f, n->array_access.index);
+                }
+
                 fast_kill_reg(ctx, f, n->array_access.base);
                 break;
             }
@@ -1019,7 +1043,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
                 assert(i->obj_count == 0);
                 Val src = val_imm(TB_TYPE_I32, 0);
-                fast_memset_const_size(ctx, f, addr, &src, i->size);
+                fast_memset_const_size(ctx, f, addr, &src, i->size, true);
 
                 fast_kill_reg(ctx, f, addr);
                 break;
@@ -1033,16 +1057,41 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 if (f->nodes[size_reg].type == TB_INTEGER_CONST &&
                     f->nodes[size_reg].integer.num_words == 1) {
                     int64_t sz = f->nodes[size_reg].integer.single_word;
-                    assert(sz <= 0 && "Cannot memset on negative numbers or zero");
+                    assert(sz > 0 && "Cannot memset on negative numbers or zero");
 
                     {
+                        LegalInt l = legalize_int(dt);
                         Val src = val_gpr(dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
-                        fast_folded_op(ctx, f, MOV, &src, val_reg);
 
-                        fast_memset_const_size(ctx, f, dst_reg, &src, sz);
+                        // convert byte into pattern
+                        //  XY
+                        //  vv
+                        //  XYXYXYXY
+                        INST2(XOR, &src, &src, TB_TYPE_I32);
+
+                        if (!tb_node_is_constant_zero(f, val_reg)) {
+                            fast_folded_op(ctx, f, MOV, &src, val_reg);
+                            if (l.mask) fast_mask_out(ctx, f, l, &src);
+
+                            // imul dst, index, 0x10101010
+                            *ctx->header.out++ = rex(true, src.gpr, src.gpr, 0);
+                            *ctx->header.out++ = 0x69;
+                            *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, src.gpr, src.gpr);
+
+                            *((uint32_t*)ctx->header.out) = 0x10101010;
+                            ctx->header.out += 4;
+
+                            fast_memset_const_size(ctx, f, dst_reg, &src, sz, false);
+                        } else {
+                            fast_memset_const_size(ctx, f, dst_reg, &src, sz, true);
+                        }
+
                         fast_kill_temp_gpr(ctx, f, src.gpr);
                     }
 
+                    assert(dst_reg != val_reg);
+                    assert(dst_reg != size_reg);
+                    assert(val_reg != size_reg);
                     fast_kill_reg(ctx, f, dst_reg);
                     fast_kill_reg(ctx, f, val_reg);
                     fast_kill_reg(ctx, f, size_reg);
@@ -1351,8 +1400,6 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     f->nodes[n->next].type == TB_IF &&
                     f->nodes[n->next].if_.cond == r;
 
-                Val temp = val_gpr(cmp_dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
-
                 Val val = { 0 };
                 if (!returns_flags) {
                     val = val_gpr(TB_TYPE_I8, fast_alloc_gpr(ctx, f, r));
@@ -1370,8 +1417,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 if (TB_IS_FLOAT_TYPE(cmp_dt)) {
                     Val compare_tmp = val_xmm(cmp_dt, fast_alloc_xmm(ctx, f, TB_TEMP_REG));
 
-                    fast_folded_op_sse(ctx, f, FP_MOV, &temp, n->i_arith.a);
-                    fast_folded_op_sse(ctx, f, FP_UCOMI, &temp, n->i_arith.b);
+                    fast_folded_op_sse(ctx, f, FP_MOV, &compare_tmp, n->i_arith.a);
+                    fast_folded_op_sse(ctx, f, FP_UCOMI, &compare_tmp, n->i_arith.b);
 
                     switch (reg_type) {
                         case TB_CMP_EQ:  cc = E; break;
@@ -1385,13 +1432,24 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 } else {
                     cmp_dt = legalize_int(cmp_dt).dt;
 
-                    bool invert = (f->nodes[n->i_arith.a].type == TB_INTEGER_CONST);
-                    if (invert) {
-                        fast_folded_op(ctx, f, MOV, &temp, n->i_arith.b);
-                        fast_folded_op(ctx, f, CMP, &temp, n->i_arith.a);
+                    bool invert = false;
+                    TB_Reg lhs = n->i_arith.a, rhs = n->i_arith.b;
+                    if (f->nodes[n->i_arith.a].type == TB_INTEGER_CONST) {
+                        tb_swap(TB_Reg, lhs, rhs);
+                        invert = true;
+                    }
+
+                    if (ctx->use_count[lhs] == 1 &&
+                        ctx->addresses[lhs].type == ADDRESS_DESC_GPR) {
+                        Val val = val_gpr(cmp_dt, ctx->addresses[lhs].gpr);
+                        fast_folded_op(ctx, f, CMP, &val, rhs);
                     } else {
-                        fast_folded_op(ctx, f, MOV, &temp, n->i_arith.a);
-                        fast_folded_op(ctx, f, CMP, &temp, n->i_arith.b);
+                        Val temp = val_gpr(cmp_dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+
+                        fast_folded_op(ctx, f, MOV, &temp, lhs);
+                        fast_folded_op(ctx, f, CMP, &temp, rhs);
+
+                        fast_kill_temp_gpr(ctx, f, temp.gpr);
                     }
 
                     switch (reg_type) {
@@ -1418,7 +1476,6 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     fast_def_flags(ctx, f, r, cc, TB_TYPE_BOOL);
                 }
 
-                fast_kill_temp_gpr(ctx, f, temp.gpr);
                 if (n->cmp.a == n->cmp.b) {
                     fast_kill_reg(ctx, f, n->cmp.a);
                 } else {
@@ -1696,10 +1753,6 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 TB_DataType src_dt = f->nodes[n->unary.src].dt;
                 bool sign_ext = (reg_type == TB_SIGN_EXT);
 
-                GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
-                fast_def_gpr(ctx, f, r, dst_gpr, dt);
-                Val val = val_gpr(dt, dst_gpr);
-
                 // Figure out if we can do it trivially
                 int bits;
                 if (!TB_NEXT_BIGGEST(&bits, dt.data, 8, 16, 32, 64)) {
@@ -1715,32 +1768,46 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 LegalInt l = legalize_int(src_dt);
                 int bits_in_type = l.dt.type == TB_PTR ? 64 : l.dt.data;
 
-                if (bits_in_type == 64) {
-                    op = MOV;
-                } else if (bits_in_type == 32) {
-                    op = (sign_ext ? MOVSXD : MOV);
-                } else if (bits_in_type == 16) {
-                    op = sign_ext ? MOVSXW : MOVZXW;
-                } else if (bits_in_type == 8) {
-                    op = (sign_ext ? MOVSXB : MOVZXB);
-                } else if (bits_in_type == 1) {
-                    op = MOVZXB;
+                if (reg_type == TB_ZERO_EXT && bits_in_type >= 32 &&
+                    ctx->use_count[n->unary.src] == 1 &&
+                    ctx->addresses[n->unary.src].type == ADDRESS_DESC_GPR) {
+                    Val src = fast_eval(ctx, f, n->unary.src);
+
+                    // move ownership
+                    ctx->gpr_allocator[src.gpr] = r;
+                    fast_def_gpr(ctx, f, r, src.gpr, dt);
                 } else {
-                    tb_todo();
+                    if (bits_in_type == 64) {
+                        op = MOV;
+                    } else if (bits_in_type == 32) {
+                        op = (sign_ext ? MOVSXD : MOV);
+                    } else if (bits_in_type == 16) {
+                        op = sign_ext ? MOVSXW : MOVZXW;
+                    } else if (bits_in_type == 8) {
+                        op = (sign_ext ? MOVSXB : MOVZXB);
+                    } else if (bits_in_type == 1) {
+                        op = MOVZXB;
+                    } else {
+                        tb_todo();
+                    }
+
+                    GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
+                    fast_def_gpr(ctx, f, r, dst_gpr, dt);
+                    Val val = val_gpr(dt, dst_gpr);
+
+                    TB_Reg src = n->unary.src;
+                    if (f->nodes[src].type == TB_LOAD &&
+                        f->nodes[src].load.address == ctx->tile.mapping) {
+                        Val addr = fast_get_tile_mapping(ctx, f, ctx->tile.mapping);
+
+                        INST2(op, &val, &addr, dt);
+                    } else {
+                        fast_folded_op(ctx, f, op, &val, n->unary.src);
+                    }
+
+                    if (l.mask) fast_mask_out(ctx, f, l, &val);
+                    fast_kill_reg(ctx, f, n->unary.src);
                 }
-
-                TB_Reg src = n->unary.src;
-                if (f->nodes[src].type == TB_LOAD &&
-                    f->nodes[src].load.address == ctx->tile.mapping) {
-                    Val addr = fast_get_tile_mapping(ctx, f, ctx->tile.mapping);
-
-                    INST2(op, &val, &addr, dt);
-                } else {
-                    fast_folded_op(ctx, f, op, &val, n->unary.src);
-                }
-
-                if (l.mask) fast_mask_out(ctx, f, l, &val);
-                fast_kill_reg(ctx, f, n->unary.src);
                 break;
             }
             case TB_FLOAT_EXT: {
@@ -1903,6 +1970,40 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 assert(0 && "Atomic flag clear not supported yet.");
                 break;
             }
+            case TB_ATOMIC_LOAD: {
+                Val addr;
+                if (ctx->tile.mapping == n->atomic.addr) {
+                    // if we can defer the LOAD into a SIGN_EXT that's kinda better
+                    if (f->nodes[n->next].type == TB_SIGN_EXT &&
+                        f->nodes[n->next].unary.src == r) {
+                        break;
+                    }
+                    addr = fast_get_tile_mapping(ctx, f, n->atomic.addr);
+                } else {
+                    addr = fast_eval_address(ctx, f, n->atomic.addr);
+                }
+
+                if (TB_IS_FLOAT_TYPE(dt) || dt.width) {
+                    Val dst = val_xmm(dt, fast_alloc_xmm(ctx, f, r));
+                    fast_def_xmm(ctx, f, r, dst.xmm, dt);
+
+                    uint8_t flags = legalize_float(dt);
+                    INST2SSE(FP_MOV, &dst, &addr, flags);
+                } else {
+                    LegalInt l = legalize_int(dt);
+
+                    GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
+                    fast_def_gpr(ctx, f, r, dst_gpr, l.dt);
+
+                    Val dst = val_gpr(dt, dst_gpr);
+                    INST2(MOV, &dst, &addr, l.dt);
+
+                    if (l.mask) fast_mask_out(ctx, f, l, &dst);
+                }
+
+                fast_kill_reg(ctx, f, n->atomic.addr);
+                break;
+            }
             case TB_ATOMIC_XCHG:
             case TB_ATOMIC_ADD:
             case TB_ATOMIC_SUB:
@@ -1972,7 +2073,69 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 break;
             }
             case TB_ATOMIC_CMPXCHG: {
-                assert(0 && "Atomic cmpxchg not supported yet.");
+                tb_assume(f->nodes[n->next].type == TB_ATOMIC_CMPXCHG2);
+                if (ctx->use_count[n->next] != 0) {
+                    tb_function_print(f, tb_default_print_callback, stdout);
+                }
+                tb_assume(ctx->use_count[n->next] == 0);
+
+                // we'll be using RAX for CMPXCHG crap
+                fast_evict_gpr(ctx, f, RAX);
+                ctx->gpr_allocator[RAX] = TB_TEMP_REG;
+                ctx->gpr_available -= 1;
+
+                TB_Reg expected = n->atomic.src;
+                TB_Reg desired  = f->nodes[n->next].atomic.src;
+
+                Val addr;
+                if (ctx->tile.mapping == n->atomic.addr) {
+                    addr = fast_get_tile_mapping(ctx, f, n->atomic.addr);
+                } else {
+                    addr = fast_eval_address(ctx, f, n->atomic.addr);
+                }
+
+                LegalInt l = legalize_int(dt);
+                int bits_in_type = l.dt.type == TB_PTR ? 64 : l.dt.data;
+
+                // mov tmpgpr, desired
+                Val desired_val = val_gpr(l.dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+                fast_folded_op(ctx, f, MOV, &desired_val, desired);
+
+                // mov RAX, expected
+                Val rax = val_gpr(l.dt, RAX);
+                fast_folded_op(ctx, f, MOV, &rax, expected);
+
+                // LOCK CMPXCHG
+                bool is_64bit = (bits_in_type > 32 || reg_type == TB_FLOAT2UINT);
+
+                assert(is_value_mem(&addr));
+                if (addr.type == VAL_MEM) {
+                    uint8_t rex_index = addr.mem.index != GPR_NONE ? addr.mem.index : 0;
+
+                    if (desired_val.gpr >= 8 && addr.mem.base >= 8 && rex_index >= 8) {
+                        *ctx->header.out++ = rex(is_64bit, desired_val.gpr, addr.mem.base, rex_index);
+                    }
+                } else {
+                    if (desired_val.gpr >= 8) {
+                        *ctx->header.out++ = rex(is_64bit, desired_val.gpr, 0, 0);
+                    }
+                }
+                *ctx->header.out++ = 0xF0;
+                *ctx->header.out++ = 0xB0 | (bits_in_type <= 8 ? 1 : 0);
+                emit_memory_operand(&ctx->header, desired_val.gpr, &addr);
+
+                if (expected == desired) {
+                    fast_kill_reg(ctx, f, expected);
+                } else {
+                    fast_kill_reg(ctx, f, expected);
+                    fast_kill_reg(ctx, f, desired);
+                }
+
+                fast_def_gpr(ctx, f, r, RAX, l.dt);
+
+                // the old value is in RAX
+                ctx->gpr_allocator[RAX] = r;
+                ctx->gpr_available += 1;
                 break;
             }
             case TB_ATOMIC_CMPXCHG2: break;
@@ -2005,6 +2168,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
         Val dst = val_gpr(TB_TYPE_PTR, dst_gpr);
         INST2(LEA, &dst, &src, TB_TYPE_PTR);
 
+        printf("TILE FAILURE BECAUSE BASIC BLOCK! r%u\n", ctx->tile.mapping);
         ctx->tile.mapping = 0;
     }
 }
@@ -2292,11 +2456,11 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         }
     }
 
-    #if 0
-    if (strcmp(f->name, "stbi__zbuild_huffman") == 0) {
-        tb_function_print(f, tb_default_print_callback, stdout);
-        printf("\n\n\n");
-    }
+    #if 1
+    //if (strcmp(f->name, "stbi__zbuild_huffman") == 0) {
+    tb_function_print(f, tb_default_print_callback, stdout);
+    printf("\n\n\n");
+    //}
     #endif
 
     // Evaluate basic blocks
@@ -2327,7 +2491,8 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
             // Evaluate return value
             if (end->ret.value) {
                 if (dt.type == TB_FLOAT) {
-                    tb_todo();
+                    Val dst = val_xmm(dt, XMM0);
+                    fast_folded_op_sse(ctx, f, FP_MOV, &dst, end->ret.value);
                 } else if ((dt.type == TB_INT && dt.data > 0) || dt.type == TB_PTR) {
                     Val dst = val_gpr(dt, RAX);
                     fast_folded_op(ctx, f, MOV, &dst, end->ret.value);
@@ -2381,6 +2546,9 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
             fast_eval_terminator_phis(ctx, f, bb, bb_end, bb_end, next_terminator);
 
             fast_evict_everything(ctx, f);
+        } else if (end->type == TB_UNREACHABLE) {
+            *ctx->header.out++ = 0x0F;
+            *ctx->header.out++ = 0x0B;
         } else if (end->type == TB_GOTO) {
             // save out PHI nodes
             TB_Label target_label = end->goto_.label;

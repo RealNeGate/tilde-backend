@@ -1,29 +1,17 @@
 local ffi = require 'ffi'
 local bitop = require 'bit'
+local C = ffi.C
 
 ffi.cdef[[
 typedef int TB_Reg;
 typedef int TB_Label;
 
 typedef enum {
-    // No overflow will assume the value does not
-    // overflow and if it does this can be considered
-    // undefined behavior with unknown consequences.
-    // no signed wrap
     TB_ASSUME_NSW,
-    // no unsigned wrap
     TB_ASSUME_NUW,
-
-    // Wrapping will allow the integer to safely wrap.
     TB_CAN_WRAP,
-
-    // Overflow check will throw an error if the result
-    // cannot be represented in the resulting type.
     TB_SIGNED_TRAP_ON_WRAP,
     TB_UNSIGNED_TRAP_ON_WRAP,
-
-    // Saturated arithmatic will clamp the results in the
-    // event of overflow/underflow.
     TB_SATURATED_UNSIGNED,
     TB_SATURATED_SIGNED
 } TB_ArithmaticBehavior;
@@ -42,14 +30,8 @@ typedef enum TB_MemoryOrder {
 } TB_MemoryOrder;
 
 typedef enum TB_DataTypeEnum {
-    // Integers, note void is an i0 and bool is an i1
-    //   i(0-2047)
     TB_INT,
-    // Floating point numbers
-    //   f{32,64}
     TB_FLOAT,
-    // Pointers
-    //   ptr(0-2047)
     TB_PTR,
 } TB_DataTypeEnum;
 
@@ -405,18 +387,20 @@ TB_NodeRef tb__first_node(TB_Function* f);
 TB_NodeRef tb__next_node(TB_NodeRef r);
 TB_Node* tb__nodes(TB_Function* f);
 void tb__print_func(TB_Function* f);
+bool tb__is_iconst(TB_Function* f, TB_Reg r, uint64_t imm);
+bool tb__is_izero(TB_Function* f, TB_Reg r);
 
 ]]
 
 tb = {}
 
 function tb.all_nodes_iter(f)
-	local node = ffi.C.tb__first_node(f)
+	local node = C.tb__first_node(f)
 
 	return function ()
 		if node.reg ~= 0 then
 			local old = node
-			node = ffi.C.tb__next_node(node)
+			node = C.tb__next_node(node)
 			return old
 		else
 			return nil
@@ -425,16 +409,48 @@ function tb.all_nodes_iter(f)
 end
 
 -- node type checking
-function tb.is_iadd(n) return ffi.C.tb__nodes(n.func)[n.reg] == TB_ADD end
-function tb.is_isub(n) return ffi.C.tb__nodes(n.func)[n.reg] == TB_SUB end
-function tb.is_imul(n) return ffi.C.tb__nodes(n.func)[n.reg] == TB_MUL end
+function tb.is_iadd(n) return C.tb__nodes(n.func)[n.reg].type == C.TB_ADD end
+function tb.is_isub(n) return C.tb__nodes(n.func)[n.reg].type == C.TB_SUB end
+function tb.is_imul(n) return C.tb__nodes(n.func)[n.reg].type == C.TB_MUL end
+function tb.is_izero(n) return C.tb__is_izero(n.func, n.reg) end
+function tb.is_iconst(n, imm) return C.tb__is_iconst(n.func, n.reg, imm) end
+
+-- node categories
+function tb.is_idiv(n)
+	local ty = C.tb__nodes(n.func)[n.reg].type
+	return ty == C.TB_SDIV or ty == C.TB_UDIV
+end
 
 function tb.is_int_binop(n)
-	local ty = ffi.C.tb__nodes(n.func)[n.reg].type
-	return ty >= ffi.C.TB_AND and ty <= ffi.C.TB_SMOD
+	local ty = C.tb__nodes(n.func)[n.reg].type
+	return ty >= C.TB_AND and ty <= C.TB_SMOD
+end
+
+-- node accessors
+-- this one applies to integer, float and
+-- relational (comparisons) binary operators
+function tb.get_binops(n)
+	local nn = C.tb__nodes(n.func)[n.reg]
+	return { func=n.func, reg=nn.i_arith.a }, { func=n.func, reg=nn.i_arith.b }
+end
+
+-- setters
+function tb.set_pass(from, to)
+	print("PASS "..from.reg.." -> "..to.reg);
+	local r = C.tb__nodes(from.func)[from.reg]
+	r.type = C.TB_PASS
+	r.pass.value = to.reg
+end
+
+function tb.set_poison(n)
+	print("POISON "..n.reg);
+	C.tb__nodes(n.func)[n.reg].type = C.TB_POISON
+end
+
+function tb.kill(n)
+	C.tb__nodes(n.func)[n.reg].type = C.TB_NULL
 end
 
 function tb.print_func(f)
-	ffi.C.tb__print_func(f)
+	C.tb__print_func(f)
 end
-

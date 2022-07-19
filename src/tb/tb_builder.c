@@ -339,7 +339,11 @@ TB_API TB_Reg tb_inst_param_addr(TB_Function* f, int param_id) {
 }
 
 TB_API void tb_inst_unreachable(TB_Function* f) {
-	tb_make_reg(f, TB_UNREACHABLE, TB_TYPE_VOID);
+	TB_Reg r = tb_make_reg(f, TB_UNREACHABLE, TB_TYPE_VOID);
+
+    tb_assume(f->current_label);
+    f->nodes[f->current_label].label.terminator = r;
+    f->current_label = TB_NULL_REG;
 }
 
 TB_API void tb_inst_debugbreak(TB_Function* f) {
@@ -500,6 +504,8 @@ TB_API TB_Reg tb_inst_get_extern_address(TB_Function* f, const TB_External* targ
 }
 
 TB_API TB_Reg tb_inst_get_global_address(TB_Function* f, const TB_Global* target) {
+    assert(target != NULL);
+
 	TB_Reg r = tb_make_reg(f, TB_GLOBAL_ADDRESS, TB_TYPE_PTR);
     f->nodes[r].global = (struct TB_NodeGlobal) { target };
     return r;
@@ -681,6 +687,15 @@ TB_API TB_Reg tb_inst_atomic_clear(TB_Function* f, TB_Reg addr, TB_MemoryOrder o
     return r;
 }
 
+TB_API TB_Reg tb_inst_atomic_load(TB_Function* f, TB_Reg addr, TB_DataType dt, TB_MemoryOrder order) {
+    TB_Reg r = tb_make_reg(f, TB_ATOMIC_LOAD, dt);
+    f->nodes[r].atomic.addr = addr;
+    f->nodes[r].atomic.src = TB_NULL_REG;
+    f->nodes[r].atomic.order = order;
+    f->nodes[r].atomic.order2 = TB_MEM_ORDER_SEQ_CST;
+    return r;
+}
+
 TB_API TB_Reg tb_inst_atomic_xchg(TB_Function* f, TB_Reg addr, TB_Reg src, TB_MemoryOrder order) {
     TB_DataType dt = f->nodes[src].dt;
 
@@ -751,10 +766,10 @@ TB_API TB_CmpXchgResult tb_inst_atomic_cmpxchg(TB_Function* f, TB_Reg addr, TB_R
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes[desired].dt, f->nodes[expected].dt));
     TB_DataType dt = f->nodes[desired].dt;
 
-    TB_Reg r  = tb_make_reg(f, TB_ATOMIC_CMPXCHG, TB_TYPE_BOOL);
-    TB_Reg r2 = tb_make_reg(f, TB_ATOMIC_CMPXCHG2, dt);
+    TB_Reg r  = tb_make_reg(f, TB_ATOMIC_CMPXCHG, dt);
+    TB_Reg r2 = tb_make_reg(f, TB_ATOMIC_CMPXCHG2, TB_TYPE_BOOL);
 
-    tb_assume(r + 1 == r2);
+    tb_assume(f->nodes[r].next == r2);
     f->nodes[r].atomic.addr = addr;
     f->nodes[r].atomic.src = expected;
     f->nodes[r].atomic.order = succ;
@@ -764,7 +779,7 @@ TB_API TB_CmpXchgResult tb_inst_atomic_cmpxchg(TB_Function* f, TB_Reg addr, TB_R
     f->nodes[r2].atomic.src = desired;
     f->nodes[r2].atomic.order = succ;
     f->nodes[r2].atomic.order2 = fail;
-    return (TB_CmpXchgResult) { .success = r, .old_value = r2 };
+    return (TB_CmpXchgResult) { .success = r2, .old_value = r };
 }
 
 // TODO(NeGate): Maybe i should split the bitshift operations into a separate kind of

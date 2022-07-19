@@ -46,6 +46,7 @@ static const char* INPUT_FILES[] = {
     "src/tb/opt/deshort_circuit.c",
     "src/tb/opt/load_elim.c",
     "src/tb/opt/hoist_locals.c",
+    "src/tb/opt/refinement.c",
     "src/tb/opt/mem2reg.c",
     "src/tb/opt/strength_reduction.c",
 

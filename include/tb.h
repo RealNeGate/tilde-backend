@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -381,6 +382,7 @@ extern "C" {
     typedef struct TB_Module            TB_Module;
     typedef struct TB_External          TB_External;
     typedef struct TB_Global            TB_Global;
+    typedef struct TB_DebugType         TB_DebugType;
     typedef struct TB_Initializer       TB_Initializer;
     typedef struct TB_Function          TB_Function;
     typedef struct TB_AttribList        TB_AttribList;
@@ -845,6 +847,15 @@ extern "C" {
     // places an attribute on a function, note that there's no limit to how many
     // registers can share an attribute
     TB_API void tb_function_append_attrib(TB_Function* f, TB_Reg r, TB_AttributeID a);
+
+    ////////////////////////////////
+    // Function IR Generation
+    ////////////////////////////////
+    TB_API const TB_DebugType* tb_debug_get_void(TB_Module* m);
+    TB_API const TB_DebugType* tb_debug_get_integer(TB_Module* m, bool is_signed, int bits);
+    TB_API const TB_DebugType* tb_debug_get_float(TB_Module* m, TB_FloatFormat fmt);
+    TB_API const TB_DebugType* tb_debug_create_ptr(TB_Module* m, const TB_DebugType* base);
+    TB_API const TB_DebugType* tb_debug_create_array(TB_Module* m, const TB_DebugType* base, size_t count);
 
     ////////////////////////////////
     // Function IR Generation

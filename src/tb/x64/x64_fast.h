@@ -587,7 +587,7 @@ static void fast_memset_const_size(X64_FastCtx* restrict ctx, TB_Function* f, TB
 
 static Val fast_get_tile_mapping(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r) {
     assert(ctx->tile.mapping == r);
-    printf("TILE USED UP! r%u\n", r);
+    // printf("TILE USED UP! r%u\n", r);
     ctx->tile.mapping = 0;
 
     return (Val) { VAL_MEM,
@@ -724,9 +724,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 Val dst = val_gpr(TB_TYPE_PTR, dst_gpr);
                 INST2(LEA, &dst, &src, TB_TYPE_PTR);
 
-                //printf("%s:r%d: failed to tile value :(\n", f->name, ctx->tile.mapping);
-
-                printf("TILE FAILURE! r%u\n", ctx->tile.mapping);
+                // printf("%s:r%d: failed to tile value :(\n", f->name, ctx->tile.mapping);
+                // printf("TILE FAILURE! r%u\n", ctx->tile.mapping);
                 ctx->tile.mapping = 0;
             }
         }
@@ -978,12 +977,12 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 }
 
                 assert(val.type == VAL_GPR);
-                fast_def_gpr(ctx, f, r, val.gpr, TB_TYPE_PTR);
-
                 if (recycled_index) {
-                    fast_kill_reg(ctx, f, n->array_access.index);
+                    // move ownership
+                    ctx->gpr_allocator[val.gpr] = r;
                 }
 
+                fast_def_gpr(ctx, f, r, val.gpr, TB_TYPE_PTR);
                 fast_kill_reg(ctx, f, n->array_access.base);
                 break;
             }
@@ -2168,7 +2167,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
         Val dst = val_gpr(TB_TYPE_PTR, dst_gpr);
         INST2(LEA, &dst, &src, TB_TYPE_PTR);
 
-        printf("TILE FAILURE BECAUSE BASIC BLOCK! r%u\n", ctx->tile.mapping);
+        // printf("TILE FAILURE BECAUSE BASIC BLOCK! r%u\n", ctx->tile.mapping);
         ctx->tile.mapping = 0;
     }
 }
@@ -2457,10 +2456,10 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
     }
 
     #if 0
-    //if (strcmp(f->name, "stbi__zbuild_huffman") == 0) {
-    tb_function_print(f, tb_default_print_callback, stdout);
-    printf("\n\n\n");
-    //}
+    if (strcmp(f->name, "cuik_visit_top_level_threaded") == 0) {
+        tb_function_print(f, tb_default_print_callback, stdout);
+        printf("\n\n\n");
+    }
     #endif
 
     // Evaluate basic blocks

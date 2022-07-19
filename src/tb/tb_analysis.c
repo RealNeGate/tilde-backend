@@ -195,14 +195,14 @@ TB_API TB_LoopInfo tb_get_loop_info(TB_Function* f, TB_Predeccesors preds, TB_La
         }
 
         if (backedge) {
-            printf("L%d is a loop (backedge: L%d)\n    ", bb, backedge);
+            printf("L%zu is a loop (backedge: L%d)\n    ", bb, backedge);
 
             TB_Loop l = { .parent_loop = -1, .header = bb, .backedge = backedge };
             l.body = malloc(f->label_count * sizeof(TB_Label));
 
             loop(j, f->label_count) {
                 if (tb_is_dominated_by(doms, bb, j)) {
-                    printf("L%d ", j);
+                    printf("L%zu ", j);
 
                     l.body[l.body_count++] = j;
                 }

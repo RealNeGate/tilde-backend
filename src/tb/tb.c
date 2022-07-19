@@ -8,7 +8,6 @@
 
 static thread_local uint8_t* tb_thread_storage;
 static thread_local int tid;
-
 static tb_atomic_int total_tid;
 
 static const IDebugFormat* tb_find_debug_format(TB_Module* m) {
@@ -26,7 +25,7 @@ ICodeGen* tb__find_code_generator(TB_Module* m) {
     }
 }
 
-static int get_local_thread_id() {
+int tb__get_local_tid(void) {
     // the value it spits out is zero-based, but
     // the TIDs consider zero as a NULL space.
     if (tid == 0) {
@@ -101,7 +100,7 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f, TB_ISelMode ise
     ICodeGen* restrict codegen = tb__find_code_generator(m);
 
     // Machine code gen
-    int id = get_local_thread_id();
+    int id = tb__get_local_tid();
     assert(id < TB_MAX_THREADS);
 
     TB_CodeRegion* region = get_or_allocate_code_region(m, id);
@@ -343,7 +342,7 @@ TB_API void tb_initializer_add_extern(TB_Module* m, TB_Initializer* init, size_t
 }
 
 TB_API TB_Global* tb_global_create(TB_Module* m, const char* name, TB_StorageClass storage, TB_Linkage linkage) {
-    int tid = get_local_thread_id();
+    int tid = tb__get_local_tid();
 
     TB_Global* g = pool_put(m->thread_info[tid].globals);
     *g = (TB_Global){
@@ -390,7 +389,7 @@ TB_API bool tb_jit_import(TB_Module* m, const char* name, void* address) {
 
 TB_API TB_External* tb_extern_create(TB_Module* m, const char* name) {
     assert(name != NULL);
-    int tid = get_local_thread_id();
+    int tid = tb__get_local_tid();
 
     TB_External* e = pool_put(m->thread_info[tid].externals);
     *e = (TB_External){ .name = tb_platform_string_alloc(name) };

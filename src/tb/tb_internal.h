@@ -314,6 +314,28 @@ struct TB_Initializer {
     TB_InitObj objects[];
 };
 
+struct TB_DebugType {
+    enum {
+        TB_DEBUG_TYPE_VOID,
+
+        TB_DEBUG_TYPE_UINT,
+        TB_DEBUG_TYPE_INT,
+        TB_DEBUG_TYPE_FLOAT,
+
+        TB_DEBUG_TYPE_ARRAY,
+        TB_DEBUG_TYPE_POINTER,
+    } tag;
+    union {
+        int int_bits;
+        TB_FloatFormat float_fmt;
+        const TB_DebugType* ptr_to;
+        struct {
+            const TB_DebugType* base;
+            size_t count;
+        } array;
+    };
+};
+
 typedef struct TB_Line {
     TB_FileID file;
     int line;
@@ -422,6 +444,7 @@ struct TB_Module {
     uint64_t* prototypes_arena;
 
     alignas(64) struct {
+        Pool(TB_DebugType) debug_types;
         Pool(TB_Global) globals;
         Pool(TB_External) externals;
 
@@ -727,6 +750,10 @@ uint64_t tb_fold_div(TB_DataType dt, uint64_t a, uint64_t b);
 ////////////////////////////////
 // ANALYSIS
 ////////////////////////////////
+int tb__get_local_tid(void);
+
+// TODO(NeGate): refactor this stuff such that it starts with two underscores, it makes
+// it more clear that these are TB private
 void tb_function_calculate_use_count(const TB_Function* f, int use_count[]);
 int tb_function_find_uses_of_node(const TB_Function* f, TB_Reg def, TB_Reg uses[]);
 

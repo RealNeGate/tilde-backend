@@ -867,6 +867,10 @@ extern "C" {
     // this only allows for power of two vector types
     TB_API TB_DataType tb_vector_type(TB_DataTypeEnum type, int width);
 
+    TB_API TB_Reg tb_function_insert(TB_Function* f, TB_Reg r, const TB_Node n);
+    TB_API TB_Reg tb_function_set(TB_Function* f, TB_Reg r, const TB_Node n);
+    TB_API TB_Reg tb_function_append(TB_Function* f, const TB_Node n);
+
     TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* user_data);
     TB_API void tb_function_print2(TB_Function* f, TB_PrintCallback callback, void* user_data, bool display_nops);
     TB_API void tb_function_free(TB_Function* f);

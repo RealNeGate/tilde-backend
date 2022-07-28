@@ -119,6 +119,11 @@ static int codeview_number_of_debug_sections(TB_Module* m) {
     return 2;
 }
 
+static void align_up_emitter(TB_Emitter* e, size_t u) {
+    size_t pad = align_up(e->count, u) - e->count;
+    while (pad--) tb_out1b(e, 0x00);
+}
+
 // Based on this, it's the only nice CodeView source out there:
 // https://github.com/netwide-assembler/nasm/blob/master/output/codeview.c
 static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporaryStorage* tls, const ICodeGen* code_gen, const char* path, size_t function_sym_start, uint32_t* func_layout) {
@@ -216,10 +221,7 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
         }
 
         tb_tls_restore(tls, lookup_table);
-
-        size_t pad = 4 - (debugt_out.count % 4);
-        if (pad == 4) pad = 0;
-        while (pad--) tb_out1b(&debugt_out, 0x00);
+        align_up_emitter(&debugt_out, 4);
     }
 
     // Write symbol info table
@@ -238,7 +240,7 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
         tb_out4b(&debugs_out, 0x00000004);
 
         // File nametable
-        if (false) {
+        if (true) {
             tb_out4b(&debugs_out, 0x000000F3);
 
             size_t field_length_patch = debugs_out.count;
@@ -258,12 +260,13 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
             }
 
             tb_patch4b(&debugs_out, field_length_patch, (debugs_out.count - field_length_patch) - 4);
+            align_up_emitter(&debugs_out, 4);
         }
 
         // Source file table
         // we practically transmute the file_table_offset from meaning file string
         // table entries into source file entries.
-        if (false) {
+        if (true) {
             tb_out4b(&debugs_out, 0x000000F4);
 
             size_t field_length_patch = debugs_out.count;
@@ -285,6 +288,7 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
             }
 
             tb_patch4b(&debugs_out, field_length_patch, (debugs_out.count - field_length_patch) - 4);
+            align_up_emitter(&debugs_out, 4);
         }
 
         // Line info table
@@ -377,6 +381,8 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
                 tb_patch4b(&debugs_out, field_length_patch, (debugs_out.count - field_length_patch) - 4);
                 // printf("\n");
             }
+
+            align_up_emitter(&debugs_out, 4);
         }
 
         // Symbol table
@@ -472,7 +478,7 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
             // patch field length
             tb_patch2b(&debugs_out, baseline, (debugs_out.count - baseline) - 2);
 
-            if (1) {
+            if (0) {
                 // frameproc
                 size_t frameproc_baseline = debugs_out.count;
 
@@ -497,10 +503,7 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
             tb_out2b(&debugs_out, S_PROC_ID_END);
         }
         tb_patch4b(&debugs_out, field_length_patch, (debugs_out.count - field_length_patch) - 4);
-
-        size_t pad = 4 - (debugs_out.count % 4);
-        if (pad == 4) pad = 0;
-        while (pad--) tb_out1b(&debugs_out, 0x00);
+        align_up_emitter(&debugs_out, 4);
     }
     tb_tls_restore(tls, file_table_offset);
 

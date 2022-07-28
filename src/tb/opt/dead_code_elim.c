@@ -18,6 +18,7 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
                 switch (n->type) {
                     // keep
                     case TB_NULL:
+                    case TB_LINE_INFO:
                     case TB_LABEL:
                     case TB_INITIALIZE:
                     case TB_PHI1:

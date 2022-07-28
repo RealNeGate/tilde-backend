@@ -31,32 +31,32 @@ TB_API void tb_get_function_get_local_info(TB_Function* f, TB_Reg r, int* size, 
 
 TB_API bool tb_node_is_phi_node(TB_Function* f, TB_Reg r) {
     return f->nodes[r].type == TB_PHI1 ||
-		f->nodes[r].type == TB_PHI2 ||
-		f->nodes[r].type == TB_PHIN;
+        f->nodes[r].type == TB_PHI2 ||
+        f->nodes[r].type == TB_PHIN;
 }
 
 TB_API int tb_node_get_phi_width(TB_Function* f, TB_Reg r) {
-	switch (f->nodes[r].type) {
-		case TB_PHI1: return 1;
-		case TB_PHI2: return 2;
-		case TB_PHIN: return f->nodes[r].phi.count;
+    switch (f->nodes[r].type) {
+        case TB_PHI1: return 1;
+        case TB_PHI2: return 2;
+        case TB_PHIN: return f->nodes[r].phi.count;
 
-		default:
-		tb_unreachable();
-		return 0;
-	}
+        default:
+        tb_unreachable();
+        return 0;
+    }
 }
 
 TB_API TB_PhiInput* tb_node_get_phi_inputs(TB_Function* f, TB_Reg r) {
-	switch (f->nodes[r].type) {
-		case TB_PHI1: return f->nodes[r].phi1.inputs;
-		case TB_PHI2: return f->nodes[r].phi2.inputs;
-		case TB_PHIN: return f->nodes[r].phi.inputs;
+    switch (f->nodes[r].type) {
+        case TB_PHI1: return f->nodes[r].phi1.inputs;
+        case TB_PHI2: return f->nodes[r].phi2.inputs;
+        case TB_PHIN: return f->nodes[r].phi.inputs;
 
-		default:
-		tb_unreachable();
-		return NULL;
-	}
+        default:
+        tb_unreachable();
+        return NULL;
+    }
 }
 
 TB_API bool tb_node_is_conditional(TB_Function* f, TB_Reg r) {
@@ -65,15 +65,15 @@ TB_API bool tb_node_is_conditional(TB_Function* f, TB_Reg r) {
 
 TB_API bool tb_node_is_terminator(TB_Function* f, TB_Reg r) {
     return f->nodes[r].type == TB_IF || f->nodes[r].type == TB_GOTO ||
-		f->nodes[r].type == TB_RET || f->nodes[r].type == TB_LABEL;
+        f->nodes[r].type == TB_RET || f->nodes[r].type == TB_LABEL;
 }
 
 TB_API bool tb_node_is_label(TB_Function* f, TB_Reg r) {
-	return f->nodes[r].type == TB_LABEL;
+    return f->nodes[r].type == TB_LABEL;
 }
 
 TB_API TB_Reg tb_node_get_last_register(TB_Function* f) {
-	return f->node_count - 1;
+    return f->node_count - 1;
 }
 
 TB_API TB_Reg tb_node_load_get_address(TB_Function* f, TB_Reg r) {
@@ -120,19 +120,19 @@ TB_API bool tb_node_is_constant_zero(TB_Function* f, TB_Reg r) {
         n = &f->nodes[n->pass.value];
     }
 
-	if (n->type == TB_INTEGER_CONST) {
-		if (n->integer.num_words == 1) {
-			if (n->integer.single_word == 0) {
-				return true;
-			}
-		} else {
-			if (BigInt_is_zero(n->integer.num_words, n->integer.words)) {
-				return true;
-			}
-		}
-	}
+    if (n->type == TB_INTEGER_CONST) {
+        if (n->integer.num_words == 1) {
+            if (n->integer.single_word == 0) {
+                return true;
+            }
+        } else {
+            if (BigInt_is_zero(n->integer.num_words, n->integer.words)) {
+                return true;
+            }
+        }
+    }
 
-	return false;
+    return false;
 }
 
 static TB_Reg tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
@@ -151,18 +151,54 @@ static TB_Reg tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
 
     TB_Reg r = f->node_count++;
     f->nodes[r] = (TB_Node) {
-		.type = type,
-		.dt = dt
-	};
+        .type = type,
+        .dt = dt
+    };
 
     f->nodes[f->node_end].next = r;
     f->node_end = r;
 
     // map the scope attribute
-	if (f->active_attrib != 0) {
-		tb_function_append_attrib(f, r, f->active_attrib);
-	}
-	return r;
+    if (f->active_attrib != 0) {
+        tb_function_append_attrib(f, r, f->active_attrib);
+    }
+    return r;
+}
+
+TB_API TB_Reg tb_function_insert(TB_Function* f, TB_Reg r, const TB_Node n) {
+    tb_todo();
+}
+
+TB_API TB_Reg tb_function_set(TB_Function* f, TB_Reg r, const TB_Node n) {
+    tb_todo();
+}
+
+TB_API TB_Reg tb_function_append(TB_Function* f, const TB_Node n) {
+    // Cannot add registers to terminated basic blocks, except labels
+    // which start new basic blocks
+    tb_assume(f);
+
+    if (n.type != TB_LABEL && f->current_label == 0) {
+        fprintf(stderr, "Cannot create node without parent basic block\n");
+        tb_function_print(f, tb_default_print_callback, stderr);
+        fprintf(stderr, "\n\n\n");
+        abort();
+    }
+
+    tb_function_reserve_nodes(f, 1);
+
+    TB_Reg r = f->node_count++;
+    f->nodes[r] = n;
+    f->nodes[r].next = TB_NULL_REG;
+
+    f->nodes[f->node_end].next = r;
+    f->node_end = r;
+
+    // map the scope attribute
+    if (f->active_attrib != 0) {
+        tb_function_append_attrib(f, r, f->active_attrib);
+    }
+    return r;
 }
 
 static TB_Reg tb_bin_arith(TB_Function* f, int type, TB_ArithmaticBehavior arith_behavior, TB_Reg a, TB_Reg b) {
@@ -200,11 +236,11 @@ static TB_AttributeID tb_make_attrib(TB_Function* f, int extra) {
 }
 
 TB_API void tb_inst_set_scope(TB_Function* f, TB_AttributeID scope) {
-	f->active_attrib = scope;
+    f->active_attrib = scope;
 }
 
 TB_API TB_AttributeID tb_inst_get_scope(TB_Function* f) {
-	return f->active_attrib;
+    return f->active_attrib;
 }
 
 TB_API TB_AttributeID tb_function_attrib_restrict(TB_Function* f, TB_AttributeID scope) {
@@ -222,21 +258,21 @@ TB_API TB_AttributeID tb_function_attrib_scope(TB_Function* f, TB_AttributeID pa
 }
 
 TB_API void tb_function_append_attrib(TB_Function* f, TB_Reg r, TB_AttributeID a) {
-	// NOTE(NeGate): this code path will a slow thing if abused...
-	TB_AttribList* new_link = tb_platform_heap_alloc(sizeof(TB_AttribList));
-	new_link->attrib = a;
-	new_link->next = NULL;
+    // NOTE(NeGate): this code path will a slow thing if abused...
+    TB_AttribList* new_link = tb_platform_heap_alloc(sizeof(TB_AttribList));
+    new_link->attrib = a;
+    new_link->next = NULL;
 
-	if (f->nodes[r].first_attrib == NULL) {
-		f->nodes[r].first_attrib = new_link;
-	} else {
-		TB_AttribList* chain = f->nodes[r].first_attrib->next;
+    if (f->nodes[r].first_attrib == NULL) {
+        f->nodes[r].first_attrib = new_link;
+    } else {
+        TB_AttribList* chain = f->nodes[r].first_attrib->next;
         do {
             chain = chain->next;
         } while (chain != NULL);
 
-		chain->next = new_link;
-	}
+        chain->next = new_link;
+    }
 }
 
 TB_API TB_Reg tb_inst_trunc(TB_Function* f, TB_Reg src, TB_DataType dt) {
@@ -268,12 +304,12 @@ TB_API TB_Reg tb_inst_int2float(TB_Function* f, TB_Reg src, TB_DataType dt, bool
     tb_assume(f->nodes[src].dt.width == dt.width);
 
     if (f->nodes[src].type == TB_INTEGER_CONST &&
-		f->nodes[src].integer.num_words == 1) {
+        f->nodes[src].integer.num_words == 1) {
         double x;
-		if (is_signed) x = (int64_t) f->nodes[src].integer.single_word;
-		else x = (uint64_t) f->nodes[src].integer.single_word;
+        if (is_signed) x = (int64_t) f->nodes[src].integer.single_word;
+        else x = (uint64_t) f->nodes[src].integer.single_word;
 
-		return tb_inst_float(f, dt, x);
+        return tb_inst_float(f, dt, x);
     }
 
     TB_Reg r = tb_make_reg(f, is_signed ? TB_INT2FLOAT : TB_UINT2FLOAT, dt);
@@ -339,7 +375,7 @@ TB_API TB_Reg tb_inst_param_addr(TB_Function* f, int param_id) {
 }
 
 TB_API void tb_inst_unreachable(TB_Function* f) {
-	TB_Reg r = tb_make_reg(f, TB_UNREACHABLE, TB_TYPE_VOID);
+    TB_Reg r = tb_make_reg(f, TB_UNREACHABLE, TB_TYPE_VOID);
 
     tb_assume(f->current_label);
     f->nodes[f->current_label].label.terminator = r;
@@ -347,14 +383,14 @@ TB_API void tb_inst_unreachable(TB_Function* f) {
 }
 
 TB_API void tb_inst_debugbreak(TB_Function* f) {
-	tb_make_reg(f, TB_DEBUGBREAK, TB_TYPE_VOID);
+    tb_make_reg(f, TB_DEBUGBREAK, TB_TYPE_VOID);
 }
 
 TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line) {
     tb_assume(line >= 0);
     if (f->nodes[f->node_count - 1].type == TB_LINE_INFO) {
-		return;
-	}
+        return;
+    }
 
     TB_Reg r = tb_make_reg(f, TB_LINE_INFO, TB_TYPE_VOID);
     f->nodes[r].line_info.file = file;
@@ -377,8 +413,8 @@ TB_API TB_Reg tb_inst_load(TB_Function* f, TB_DataType dt, TB_Reg addr, TB_CharU
 
     TB_Reg r = tb_make_reg(f, TB_LOAD, dt);
     f->nodes[r].load = (struct TB_NodeLoad) {
-		.address = addr, .alignment = alignment
-	};
+        .address = addr, .alignment = alignment
+    };
     return r;
 }
 
@@ -388,8 +424,8 @@ TB_API void tb_inst_store(TB_Function* f, TB_DataType dt, TB_Reg addr, TB_Reg va
 
     TB_Reg r = tb_make_reg(f, TB_STORE, dt);
     f->nodes[r].store = (struct TB_NodeStore) {
-		.address = addr, .value = val, .alignment = alignment
-	};
+        .address = addr, .value = val, .alignment = alignment
+    };
     return;
 }
 
@@ -418,15 +454,15 @@ TB_API void tb_inst_initialize_mem(TB_Function* f, TB_Reg addr, TB_Initializer* 
 
 TB_API TB_Reg tb_inst_bool(TB_Function* f, bool imm) {
     TB_Reg r = tb_make_reg(f, TB_INTEGER_CONST, TB_TYPE_BOOL);
-	f->nodes[r].integer.num_words = 1;
-	f->nodes[r].integer.single_word = imm;
+    f->nodes[r].integer.num_words = 1;
+    f->nodes[r].integer.single_word = imm;
     return r;
 }
 
 TB_API TB_Reg tb_inst_ptr(TB_Function* f, uint64_t imm) {
     TB_Reg r = tb_make_reg(f, TB_INTEGER_CONST, TB_TYPE_PTR);
-	f->nodes[r].integer.num_words = 1;
-	f->nodes[r].integer.single_word = imm;
+    f->nodes[r].integer.num_words = 1;
+    f->nodes[r].integer.single_word = imm;
     return r;
 }
 
@@ -434,20 +470,20 @@ TB_API TB_Reg tb_inst_uint(TB_Function* f, TB_DataType dt, uint64_t imm) {
     tb_assume(TB_IS_POINTER_TYPE(dt) || TB_IS_INTEGER_TYPE(dt));
 
     TB_Reg r = tb_make_reg(f, TB_INTEGER_CONST, dt);
-	f->nodes[r].integer.num_words = 1;
-	f->nodes[r].integer.single_word = imm;
+    f->nodes[r].integer.num_words = 1;
+    f->nodes[r].integer.single_word = imm;
     return r;
 }
 
 TB_API TB_Reg tb_inst_sint(TB_Function* f, TB_DataType dt, int64_t imm) {
-	tb_assume(TB_IS_POINTER_TYPE(dt) || (TB_IS_INTEGER_TYPE(dt) && (dt.data <= 64)));
+    tb_assume(TB_IS_POINTER_TYPE(dt) || (TB_IS_INTEGER_TYPE(dt) && (dt.data <= 64)));
 
     TB_Reg r = tb_make_reg(f, TB_INTEGER_CONST, dt);
-	f->nodes[r].integer.num_words = 1;
-	f->nodes[r].integer.single_word = imm;
+    f->nodes[r].integer.num_words = 1;
+    f->nodes[r].integer.single_word = imm;
 
-	uint64_t mask = ~UINT64_C(0) >> (64 - dt.data);
-	f->nodes[r].integer.single_word &= mask;
+    uint64_t mask = ~UINT64_C(0) >> (64 - dt.data);
+    f->nodes[r].integer.single_word &= mask;
     return r;
 }
 
@@ -507,7 +543,7 @@ TB_API TB_Reg tb_inst_get_extern_address(TB_Function* f, const TB_External* targ
 TB_API TB_Reg tb_inst_get_global_address(TB_Function* f, const TB_Global* target) {
     assert(target != NULL);
 
-	TB_Reg r = tb_make_reg(f, TB_GLOBAL_ADDRESS, TB_TYPE_PTR);
+    TB_Reg r = tb_make_reg(f, TB_GLOBAL_ADDRESS, TB_TYPE_PTR);
     f->nodes[r].global = (struct TB_NodeGlobal) { target };
     return r;
 }
@@ -516,7 +552,7 @@ TB_Reg* tb_vla_reserve(TB_Function* f, size_t count) {
     // Reserve space for the arguments
     if (f->vla.count + count >= f->vla.capacity) {
         f->vla.capacity = tb_next_pow2(f->vla.count + count);
-		if (f->vla.capacity < 16) f->vla.capacity = 16;
+        if (f->vla.capacity < 16) f->vla.capacity = 16;
 
         f->vla.data = tb_platform_heap_realloc(f->vla.data, f->vla.capacity * sizeof(TB_Reg));
     }
@@ -593,13 +629,13 @@ TB_API TB_Reg tb_inst_neg(TB_Function* f, TB_Reg n) {
     TB_DataType dt = f->nodes[n].dt;
 
     if (f->nodes[n].type == TB_INTEGER_CONST && f->nodes[n].integer.num_words == 1) {
-		uint64_t src = f->nodes[n].integer.single_word;
-		uint64_t mask = ~UINT64_C(0) >> (64 - dt.data);
+        uint64_t src = f->nodes[n].integer.single_word;
+        uint64_t mask = ~UINT64_C(0) >> (64 - dt.data);
 
-		// two's complement negate is just invert and add 1
-		uint64_t negated = (~src + 1) & mask;
+        // two's complement negate is just invert and add 1
+        uint64_t negated = (~src + 1) & mask;
 
-		return tb_inst_sint(f, dt, negated);
+        return tb_inst_sint(f, dt, negated);
     } else if (f->nodes[n].type == TB_FLOAT_CONST) {
         return tb_inst_float(f, dt, -f->nodes[n].flt.value);
     }
@@ -620,8 +656,8 @@ TB_API TB_Reg tb_inst_or(TB_Function* f, TB_Reg a, TB_Reg b) {
 
     if (f->nodes[a].type == TB_INTEGER_CONST && f->nodes[b].type == TB_INTEGER_CONST) {
         if (f->nodes[a].integer.single_word == 1 && f->nodes[b].integer.single_word == 1) {
-			return tb_inst_uint(f, dt, f->nodes[a].integer.single_word | f->nodes[b].integer.single_word);
-		}
+            return tb_inst_uint(f, dt, f->nodes[a].integer.single_word | f->nodes[b].integer.single_word);
+        }
     }
 
     return tb_bin_arith(f, TB_OR, TB_ASSUME_NUW, a, b);
@@ -654,7 +690,7 @@ TB_API TB_Reg tb_inst_mul(TB_Function* f, TB_Reg a, TB_Reg b, TB_ArithmaticBehav
 }
 
 TB_API TB_Reg tb_inst_div(TB_Function* f, TB_Reg a, TB_Reg b, bool signedness) {
-	// division can't wrap or overflow
+    // division can't wrap or overflow
     return tb_bin_arith(f, signedness ? TB_SDIV : TB_UDIV, TB_ASSUME_NUW, a, b);
 }
 
@@ -860,7 +896,7 @@ TB_API TB_Reg tb_inst_cmp_eq(TB_Function* f, TB_Reg a, TB_Reg b) {
 
 TB_API TB_Reg tb_inst_cmp_ne(TB_Function* f, TB_Reg a, TB_Reg b) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes[a].dt, f->nodes[b].dt));
-	TB_DataType dt = f->nodes[a].dt;
+    TB_DataType dt = f->nodes[a].dt;
 
     TB_Reg r = tb_make_reg(f, TB_CMP_NE, TB_TYPE_BOOL);
     f->nodes[r].cmp.a  = a;
@@ -871,7 +907,7 @@ TB_API TB_Reg tb_inst_cmp_ne(TB_Function* f, TB_Reg a, TB_Reg b) {
 
 TB_API TB_Reg tb_inst_cmp_ilt(TB_Function* f, TB_Reg a, TB_Reg b, bool signedness) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes[a].dt, f->nodes[b].dt));
-	tb_assume(TB_IS_INTEGER_TYPE(f->nodes[a].dt) || TB_IS_POINTER_TYPE(f->nodes[a].dt));
+    tb_assume(TB_IS_INTEGER_TYPE(f->nodes[a].dt) || TB_IS_POINTER_TYPE(f->nodes[a].dt));
     TB_DataType dt = f->nodes[a].dt;
 
     TB_Reg r = tb_make_reg(f, signedness ? TB_CMP_SLT : TB_CMP_ULT, TB_TYPE_BOOL);
@@ -883,7 +919,7 @@ TB_API TB_Reg tb_inst_cmp_ilt(TB_Function* f, TB_Reg a, TB_Reg b, bool signednes
 
 TB_API TB_Reg tb_inst_cmp_ile(TB_Function* f, TB_Reg a, TB_Reg b, bool signedness) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes[a].dt, f->nodes[b].dt));
-	tb_assume(TB_IS_INTEGER_TYPE(f->nodes[a].dt) || TB_IS_POINTER_TYPE(f->nodes[a].dt));
+    tb_assume(TB_IS_INTEGER_TYPE(f->nodes[a].dt) || TB_IS_POINTER_TYPE(f->nodes[a].dt));
     TB_DataType dt = f->nodes[a].dt;
 
     TB_Reg r = tb_make_reg(f, signedness ? TB_CMP_SLE : TB_CMP_ULE, TB_TYPE_BOOL);
@@ -895,7 +931,7 @@ TB_API TB_Reg tb_inst_cmp_ile(TB_Function* f, TB_Reg a, TB_Reg b, bool signednes
 
 TB_API TB_Reg tb_inst_cmp_igt(TB_Function* f, TB_Reg a, TB_Reg b, bool signedness) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes[a].dt, f->nodes[b].dt));
-	tb_assume(TB_IS_INTEGER_TYPE(f->nodes[a].dt) || TB_IS_POINTER_TYPE(f->nodes[a].dt));
+    tb_assume(TB_IS_INTEGER_TYPE(f->nodes[a].dt) || TB_IS_POINTER_TYPE(f->nodes[a].dt));
     TB_DataType dt = f->nodes[a].dt;
 
     TB_Reg r = tb_make_reg(f, signedness ? TB_CMP_SLT : TB_CMP_ULT, TB_TYPE_BOOL);
@@ -907,7 +943,7 @@ TB_API TB_Reg tb_inst_cmp_igt(TB_Function* f, TB_Reg a, TB_Reg b, bool signednes
 
 TB_API TB_Reg tb_inst_cmp_ige(TB_Function* f, TB_Reg a, TB_Reg b, bool signedness) {
     tb_assume(TB_DATA_TYPE_EQUALS(f->nodes[a].dt, f->nodes[b].dt));
-	tb_assume(TB_IS_INTEGER_TYPE(f->nodes[a].dt) || TB_IS_POINTER_TYPE(f->nodes[a].dt));
+    tb_assume(TB_IS_INTEGER_TYPE(f->nodes[a].dt) || TB_IS_POINTER_TYPE(f->nodes[a].dt));
     TB_DataType dt = f->nodes[a].dt;
 
     TB_Reg r = tb_make_reg(f, signedness ? TB_CMP_SLE : TB_CMP_ULE, TB_TYPE_BOOL);
@@ -971,16 +1007,16 @@ TB_API TB_Reg tb_inst_phi2(TB_Function* f, TB_Label a_label, TB_Reg a, TB_Label 
 
     TB_Reg r = tb_make_reg(f, TB_PHI2, dt);
     f->nodes[r].phi2.inputs[0] = (TB_PhiInput){
-		tb_find_reg_from_label(f, a_label), a
-	};
+        tb_find_reg_from_label(f, a_label), a
+    };
     f->nodes[r].phi2.inputs[1] = (TB_PhiInput){
-		tb_find_reg_from_label(f, b_label), b
-	};
+        tb_find_reg_from_label(f, b_label), b
+    };
     return r;
 }
 
 TB_API TB_Label tb_inst_new_label_id(TB_Function* f) {
-	return f->label_count++;
+    return f->label_count++;
 }
 
 TB_API TB_Reg tb_inst_label(TB_Function* f, TB_Label id) {
@@ -990,8 +1026,8 @@ TB_API TB_Reg tb_inst_label(TB_Function* f, TB_Label id) {
     f->nodes[r].label = (struct TB_NodeLabel) { .id = id };
 
     if (f->current_label) {
-		f->nodes[f->current_label].label.terminator = r;
-	}
+        f->nodes[f->current_label].label.terminator = r;
+    }
 
     f->current_label = r;
     return r;

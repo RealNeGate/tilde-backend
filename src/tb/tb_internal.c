@@ -117,7 +117,7 @@ TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStora
                 TB_SwitchEntry* entries = (TB_SwitchEntry*) &f->vla.data[end->switch_.entries_start];
 
                 loop(i, entry_count) {
-                    if (l == entries[i].key) APPEND_TO_REG_LIST(id);
+                    if (l == entries[i].value) APPEND_TO_REG_LIST(id);
                 }
 
                 if (l == end->switch_.default_label) APPEND_TO_REG_LIST(id);
@@ -125,7 +125,12 @@ TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStora
                 label = end->next;
                 break;
             }
-            case TB_RET: label = end->next; break;
+
+            case TB_UNREACHABLE:
+            case TB_RET:
+            label = end->next;
+            break;
+
             default: tb_todo();
         }
 

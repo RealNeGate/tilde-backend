@@ -591,7 +591,7 @@ TB_API bool tb_opt_canonicalize(TB_Function* f) {
         iteration_changes |= tb_opt_fold(f);
         iteration_changes |= tb_opt_strength_reduction(f);
         iteration_changes |= tb_opt_dead_expr_elim(f);
-        iteration_changes |= tb_opt_dead_block_elim(f);
+        //iteration_changes |= tb_opt_dead_block_elim(f);
 
         if (iteration_changes) changes = true;
         else break;

@@ -6,7 +6,7 @@
 // read-only data is executable.
 void tb_module_export_jit(TB_Module* m, TB_ISelMode isel_mode) {
     #if TB_HOST_ARCH == TB_HOST_X86_64
-    const ICodeGen* restrict codegen = &x64_codegen;
+    const ICodeGen* restrict codegen = &tb__x64_codegen;
     #else
     #error "Cannot compile JIT for this target architecture!"
     #endif

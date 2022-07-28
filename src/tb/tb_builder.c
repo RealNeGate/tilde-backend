@@ -361,13 +361,14 @@ TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line) {
     f->nodes[r].line_info.line = line;
 }
 
-TB_API TB_Reg tb_inst_local(TB_Function* f, uint32_t size, TB_CharUnits alignment) {
+TB_API TB_Reg tb_inst_local(TB_Function* f, uint32_t size, TB_CharUnits alignment, const char* name) {
     tb_assume(size > 0);
     tb_assume(alignment > 0 && tb_is_power_of_two(alignment));
 
     TB_Reg r = tb_make_reg(f, TB_LOCAL, TB_TYPE_PTR);
     f->nodes[r].local.alignment = alignment;
     f->nodes[r].local.size = size;
+    f->nodes[r].local.name = name;
     return r;
 }
 

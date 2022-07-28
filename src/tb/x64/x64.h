@@ -2,11 +2,6 @@
 #include "../codegen/tree.h"
 #include "../tb_internal.h"
 
-#if TB_HOST_ARCH == TB_HOST_X86_64
-// Needed for some of the fancier
-#include <emmintrin.h>
-#endif
-
 #define TB_TEMP_REG INT_MAX
 
 static_assert(sizeof(float) == sizeof(uint32_t), "Float needs to be a 32-bit float!");
@@ -296,9 +291,8 @@ static const char* GPR_NAMES[] = { "RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RS
 #endif
 
 // shorthand macros
-#define STACK_ALLOC(size, align)                                                  \
-(ctx->header.stack_usage = align_up(ctx->header.stack_usage + (size), align), \
-    -ctx->header.stack_usage)
+#define STACK_ALLOC(size, align) \
+(ctx->header.stack_usage = align_up(ctx->header.stack_usage + (size), align), - ctx->header.stack_usage)
 
 #define INST1(op, a)              inst1(&ctx->header, op, a)
 #define INST2(op, a, b, dt)       inst2(&ctx->header, op, a, b, dt)

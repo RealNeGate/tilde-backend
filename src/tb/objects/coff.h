@@ -44,43 +44,55 @@
 #define IMAGE_REL_AMD64_SECTION  0x000A
 #define IMAGE_REL_AMD64_SECREL   0x000B
 
+#define IMAGE_SCN_MEM_DISCARDABLE 0x02000000
+#define IMAGE_SCN_MEM_EXECUTE     0x20000000
+#define IMAGE_SCN_MEM_READ        0x40000000
+#define IMAGE_SCN_MEM_WRITE       0x80000000
+
+#define IMAGE_SCN_CNT_CODE                   0x00000020  /* Section contains code. */
+#define IMAGE_SCN_CNT_INITIALIZED_DATA       0x00000040  /* Section contains initialized data. */
+#define IMAGE_SCN_CNT_UNINITIALIZED_DATA     0x00000080  /* Section contains uninitialized data. */
+
+#define IMAGE_DIRECTORY_ENTRY_IMPORT 1
+#define IMAGE_DIRECTORY_ENTRY_RELOC  5
+
 #define MD5_HASHBYTES 16
 
 typedef struct {
-	char name[16];
-	char date[12];
+    char name[16];
+    char date[12];
 
-	// Microsoft tools don't actually do anything with this
-	char user_id[6];
-	char group_id[6];
+    // Microsoft tools don't actually do anything with this
+    char user_id[6];
+    char group_id[6];
 
-	char mode[8];
-	char size[10];
+    char mode[8];
+    char size[10];
 
-	uint8_t newline[2];
-	uint8_t contents[];
+    uint8_t newline[2];
+    uint8_t contents[];
 } COFF_ArchiveMemberHeader;
 
 typedef struct {
-	uint16_t sig1;
-	uint16_t sig2;
-	uint16_t version;
-	uint16_t machine;
-	uint32_t timestamp;
-	uint32_t size_of_data;
-	uint16_t ordinal_hint;
+    uint16_t sig1;
+    uint16_t sig2;
+    uint16_t version;
+    uint16_t machine;
+    uint32_t timestamp;
+    uint32_t size_of_data;
+    uint16_t ordinal_hint;
 
-	uint16_t type      : 2;
-	uint16_t name_type : 3;
-	uint16_t reserved  : 11;
+    uint16_t type      : 2;
+    uint16_t name_type : 3;
+    uint16_t reserved  : 11;
 } COFF_ImportHeader;
 
 typedef struct {
-	uint32_t import_lookup_table; // RVA
-	uint32_t timestamp;
-	uint32_t forwarder_chain;
-	uint32_t name;
-	uint32_t import_address_table; // RVA; Thunk table
+    uint32_t import_lookup_table; // RVA
+    uint32_t timestamp;
+    uint32_t forwarder_chain;
+    uint32_t name;
+    uint32_t import_address_table; // RVA; Thunk table
 } COFF_ImportDirectory;
 
 typedef struct COFF_SectionHeader {
@@ -159,36 +171,36 @@ typedef struct {
 
 #pragma pack(push, 1)
 typedef struct {
-	uint16_t e_magic;    // Magic number
-	uint16_t e_cblp;     // Bytes on last page of file
-	uint16_t e_cp;       // Pages in file
-	uint16_t e_crlc;     // Relocations
-	uint16_t e_cparhdr;  // Size of header in paragraphs
-	uint16_t e_minalloc; // Minimum extra paragraphs needed
-	uint16_t e_maxalloc; // Maximum extra paragraphs needed
-	uint16_t e_ss;       // Initial (relative) SS value
-	uint16_t e_sp;       // Initial SP value
-	uint16_t e_csum;     // Checksum
-	uint16_t e_ip;       // Initial IP value
-	uint16_t e_cs;       // Initial (relative) CS value
-	uint16_t e_lfarlc;   // File address of relocation table
-	uint16_t e_ovno;     // Overlay number
-	uint16_t e_res[4];   // Reserved words
-	uint16_t e_oemid;    // OEM identifier (for e_oeminfo)
-	uint16_t e_oeminfo;  // OEM information; e_oemid specific
-	uint16_t e_res2[10]; // Reserved words
+    uint16_t e_magic;    // Magic number
+    uint16_t e_cblp;     // Bytes on last page of file
+    uint16_t e_cp;       // Pages in file
+    uint16_t e_crlc;     // Relocations
+    uint16_t e_cparhdr;  // Size of header in paragraphs
+    uint16_t e_minalloc; // Minimum extra paragraphs needed
+    uint16_t e_maxalloc; // Maximum extra paragraphs needed
+    uint16_t e_ss;       // Initial (relative) SS value
+    uint16_t e_sp;       // Initial SP value
+    uint16_t e_csum;     // Checksum
+    uint16_t e_ip;       // Initial IP value
+    uint16_t e_cs;       // Initial (relative) CS value
+    uint16_t e_lfarlc;   // File address of relocation table
+    uint16_t e_ovno;     // Overlay number
+    uint16_t e_res[4];   // Reserved words
+    uint16_t e_oemid;    // OEM identifier (for e_oeminfo)
+    uint16_t e_oeminfo;  // OEM information; e_oemid specific
+    uint16_t e_res2[10]; // Reserved words
     uint32_t e_lfanew;   // File address of new exe header
 } PE_DosHeader;
 
 typedef struct {
-	uint32_t magic; // PE\0\0 or 0x00004550
-	uint16_t machine;
-	uint16_t section_count;
-	uint32_t timestamp;
-	uint32_t symbol_table;
-	uint32_t symbol_count;
-	uint16_t size_of_optional_header;
-	uint16_t characteristics;
+    uint32_t magic; // PE\0\0 or 0x00004550
+    uint16_t machine;
+    uint16_t section_count;
+    uint32_t timestamp;
+    uint32_t symbol_table;
+    uint32_t symbol_count;
+    uint16_t size_of_optional_header;
+    uint16_t characteristics;
 } PE_Header;
 
 typedef struct {
@@ -225,22 +237,22 @@ typedef struct {
     uint64_t size_of_stack_commit;
     uint64_t size_of_heap_reserve;
     uint64_t size_of_heap_commit;
-	uint32_t loader_flags;
-	uint32_t rva_size_count;
+    uint32_t loader_flags;
+    uint32_t rva_size_count;
     PE_ImageDataDirectory data_directories[IMAGE_NUMBEROF_DIRECTORY_ENTRIES];
 } PE_OptionalHeader64;
 
 typedef struct { // size 40 bytes
-	char name[8];
-	uint32_t virtual_size;
-	uint32_t virtual_address;
-	uint32_t size_of_raw_data;
-	uint32_t pointer_to_raw_data;
-	uint32_t pointer_to_relocs;
-	uint32_t pointer_to_linenos;
-	uint16_t relocation_count;
+    char name[8];
+    uint32_t virtual_size;
+    uint32_t virtual_address;
+    uint32_t size_of_raw_data;
+    uint32_t pointer_to_raw_data;
+    uint32_t pointer_to_relocs;
+    uint32_t pointer_to_linenos;
+    uint16_t relocation_count;
     uint16_t linenos_count;
-	uint32_t characteristics;
+    uint32_t characteristics;
 } PE_SectionHeader;
 #pragma pack(pop)
 

@@ -32,6 +32,7 @@ static const char* INPUT_FILES[] = {
 
     // Targets go here
     "src/tb/x64/x64.c",
+    "src/tb/aarch64/aarch64.c",
 
     // Debug formats here
     "src/tb/debug/codeview.c",

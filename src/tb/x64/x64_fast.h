@@ -33,14 +33,10 @@ typedef struct {
 
     bool is_sysv;
 
-    TB_Reg*  use_count;
-    int*     ordinal;
-    TB_Reg*  phis;
-    uint32_t phi_count;
-    int      register_barrier;
-    GPR      temp_load_reg; // sometimes we need a register to do a double-deref
-
-    uint32_t caller_usage;
+    TB_Reg* use_count;
+    int* ordinal;
+    int register_barrier;
+    GPR temp_load_reg; // sometimes we need a register to do a double-deref
 
     // Peephole to improve tiling
     // of memory operands:
@@ -418,25 +414,25 @@ static void fast_folded_op(X64_FastCtx* ctx, TB_Function* f, Inst2Type op, const
     Val rhs = fast_eval(ctx, f, rhs_reg);
 
     TB_Node* restrict n = &f->nodes[rhs_reg];
-    LegalInt l = legalize_int(n->dt);
+    LegalInt l = legalize_int(op == MOVSXD ? TB_TYPE_I64 : n->dt);
     //assert(l.mask == 0 && "TODO");
 
     if (!rhs.is_spill && is_value_mem(&rhs) && n->type != TB_LOAD) {
+        Val tmp = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
         if (is_value_mem(lhs)) {
-            Val tmp = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
-
             INST2(LEA, &tmp, &rhs, l.dt);
-            INST2(op, lhs, &tmp, l.dt);
-
-            fast_kill_temp_gpr(ctx, f, tmp.gpr);
         } else {
             if (rhs.type == VAL_MEM && rhs.mem.index == GPR_NONE && rhs.mem.disp == 0) {
-                Val tmp = val_gpr(TB_TYPE_PTR, rhs.mem.base);
-                INST2(MOV, lhs, &tmp, l.dt);
+                // lea rcx, [rdx] => mov rcx, rdx
+                Val base = val_gpr(TB_TYPE_PTR, rhs.mem.base);
+                INST2(MOV, &tmp, &base, l.dt);
             } else {
-                INST2(LEA, lhs, &rhs, l.dt);
+                INST2(LEA, &tmp, &rhs, l.dt);
             }
         }
+
+        INST2(op, lhs, &tmp, l.dt);
+        fast_kill_temp_gpr(ctx, f, tmp.gpr);
     } else if (is_value_mem(lhs) && is_value_mem(&rhs)) {
         Val tmp = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
 
@@ -620,6 +616,36 @@ static void fast_evict_everything(X64_FastCtx* restrict ctx, TB_Function* f) {
     #endif
 }
 
+static void fast_spill_tile(X64_FastCtx* restrict ctx, TB_Function* f) {
+    Val src = {
+        VAL_MEM,
+        .mem = {
+            .base = ctx->tile.base,
+            .index = ctx->tile.index,
+            .scale = ctx->tile.scale,
+            .disp  = ctx->tile.disp
+        }
+    };
+
+    GPR dst_gpr;
+    if (ctx->gpr_allocator[ctx->tile.base] == ctx->tile.mapping) {
+        dst_gpr = ctx->tile.base;
+    } else if (ctx->tile.index != GPR_NONE && ctx->gpr_allocator[ctx->tile.index] == ctx->tile.mapping) {
+        dst_gpr = ctx->tile.index;
+    } else {
+        dst_gpr = fast_alloc_gpr(ctx, f, ctx->tile.mapping);
+    }
+
+    fast_def_gpr(ctx, f, ctx->tile.mapping, dst_gpr, TB_TYPE_PTR);
+
+    Val dst = val_gpr(TB_TYPE_PTR, dst_gpr);
+    INST2(LEA, &dst, &src, TB_TYPE_PTR);
+
+    // printf("%s:r%d: failed to tile value :(\n", f->name, ctx->tile.mapping);
+    // printf("TILE FAILURE! r%u\n", ctx->tile.mapping);
+    ctx->tile.mapping = 0;
+}
+
 static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Reg bb_end) {
     // first node in the basic block
     bb = f->nodes[bb].next;
@@ -708,25 +734,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
             }
 
             if (!can_keep_it) {
-                Val src = {
-                    VAL_MEM,
-                    .mem = {
-                        .base = ctx->tile.base,
-                        .index = ctx->tile.index,
-                        .scale = ctx->tile.scale,
-                        .disp  = ctx->tile.disp
-                    }
-                };
-
-                GPR dst_gpr = fast_alloc_gpr(ctx, f, ctx->tile.mapping);
-                fast_def_gpr(ctx, f, ctx->tile.mapping, dst_gpr, TB_TYPE_PTR);
-
-                Val dst = val_gpr(TB_TYPE_PTR, dst_gpr);
-                INST2(LEA, &dst, &src, TB_TYPE_PTR);
-
-                // printf("%s:r%d: failed to tile value :(\n", f->name, ctx->tile.mapping);
-                // printf("TILE FAILURE! r%u\n", ctx->tile.mapping);
-                ctx->tile.mapping = 0;
+                fast_spill_tile(ctx, f);
             }
         }
 
@@ -899,15 +907,12 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 uint32_t stride = n->array_access.stride;
 
                 Val val;
-                bool recycled_index = false;
                 if (ctx->use_count[n->array_access.index] == 1 &&
                     ctx->addresses[n->array_access.index].type == ADDRESS_DESC_GPR) {
                     val = fast_eval(ctx, f, n->array_access.index);
-                    recycled_index = true;
                 } else {
                     val = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, r));
                     fast_folded_op(ctx, f, MOV, &val, n->array_access.index);
-                    fast_kill_reg(ctx, f, n->array_access.index);
                 }
 
                 // if it's an LEA index*stride
@@ -970,19 +975,17 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                         ctx->tile.scale   = stride_as_shift;
                         ctx->tile.disp    = 0;
 
-                        fast_kill_temp_gpr(ctx, f, temp.gpr);
+                        // fast_kill_temp_gpr(ctx, f, temp.gpr);
                     }
                 } else {
                     fast_folded_op(ctx, f, ADD, &val, n->array_access.base);
+                    fast_def_gpr(ctx, f, r, val.gpr, TB_TYPE_PTR);
                 }
 
                 assert(val.type == VAL_GPR);
-                if (recycled_index) {
-                    // move ownership
-                    ctx->gpr_allocator[val.gpr] = r;
-                }
 
-                fast_def_gpr(ctx, f, r, val.gpr, TB_TYPE_PTR);
+                // move ownership
+                ctx->gpr_allocator[val.gpr] = r;
                 fast_kill_reg(ctx, f, n->array_access.base);
                 break;
             }
@@ -1287,15 +1290,14 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 LegalInt l = legalize_int(dt);
                 int bits_in_type = l.dt.type == TB_PTR ? 64 : l.dt.data;
 
-                Val dst = val_gpr(l.dt, fast_alloc_gpr(ctx, f, r));
-                fast_def_gpr(ctx, f, r, dst.gpr, l.dt);
-
-                fast_folded_op(ctx, f, MOV, &dst, n->i_arith.a);
-
                 if (f->nodes[n->i_arith.b].type == TB_INTEGER_CONST &&
                     f->nodes[n->i_arith.b].integer.num_words == 1) {
                     uint64_t imm = f->nodes[n->i_arith.b].integer.single_word;
                     assert(imm < 64);
+
+                    Val dst = val_gpr(l.dt, fast_alloc_gpr(ctx, f, r));
+                    fast_def_gpr(ctx, f, r, dst.gpr, l.dt);
+                    fast_folded_op(ctx, f, MOV, &dst, n->i_arith.a);
 
                     // C1 /4       shl r/m, imm
                     // C1 /5       shr r/m, imm
@@ -1318,6 +1320,15 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     break;
                 }
 
+                // we'll be using this bad boy
+                fast_evict_gpr(ctx, f, RCX);
+                ctx->gpr_allocator[RCX] = TB_TEMP_REG;
+                ctx->gpr_available -= 1;
+
+                Val dst = val_gpr(l.dt, fast_alloc_gpr(ctx, f, r));
+                fast_def_gpr(ctx, f, r, dst.gpr, l.dt);
+                fast_folded_op(ctx, f, MOV, &dst, n->i_arith.a);
+
                 // MOV rcx, b
                 Val rcx = val_gpr(dt, RCX);
                 fast_folded_op(ctx, f, MOV, &rcx, n->i_arith.b);
@@ -1336,6 +1347,10 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 }
 
                 if (l.mask) fast_mask_out(ctx, f, l, &dst);
+
+                // free up RCX
+                ctx->gpr_allocator[RCX] = TB_NULL_REG;
+                ctx->gpr_available += 1;
 
                 fast_kill_reg(ctx, f, n->i_arith.a);
                 fast_kill_reg(ctx, f, n->i_arith.b);
@@ -1781,7 +1796,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     } else if (bits_in_type == 32) {
                         op = (sign_ext ? MOVSXD : MOV);
                     } else if (bits_in_type == 16) {
-                        op = sign_ext ? MOVSXW : MOVZXW;
+                        op = (sign_ext ? MOVSXW : MOVZXW);
                     } else if (bits_in_type == 8) {
                         op = (sign_ext ? MOVSXB : MOVZXB);
                     } else if (bits_in_type == 1) {
@@ -1816,7 +1831,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 fast_def_xmm(ctx, f, r, val.xmm, dt);
 
                 uint8_t flags = legalize_float(src.dt);
-                if (src.dt.type != dt.type || src.dt.width != dt.width) {
+                if (!TB_DATA_TYPE_EQUALS(src.dt, dt)) {
                     INST2SSE(FP_CVT, &val, &src, flags);
                 } else {
                     INST2SSE(FP_MOV, &val, &src, flags);
@@ -2151,24 +2166,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
     // tile mapping cannot cross BB boundaries
     if (ctx->tile.mapping) {
-        Val src = {
-            VAL_MEM,
-            .mem = {
-                .base = ctx->tile.base,
-                .index = ctx->tile.index,
-                .scale = ctx->tile.scale,
-                .disp  = ctx->tile.disp
-            }
-        };
-
-        GPR dst_gpr = fast_alloc_gpr(ctx, f, ctx->tile.mapping);
-        fast_def_gpr(ctx, f, ctx->tile.mapping, dst_gpr, TB_TYPE_PTR);
-
-        Val dst = val_gpr(TB_TYPE_PTR, dst_gpr);
-        INST2(LEA, &dst, &src, TB_TYPE_PTR);
-
-        // printf("TILE FAILURE BECAUSE BASIC BLOCK! r%u\n", ctx->tile.mapping);
-        ctx->tile.mapping = 0;
+        fast_spill_tile(ctx, f);
     }
 }
 
@@ -2295,15 +2293,15 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
 
     // Allocate all the memory we'll need
     bool is_ctx_heap_allocated = false;
-    X64_FastCtx* restrict ctx  = NULL;
+    X64_FastCtx* restrict ctx = NULL;
     {
         // if we can't fit our memory usage into memory, we fallback
         FunctionTallySimple tally = tally_memory_usage_simple(f);
-        is_ctx_heap_allocated     = !tb_tls_can_fit(tls, tally.memory_usage);
+        is_ctx_heap_allocated = !tb_tls_can_fit(tls, tally.memory_usage);
 
         size_t ctx_size = sizeof(X64_FastCtx) + (f->node_count * sizeof(AddressDesc));
         if (is_ctx_heap_allocated) {
-            ctx  = tb_platform_heap_alloc(ctx_size);
+            ctx = tb_platform_heap_alloc(ctx_size);
             *ctx = (X64_FastCtx) {
                 .header = {
                     .out           = out,
@@ -2316,7 +2314,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
                 .use_count = tb_platform_heap_alloc(f->node_count * sizeof(TB_Reg))
             };
         } else {
-            ctx  = tb_tls_push(tls, ctx_size);
+            ctx = tb_tls_push(tls, ctx_size);
             *ctx = (X64_FastCtx) {
                 .header = {
                     .out           = out,
@@ -2331,7 +2329,6 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         }
 
         ctx->header.f = f;
-        ctx->header.function_id = f - f->module->functions.data;
 
         f->line_count = 0;
         f->lines      = tb_platform_arena_alloc(tally.line_info_count * sizeof(TB_Line));
@@ -2339,7 +2336,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         ctx->gpr_available = 14;
         ctx->xmm_available = 16;
         ctx->temp_load_reg = GPR_NONE;
-        ctx->is_sysv       = (f->module->target_abi == TB_ABI_SYSTEMV);
+        ctx->is_sysv = (f->module->target_abi == TB_ABI_SYSTEMV);
         memset(ctx->addresses, 0, f->node_count * sizeof(AddressDesc));
     }
 
@@ -2415,6 +2412,8 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         }
     }
 
+    // printf("STACK MAP: %s\n", f->name);
+
     // Just the splitting point between parameters
     // and locals in the stack.
     TB_FOR_EACH_NODE(n, f) {
@@ -2452,11 +2451,13 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
             int pos = STACK_ALLOC(size, align);
 
             fast_def_stack(ctx, f, r, pos, n->dt);
+
+            // if (n->local.name) printf("  [rbp - %#x]\t%s\n", -pos, n->local.name);
         }
     }
 
     #if 0
-    if (strcmp(f->name, "cuik_visit_top_level_threaded") == 0) {
+    if (strcmp(f->name, "cuikpp_define_empty_slice") == 0) {
         tb_function_print(f, tb_default_print_callback, stdout);
         printf("\n\n\n");
     }
@@ -2664,7 +2665,6 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
 
     if (is_ctx_heap_allocated) {
         tb_platform_heap_free(ctx->use_count);
-        tb_platform_heap_free(ctx->phis);
 
         tb_platform_heap_free(ctx->header.labels);
         tb_platform_heap_free(ctx->header.label_patches);

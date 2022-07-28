@@ -639,7 +639,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
 // code generators
 ICodeGen* tb__find_code_generator(TB_Module* m);
 
-uint8_t* tb_out_reserve(TB_Emitter* o, size_t count);
+void* tb_out_reserve(TB_Emitter* o, size_t count);
 // The return value is the start of the empty region after
 // the data, this is where you can start appending new data
 // and you're guarenteed `count` bytes. if this function is
@@ -779,8 +779,9 @@ inline static bool tb_data_type_match(const TB_DataType* a, const TB_DataType* b
 }
 
 // NOTE(NeGate): Place all the codegen interfaces down here
-extern ICodeGen x64_codegen;
+extern ICodeGen tb__x64_codegen;
+extern ICodeGen tb__aarch64_codegen;
 
 // And all debug formats here
 //extern IDebugFormat dwarf_debug_format;
-extern IDebugFormat codeview_debug_format;
+extern IDebugFormat tb__codeview_debug_format;

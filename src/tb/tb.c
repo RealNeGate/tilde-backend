@@ -12,15 +12,16 @@ static tb_atomic_int total_tid;
 
 static const IDebugFormat* tb_find_debug_format(TB_Module* m) {
     switch (m->debug_fmt) {
-        //case TB_DEBUGFMT_DWARF: return &dwarf_debug_format;
-        case TB_DEBUGFMT_CODEVIEW: return &codeview_debug_format;
+        //case TB_DEBUGFMT_DWARF: return &tb__dwarf_debug_format;
+        case TB_DEBUGFMT_CODEVIEW: return &tb__codeview_debug_format;
         default: return NULL;
     }
 }
 
 ICodeGen* tb__find_code_generator(TB_Module* m) {
     switch (m->target_arch) {
-        case TB_ARCH_X86_64: return &x64_codegen;
+        case TB_ARCH_X86_64: return &tb__x64_codegen;
+        case TB_ARCH_AARCH64: return &tb__aarch64_codegen;
         default: return NULL;
     }
 }
@@ -553,7 +554,7 @@ void tb_object_free(TB_ObjectFile* obj) {
 //
 // Simple linear allocation for the backend's to output code with
 //
-uint8_t* tb_out_reserve(TB_Emitter* o, size_t count) {
+void* tb_out_reserve(TB_Emitter* o, size_t count) {
     if (o->count + count >= o->capacity) {
         if (o->capacity == 0) {
             o->capacity = 64;

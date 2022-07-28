@@ -512,7 +512,7 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
     };
 }
 
-IDebugFormat codeview_debug_format = {
+IDebugFormat tb__codeview_debug_format = {
     "CodeView",
     codeview_supported_target,
     codeview_number_of_debug_sections,

@@ -1,14 +1,28 @@
 #include "coff.h"
 
-//#define NL_STRING_MAP_INLINE
-//#define NL_STRING_MAP_IMPL
-//#include "../string_map.h"
+#define NL_STRING_MAP_INLINE
+#define NL_STRING_MAP_IMPL
+#include "../string_map.h"
+
+typedef struct {
+    NL_Slice name;
+    // this is the location the thunk will call
+    uint32_t ds_address;
+    // this is the ID of the thunk
+    uint32_t thunk_id;
+} ImportThunk;
+
+typedef struct {
+    NL_Slice libpath;
+    DynArray(ImportThunk) thunks;
+} ImportTable;
 
 typedef struct {
     TB_LinkerInput inputs;
 
-    // symbol name -> libpath
-    //NL_Strmap(TB_Slice) import_nametable;
+    // symbol name -> imports
+    NL_Strmap(int) import_nametable;
+    DynArray(ImportTable) imports;
 } LinkerCtx;
 
 const static uint8_t dos_stub[] = {
@@ -61,25 +75,46 @@ static FILE* locate_file(LinkerCtx* restrict ctx, const char* path) {
     return NULL;
 }
 
-static void pad_file(FILE* file, char pad, size_t align) {
+static void pad_file(TB_TemporaryStorage* tls, FILE* file, char pad, size_t align) {
     size_t align_mask = align - 1;
 
     long i = ftell(file);
     long end = (i + align_mask) & ~align_mask;
-    while (i < end) {
-        fwrite(&pad, 1, 1, file);
-        i += 1;
-    }
+    if (i == end) return;
+
+    char* tmp = tb_tls_push(tls, end - i);
+    memset(tmp, pad, end - i);
+    fwrite(tmp, end - i, 1, file);
+    tb_tls_restore(tls, tmp);
 }
 
 static void import_archive(LinkerCtx* restrict ctx, TB_ArchiveFile* restrict ar) {
     loop(i, ar->import_count) {
         TB_ArchiveImport* restrict import = &ar->imports[i];
+        NL_Slice libname = { strlen(import->libname), (uint8_t*) import->libname };
 
-        //TB_Slice libname = { strlen(import->libname), (uint8_t*) import->libname };
-        //nl_strmap_put_cstr(ctx->import_nametable, import->name, libname);
+        ptrdiff_t import_index = -1;
+        dyn_array_for(j, ctx->imports) {
+            ImportTable* table = &ctx->imports[j];
 
-        printf("%s : %s\n", import->libname, import->name);
+            if (table->libpath.length == libname.length &&
+                memcmp(table->libpath.data, libname.data, libname.length) == 0) {
+                import_index = j;
+                break;
+            }
+        }
+
+        if (import_index < 0) {
+            // we haven't used this DLL yet, make an import table for it
+            import_index = dyn_array_length(ctx->imports);
+            dyn_array_put_uninit(ctx->imports, 1);
+
+            ImportTable* t = &ctx->imports[import_index];
+            t->libpath = libname;
+            t->thunks = dyn_array_create(ImportThunk);
+        }
+
+        nl_strmap_put_cstr(ctx->import_nametable, import->name, import_index);
     }
 }
 
@@ -94,7 +129,11 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
     // function relative to the .text section start.
     uint32_t* func_layout = tb_platform_heap_alloc((1+m->functions.count) * sizeof(uint32_t));
 
+    const size_t image_base = 0x00400000;
+
     // Generate import lookup table
+    ctx.imports = dyn_array_create(ImportTable);
+
     loop(i, ctx.inputs.input_count) {
         FILE* file = locate_file(&ctx, ctx.inputs.inputs[i]);
         if (file == NULL) {
@@ -115,18 +154,117 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         }
     }
 
+    // Find all the imports & place them into the right buckets
+    uint32_t thunk_id_counter = 0;
+    loop(i, m->max_threads) {
+        pool_for(TB_External, e, m->thread_info[i].externals) {
+            ptrdiff_t search = nl_strmap_get_cstr(ctx.import_nametable, e->name);
+            if (search < 0) {
+                tb_panic("Could not link external: %s\n", e->name);
+            }
+
+            ImportTable* table = &ctx.imports[ctx.import_nametable[search]];
+
+            ImportThunk t = { 0 };
+            t.name = nl_slice__cstr(e->name);
+            t.thunk_id = thunk_id_counter++;
+
+            dyn_array_put(table->thunks, t);
+            e->address = &table->thunks[dyn_array_length(table->thunks) - 1];
+        }
+    }
+
+    // Generate bytes for the import table
+    TB_Emitter import_table = { 0 };
+
+    // add DLL import directories
+    //
+    // each entry is 20bytes and they're ordered by the imports so we
+    // can patch back with that kind of knowledge
+    dyn_array_for(i, ctx.imports) {
+        tb_out4b(&import_table, 0); // import lookup table RVA
+        tb_out4b(&import_table, 0); // timestamp
+        tb_out4b(&import_table, 0); // forwarder chain
+        tb_out4b(&import_table, 0); // name RVA
+        tb_out4b(&import_table, 0); // import address table RVA
+    }
+
+    // null directory
+    loop(i, 5) tb_out4b(&import_table, 0);
+
+    size_t iat_start = import_table.count;
+    dyn_array_for(i, ctx.imports) {
+        ImportTable* imp = &ctx.imports[i];
+        printf("\nIMPORT FOR '%.*s'\n", (int) imp->libpath.length, imp->libpath.data);
+
+        // slap that lib name (these are RVAs)
+        tb_patch4b(&import_table, (i * 20) + 12, 0x1000 + import_table.count);
+
+        tb_out_reserve(&import_table, imp->libpath.length + 1);
+        tb_outs_UNSAFE(&import_table, imp->libpath.length, imp->libpath.data);
+        tb_out1b_UNSAFE(&import_table, 0x00);
+
+        // setup a patch for the thunk array and then fill it out
+        tb_patch4b(&import_table, (i * 20) + 16, 0x1000 + import_table.count);
+        dyn_array_for(j, imp->thunks) {
+            ImportThunk* t = &imp->thunks[j];
+            printf("  %.*s\n", (int) t->name.length, t->name.data);
+
+            imp->thunks[j].ds_address = import_table.count;
+            tb_out8b(&import_table, 0);
+        }
+
+        // these structures are null terminated :P
+        tb_out8b(&import_table, 0);
+    }
+
+    dyn_array_for(i, ctx.imports) {
+        ImportTable* imp = &ctx.imports[i];
+
+        // fill all the C strings and then backpatch
+        dyn_array_for(j, imp->thunks) {
+            ImportThunk* t = &imp->thunks[j];
+
+            uint32_t patch_pos = imp->thunks[j].ds_address;
+            tb_patch4b(&import_table, patch_pos, 0x1000 + import_table.count);
+
+            tb_out2b(&import_table, 0);
+            tb_out_reserve(&import_table, t->name.length + 1);
+            tb_outs_UNSAFE(&import_table, t->name.length, t->name.data);
+            tb_out1b_UNSAFE(&import_table, 0x00);
+
+        }
+    }
+    size_t text_base = align_up(0x1000 + import_table.count, 4096);
+
+    // generate trampolines
+    size_t trampolines_size = 6 * thunk_id_counter;
+    uint8_t* trampolines = malloc(trampolines_size);
+
+    loop(i, thunk_id_counter) {
+        // add trampoline JMP
+        // NOTE(NeGate): this is x64 specific, we can technically generate
+        // PE files for other platforms so that's something to think about
+        trampolines[i*6 + 0] = 0xFF;
+        trampolines[i*6 + 1] = 0x25;
+
+        uint32_t actual_pos = text_base + (i*6);
+        uint32_t target = iat_start + (i*8);
+
+        uint32_t p = (target - actual_pos) + 4;
+        memcpy(&trampolines[i*6 + 2], &p, sizeof(uint32_t));
+    }
+
     // Layout functions
-    size_t text_section_size = 0;
+    size_t text_section_size = align_up(trampolines_size, 16);
     size_t entrypoint = SIZE_MAX;
     loop(i, m->functions.count) {
         TB_FunctionOutput* out_f = m->functions.data[i].output;
         func_layout[i] = text_section_size;
         if (out_f == NULL) continue;
 
-        if (m->functions.data[i].name[0] == 'm') {
-            if (strcmp(m->functions.data[i].name, "main") == 0) {
-                entrypoint = text_section_size;
-            }
+        if (m->functions.data[i].name[0] == 'm' && strcmp(m->functions.data[i].name, "main") == 0) {
+            entrypoint = text_section_size;
         }
 
         uint64_t meta = out_f->prologue_epilogue_metadata;
@@ -142,11 +280,36 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         text_section_size += code_size;
     }
     func_layout[m->functions.count] = text_section_size;
-    assert(entrypoint != SIZE_MAX);
-    (void)entrypoint;
+    text_section_size = align_up(text_section_size, 4096);
+
+    if (entrypoint == SIZE_MAX) {
+        fprintf(stderr, "error: no entrypoint defined!\n");
+        return;
+    }
 
     // Target specific: resolve internal call patches
     code_gen->emit_call_patches(m, func_layout);
+
+    // Apply external relocations
+    loop(i, m->max_threads) {
+        loop(j, dyn_array_length(m->thread_info[i].ecall_patches)) {
+            TB_ExternFunctionPatch* patch = &m->thread_info[i].ecall_patches[j];
+            TB_FunctionOutput* out_f = patch->source->output;
+
+            uint64_t meta = out_f->prologue_epilogue_metadata;
+            uint64_t stack_usage = out_f->stack_usage;
+            uint8_t* code = out_f->code;
+
+            size_t actual_pos = func_layout[patch->source - m->functions.data] +
+                code_gen->get_prologue_length(meta, stack_usage) + patch->pos + 4;
+
+            ImportThunk* thunk = patch->target->address;
+            assert(thunk != NULL);
+
+            uint32_t p = (thunk->thunk_id * 6) - actual_pos;
+            memcpy(&code[patch->pos], &p, sizeof(uint32_t));
+        }
+    }
 
     FILE* f = fopen(path, "wb");
 
@@ -157,7 +320,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
     PE_Header header = {
         .magic = 0x00004550,
         .machine = 0x8664,
-        .section_count = 1,
+        .section_count = 2,
         .timestamp = time(NULL),
         .symbol_table = 0,
         .symbol_count = 0,
@@ -173,17 +336,17 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
     PE_OptionalHeader64 opt_header = {
         .magic = 0x20b,
 
-        .size_of_code = (text_section_size + 0xFFF) & ~0xFFF,
-        .size_of_initialized_data = 0,
+        .size_of_code = align_up(text_section_size, 0x1000),
+        .size_of_initialized_data = align_up(import_table.count, 0x1000),
         .size_of_uninitialized_data = 0,
 
-        .base_of_code = 0x1000,
+        .base_of_code = text_base,
 
         .section_alignment = 0x1000,
         .file_alignment = 0x200,
 
-        .image_base = 0x00400000,
-        .entrypoint = 0x1000,
+        .image_base = image_base,
+        .entrypoint = text_base + entrypoint,
 
         // 6.0
         .major_os_ver = 6,
@@ -193,7 +356,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         .major_subsystem_ver = 6,
         .minor_subsystem_ver = 0,
 
-        .size_of_image = 0x2000,
+        .size_of_image = text_base + text_section_size,
         .size_of_headers = (size_of_headers + 0x1FF) & ~0x1FF,
         .subsystem = 2 /* WINDOWS_GUI */,
 
@@ -201,25 +364,46 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         .size_of_stack_commit  = 4096,
 
         .rva_size_count = IMAGE_NUMBEROF_DIRECTORY_ENTRIES,
+        .data_directories = {
+            [IMAGE_DIRECTORY_ENTRY_IMPORT] = { 0x1000, import_table.count },
+            [IMAGE_DIRECTORY_ENTRY_RELOC]  = { },
+        }
     };
     fwrite(&opt_header, sizeof(opt_header), 1, f);
 
     // generate text section
     {
-        long data_pos = ftell(f) + sizeof(PE_SectionHeader);
+        long data_pos = ftell(f) + (header.section_count * sizeof(PE_SectionHeader));
         data_pos = (data_pos + 0x1FF) & ~0x1FF;
 
-        PE_SectionHeader sec = {
-            .name = { ".text" },
-            .virtual_size = text_section_size,
-            .virtual_address = 0x1000,
-            .size_of_raw_data = (text_section_size + 0x1FF) & ~0x1FF,
-            .pointer_to_raw_data = data_pos,
-            .characteristics = 0x60000020,
+        PE_SectionHeader sections[] = {
+            {
+                .name = { ".rdata" },
+                .virtual_size = import_table.count,
+                .virtual_address = 0x1000, // at the start of our section memory
+                .size_of_raw_data = (import_table.count + 0x1FF) & ~0x1FF,
+                .pointer_to_raw_data = data_pos,
+                .characteristics = IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_INITIALIZED_DATA,
+            },
+            {
+                .name = { ".text" },
+                .virtual_size = text_section_size,
+                .virtual_address = text_base,
+                .size_of_raw_data = (text_section_size + 0x1FF) & ~0x1FF,
+                .pointer_to_raw_data = align_up(data_pos + import_table.count, 0x1000),
+                .characteristics = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_CNT_CODE,
+            },
         };
-        fwrite(&sec, sizeof(sec), 1, f);
+        fwrite(sections, sizeof(sections), 1, f);
+        pad_file(tls, f, 0x00, 0x200);
 
-        pad_file(f, 0x00, 0x200);
+        assert(ftell(f) == sections[0].pointer_to_raw_data);
+        fwrite(import_table.data, import_table.count, 1, f);
+        pad_file(tls, f, 0x00, 0x1000);
+
+        assert(ftell(f) == sections[1].pointer_to_raw_data);
+        fwrite(trampolines, trampolines_size, 1, f);
+        pad_file(tls, f, 0xCC, 16);
 
         loop(i, m->functions.count) {
             TB_FunctionOutput* out_f = m->functions.data[i].output;
@@ -240,7 +424,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
             fwrite(code, code_size, 1, f);
             fwrite(epilogue, epilogue_len, 1, f);
         }
-        pad_file(f, 0xCC, 0x200);
+        pad_file(tls, f, 0xCC, 0x1000);
     }
 
     fclose(f);

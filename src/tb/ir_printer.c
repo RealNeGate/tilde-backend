@@ -31,6 +31,29 @@ static void tb_print_type(TB_DataType dt, TB_PrintCallback callback, void* user_
     }
 }
 
+static void print_string(TB_PrintCallback callback, void* user_data, const uint8_t* data, size_t length) {
+    if (length == 0) {
+        callback(user_data, "\"\"");
+        return;
+    }
+
+    // skip a null terminator
+    if (data[length - 1] == 0) length--;
+
+    size_t last = 0;
+    callback(user_data, "\"");
+    loop(i, length) {
+        if (data[i] <= 32 || data[i] >= 128) {
+            // print all the non-fancy chars
+            callback(user_data, "%.*s", (int)(i - last), data + last);
+            callback(user_data, "\\%02x", data[i]);
+            last = i + 1;
+        }
+    }
+
+    callback(user_data, "%.*s\"", (int)(length - last), data + last);
+}
+
 static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_data, TB_Node* restrict n) {
     TB_Reg i = TB_GET_REG(n, f);
     TB_NodeTypeEnum type = n->type;
@@ -55,7 +78,8 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
             break;
         }
         case TB_STRING_CONST: {
-            callback(user_data, "  r%-8u = string \"%.*s\"", i, (int)n->string.length, n->string.data);
+            callback(user_data, "  r%-8u = string ", i);
+            print_string(callback, user_data, (const uint8_t*) n->string.data, n->string.length);
             break;
         }
         case TB_LINE_INFO: {
@@ -301,7 +325,7 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
         case TB_SWITCH: {
             callback(user_data, " switch.");
             tb_print_type(dt, callback, user_data);
-            callback(user_data, " r%u (", n->switch_.key);
+            callback(user_data, " r%u (\n", n->switch_.key);
 
             size_t entry_start = n->switch_.entries_start;
             size_t entry_count = (n->switch_.entries_end - n->switch_.entries_start) / 2;
@@ -309,7 +333,7 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
             for (size_t j = 0; j < entry_count; j++) {
                 TB_SwitchEntry* e = (TB_SwitchEntry*)&f->vla.data[entry_start + (j * 2)];
 
-                callback(user_data, "    %u -> L%d,\n", e->key, e->value);
+                callback(user_data, "    %-8u -> L%d,\n", e->key, e->value);
             }
             callback(user_data, "    default -> L%d)", n->switch_.default_label);
             break;
@@ -382,6 +406,9 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
             tb_print_type(dt, callback, user_data);
             callback(user_data, " r%u", n->i_arith.a);
         }
+        break;
+        case TB_UNREACHABLE:
+        callback(user_data, "  unreachable");
         break;
         default: tb_todo();
     }

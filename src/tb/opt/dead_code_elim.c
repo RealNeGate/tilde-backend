@@ -36,6 +36,8 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
                     case TB_TRAP:
                     case TB_UNREACHABLE:
                     case TB_ATOMIC_XCHG:
+                    case TB_ATOMIC_CMPXCHG:
+                    case TB_ATOMIC_CMPXCHG2:
                     case TB_ATOMIC_ADD:
                     case TB_ATOMIC_SUB:
                     case TB_ATOMIC_AND:
@@ -122,6 +124,8 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
 }
 
 bool tb_opt_dead_block_elim(TB_Function* f) {
+    tb_panic("Fuck off");
+
     TB_TemporaryStorage* tls = tb_tls_allocate();
 
     int* pred_count = tb_tls_push(tls, f->label_count * sizeof(int));
@@ -146,6 +150,8 @@ bool tb_opt_dead_block_elim(TB_Function* f) {
                 if (n->label.id != 0 && pred_count[n->label.id] == 0) {
                     OPTIMIZER_LOG(i, "Killed unused BB");
 
+                    //tb_function_print2(f, tb_default_print_callback, stdout, true);
+
                     TB_Reg old_terminator = f->nodes[block].label.terminator;
                     TB_Reg new_terminator = n->label.terminator;
                     TB_Reg terminator_next = f->nodes[new_terminator].next;
@@ -163,6 +169,7 @@ bool tb_opt_dead_block_elim(TB_Function* f) {
                     tb_murder_reg(f, old_terminator);
 
                     tb_function_find_replace_reg(f, i, block);
+                    //tb_function_print2(f, tb_default_print_callback, stdout, true);
                     changes = true;
                 } else {
                     block = i;

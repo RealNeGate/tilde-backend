@@ -461,6 +461,7 @@ extern "C" {
             struct TB_NodeLocal {
                 TB_CharUnits size;
                 TB_CharUnits alignment;
+                const char* name;
             } local;
             struct TB_NodeUnary {
                 TB_Reg src;
@@ -892,7 +893,7 @@ extern "C" {
     TB_API TB_Reg tb_inst_float2int(TB_Function* f, TB_Reg src, TB_DataType dt, bool is_signed);
     TB_API TB_Reg tb_inst_bitcast(TB_Function* f, TB_Reg src, TB_DataType dt);
 
-    TB_API TB_Reg tb_inst_local(TB_Function* f, uint32_t size, TB_CharUnits align);
+    TB_API TB_Reg tb_inst_local(TB_Function* f, uint32_t size, TB_CharUnits align, const char* name);
     TB_API TB_Reg tb_inst_load(TB_Function* f, TB_DataType dt, TB_Reg addr, TB_CharUnits align);
     TB_API void tb_inst_store(TB_Function* f, TB_DataType dt, TB_Reg addr, TB_Reg val, TB_CharUnits align);
 

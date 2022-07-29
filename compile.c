@@ -164,6 +164,7 @@ int main(int argc, char* argv[]) {
             .unused_declarations = true,
         },
 
+        .use_asan = false,
         .debug_info = true
     };
 

@@ -263,6 +263,8 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
             case TB_PTR2INT: callback(user_data, "ptr2int."); break;
             case TB_FLOAT2INT: callback(user_data, "float2int."); break;
             case TB_INT2FLOAT: callback(user_data, "int2float."); break;
+            case TB_FLOAT2UINT: callback(user_data, "float2uint."); break;
+            case TB_UINT2FLOAT: callback(user_data, "uint2float."); break;
             case TB_TRUNCATE: callback(user_data, "trunc."); break;
             default: tb_todo();
         }

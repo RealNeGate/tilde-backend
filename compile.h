@@ -475,7 +475,7 @@ static void cc_invoke(const CC_Options* options, const char* input_path, const c
     }
 
     if (ON_CLANG) cmd_append(" -Wno-microsoft-enum-forward-reference -Wno-microsoft-anon-tag -Wno-gnu-designator");
-    if (options->use_asan) cmd_append(" -fsanitize=address");
+    if (options->use_asan) cmd_append(" -fsanitize=address -DUSING_DA_ASAN ");
 
     if (ON_WINDOWS) {
         cmd_append(" -D__inline=\"static __inline\"");

@@ -139,6 +139,7 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
             // alright to group them here.
             TB_Node* a = &f->nodes[n->i_arith.a];
             TB_Node* b = &f->nodes[n->i_arith.b];
+            TB_ArithmaticBehavior ab = n->i_arith.arith_behavior;
 
             // Move all integer constants to the right side
             bool is_aconst = (a->type == TB_INTEGER_CONST);
@@ -164,7 +165,9 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
                 extra->dt = n->dt;
                 extra->i_arith.a = y;
                 extra->i_arith.b = z;
+                extra->i_arith.arith_behavior = ab;
 
+                n = &f->nodes[i];
                 n->i_arith.a = x;
                 n->i_arith.b = extra_reg;
                 changes++;
@@ -188,6 +191,7 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
                     extra->integer.single_word = mask - 1;
 
                     // new AND operation to replace old MOD
+                    n = &f->nodes[i];
                     n->type = TB_AND;
                     n->i_arith.b = extra_reg;
                     changes++;
@@ -216,6 +220,7 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
                     .single_word = init->size
                 };
 
+                n = &f->nodes[i];
                 n->type = TB_MEMSET;
                 n->mem_op.dst = addr;
                 n->mem_op.src = imm_reg;
@@ -315,6 +320,7 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
                         TB_Reg a = n->array_access.base;
                         TB_Reg b = index->i_arith.a;
 
+                        n = &f->nodes[i];
                         n->type = TB_MEMBER_ACCESS;
                         n->dt = TB_TYPE_PTR;
                         n->member_access.base = new_array_reg;

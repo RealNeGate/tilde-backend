@@ -493,6 +493,15 @@ TB_API TB_Reg tb_inst_float(TB_Function* f, TB_DataType dt, double imm) {
     return r;
 }
 
+TB_API TB_Reg tb_inst_string(TB_Function* f, size_t len, const char* str) {
+    char* newstr = tb_platform_arena_alloc(len);
+    memcpy(newstr, str, len);
+
+    TB_Reg r = tb_make_reg(f, TB_STRING_CONST, TB_TYPE_PTR);
+    f->nodes[r].string = (struct TB_NodeString) { .length = len, .data = newstr };
+    return r;
+}
+
 TB_API TB_Reg tb_inst_cstring(TB_Function* f, const char* str) {
     size_t len = strlen(str);
     char* newstr = tb_platform_arena_alloc(len + 1);
@@ -501,15 +510,6 @@ TB_API TB_Reg tb_inst_cstring(TB_Function* f, const char* str) {
 
     TB_Reg r = tb_make_reg(f, TB_STRING_CONST, TB_TYPE_PTR);
     f->nodes[r].string = (struct TB_NodeString) { .length = len + 1, .data = newstr };
-    return r;
-}
-
-TB_API TB_Reg tb_inst_string(TB_Function* f, size_t len, const char* str) {
-    char* newstr = tb_platform_arena_alloc(len);
-    memcpy(newstr, str, len);
-
-    TB_Reg r = tb_make_reg(f, TB_STRING_CONST, TB_TYPE_PTR);
-    f->nodes[r].string = (struct TB_NodeString) { .length = len, .data = newstr };
     return r;
 }
 

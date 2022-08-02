@@ -48,6 +48,8 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
             unique_id_counter += 1;
         }
     }
+
+    string_table_cap += unique_id_counter;
     string_table_cap += m->functions.compiled_count;
 
     char** string_table = tb_platform_heap_alloc(string_table_cap * sizeof(const char*));
@@ -252,9 +254,14 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
                 // clear out space
                 memset(&data[g->pos], 0, init->size);
 
-                loop(k, init->obj_count) if (init->objects[k].type == TB_INIT_OBJ_REGION) {
-                    memcpy(&data[g->pos + init->objects[k].offset], init->objects[k].region.ptr,
-                        init->objects[k].region.size);
+                loop(k, init->obj_count) {
+                    if (init->objects[k].type == TB_INIT_OBJ_REGION) {
+                        memcpy(
+                            &data[g->pos + init->objects[k].offset],
+                            init->objects[k].region.ptr,
+                            init->objects[k].region.size
+                        );
+                    }
                 }
             }
         }

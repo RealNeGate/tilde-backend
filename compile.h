@@ -490,6 +490,7 @@ static void cc_invoke(const CC_Options* options, const char* input_path, const c
         cmd_append(" -I ");
         cmd_append(options->includes[i]);
     }
+
     cmd_append(" -c -o ");
     cmd_append(options->output_dir);
 

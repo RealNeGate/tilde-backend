@@ -43,10 +43,15 @@ static void print_string(TB_PrintCallback callback, void* user_data, const uint8
     size_t last = 0;
     callback(user_data, "\"");
     loop(i, length) {
-        if (data[i] <= 32 || data[i] >= 128) {
+        if (data[i] < 32 || data[i] >= 128) {
             // print all the non-fancy chars
             callback(user_data, "%.*s", (int)(i - last), data + last);
-            callback(user_data, "\\%02x", data[i]);
+            switch (data[i]) {
+                case '\r': callback(user_data, "\\r"); break;
+                case '\n': callback(user_data, "\\n"); break;
+                case '\e': callback(user_data, "\\e"); break;
+                default: callback(user_data, "\\%02x", data[i]); break;
+            }
             last = i + 1;
         }
     }

@@ -118,6 +118,11 @@ static void import_archive(LinkerCtx* restrict ctx, TB_ArchiveFile* restrict ar)
     }
 }
 
+static void align_up_emitter(TB_Emitter* e, size_t u) {
+    size_t pad = align_up(e->count, u) - e->count;
+    while (pad--) tb_out1b(e, 0x00);
+}
+
 void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_LinkerInput* restrict input, const char* path, const IDebugFormat* debug_fmt) {
     TB_TemporaryStorage* tls = tb_tls_allocate();
     LinkerCtx ctx = { .inputs = *input };
@@ -128,8 +133,6 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
     // Buffer stores all the positions of each
     // function relative to the .text section start.
     uint32_t* func_layout = tb_platform_heap_alloc((1+m->functions.count) * sizeof(uint32_t));
-
-    const size_t image_base = 0x00400000;
 
     // Generate import lookup table
     ctx.imports = dyn_array_create(ImportTable);
@@ -192,7 +195,6 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
     // null directory
     loop(i, 5) tb_out4b(&import_table, 0);
 
-    size_t iat_start = import_table.count;
     dyn_array_for(i, ctx.imports) {
         ImportTable* imp = &ctx.imports[i];
         printf("\nIMPORT FOR '%.*s'\n", (int) imp->libpath.length, imp->libpath.data);
@@ -206,6 +208,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
 
         // setup a patch for the thunk array and then fill it out
         tb_patch4b(&import_table, (i * 20) + 16, 0x1000 + import_table.count);
+
         dyn_array_for(j, imp->thunks) {
             ImportThunk* t = &imp->thunks[j];
             printf("  %.*s\n", (int) t->name.length, t->name.data);
@@ -218,6 +221,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         tb_out8b(&import_table, 0);
     }
 
+    size_t import_entry_count = 0;
     dyn_array_for(i, ctx.imports) {
         ImportTable* imp = &ctx.imports[i];
 
@@ -232,10 +236,46 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
             tb_out_reserve(&import_table, t->name.length + 1);
             tb_outs_UNSAFE(&import_table, t->name.length, t->name.data);
             tb_out1b_UNSAFE(&import_table, 0x00);
-
         }
+
+        import_entry_count += dyn_array_length(imp->thunks) + 1;
     }
-    size_t text_base = align_up(0x1000 + import_table.count, 4096);
+    align_up_emitter(&import_table, 16);
+
+    size_t iat_start = import_table.count;
+    {
+        // leave the IAT undefined for now, it's filled in in a sec
+        tb_out_reserve(&import_table, import_entry_count * 8);
+        tb_out_commit(&import_table, import_entry_count * 8);
+        align_up_emitter(&import_table, 16);
+    }
+
+    // fill in IAT correctly
+    import_entry_count = 0;
+    dyn_array_for(i, ctx.imports) {
+        ImportTable* imp = &ctx.imports[i];
+
+        size_t thunk_count = dyn_array_length(imp->thunks);
+        if (thunk_count != 0) {
+            // duplicate ILT into IAT
+            uint32_t src_pos = imp->thunks[0].ds_address;
+            uint32_t dst_pos = iat_start + (import_entry_count * 8);
+
+            // patch in IAT into the import directory table header
+            tb_patch4b(&import_table, (i * 20), 0x1000 + dst_pos);
+
+            memcpy(&import_table.data[dst_pos], &import_table.data[src_pos], thunk_count * 8);
+            // null termination
+            memset(&import_table.data[dst_pos + (thunk_count * 8)], 0, 8);
+        }
+
+        import_entry_count += thunk_count + 1;
+    }
+
+    size_t data_size = align_up(m->data_region_size, 512);
+    size_t rdata_size = align_up(import_table.count + m->rdata_region_size, 512);
+
+    size_t text_base = align_up(0x1000 + rdata_size, 4096);
 
     // generate trampolines
     size_t trampolines_size = 6 * thunk_id_counter;
@@ -249,7 +289,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         trampolines[i*6 + 1] = 0x25;
 
         uint32_t actual_pos = text_base + (i*6);
-        uint32_t target = iat_start + (i*8);
+        uint32_t target = 0x1000 + iat_start + (i*8);
 
         uint32_t p = (target - actual_pos) + 4;
         memcpy(&trampolines[i*6 + 2], &p, sizeof(uint32_t));
@@ -280,8 +320,9 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         text_section_size += code_size;
     }
     func_layout[m->functions.count] = text_section_size;
-    text_section_size = align_up(text_section_size, 4096);
+    text_section_size = align_up(text_section_size, 512);
 
+    size_t data_base = align_up(text_base + text_section_size, 4096);
     if (entrypoint == SIZE_MAX) {
         fprintf(stderr, "error: no entrypoint defined!\n");
         return;
@@ -291,6 +332,8 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
     code_gen->emit_call_patches(m, func_layout);
 
     // Apply external relocations
+    ptrdiff_t const_data_rva = 0x1000 + import_table.count;
+    ptrdiff_t global_data_rva = 0x1000 + import_table.count;
     loop(i, m->max_threads) {
         loop(j, dyn_array_length(m->thread_info[i].ecall_patches)) {
             TB_ExternFunctionPatch* patch = &m->thread_info[i].ecall_patches[j];
@@ -309,6 +352,39 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
             uint32_t p = (thunk->thunk_id * 6) - actual_pos;
             memcpy(&code[patch->pos], &p, sizeof(uint32_t));
         }
+
+        loop(j, dyn_array_length(m->thread_info[i].global_patches)) {
+            TB_GlobalPatch* patch = &m->thread_info[i].global_patches[j];
+            TB_FunctionOutput* out_f = patch->source->output;
+
+            uint64_t meta = out_f->prologue_epilogue_metadata;
+            uint64_t stack_usage = out_f->stack_usage;
+            uint8_t* code = out_f->code;
+
+            size_t actual_pos = func_layout[patch->source - m->functions.data] +
+                code_gen->get_prologue_length(meta, stack_usage) + patch->pos + 4;
+
+            const TB_Global* global = patch->target;
+            assert(global->storage == TB_STORAGE_DATA);
+
+            int32_t p = global_data_rva - actual_pos;
+            *((int32_t*)&code[patch->pos]) += p;
+        }
+
+        loop(j, dyn_array_length(m->thread_info[i].const_patches)) {
+            TB_ConstPoolPatch* patch = &m->thread_info[i].const_patches[j];
+            TB_FunctionOutput* out_f = patch->source->output;
+
+            uint64_t meta = out_f->prologue_epilogue_metadata;
+            uint64_t stack_usage = out_f->stack_usage;
+            uint8_t* code = out_f->code;
+
+            size_t actual_pos = text_base + func_layout[patch->source - m->functions.data] +
+                code_gen->get_prologue_length(meta, stack_usage) + patch->pos + 4;
+
+            int32_t p = const_data_rva - actual_pos;
+            *((int32_t*)&code[patch->pos]) += p;
+        }
     }
 
     FILE* f = fopen(path, "wb");
@@ -320,7 +396,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
     PE_Header header = {
         .magic = 0x00004550,
         .machine = 0x8664,
-        .section_count = 2,
+        .section_count = 3,
         .timestamp = time(NULL),
         .symbol_table = 0,
         .symbol_count = 0,
@@ -337,7 +413,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         .magic = 0x20b,
 
         .size_of_code = align_up(text_section_size, 0x1000),
-        .size_of_initialized_data = align_up(import_table.count, 0x1000),
+        .size_of_initialized_data = rdata_size + data_size,
         .size_of_uninitialized_data = 0,
 
         .base_of_code = text_base,
@@ -345,7 +421,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         .section_alignment = 0x1000,
         .file_alignment = 0x200,
 
-        .image_base = image_base,
+        .image_base = 0x00400000,
         .entrypoint = text_base + entrypoint,
 
         // 6.0
@@ -356,7 +432,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         .major_subsystem_ver = 6,
         .minor_subsystem_ver = 0,
 
-        .size_of_image = text_base + text_section_size,
+        .size_of_image = data_base + data_size,
         .size_of_headers = (size_of_headers + 0x1FF) & ~0x1FF,
         .subsystem = 2 /* WINDOWS_GUI */,
 
@@ -366,40 +442,61 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         .rva_size_count = IMAGE_NUMBEROF_DIRECTORY_ENTRIES,
         .data_directories = {
             [IMAGE_DIRECTORY_ENTRY_IMPORT] = { 0x1000, import_table.count },
-            [IMAGE_DIRECTORY_ENTRY_RELOC]  = { },
+            [IMAGE_DIRECTORY_ENTRY_IAT]  = { 0x1000 + iat_start, import_entry_count * 8 },
         }
     };
     fwrite(&opt_header, sizeof(opt_header), 1, f);
 
     // generate text section
     {
-        long data_pos = ftell(f) + (header.section_count * sizeof(PE_SectionHeader));
-        data_pos = (data_pos + 0x1FF) & ~0x1FF;
+        long section_raw_data_pos = ftell(f) + (header.section_count * sizeof(PE_SectionHeader));
+        section_raw_data_pos = align_up(section_raw_data_pos, 512);
 
         PE_SectionHeader sections[] = {
             {
                 .name = { ".rdata" },
-                .virtual_size = import_table.count,
+                .virtual_size = rdata_size,
                 .virtual_address = 0x1000, // at the start of our section memory
-                .size_of_raw_data = (import_table.count + 0x1FF) & ~0x1FF,
-                .pointer_to_raw_data = data_pos,
+                .size_of_raw_data = rdata_size,
+                .pointer_to_raw_data = section_raw_data_pos,
                 .characteristics = IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_INITIALIZED_DATA,
             },
             {
                 .name = { ".text" },
                 .virtual_size = text_section_size,
                 .virtual_address = text_base,
-                .size_of_raw_data = (text_section_size + 0x1FF) & ~0x1FF,
-                .pointer_to_raw_data = align_up(data_pos + import_table.count, 0x1000),
+                .size_of_raw_data = text_section_size,
+                .pointer_to_raw_data = section_raw_data_pos + rdata_size,
                 .characteristics = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_CNT_CODE,
+            },
+            {
+                .name = { ".data" },
+                .virtual_size = data_size,
+                .virtual_address = data_base,
+                .size_of_raw_data = data_size,
+                .pointer_to_raw_data = section_raw_data_pos + rdata_size + text_section_size,
+                .characteristics = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE,
             },
         };
         fwrite(sections, sizeof(sections), 1, f);
         pad_file(tls, f, 0x00, 0x200);
 
-        assert(ftell(f) == sections[0].pointer_to_raw_data);
-        fwrite(import_table.data, import_table.count, 1, f);
-        pad_file(tls, f, 0x00, 0x1000);
+        {
+            assert(ftell(f) == sections[0].pointer_to_raw_data);
+            fwrite(import_table.data, import_table.count, 1, f);
+
+            char* rdata = tb_platform_heap_alloc(m->rdata_region_size);
+            loop(i, m->max_threads) {
+                loop(j, dyn_array_length(m->thread_info[i].const_patches)) {
+                    TB_ConstPoolPatch* p = &m->thread_info[i].const_patches[j];
+                    memcpy(&rdata[p->rdata_pos], p->data, p->length);
+                }
+            }
+
+            fwrite(rdata, m->rdata_region_size, 1, f);
+            pad_file(tls, f, 0x00, 0x200);
+            tb_platform_heap_free(rdata);
+        }
 
         assert(ftell(f) == sections[1].pointer_to_raw_data);
         fwrite(trampolines, trampolines_size, 1, f);
@@ -424,7 +521,39 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
             fwrite(code, code_size, 1, f);
             fwrite(epilogue, epilogue_len, 1, f);
         }
-        pad_file(tls, f, 0xCC, 0x1000);
+        pad_file(tls, f, 0xCC, 0x200);
+
+        assert(ftell(f) == sections[2].pointer_to_raw_data);
+        {
+            char* data = tb_platform_heap_alloc(m->data_region_size);
+
+            loop(i, m->max_threads) {
+                pool_for(TB_Global, g, m->thread_info[i].globals) {
+                    if (g->storage != TB_STORAGE_DATA) continue;
+                    TB_Initializer* init = g->init;
+
+                    // clear out space
+                    memset(&data[g->pos], 0, init->size);
+
+                    loop(k, init->obj_count) {
+                        if (init->objects[k].type == TB_INIT_OBJ_REGION) {
+                            memcpy(
+                                &data[g->pos + init->objects[k].offset],
+                                init->objects[k].region.ptr,
+                                init->objects[k].region.size
+                            );
+                        } else {
+                            tb_todo();
+                        }
+                    }
+                }
+            }
+
+            fwrite(data, m->data_region_size, 1, f);
+            tb_platform_heap_free(data);
+
+            pad_file(tls, f, 0xCC, 0x200);
+        }
     }
 
     fclose(f);

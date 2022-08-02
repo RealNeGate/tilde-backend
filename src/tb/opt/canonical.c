@@ -576,6 +576,7 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
                     seq = &f->nodes[seq->next];
                 } while (seq->type == TB_LABEL && seq != end);
 
+                assert(bb_end >= 0);
                 n->next = bb_start;
                 n->label.terminator = bb_end;
                 changes++;

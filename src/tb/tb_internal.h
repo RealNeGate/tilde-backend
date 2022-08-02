@@ -75,14 +75,14 @@ typedef struct TB_Emitter {
 #define TB_GET_REG(node, f) ((node) - (f)->nodes)
 
 #define TB_FOR_EACH_NODE(elem, f) \
-for (TB_Node *n_ = f->nodes, *elem = &n_[1]; elem != n_; elem = &n_[elem->next])
+for (TB_Node* elem = &f->nodes[1]; elem != f->nodes; elem = &f->nodes[elem->next])
 
 #define TB_FOR_EACH_NODE_AFTER(elem, start, f) \
-for (TB_Node *n_ = f->nodes, *elem = &n_[(start)->next]; elem != n_; elem = &n_[elem->next])
+for (TB_Node* elem = &f->nodes[(start)->next]; elem != f->nodes; elem = &f->nodes[elem->next])
 
 #define TB_FOR_EACH_NODE_BB(elem, f, start) \
-for (TB_Node *n_ = f->nodes, *elem = &n_[n_[start].next]; elem != n_ && elem->type != TB_LABEL; \
-    elem = &n_[elem->next])
+for (TB_Node* elem = &f->nodes[f->nodes[start].next]; elem != f->nodes && elem->type != TB_LABEL; \
+    elem = &f->nodes[elem->next])
 
 #define TB_FOR_EACH_NODE_RANGE(elem, f, start, end) \
 for (TB_Node* elem = &f->nodes[start], *end__ = &f->nodes[end]; elem != end__; \
@@ -566,7 +566,7 @@ do {                     \
 #else
 #define tb_todo()            __builtin_trap()
 #define tb_unreachable()     __builtin_unreachable()
-#define tb_assume(condition) __builtin_unreachable()
+#define tb_assume(condition) ((condition) ? 0 : (void) __builtin_unreachable())
 #endif
 #endif
 

@@ -125,9 +125,11 @@ static bool is_address_node(TB_Function* f, TB_Reg r) {
 
 static bool fits_into_int32(TB_Node* n) {
     if (n->type == TB_INTEGER_CONST &&
-        n->integer.num_words == 1 &&
-        FITS_INTO(n->integer.single_word, int32_t)) {
-        return true;
+        n->integer.num_words == 1) {
+        uint64_t x = n->integer.single_word;
+        int32_t y = x & 0xFFFFFFFF;
+
+        return (int64_t)y == x;
     }
 
     return false;
@@ -350,6 +352,10 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
                     tb_panic("TB error: no tls_index provided\n");
                 }
 
+                /*if (strcmp(f->name, "tls_push") == 0) {
+                    __debugbreak();
+                }*/
+
                 // since t0 dies before dst is allocated we just recycle it
                 // mov t0, dword    [_tls_index]
                 Val dst = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, r));
@@ -365,7 +371,7 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
                 // mov t1, qword gs:[58h]
                 Val t1 = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
                 *ctx->header.out++ = 0x65;
-                *ctx->header.out++ = t1.gpr >= 8 ? 0x49 : 0x48;
+                *ctx->header.out++ = t1.gpr >= 8 ? 0x4C : 0x48;
                 *ctx->header.out++ = 0x8B;
                 *ctx->header.out++ = mod_rx_rm(MOD_INDIRECT, t1.gpr, RSP);
                 *ctx->header.out++ = mod_rx_rm(SCALE_X1, RSP, RBP);
@@ -379,7 +385,7 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
                 INST2(MOV, &t1, &mem, TB_TYPE_I64);
 
                 // lea addr,        [t1+relocation]
-                *ctx->header.out++ = rex(true, dst.gpr, RBP, 0);
+                *ctx->header.out++ = rex(true, dst.gpr, t1.gpr, 0);
                 *ctx->header.out++ = 0x8D;
                 if ((t1.gpr & 7) == RSP) {
                     *ctx->header.out++ = mod_rx_rm(MOD_INDIRECT_DISP32, dst.gpr, RSP);

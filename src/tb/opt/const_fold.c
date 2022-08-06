@@ -87,24 +87,23 @@ bool tb_opt_fold(TB_Function* f) {
                         break;
                     }
                     case TB_ADD: {
-                        if (tb_add_overflow(ai << shift, bi << shift, &result)) {
-                            result >>= shift;
+                        bool ovr = tb_add_overflow(ai << shift, bi << shift, &result);
 
-                            if (ab == TB_CAN_WRAP) result &= mask;
-                            else if (ab == TB_SATURATED_UNSIGNED) result = mask;
-                            else if (ab == TB_SATURATED_SIGNED) tb_todo();
+                        if ((ab & TB_ARITHMATIC_NUW) && ovr) {
+                            OPTIMIZER_LOG(n - f->nodes, "add overflow poison");
+                            n->type = TB_POISON;
+                            goto skip_normal_const;
                         } else {
                             result = (result >> shift) & mask;
                         }
                         break;
                     }
                     case TB_SUB: {
-                        if (tb_sub_overflow(ai << shift, bi << shift, &result)) {
-                            result >>= shift;
-
-                            if (ab == TB_CAN_WRAP) result &= mask;
-                            else if (ab == TB_SATURATED_UNSIGNED) result = mask;
-                            else if (ab == TB_SATURATED_SIGNED) tb_todo();
+                        bool ovr = tb_sub_overflow(ai << shift, bi << shift, &result);
+                        if ((ab & TB_ARITHMATIC_NUW) && ovr) {
+                            OPTIMIZER_LOG(n - f->nodes, "add overflow poison");
+                            n->type = TB_POISON;
+                            goto skip_normal_const;
                         } else {
                             result = (result >> shift) & mask;
                         }
@@ -113,19 +112,14 @@ bool tb_opt_fold(TB_Function* f) {
                     case TB_MUL: {
                         TB_MultiplyResult res = tb_mul64x128(ai, bi);
 
-                        if ((res.lo & ~mask) || res.hi) {
-                            result = res.lo & mask;
-
-                            if (ab == TB_SATURATED_SIGNED) {
-                                tb_todo();
-                                result = ((int64_t)res.lo) >= 0 ? INT64_MAX : INT64_MIN;
-                            } else if (ab == TB_SATURATED_UNSIGNED) {
-                                result = UINT64_MAX;
-                            } else if (ab == TB_SIGNED_TRAP_ON_WRAP) {
-                                tb_panic("compile time trap");
-                            } else if (ab == TB_UNSIGNED_TRAP_ON_WRAP) {
-                                tb_panic("compile time trap");
-                            }
+                        if ((ab & TB_ARITHMATIC_NUW) && (res.hi || res.lo & ~mask)) {
+                            OPTIMIZER_LOG(n - f->nodes, "multiply overflow poison");
+                            n->type = TB_POISON;
+                            goto skip_normal_const;
+                        } else if ((ab & TB_ARITHMATIC_NSW) && res.hi != res.lo >> 63) {
+                            OPTIMIZER_LOG(n - f->nodes, "multiply overflow poison");
+                            n->type = TB_POISON;
+                            goto skip_normal_const;
                         } else {
                             result = res.lo & mask;
                         }

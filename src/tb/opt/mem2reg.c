@@ -416,15 +416,11 @@ static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_
     // and thus we can't mem2reg
     int use_count = 0;
 
-    #define X(reg) \
-    if (reg == address) use_count += 1;
     TB_FOR_EACH_NODE(n, f) {
-        switch (n->type) {
-            TB_FOR_EACH_REG_IN_NODE(X);
-            default: tb_todo();
+        TB_FOR_INPUT_IN_NODE(it, f, n) {
+            if (it.r == address) use_count += 1;
         }
     }
-    #undef X
 
     int value_based_use_count = 0;
     int pointer_size = tb__find_code_generator(f->module)->pointer_size;

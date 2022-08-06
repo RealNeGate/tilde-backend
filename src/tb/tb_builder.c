@@ -421,6 +421,7 @@ TB_API TB_Reg tb_inst_load(TB_Function* f, TB_DataType dt, TB_Reg addr, TB_CharU
 TB_API void tb_inst_store(TB_Function* f, TB_DataType dt, TB_Reg addr, TB_Reg val, uint32_t alignment) {
     tb_assume(addr);
     tb_assume(val);
+    tb_assume(TB_DATA_TYPE_EQUALS(dt, f->nodes[val].dt));
 
     TB_Reg r = tb_make_reg(f, TB_STORE, dt);
     f->nodes[r].store = (struct TB_NodeStore) {
@@ -647,7 +648,7 @@ TB_API TB_Reg tb_inst_neg(TB_Function* f, TB_Reg n) {
 
 TB_API TB_Reg tb_inst_and(TB_Function* f, TB_Reg a, TB_Reg b) {
     // bitwise operators can't wrap
-    return tb_bin_arith(f, TB_AND, TB_ASSUME_NUW, a, b);
+    return tb_bin_arith(f, TB_AND, 0, a, b);
 }
 
 TB_API TB_Reg tb_inst_or(TB_Function* f, TB_Reg a, TB_Reg b) {
@@ -660,12 +661,12 @@ TB_API TB_Reg tb_inst_or(TB_Function* f, TB_Reg a, TB_Reg b) {
         }
     }
 
-    return tb_bin_arith(f, TB_OR, TB_ASSUME_NUW, a, b);
+    return tb_bin_arith(f, TB_OR, 0, a, b);
 }
 
 TB_API TB_Reg tb_inst_xor(TB_Function* f, TB_Reg a, TB_Reg b) {
     // bitwise operators can't wrap
-    return tb_bin_arith(f, TB_XOR, TB_ASSUME_NUW, a, b);
+    return tb_bin_arith(f, TB_XOR, 0, a, b);
 }
 
 TB_API TB_Reg tb_inst_select(TB_Function* f, TB_Reg cond, TB_Reg a, TB_Reg b) {
@@ -691,12 +692,12 @@ TB_API TB_Reg tb_inst_mul(TB_Function* f, TB_Reg a, TB_Reg b, TB_ArithmaticBehav
 
 TB_API TB_Reg tb_inst_div(TB_Function* f, TB_Reg a, TB_Reg b, bool signedness) {
     // division can't wrap or overflow
-    return tb_bin_arith(f, signedness ? TB_SDIV : TB_UDIV, TB_ASSUME_NUW, a, b);
+    return tb_bin_arith(f, signedness ? TB_SDIV : TB_UDIV, 0, a, b);
 }
 
 TB_API TB_Reg tb_inst_mod(TB_Function* f, TB_Reg a, TB_Reg b, bool signedness) {
     // modulo can't wrap or overflow
-    return tb_bin_arith(f, signedness ? TB_SMOD : TB_UMOD, TB_ASSUME_NUW, a, b);
+    return tb_bin_arith(f, signedness ? TB_SMOD : TB_UMOD, 0, a, b);
 }
 
 TB_API TB_Reg tb_inst_shl(TB_Function* f, TB_Reg a, TB_Reg b, TB_ArithmaticBehavior arith_behavior) {
@@ -823,12 +824,12 @@ TB_API TB_CmpXchgResult tb_inst_atomic_cmpxchg(TB_Function* f, TB_Reg addr, TB_R
 // operator that has different arithmatic behaviors, maybe like trap on a large shift amount
 TB_API TB_Reg tb_inst_sar(TB_Function* f, TB_Reg a, TB_Reg b) {
     // shift right can't wrap or overflow
-    return tb_bin_arith(f, TB_SAR, TB_ASSUME_NUW, a, b);
+    return tb_bin_arith(f, TB_SAR, 0, a, b);
 }
 
 TB_API TB_Reg tb_inst_shr(TB_Function* f, TB_Reg a, TB_Reg b) {
     // shift right can't wrap or overflow
-    return tb_bin_arith(f, TB_SHR, TB_ASSUME_NUW, a, b);
+    return tb_bin_arith(f, TB_SHR, 0, a, b);
 }
 
 TB_API TB_Reg tb_inst_fadd(TB_Function* f, TB_Reg a, TB_Reg b) {
@@ -858,7 +859,7 @@ TB_API TB_Reg tb_inst_va_start(TB_Function* f, TB_Reg a) {
 TB_API TB_Reg tb_inst_x86_ldmxcsr(TB_Function* f, TB_Reg a) {
     assert(f->nodes[a].dt.type == TB_INT && f->nodes[a].dt.data == 32);
 
-    TB_Reg r = tb_make_reg(f, TB_X86INTRIN_SQRT, TB_TYPE_I32);
+    TB_Reg r = tb_make_reg(f, TB_X86INTRIN_LDMXCSR, TB_TYPE_I32);
     f->nodes[r].unary = (struct TB_NodeUnary) { a };
     return r;
 }

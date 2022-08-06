@@ -7,8 +7,10 @@
 // #define GAD_NUM_REG_FAMILIES 2
 // #define GAD_REGS_IN_FAMILY 16
 // #define GAD_VAL MyCpuVal
+// ...
 // #include "generic_addrdesc.h"
 //
+// Explanations:
 static_assert(sizeof(float) == sizeof(uint32_t), "lil bitch... float gotta be 32bit");
 static_assert(sizeof(double) == sizeof(uint64_t), "big bitch... double gotta be 64bit");
 
@@ -23,6 +25,13 @@ static thread_local size_t s_local_thread_id;
 // We really only need the position where to patch
 // it since it's all internal and the target is implicit.
 typedef uint32_t ReturnPatch;
+
+// this would represent a set of instructions which pipe results into each other.
+// it is the user's responsibility to know when the chain should be cut and this
+// process is known as tiling *technically*.
+typedef struct InstThread {
+    TB_Reg r;
+} InstThread;
 
 typedef struct LabelPatch {
     int pos;
@@ -137,6 +146,100 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
     };
 }
 
+static void GAD_EXPORT(get_data_type_size)(TB_DataType dt, TB_CharUnits* out_size, TB_CharUnits* out_align) {
+    switch (dt.type) {
+        case TB_INT: {
+            // round up bits to a byte
+            bool is_big_int = dt.data > 64;
+            int bits = is_big_int ? ((dt.data + 7) / 8) : tb_next_pow2(dt.data);
+
+            *out_size  = ((bits+7) / 8) << dt.width;
+            *out_align = is_big_int ? 8 : bits/8;
+            break;
+        }
+        case TB_FLOAT: {
+            int s = 0;
+            if (dt.data == TB_FLT_32) s = 4;
+            else if (dt.data == TB_FLT_64) s = 8;
+            else tb_unreachable();
+
+            *out_size = s << dt.width;
+            *out_align = s;
+            break;
+        }
+        case TB_PTR: {
+            *out_size = 8;
+            *out_align = 8;
+            break;
+        }
+        default: tb_unreachable();
+    }
+}
+
+static bool GAD_EXPORT(fits_into_int32)(TB_Node* n) {
+    if (n->type == TB_INTEGER_CONST &&
+        n->integer.num_words == 1) {
+        uint64_t x = n->integer.single_word;
+        int32_t y = x & 0xFFFFFFFF;
+
+        return (int64_t)y == x;
+    }
+
+    return false;
+}
+
+static void GAD_EXPORT(emit_call_patches)(TB_Module* restrict m, uint32_t* restrict func_layout) {
+
+}
+
+static void GAD_EXPORT(spill_if_running_out)(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Reg bb_end) {
+    loop(i, GAD_NUM_REG_FAMILIES) {
+        if (ctx->regs_available[i] < 4) {
+            tb_todo();
+        }
+    }
+}
+
+static void GAD_EXPORT(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Reg bb_end) {
+    // first node in the basic block
+    bb = f->nodes[bb].next;
+    if (bb == bb_end) return;
+
+    TB_FOR_EACH_NODE_RANGE(n, f, bb, bb_end) {
+        TB_Reg r = n - f->nodes;
+
+        TB_Node* restrict n = &f->nodes[r];
+        TB_NodeTypeEnum reg_type = n->type;
+        // TB_DataType dt = n->dt;
+
+        // spilling
+        GAD_EXPORT(spill_if_running_out)(ctx, f, bb, bb_end);
+
+        switch (reg_type) {
+            case TB_NULL:
+            case TB_PARAM:
+            case TB_PHI1:
+            case TB_PHI2:
+            case TB_PHIN:
+            case TB_GLOBAL_ADDRESS:
+            case TB_PARAM_ADDR:
+            case TB_LOCAL:
+            break;
+
+            case TB_INTEGER_CONST:
+            if (!GAD_EXPORT(fits_into_int32)(n)) {
+                // assert(dt.type == TB_PTR || (dt.type == TB_INT && dt.data <= 64));
+
+                tb_todo();
+            }
+            break;
+
+            default:
+            tb_todo();
+        }
+    }
+}
+
 static TB_FunctionOutput GAD_EXPORT(compile_function)(TB_FunctionID id, TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
     s_local_thread_id = local_thread_id;
     TB_TemporaryStorage* tls = tb_tls_allocate();
@@ -162,7 +265,11 @@ static TB_FunctionOutput GAD_EXPORT(compile_function)(TB_FunctionID id, TB_Funct
         f->lines = tb_platform_arena_alloc(tally.line_info_count * sizeof(TB_Line));
 
         memset(ctx->addresses, 0, f->node_count * sizeof(AddressDesc));
+
+        GAD_INITIAL_REG_ALLOC(ctx);
     }
+
+    tb_function_print(f, tb_default_print_callback, stdout);
 
     // Analyze function for stack, use counts and phi nodes
     tb_function_calculate_use_count(f, ctx->use_count);
@@ -198,6 +305,7 @@ static TB_FunctionOutput GAD_EXPORT(compile_function)(TB_FunctionID id, TB_Funct
         ctx->labels[label_id] = GET_CODE_POS();
 
         // Generate instructions per BB
+        GAD_EXPORT(eval_bb)(ctx, f, bb, bb_end);
 
         // Evaluate the terminator
         TB_Node* next_bb = end;

@@ -31,8 +31,7 @@ inline static void emit_memory_operand(X64_CtxHeader* restrict ctx, uint8_t rx, 
         // and write the real base into the SIB
         uint8_t mod = MOD_INDIRECT_DISP32;
         if (disp == 0 && (base & 7) != RBP) mod = MOD_INDIRECT;
-        else if (disp == (int8_t)disp)
-            mod = MOD_INDIRECT_DISP8;
+        else if (disp == (int8_t)disp) mod = MOD_INDIRECT_DISP8;
 
         EMIT(mod_rx_rm(mod, rx, needs_index ? RSP : base));
         if (needs_index) { EMIT(mod_rx_rm(scale, (base & 7) == RSP ? RSP : index, base)); }

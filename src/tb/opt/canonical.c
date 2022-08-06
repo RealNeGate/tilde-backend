@@ -454,7 +454,7 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
                     }
                 }
 
-                if (new_length != n->phi.count) {
+                if (new_length != count) {
                     // Pass it off to more permanent storage
                     if (n->type == TB_PHIN) {
                         tb_platform_heap_free(inputs);
@@ -588,20 +588,21 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
 }
 
 TB_API bool tb_opt_canonicalize(TB_Function* f) {
+    static TB_FunctionPass opts[] = {
+        { "canonicalize_phase1", tb_opt_canonicalize_phase1 },
+        { "subexpr_elim",        tb_opt_subexpr_elim },
+        { "remove_pass_node",    tb_opt_remove_pass_node },
+        { "fold",                tb_opt_fold },
+        { "strength",            tb_opt_strength_reduction },
+        { "dead_expr_elim",      tb_opt_dead_expr_elim }
+    };
+
     bool changes = false;
-    while (true) {
-        bool iteration_changes = false;
-
-        iteration_changes |= tb_opt_canonicalize_phase1(f);
-        iteration_changes |= tb_opt_subexpr_elim(f);
-        iteration_changes |= tb_opt_remove_pass_node(f);
-        iteration_changes |= tb_opt_fold(f);
-        iteration_changes |= tb_opt_strength_reduction(f);
-        iteration_changes |= tb_opt_dead_expr_elim(f);
-        //iteration_changes |= tb_opt_dead_block_elim(f);
-
-        if (iteration_changes) changes = true;
-        else break;
+    retry: {
+        if (tb_function_optimize(f, COUNTOF(opts), opts)) {
+            changes = true;
+            goto retry;
+        }
     }
 
     return changes;

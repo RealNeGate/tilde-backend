@@ -19,19 +19,6 @@ extern "C" {
     #define TB_VERSION_MINOR 2
     #define TB_VERSION_PATCH 0
 
-    #ifndef TB_MAX_THREADS
-    #define TB_MAX_THREADS 16
-    #endif
-
-    // Per-thread
-    #ifndef TB_TEMPORARY_STORAGE_SIZE
-    #define TB_TEMPORARY_STORAGE_SIZE (1 << 20)
-    #endif
-
-    #ifndef TB_MAX_FUNCTIONS
-    #define TB_MAX_FUNCTIONS (1 << 22)
-    #endif
-
     #define TB_API extern
 
     #define TB_HOST_UNKNOWN 0
@@ -43,27 +30,10 @@ extern "C" {
     #define TB_HOST_ARCH TB_HOST_UNKNOWN
     #endif
 
-    typedef enum {
-        // No overflow will assume the value does not
-        // overflow and if it does this can be considered
-        // undefined behavior with unknown consequences.
-        // no signed wrap
-        TB_ASSUME_NSW,
-        // no unsigned wrap
-        TB_ASSUME_NUW,
-
-        // Wrapping will allow the integer to safely wrap.
-        TB_CAN_WRAP,
-
-        // Overflow check will throw an error if the result
-        // cannot be represented in the resulting type.
-        TB_SIGNED_TRAP_ON_WRAP,
-        TB_UNSIGNED_TRAP_ON_WRAP,
-
-        // Saturated arithmatic will clamp the results in the
-        // event of overflow/underflow.
-        TB_SATURATED_UNSIGNED,
-        TB_SATURATED_SIGNED
+    // These are flags
+    typedef enum TB_ArithmaticBehavior {
+        TB_ARITHMATIC_NSW = 1,
+        TB_ARITHMATIC_NUW = 2,
     } TB_ArithmaticBehavior;
 
     typedef enum TB_DebugFormat {
@@ -850,13 +820,30 @@ extern "C" {
     TB_API void tb_function_append_attrib(TB_Function* f, TB_Reg r, TB_AttributeID a);
 
     ////////////////////////////////
-    // Function IR Generation
+    // Debug info Generation
     ////////////////////////////////
     TB_API const TB_DebugType* tb_debug_get_void(TB_Module* m);
     TB_API const TB_DebugType* tb_debug_get_integer(TB_Module* m, bool is_signed, int bits);
     TB_API const TB_DebugType* tb_debug_get_float(TB_Module* m, TB_FloatFormat fmt);
     TB_API const TB_DebugType* tb_debug_create_ptr(TB_Module* m, const TB_DebugType* base);
     TB_API const TB_DebugType* tb_debug_create_array(TB_Module* m, const TB_DebugType* base, size_t count);
+
+    ////////////////////////////////
+    // IR access
+    ////////////////////////////////
+    typedef struct TB_NodeInputIter {
+        TB_Reg r;
+
+        // private
+        int index_;
+        TB_Reg parent_;
+    } TB_NodeInputIter;
+
+    #define TB_FOR_INPUT_IN_REG(it, f, parent) for (TB_NodeInputIter it = { .parent_ = (n) }; tb_next_node_input(f, &it);)
+    #define TB_FOR_INPUT_IN_NODE(it, f, parent) for (TB_NodeInputIter it = { .parent_ = (n) - f->nodes }; tb_next_node_input(f, &it);)
+
+    TB_API TB_NodeInputIter tb_node_input_iter(TB_Reg r);
+    TB_API bool tb_next_node_input(const TB_Function* f, TB_NodeInputIter* iter);
 
     ////////////////////////////////
     // Function IR Generation
@@ -1034,7 +1021,7 @@ extern "C" {
     ////////////////////////////////
     // Optimizer
     ////////////////////////////////
-    typedef struct {
+    typedef struct TB_FunctionPass {
         const char* name;
 
         // if execute is NULL, we try to load a LUA file for the pass
@@ -1042,7 +1029,7 @@ extern "C" {
         void* l_state;
     } TB_FunctionPass;
 
-    typedef struct {
+    typedef struct TB_OptimizerCallback {
         // invoked once before any passes are run in tb_function_optimize
         void (*start)(void* user_data, TB_Function* f, const TB_FunctionPass* pass);
 
@@ -1073,6 +1060,7 @@ extern "C" {
     TB_API void tb_free_loop_info(TB_LoopInfo loops);
 
     // passes
+    TB_API bool tb_opt_canonicalize(TB_Function* f);
     TB_API bool tb_opt_merge_rets(TB_Function* f);
     TB_API bool tb_opt_mem2reg(TB_Function* f);
     TB_API bool tb_opt_branchless(TB_Function* f);
@@ -1084,7 +1072,6 @@ extern "C" {
     TB_API bool tb_opt_load_elim(TB_Function* f);
     TB_API bool tb_opt_hoist_invariants(TB_Function* f);
     TB_API bool tb_opt_hoist_locals(TB_Function* f);
-    TB_API bool tb_opt_canonicalize(TB_Function* f);
     TB_API bool tb_opt_deshort_circuit(TB_Function* f);
     TB_API bool tb_opt_remove_pass_node(TB_Function* f);
     TB_API bool tb_opt_strength_reduction(TB_Function* f);

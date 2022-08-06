@@ -20,7 +20,7 @@ static const IDebugFormat* tb_find_debug_format(TB_Module* m) {
 
 ICodeGen* tb__find_code_generator(TB_Module* m) {
     switch (m->target_arch) {
-        case TB_ARCH_X86_64: return &tb__x64_codegen;
+        case TB_ARCH_X86_64: return &tb__x64_codegen; // tb__x64_codegen;
         case TB_ARCH_AARCH64: return &tb__aarch64_codegen;
         default: return NULL;
     }
@@ -46,8 +46,8 @@ static TB_CodeRegion* get_or_allocate_code_region(TB_Module* m, int tid) {
     return m->code_regions[tid];
 }
 
-// TODO(NeGate): Doesn't free the name, it's kept forever
 TB_API void tb_function_free(TB_Function* f) {
+    // NOTE(NeGate): Doesn't free the name, it's kept forever
     if (f->nodes == NULL) return;
 
     tb_platform_heap_free(f->nodes);

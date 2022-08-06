@@ -30,7 +30,28 @@ bool tb_opt_refinement(TB_Function* f) {
     tb_function_print2(f, tb_default_print_callback, stdout, false);
 
     loop(i, loops.count) {
-        TB_Reg loop_header = tb_find_reg_from_label(f, loops.loops[i].header);
+        const TB_Loop* l = &loops.loops[i];
+
+        TB_Reg loop_header = tb_find_reg_from_label(f, l->header);
+        TB_Label loop_header_id = f->nodes[loop_header].label.id;
+
+        // check for which predeccessors actually exist outside of the loop, these
+        TB_Label loop_entry_id = 0;
+        loop(j, preds.count[loop_header_id]) {
+            if (preds.preds[loop_header_id][j] != l->backedge) {
+                if (loop_entry_id != 0) {
+                    loop_entry_id = 0;
+                    break;
+                }
+
+                loop_entry_id = preds.preds[loop_header_id][j];
+            }
+        }
+
+        if (loop_entry_id == 0) continue;
+
+        // we have one clean predecessor which we can use to track initial loop state
+
 
         // we're just gonna work with the assumption that this is always gonna
         // be an IF with one of the edges pointing out, there's different kinds
@@ -38,8 +59,8 @@ bool tb_opt_refinement(TB_Function* f) {
         TB_Node* loop_gate = &f->nodes[f->nodes[loop_header].label.terminator];
         if (loop_gate->type != TB_IF) continue;
 
-        bool exits_on_true = is_outside_of_loop(f, &loops.loops[i], loop_gate->if_.if_true);
-        bool exits_on_false = is_outside_of_loop(f, &loops.loops[i], loop_gate->if_.if_false);
+        bool exits_on_true = is_outside_of_loop(f, l, loop_gate->if_.if_true);
+        bool exits_on_false = is_outside_of_loop(f, l, loop_gate->if_.if_false);
 
         // constant loop?
         if (exits_on_true == exits_on_false) continue;

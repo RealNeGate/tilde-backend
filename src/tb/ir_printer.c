@@ -186,15 +186,15 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
             tb_print_type(dt, callback, user_data);
             callback(user_data, " r%u, r%u", n->i_arith.a, n->i_arith.b);
 
-            switch (n->i_arith.arith_behavior) {
-                case TB_ASSUME_NSW: callback(user_data, " # no signed wrap"); break;
-                case TB_ASSUME_NUW: callback(user_data, " # no signed wrap"); break;
-                case TB_CAN_WRAP: callback(user_data, " # can wrap"); break;
-                case TB_SIGNED_TRAP_ON_WRAP: callback(user_data, " # signed trap on wrap"); break;
-                case TB_UNSIGNED_TRAP_ON_WRAP: callback(user_data, " # unsigned trap on wrap"); break;
-                case TB_SATURATED_UNSIGNED: callback(user_data, " # saturated unsigned"); break;
-                case TB_SATURATED_SIGNED: callback(user_data, " # saturated signed"); break;
-                default: tb_todo();
+            if (n->i_arith.arith_behavior) {
+                callback(user_data, " # ");
+                if (n->i_arith.arith_behavior & TB_ARITHMATIC_NSW) {
+                    callback(user_data, "nsw ");
+                }
+
+                if (n->i_arith.arith_behavior & TB_ARITHMATIC_NUW) {
+                    callback(user_data, "nuw ");
+                }
             }
             break;
         }

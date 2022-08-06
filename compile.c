@@ -16,6 +16,7 @@ static const char* INPUT_FILES[] = {
     "src/tb/ir_printer.c",
     "src/tb/debug_builder.c",
     "src/tb/hash.c",
+    "src/tb/iter.c",
     "src/tb/bigint/BigInt.c",
 
     // Generic codegen stuff

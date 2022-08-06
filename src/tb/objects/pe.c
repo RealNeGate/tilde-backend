@@ -365,6 +365,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
                 code_gen->get_prologue_length(meta, stack_usage) + patch->pos + 4;
 
             const TB_Global* global = patch->target;
+            (void)global;
             assert(global->storage == TB_STORAGE_DATA);
 
             int32_t p = global_data_rva - actual_pos;

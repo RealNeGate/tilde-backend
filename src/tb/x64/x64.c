@@ -17,7 +17,7 @@
 #define DEBUG_LOG(...) ((void)0)
 #endif
 
-void x64_emit_call_patches(TB_Module* restrict m, uint32_t* restrict func_layout) {
+static void x64_emit_call_patches(TB_Module* restrict m, uint32_t* restrict func_layout) {
     loop(i, m->max_threads) {
         TB_FunctionPatch* patches = m->thread_info[i].call_patches;
 
@@ -71,7 +71,7 @@ static int get_data_type_size(const TB_DataType dt) {
     }
 }
 
-void x64_get_data_type_size(TB_DataType dt, TB_CharUnits* out_size, TB_CharUnits* out_align) {
+static void x64_get_data_type_size(TB_DataType dt, TB_CharUnits* out_size, TB_CharUnits* out_align) {
     switch (dt.type) {
         case TB_INT: {
             // round up bits to a byte

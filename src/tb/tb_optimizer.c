@@ -42,7 +42,7 @@ static const TB_FunctionPass default_passes[] = {
 
     OPT(compact_dead_regs),
 };
-enum { OPTIMIZATION_COUNT = TB_ARRLEN(default_passes) };
+enum { OPTIMIZATION_COUNT = COUNTOF(default_passes) };
 #undef OPT
 
 static void print_to_buffer(void* user_data, const char* fmt, ...) {
@@ -69,6 +69,7 @@ static void print_to_buffer(void* user_data, const char* fmt, ...) {
 #define RESET_TEXT ""
 #endif
 
+#if 0
 static DynArray(char*) split_lines(const char* src) {
     DynArray(char*) lines = dyn_array_create(char*);
     char* clone = strdup(src);
@@ -92,12 +93,12 @@ static int* lcslen(size_t xl, char** x, size_t yl, char** y) {
     loop(i, xl) {
         loop(j, yl) {
             if (strcmp(x[i], y[j]) == 0) {
-                c[i + (j * stride)] = 1 + c[(i-1) + ((j-1) * stride)];
+                c[(i+1) + ((j+1) * stride)] = 1 + c[i + (j * stride)];
             } else {
-                int a = c[(i-1) + (j * stride)];
-                int b = c[i + ((j-1) * stride)];
+                int a = c[i + ((j+1) * stride)];
+                int b = c[(i+1) + (j * stride)];
 
-                c[i + (j * stride)] = a > b ? a : b;
+                c[(i+1) + ((j+1) * stride)] = a > b ? a : b;
             }
         }
     }
@@ -106,51 +107,25 @@ static int* lcslen(size_t xl, char** x, size_t yl, char** y) {
 }
 
 static void print_diff2(int* c, size_t cstride, char** x, char** y, int i, int j) {
-    // 0 for x, 1 for y
-    // negative for removal
-    bool remove = false;
-    bool on_y = false;
-
     if (i < 0 && j < 0) {
         // do nothing?
         return;
     } else if (i < 0) {
         print_diff2(c, cstride, x, y, i, j - 1);
-        on_y = true, remove = true;
+        printf(GREEN_TEXT"+ %s\n"RESET_TEXT, y[j]);
     } else if (j < 0) {
         print_diff2(c, cstride, x, y, i - 1, j);
-        on_y = false, remove = true;
+        printf(RED_TEXT"- %s\n"RESET_TEXT, x[i]);
     } else if (strcmp(x[i], y[j]) == 0) {
         print_diff2(c, cstride, x, y, i - 1, j - 1);
-
-        printf(RESET_TEXT "  %-80s|  %-80s\n", x[i], y[j]);
-        return;
-    } else if (c[i + ((j-1) * cstride)] >= c[(i-1) + (j * cstride)]) {
+        printf("  %s\n", x[i]);
+    } else if (c[(i+1) + (j * cstride)] >= c[i + ((j+1) * cstride)]) {
         print_diff2(c, cstride, x, y, i, j - 1);
-        on_y = true, remove = false;
+        printf(GREEN_TEXT"+ %s\n"RESET_TEXT, y[j]);
     } else {
         print_diff2(c, cstride, x, y, i - 1, j);
-        on_y = false, remove = true;
+        printf(RED_TEXT"- %s\n"RESET_TEXT, x[i]);
     }
-
-    const char* prefix1 = remove ? RED_TEXT"- " : GREEN_TEXT"+ ";
-    const char* prefix2 = "  ";
-
-    if (on_y) {
-        tb_swap(const char*, prefix1, prefix2);
-    }
-
-    bool a = (!on_y && i >= 0);
-    bool b = (on_y && j >= 0);
-
-    // left side
-    printf("%03d %s%-80s|", i, prefix1, a ? x[i] : "");
-
-    // right side
-    printf("%03d %s%-80s|", j, prefix2, b ? y[j] : "");
-
-    // next line
-    printf("\n");
 }
 
 static void diff(size_t xl, char** x, size_t yl, char** y) {
@@ -158,7 +133,6 @@ static void diff(size_t xl, char** x, size_t yl, char** y) {
     print_diff2(c, xl + 1, x, y, xl - 1, yl - 1);
 }
 
-static FILE* debug_file;
 static void print_diff(const char* description, const char* oldstr, const char* newstr) {
     fprintf(debug_file, "  %s\n", description);
 
@@ -167,32 +141,111 @@ static void print_diff(const char* description, const char* oldstr, const char* 
     diff(dyn_array_length(old_lines), old_lines, dyn_array_length(new_lines), new_lines);
 
     fprintf(debug_file, RESET_TEXT "\n\n\n");
+
+    dyn_array_destroy(old_lines);
+    dyn_array_destroy(new_lines);
+}
+#endif
+
+static void html_print(void* user_data, const char* fmt, ...) {
+    char tmp[1024];
+
+    va_list ap;
+    va_start(ap, fmt);
+    int result = vsnprintf(tmp, sizeof(tmp), fmt, ap);
+    va_end(ap);
+
+    if (result < 0 || result >= sizeof(tmp)) {
+        tb_panic("Ran out of space in my internal buffer");
+    }
+
+    // print but replace the escape chars
+    FILE* f = (FILE*) user_data;
+
+    const char* start = tmp;
+    const char* s = start;
+    for (; *s; s++) {
+        if (*s == '<' || *s == '>' || *s == '"' || *s == '\'' || *s == '&') {
+            fprintf(f, "%.*s", (int)(s - start), start);
+
+            switch (*s) {
+                case '<': fprintf(f, "&lt;"); break;
+                case '>': fprintf(f, "&gt;"); break;
+                case '"': fprintf(f, "&quot;"); break;
+                case '\'': fprintf(f, "&#39;"); break;
+                case '&': fprintf(f, "&amp;"); break;
+                default: tb_todo();
+            }
+
+            start = s + 1;
+        }
+    }
+
+    if (start != s) {
+        fprintf(f, "%.*s", (int)(s - start), start);
+    }
+}
+
+static void log_function(FILE* out, const char* title, TB_Function* f) {
+    #if 1
+    tb_function_print(f, tb_default_print_callback, out);
+    #else
+    fprintf(out, "<td valign=\"top\">\n");
+    fprintf(out, "%s:<br>\n", title);
+    fprintf(out, "<pre>\n");
+    tb_function_print(f, html_print, out);
+    fprintf(out, "</pre>\n");
+    fprintf(out, "</td>\n");
+    #endif
+}
+
+static FILE* debug_file;
+static void end_crap() {
+    fprintf(debug_file, "</table>\n");
+    fprintf(debug_file, "</body>\n");
+    fprintf(debug_file, "</html>\n");
+    fclose(debug_file);
 }
 
 TB_API bool tb_function_optimize(TB_Function* f, size_t pass_count, const TB_FunctionPass* passes) {
-    if (debug_file == NULL) {
+    /*if (debug_file == NULL) {
+        #if 1
         debug_file = stdout;
-    }
+        #else
+        debug_file = fopen("foo.html", "wb"); // stdout;
+        assert(debug_file);
+
+        fprintf(debug_file, "<html>\n");
+        fprintf(debug_file, "<style>\n");
+        fprintf(debug_file, "table, th {\n");
+        fprintf(debug_file, "border:1px solid black;\n");
+        fprintf(debug_file, "}\n");
+        fprintf(debug_file, "td {\n");
+        fprintf(debug_file, "border:1px solid black;\n");
+        fprintf(debug_file, "padding: 0.5em;\n");
+        fprintf(debug_file, "}\n");
+        fprintf(debug_file, "</style>\n");
+        fprintf(debug_file, "<body>\n");
+        fprintf(debug_file, "<table>\n");
+
+        atexit(end_crap);
+        #endif
+    }*/
 
     if (pass_count == 0) {
         pass_count = sizeof(default_passes) / sizeof(default_passes[0]);
         passes = default_passes;
     }
 
-    bool diff_opts = false;
-    char* big_boy = NULL;
-    int in_use = 1;
+    bool diff_opts = false;//!strcmp(f->name, "set_defines");
     if (diff_opts) {
-        big_boy = tb_platform_heap_alloc(2*DIFF_BUFFER_SIZE);
-
-        big_boy[0] = 0;
-        tb_function_print(f, print_to_buffer, big_boy);
-        printf("INITIAL\n%s\n\n\n", big_boy);
+        log_function(debug_file, "initial", f);
     }
 
     bool changes = false;
     for (size_t i = 0; i < pass_count; i++) {
         bool success = false;
+
         if (passes[i].l_state != NULL) {
             // Invokes the pass
             lua_State* L = lua_newthread(passes[i].l_state);
@@ -212,16 +265,7 @@ TB_API bool tb_function_optimize(TB_Function* f, size_t pass_count, const TB_Fun
 
         if (success) {
             if (diff_opts) {
-                // double buffering amirite
-                char* oldstr = &big_boy[in_use ? 0 : DIFF_BUFFER_SIZE];
-                char* newstr = &big_boy[in_use ? DIFF_BUFFER_SIZE : 0];
-
-                // Reset then write IR dump into newstr
-                *newstr = 0;
-                tb_function_print(f, print_to_buffer, newstr);
-
-                print_diff(passes[i].name ? passes[i].name : passes[i].l_state ? "lua unknown" : "C unknown", oldstr, newstr);
-                in_use = (in_use + 1) & 1;
+                log_function(debug_file, passes[i].name ? passes[i].name : passes[i].l_state ? "lua unknown" : "C unknown", f);
             }
 
             changes = true;
@@ -229,11 +273,6 @@ TB_API bool tb_function_optimize(TB_Function* f, size_t pass_count, const TB_Fun
     }
 
     changes |= tb_opt_remove_pass_node(f);
-
-    if (diff_opts) {
-        tb_platform_heap_free(big_boy);
-    }
-
     return changes;
 }
 

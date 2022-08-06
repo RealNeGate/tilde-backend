@@ -8,12 +8,12 @@ static_assert(sizeof(float) == sizeof(uint32_t), "Float needs to be a 32-bit flo
 static_assert(sizeof(double) == sizeof(uint64_t), "Double needs to be a 64-bit float!");
 
 typedef union {
-    float    f;
+    float f;
     uint32_t i;
 } Cvt_F32U32;
 
 typedef union {
-    double   f;
+    double f;
     uint64_t i;
 } Cvt_F64U64;
 

@@ -44,6 +44,10 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
                     case TB_ATOMIC_AND:
                     case TB_ATOMIC_XOR:
                     case TB_ATOMIC_OR:
+                    case TB_X86INTRIN_SQRT:
+                    case TB_X86INTRIN_RSQRT:
+                    case TB_X86INTRIN_LDMXCSR:
+                    case TB_X86INTRIN_STMXCSR:
                     break;
 
                     case TB_CALL:

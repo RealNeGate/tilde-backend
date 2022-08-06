@@ -352,10 +352,6 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
                     tb_panic("TB error: no tls_index provided\n");
                 }
 
-                /*if (strcmp(f->name, "tls_push") == 0) {
-                    __debugbreak();
-                }*/
-
                 // since t0 dies before dst is allocated we just recycle it
                 // mov t0, dword    [_tls_index]
                 Val dst = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, r));
@@ -805,7 +801,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     if (dst_xmm >= 8) *ctx->header.out++ = 0x44;
                     *ctx->header.out++ = 0x0F;
                     *ctx->header.out++ = 0x10;
-                    *ctx->header.out++ = ((dst_xmm & 7) << 3) | RBP;
+                    *ctx->header.out++ = mod_rx_rm(MOD_INDIRECT, dst_xmm, RBP);
 
                     uint32_t disp = 0;
                     if (dt.data == TB_FLT_64) {
@@ -1552,14 +1548,22 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     }
 
                     if (is_64bit || val.xmm >= 8 || src_needs_rex) {
-                        *ctx->header.out++ = rex(is_64bit, src.gpr, val.gpr, 0);
+                        if (int2float) {
+                            *ctx->header.out++ = rex(is_64bit, val.gpr, src.gpr, 0);
+                        } else {
+                            *ctx->header.out++ = rex(is_64bit, src.gpr, val.gpr, 0);
+                        }
                     }
 
                     *ctx->header.out++ = 0x0F;
-                    *ctx->header.out++ = int2float ? 0x7E : 0x6E;
+                    *ctx->header.out++ = int2float ? 0x6E : 0x7E;
 
                     // val.gpr and val.xmm alias so it's irrelevant which one we pick
-                    emit_memory_operand(&ctx->header, val.gpr, &src);
+                    if (int2float) {
+                        emit_memory_operand(&ctx->header, val.gpr, &src);
+                    } else {
+                        emit_memory_operand(&ctx->header, src.gpr, &val);
+                    }
 
                     fast_kill_reg(ctx, f, n->unary.src);
                 }
@@ -2094,9 +2098,9 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
             }
             case TB_ATOMIC_CMPXCHG: {
                 tb_assume(f->nodes[n->next].type == TB_ATOMIC_CMPXCHG2);
-                if (ctx->use_count[n->next] != 0) {
+                /*if (ctx->use_count[n->next] != 0) {
                     tb_function_print(f, tb_default_print_callback, stdout);
-                }
+                }*/
                 tb_assume(ctx->use_count[n->next] == 0);
 
                 // we'll be using RAX for CMPXCHG crap
@@ -2159,6 +2163,35 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 break;
             }
             case TB_ATOMIC_CMPXCHG2: break;
+
+            case TB_X86INTRIN_LDMXCSR: {
+                LegalInt l = legalize_int(dt);
+
+                // mov tmpgpr, desired
+                Val tmp = val_gpr(l.dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+                fast_folded_op(ctx, f, MOV, &tmp, n->unary.src);
+
+                // 0F AE /2 LDMXCSR m32
+                if (tmp.gpr >= 8) *ctx->header.out++ = rex(false, 0, 0, tmp.gpr);
+                *ctx->header.out++ = 0x0F;
+                *ctx->header.out++ = 0xAE;
+                *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0x02, tmp.gpr);
+
+                fast_kill_temp_gpr(ctx, f, tmp.gpr);
+                break;
+            }
+            case TB_X86INTRIN_STMXCSR: {
+                // alloc dst
+                Val dst = val_gpr(dt, fast_alloc_gpr(ctx, f, r));
+                fast_def_gpr(ctx, f, r, dst.gpr, dt);
+
+                // 0F AE /3 STMXCSR m32
+                if (dst.gpr >= 8) *ctx->header.out++ = rex(false, 0, 0, dst.gpr);
+                *ctx->header.out++ = 0x0F;
+                *ctx->header.out++ = 0xAE;
+                *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0x03, dst.gpr);
+                break;
+            }
 
             default: tb_todo();
         }
@@ -2337,7 +2370,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         ctx->header.f = f;
 
         f->line_count = 0;
-        f->lines      = tb_platform_arena_alloc(tally.line_info_count * sizeof(TB_Line));
+        f->lines = tb_platform_arena_alloc(tally.line_info_count * sizeof(TB_Line));
 
         ctx->gpr_available = 14;
         ctx->xmm_available = 16;

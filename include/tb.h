@@ -357,6 +357,7 @@ extern "C" {
     typedef struct TB_Function          TB_Function;
     typedef struct TB_AttribList        TB_AttribList;
     typedef struct TB_FunctionPrototype TB_FunctionPrototype;
+    typedef struct TB_ModuleExporter    TB_ModuleExporter;
 
     // references to a node within a TB_Function
     // these are virtual registers so they don't necessarily
@@ -673,6 +674,21 @@ extern "C" {
         const char** search_dirs;
     } TB_LinkerInput;
 
+    typedef struct {
+        enum {
+            TB_EXPORT_PACKET_NONE,
+
+            TB_EXPORT_PACKET_WRITE,
+        } type;
+        union {
+            struct {
+                // input
+                size_t length;
+                const uint8_t* data;
+            } write;
+        };
+    } TB_ModuleExportPacket;
+
     // *******************************
     // Public macros
     // *******************************
@@ -729,7 +745,8 @@ extern "C" {
     TB_API void tb_module_set_tls_index(TB_Module* m, TB_External* e);
 
     // Exports an relocatable object file
-    TB_API bool tb_module_export(TB_Module* m, const char* path);
+    TB_API TB_ModuleExporter* tb_module_make_exporter(TB_Module* m);
+    TB_API bool tb_module_exporter_next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPacket* packet);
 
     // Exports an fully linked executable file
     TB_API bool tb_module_export_exec(TB_Module* m, const char* path, const TB_LinkerInput* input);

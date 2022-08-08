@@ -1,6 +1,329 @@
 #include "coff.h"
 
-void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt) {
+// my section numbers in TB_ModuleExporterCOFF.sections
+enum {
+    S_TEXT,
+    S_RDATA,
+    S_DATA,
+    S_TLS,
+    S_MAX
+};
+
+typedef struct TB_ModuleExporterCOFF {
+    enum {
+        STAGE__WRITE_FILE_HEADER,
+        STAGE__WRITE_SECTION_HEADERS,
+        STAGE__WRITE_DEBUG_HEADERS,
+
+        STAGE__WRITE_CODE_SECTION,
+    } stage;
+    // depends on the stage, go check the code for them
+    size_t tick[2];
+
+    // [m->functions.count + 1] last slot is the size of the text section
+    uint32_t* func_layout;
+
+    // String table array, stores the strings which will be put
+    // into the string table
+    uint32_t string_table_length;
+    uint32_t string_table_mark;
+    uint32_t string_table_cap;
+    char** string_table;
+
+    size_t function_sym_start;
+    size_t external_sym_start;
+
+    size_t string_table_pos;
+
+    // COFF file header & section headers
+    COFF_FileHeader header;
+    COFF_SectionHeader sections[S_MAX];
+
+    TB_SectionGroup debug_sections;
+    COFF_SectionHeader* debug_section_headers;
+
+    char proepi_buffer[PROEPI_BUFFER];
+} TB_ModuleExporterCOFF;
+
+static void send_write_message(TB_ModuleExportPacket* packet, const void* data, size_t length) {
+    packet->type = TB_EXPORT_PACKET_WRITE;
+    packet->write.length = length;
+    packet->write.data = data;
+}
+
+TB_ModuleExporter* tb_coff__make(TB_Module* m) {
+    return memset(malloc(sizeof(TB_ModuleExporterCOFF)), 0, sizeof(TB_ModuleExporterCOFF));
+}
+
+bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPacket* packet) {
+    TB_ModuleExporterCOFF* restrict e = (TB_ModuleExporterCOFF*) exporter;
+
+    switch (e->stage) {
+        case STAGE__WRITE_FILE_HEADER: {
+            ////////////////////////////////
+            // Layout work
+            ////////////////////////////////
+            const char* path = "wack.obj";
+            e->string_table_mark = 4;
+
+            // tally up .data relocations
+            uint32_t data_relocation_count = 0;
+
+            FOREACH_N(t, 0, m->max_threads) {
+                pool_for(TB_Global, g, m->thread_info[t].globals) {
+                    TB_Initializer* init = g->init;
+                    FOREACH_N(k, 0, init->obj_count) {
+                        data_relocation_count += (init->objects[k].type != TB_INIT_OBJ_REGION);
+                    }
+                }
+            }
+
+            const IDebugFormat* restrict debug_fmt = tb__find_debug_format(m);
+
+            int number_of_sections = 3
+                + (m->tls_region_size ? 1 : 0)
+                + (debug_fmt != NULL ? debug_fmt->number_of_debug_sections(m) : 0);
+
+            // mark each with a unique id
+            e->function_sym_start = (number_of_sections * 2);
+            e->external_sym_start = e->function_sym_start + m->functions.compiled_count;
+
+            size_t unique_id_counter = 0;
+            FOREACH_N(i, 0, m->max_threads) {
+                pool_for(TB_External, ext, m->thread_info[i].externals) {
+                    int id = e->external_sym_start + unique_id_counter;
+                    ext->address = (void*) (uintptr_t) id;
+                    unique_id_counter += 1;
+                }
+
+                pool_for(TB_Global, g, m->thread_info[i].globals) {
+                    g->id = e->external_sym_start + unique_id_counter;
+                    unique_id_counter += 1;
+                }
+            }
+
+            e->string_table_cap += unique_id_counter;
+            e->string_table_cap += m->functions.compiled_count;
+            e->string_table = tb_platform_heap_alloc(e->string_table_cap * sizeof(const char*));
+
+            // layout functions in file
+            e->func_layout = tb_platform_heap_alloc((m->functions.count + 1) * sizeof(uint32_t));
+
+            // TODO(NeGate): We might do alphabetical sorting for consistent binary output
+            const ICodeGen* restrict code_gen = tb__find_code_generator(m);
+            size_t text_section_size = 0;
+            FOREACH_N(i, 0, m->functions.count) {
+                TB_FunctionOutput* out_f = m->functions.data[i].output;
+                e->func_layout[i] = text_section_size;
+                if (out_f == NULL) continue;
+
+                uint64_t meta = out_f->prologue_epilogue_metadata;
+                uint64_t stack_usage = out_f->stack_usage;
+
+                size_t code_size = out_f->code_size;
+                size_t prologue = code_gen->get_prologue_length(meta, stack_usage);
+                size_t epilogue = code_gen->get_epilogue_length(meta, stack_usage);
+                assert(prologue + epilogue < PROEPI_BUFFER);
+
+                text_section_size += prologue;
+                text_section_size += epilogue;
+                text_section_size += code_size;
+            }
+            e->func_layout[m->functions.count] = text_section_size;
+
+            ////////////////////////////////
+            // create headers
+            ////////////////////////////////
+            e->header = (COFF_FileHeader){
+                .num_sections = number_of_sections,
+                .timestamp = time(NULL),
+                .symbol_count = 0,
+                .symbol_table = 0,
+                .characteristics = IMAGE_FILE_LINE_NUMS_STRIPPED
+            };
+
+            e->sections[S_TEXT] = (COFF_SectionHeader){
+                .name = { ".text" }, // .text
+                .characteristics = COFF_CHARACTERISTICS_TEXT,
+                .raw_data_size = text_section_size,
+            };
+
+            e->sections[S_RDATA] = (COFF_SectionHeader){
+                .name = { ".rdata" }, // .rdata
+                .characteristics = COFF_CHARACTERISTICS_RODATA,
+                .raw_data_size = m->rdata_region_size
+            };
+
+            e->sections[S_DATA] = (COFF_SectionHeader){
+                .name = { ".data" }, // .data
+                .characteristics = COFF_CHARACTERISTICS_DATA,
+                .raw_data_size = m->data_region_size
+            };
+
+            e->sections[S_TLS] = (COFF_SectionHeader){
+                .name = { ".tls$" },
+                .characteristics = COFF_CHARACTERISTICS_DATA,
+                .raw_data_size = m->tls_region_size
+            };
+
+            switch (m->target_arch) {
+                case TB_ARCH_X86_64:  e->header.machine = COFF_MACHINE_AMD64; break;
+                case TB_ARCH_AARCH64: e->header.machine = COFF_MACHINE_ARM64; break;
+                default: tb_todo();
+            }
+
+            if (debug_fmt != NULL) {
+                TB_TemporaryStorage* tls = tb_tls_allocate();
+
+                e->debug_sections = debug_fmt->generate_debug_info(m, tls, code_gen, path, e->function_sym_start, e->func_layout);
+                e->debug_section_headers = tb_platform_heap_alloc(e->debug_sections.length * sizeof(COFF_SectionHeader));
+
+                FOREACH_N(i, 0, e->debug_sections.length) {
+                    e->debug_section_headers[i] = (COFF_SectionHeader) { 0 };
+                    e->debug_section_headers[i].characteristics = COFF_CHARACTERISTICS_CV;
+                    e->debug_section_headers[i].num_reloc = e->debug_sections.data[i].relocation_count;
+
+                    TB_Slice name = e->debug_sections.data[i].name;
+                    if (name.length > 8) {
+                        // we'd need to put it into the string table... im lazy
+                        // so i wont do the logic for it yet
+                        tb_todo();
+                    } else {
+                        memcpy(e->debug_section_headers[i].name, name.data, name.length);
+                        if (name.length < 8) e->debug_section_headers[i].name[name.length] = 0;
+                    }
+                }
+            }
+
+            // Target specific: resolve internal call patches
+            code_gen->emit_call_patches(m, e->func_layout);
+
+            // symbols
+            {
+                e->header.symbol_count = (number_of_sections * 2) + m->functions.compiled_count;
+
+                // total externals + total globals
+                e->header.symbol_count += unique_id_counter;
+            }
+
+            // relocation
+            {
+                e->sections[S_TEXT].num_reloc = 0;
+                FOREACH_N(i, 0, m->max_threads) {
+                    e->sections[S_TEXT].num_reloc += dyn_array_length(m->thread_info[i].const_patches);
+                    e->sections[S_TEXT].num_reloc += dyn_array_length(m->thread_info[i].ecall_patches);
+                    e->sections[S_TEXT].num_reloc += dyn_array_length(m->thread_info[i].global_patches);
+                }
+
+                e->sections[S_DATA].num_reloc = data_relocation_count;
+            }
+
+            // layout sections & relocations
+            size_t string_table_pos = 0;
+            {
+                size_t counter = sizeof(COFF_FileHeader) + (number_of_sections * sizeof(COFF_SectionHeader));
+
+                e->sections[S_TEXT].raw_data_pos = tb_post_inc(&counter, e->sections[S_TEXT].raw_data_size);
+                e->sections[S_RDATA].raw_data_pos = tb_post_inc(&counter, e->sections[S_RDATA].raw_data_size);
+                e->sections[S_DATA].raw_data_pos = tb_post_inc(&counter, e->sections[S_DATA].raw_data_size);
+                e->sections[S_TLS].raw_data_pos = tb_post_inc(&counter, e->sections[S_TLS].raw_data_size);
+
+                FOREACH_N(i, 0, e->debug_sections.length) {
+                    e->debug_section_headers[i].raw_data_size = e->debug_sections.data[i].raw_data.length;
+                    e->debug_section_headers[i].raw_data_pos = tb_post_inc(&counter, e->debug_section_headers[i].raw_data_size);
+                }
+
+                // Do the relocation lists next
+                e->sections[S_TEXT].pointer_to_reloc = tb_post_inc(&counter, e->sections[S_TEXT].num_reloc * sizeof(COFF_ImageReloc));
+                e->sections[S_DATA].pointer_to_reloc = tb_post_inc(&counter, e->sections[S_DATA].num_reloc * sizeof(COFF_ImageReloc));
+
+                FOREACH_N(i, 0, e->debug_sections.length) {
+                    e->debug_section_headers[i].pointer_to_reloc = tb_post_inc(&counter, e->debug_section_headers[i].num_reloc * sizeof(COFF_ImageReloc));
+                }
+
+                e->header.symbol_table = tb_post_inc(&counter, e->header.symbol_count * sizeof(COFF_Symbol));
+                string_table_pos = counter;
+
+                // it's only here for an assertion, so i'm making
+                // sure it doesn't get mark as unused in release.
+                ((void)string_table_pos);
+            }
+
+            ////////////////////////////////
+            // advance state & write out file header
+            ////////////////////////////////
+            send_write_message(packet, &e->header, sizeof(COFF_FileHeader));
+            e->stage += 1;
+            return true;
+        }
+
+        case STAGE__WRITE_SECTION_HEADERS: {
+            // figure out how many section headers to write out
+            int count = (e->sections[S_TLS].raw_data_size > 0 ? S_TLS+1 : S_DATA+1);
+
+            send_write_message(packet, e->sections, count * sizeof(COFF_SectionHeader));
+            e->stage += 1;
+            return true;
+        }
+
+        case STAGE__WRITE_DEBUG_HEADERS: {
+            send_write_message(packet, e->debug_section_headers, sizeof(COFF_SectionHeader) * e->debug_sections.length);
+
+            // find first non-empty function
+            size_t i = 0;
+            while (i < m->functions.count && m->functions.data[i].output == NULL) {
+                i += 1;
+            }
+            assert(i == m->functions.count && "TODO: handle completely empty code section");
+
+            e->tick[0] = i, e->tick[1] = 0;
+            e->stage += 1;
+            return true;
+        }
+        case STAGE__WRITE_DEBUG_HEADERS: {
+            // tick[0]
+            //   is the function index
+            //
+            // tick[1]
+            //   0 is prologue
+            //   1 is body
+            //   2 is epilogue
+            switch (e->tick[1]++) {
+                case 0:
+                size_t len = code_gen->emit_prologue(e->proepi_buffer, meta, stack_usage);
+                send_write_message(packet, e->proepi_buffer, len);
+                break;
+
+                case 1:
+                TB_FunctionOutput* out_f = m->functions.data[i].output;
+                if (!out_f) continue;
+                break;
+
+                case 2:
+
+                // next compiled function
+                size_t i = e->tick[0] + 1;
+                while (i < m->functions.count && m->functions.data[i].output == NULL) {
+                    i += 1;
+                }
+                e->tick[0] = i;
+
+                if (i >= m->functions.count) {
+                    // reset tickers and advance
+                    e->tick[0] = 0, e->tick[1] = 0;
+                    e->state += 1;
+                }
+                break;
+            }
+            return true;
+        }
+    }
+}
+
+void tb_export_coff(TB_Module* m, const char* path) {
+    const ICodeGen* restrict code_gen = tb__find_code_generator(m);
+    const IDebugFormat* restrict debug_fmt = tb__find_debug_format(m);
+
     TB_TemporaryStorage* tls = tb_tls_allocate();
 
     // The prologue and epilogue generators need some storage

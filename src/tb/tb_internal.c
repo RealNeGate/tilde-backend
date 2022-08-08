@@ -112,21 +112,19 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace) {
             break;
 
             case TB_PHI1:
-            FOREACH_N(it, 1) {
-                X(n->phi1.inputs[it].label);
-                X(n->phi1.inputs[it].val);
-            }
+            X(n->phi1.inputs[0].label);
+            X(n->phi1.inputs[0].val);
             break;
 
             case TB_PHI2:
-            FOREACH_N(it, 2) {
+            FOREACH_N(it, 0, 2) {
                 X(n->phi2.inputs[it].label);
                 X(n->phi2.inputs[it].val);
             }
             break;
 
             case TB_PHIN:
-            FOREACH_N(it, n->phi.count) {
+            FOREACH_N(it, 0, n->phi.count) {
                 X(n->phi.inputs[it].label);
                 X(n->phi.inputs[it].val);
             }
@@ -187,7 +185,7 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace) {
             case TB_VCALL: {
                 X(n->vcall.target);
 
-                FOREACH_N(it, n->call.param_end - n->call.param_start) {
+                FOREACH_N(it, n->call.param_start, n->call.param_end) {
                     X(f->vla.data[n->call.param_start + it]);
                 }
                 break;
@@ -196,8 +194,8 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace) {
             case TB_CALL:
             case TB_ICALL:
             case TB_ECALL: {
-                FOREACH_N(it, n->call.param_end - n->call.param_start) {
-                    X(f->vla.data[n->call.param_start + it]);
+                FOREACH_N(it, n->call.param_start, n->call.param_end) {
+                    X(f->vla.data[it]);
                 }
                 break;
             }
@@ -286,7 +284,7 @@ TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStora
                 size_t entry_count = (end->switch_.entries_end - end->switch_.entries_start) / 2;
                 TB_SwitchEntry* entries = (TB_SwitchEntry*) &f->vla.data[end->switch_.entries_start];
 
-                loop(i, entry_count) {
+                FOREACH_N(i, 0, entry_count) {
                     if (l == entries[i].value) APPEND_TO_REG_LIST(id);
                 }
 

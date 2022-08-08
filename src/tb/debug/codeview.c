@@ -505,7 +505,7 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
         tb_patch4b(&debugs_out, field_length_patch, (debugs_out.count - field_length_patch) - 4);
         align_up_emitter(&debugs_out, 4);
     }
-    tb_tls_restore(tls, file_table_offset);
+    tb_tls_restore(tls, function_type_table);
 
     sections[0].raw_data = (TB_Slice){ debugs_out.count, debugs_out.data };
     sections[1].raw_data = (TB_Slice){ debugt_out.count, debugt_out.data };

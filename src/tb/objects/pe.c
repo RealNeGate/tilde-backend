@@ -177,13 +177,35 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         }
     }
 
+    // cull any import directory
+    size_t j = 0;
+    size_t import_entry_count = 0;
+    dyn_array_for(i, ctx.imports) {
+        if (dyn_array_length(ctx.imports[i].thunks) != 0) {
+            if (i != j) {
+                ctx.imports[j] = ctx.imports[i];
+            }
+            j += 1;
+
+            import_entry_count += dyn_array_length(ctx.imports[i].thunks) + 1;
+        }
+    }
+    dyn_array_length(ctx.imports) = j; // trimmed
+
     // Generate bytes for the import table
     TB_Emitter import_table = { 0 };
+
+    {
+        // leave the IAT undefined for now, it's filled in a sec
+        tb_out_zero(&import_table, import_entry_count * 8);
+        align_up_emitter(&import_table, 16);
+    }
 
     // add DLL import directories
     //
     // each entry is 20bytes and they're ordered by the imports so we
     // can patch back with that kind of knowledge
+    size_t ilt_start = import_table.count;
     dyn_array_for(i, ctx.imports) {
         tb_out4b(&import_table, 0); // import lookup table RVA
         tb_out4b(&import_table, 0); // timestamp
@@ -200,14 +222,14 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         printf("\nIMPORT FOR '%.*s'\n", (int) imp->libpath.length, imp->libpath.data);
 
         // slap that lib name (these are RVAs)
-        tb_patch4b(&import_table, (i * 20) + 12, 0x1000 + import_table.count);
+        tb_patch4b(&import_table, ilt_start + (i * 20) + 12, 0x1000 + import_table.count);
 
         tb_out_reserve(&import_table, imp->libpath.length + 1);
         tb_outs_UNSAFE(&import_table, imp->libpath.length, imp->libpath.data);
         tb_out1b_UNSAFE(&import_table, 0x00);
 
         // setup a patch for the thunk array and then fill it out
-        tb_patch4b(&import_table, (i * 20) + 16, 0x1000 + import_table.count);
+        tb_patch4b(&import_table, ilt_start + (i * 20) + 16, 0x1000 + import_table.count);
 
         dyn_array_for(j, imp->thunks) {
             ImportThunk* t = &imp->thunks[j];
@@ -221,9 +243,10 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         tb_out8b(&import_table, 0);
     }
 
-    size_t import_entry_count = 0;
+    import_entry_count = 0;
     dyn_array_for(i, ctx.imports) {
         ImportTable* imp = &ctx.imports[i];
+        tb_patch4b(&import_table, ilt_start + (i * 20) + 0, 0x1000 + ilt_start + (import_entry_count * 8));
 
         // fill all the C strings and then backpatch
         dyn_array_for(j, imp->thunks) {
@@ -231,6 +254,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
 
             uint32_t patch_pos = imp->thunks[j].ds_address;
             tb_patch4b(&import_table, patch_pos, 0x1000 + import_table.count);
+            // tb_patch4b(&import_table, (j + import_entry_count) * 8, 0x1000 + import_table.count);
 
             tb_out2b(&import_table, 0);
             tb_out_reserve(&import_table, t->name.length + 1);
@@ -242,39 +266,8 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
     }
     align_up_emitter(&import_table, 16);
 
-    size_t iat_start = import_table.count;
-    {
-        // leave the IAT undefined for now, it's filled in in a sec
-        tb_out_reserve(&import_table, import_entry_count * 8);
-        tb_out_commit(&import_table, import_entry_count * 8);
-        align_up_emitter(&import_table, 16);
-    }
-
-    // fill in IAT correctly
-    import_entry_count = 0;
-    dyn_array_for(i, ctx.imports) {
-        ImportTable* imp = &ctx.imports[i];
-
-        size_t thunk_count = dyn_array_length(imp->thunks);
-        if (thunk_count != 0) {
-            // duplicate ILT into IAT
-            uint32_t src_pos = imp->thunks[0].ds_address;
-            uint32_t dst_pos = iat_start + (import_entry_count * 8);
-
-            // patch in IAT into the import directory table header
-            tb_patch4b(&import_table, (i * 20), 0x1000 + dst_pos);
-
-            memcpy(&import_table.data[dst_pos], &import_table.data[src_pos], thunk_count * 8);
-            // null termination
-            memset(&import_table.data[dst_pos + (thunk_count * 8)], 0, 8);
-        }
-
-        import_entry_count += thunk_count + 1;
-    }
-
-    size_t data_size = align_up(m->data_region_size, 512);
+    size_t data_size = align_up(m->data_region_size + 16, 512);
     size_t rdata_size = align_up(import_table.count + m->rdata_region_size, 512);
-
     size_t text_base = align_up(0x1000 + rdata_size, 4096);
 
     // generate trampolines
@@ -289,9 +282,9 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         trampolines[i*6 + 1] = 0x25;
 
         uint32_t actual_pos = text_base + (i*6);
-        uint32_t target = 0x1000 + iat_start + (i*8);
+        uint32_t target = 0x1000 + (i*8);
 
-        uint32_t p = (target - actual_pos) + 4;
+        uint32_t p = target - actual_pos;
         memcpy(&trampolines[i*6 + 2], &p, sizeof(uint32_t));
     }
 
@@ -303,7 +296,8 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         func_layout[i] = text_section_size;
         if (out_f == NULL) continue;
 
-        if (m->functions.data[i].name[0] == 'm' && strcmp(m->functions.data[i].name, "main") == 0) {
+        if (m->functions.data[i].name[0] == 'm' &&
+            strcmp(m->functions.data[i].name, "mainCRTStartup") == 0) {
             entrypoint = text_section_size;
         }
 
@@ -435,15 +429,15 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
 
         .size_of_image = data_base + data_size,
         .size_of_headers = (size_of_headers + 0x1FF) & ~0x1FF,
-        .subsystem = 2 /* WINDOWS_GUI */,
+        .subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI,
 
         .size_of_stack_reserve = 2 << 20,
         .size_of_stack_commit  = 4096,
 
         .rva_size_count = IMAGE_NUMBEROF_DIRECTORY_ENTRIES,
         .data_directories = {
-            [IMAGE_DIRECTORY_ENTRY_IMPORT] = { 0x1000, import_table.count },
-            [IMAGE_DIRECTORY_ENTRY_IAT]  = { 0x1000 + iat_start, import_entry_count * 8 },
+            [IMAGE_DIRECTORY_ENTRY_IMPORT] = { 0x1000 + ilt_start, import_table.count - ilt_start },
+            [IMAGE_DIRECTORY_ENTRY_IAT]  = { 0x1000, import_entry_count * 8 },
         }
     };
     fwrite(&opt_header, sizeof(opt_header), 1, f);
@@ -476,7 +470,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
                 .virtual_address = data_base,
                 .size_of_raw_data = data_size,
                 .pointer_to_raw_data = section_raw_data_pos + rdata_size + text_section_size,
-                .characteristics = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE,
+                .characteristics = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_CNT_INITIALIZED_DATA,
             },
         };
         fwrite(sections, sizeof(sections), 1, f);
@@ -550,10 +544,11 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
                 }
             }
 
+            fwrite((const char[16]) { "TildeBackend" }, 16, 1, f);
             fwrite(data, m->data_region_size, 1, f);
             tb_platform_heap_free(data);
 
-            pad_file(tls, f, 0xCC, 0x200);
+            pad_file(tls, f, 0x00, 0x200);
         }
     }
 

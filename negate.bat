@@ -1,12 +1,13 @@
 @echo off
 
-clang compile.c && a.exe bin/tildebackend
-if ERRORLEVEL 1 exit /b 1
+rem clang compile.c && a.exe bin/tildebackend
+rem if ERRORLEVEL 1 exit /b 1
 
-wsl gcc compile.c
-wsl ./a.out bin/tildebackend
+rem wsl gcc compile.c
+rem wsl ./a.out bin/tildebackend
 
-copy bin\tildebackend.lib W:\Workspace\Cuik\deps\
-copy bin\tildebackend.a W:\Workspace\Cuik\deps\
+rem copy bin\tildebackend.lib W:\Workspace\Cuik\deps\
+rem copy bin\tildebackend.a W:\Workspace\Cuik\deps\
+copy include\tb.h W:\Workspace\Cuik\include\
 
 pause

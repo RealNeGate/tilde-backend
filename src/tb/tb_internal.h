@@ -483,8 +483,8 @@ do {                                      \
 #define COUNTOF(...) (sizeof(__VA_ARGS__) / sizeof((__VA_ARGS__)[0]))
 #endif
 
-#define FOREACH_N(it, count) \
-for (size_t it = 0, end__ = (count); it < end__; ++it)
+#define FOREACH_N(it, start, count) \
+for (ptrdiff_t it = (start), end__ = (count); it < end__; ++it)
 
 #define loop(iterator, count) \
 for (size_t iterator = 0, end__ = (count); iterator < end__; ++iterator)
@@ -516,8 +516,13 @@ void* tb_tls_pop(TB_TemporaryStorage* store, size_t size);
 void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance);
 bool tb_tls_can_fit(TB_TemporaryStorage* store, size_t size);
 
+const IDebugFormat* tb__find_debug_format(TB_Module* m);
+ICodeGen* tb__find_code_generator(TB_Module* m);
+
 // object file output
-void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt);
+TB_ModuleExporter* tb_coff__make(TB_Module* m);
+bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPacket* packet);
+
 void tb_export_macho(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt);
 void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt);
 
@@ -543,6 +548,9 @@ void tb_out1b_UNSAFE(TB_Emitter* o, uint8_t i);
 void tb_out4b_UNSAFE(TB_Emitter* o, uint32_t i);
 void tb_outstr_UNSAFE(TB_Emitter* o, const char* str);
 void tb_outs_UNSAFE(TB_Emitter* o, size_t len, const uint8_t* str);
+
+void tb_out_zero(TB_Emitter* o, size_t len);
+// fills region with zeros
 
 void tb_out1b(TB_Emitter* o, uint8_t i);
 void tb_out2b(TB_Emitter* o, uint16_t i);

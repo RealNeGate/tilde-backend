@@ -10,7 +10,7 @@ static thread_local uint8_t* tb_thread_storage;
 static thread_local int tid;
 static tb_atomic_int total_tid;
 
-static const IDebugFormat* tb_find_debug_format(TB_Module* m) {
+const IDebugFormat* tb__find_debug_format(TB_Module* m) {
     switch (m->debug_fmt) {
         //case TB_DEBUGFMT_DWARF: return &tb__dwarf_debug_format;
         case TB_DEBUGFMT_CODEVIEW: return &tb__codeview_debug_format;
@@ -20,7 +20,7 @@ static const IDebugFormat* tb_find_debug_format(TB_Module* m) {
 
 ICodeGen* tb__find_code_generator(TB_Module* m) {
     switch (m->target_arch) {
-        case TB_ARCH_X86_64: return &tb__x64_codegen; // tb__x64_codegen;
+        case TB_ARCH_X86_64: return &tb__x64_codegen;
         case TB_ARCH_AARCH64: return &tb__aarch64_codegen;
         default: return NULL;
     }
@@ -130,23 +130,23 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f, TB_ISelMode ise
     return true;
 }
 
-TB_API bool tb_module_export(TB_Module* m, const char* path) {
-    const ICodeGen* restrict code_gen = tb__find_code_generator(m);
-    const IDebugFormat* restrict debug_fmt = tb_find_debug_format(m);
-
+TB_API TB_ModuleExporter* tb_module_make_exporter(TB_Module* m) {
     switch (m->target_system) {
-        case TB_SYSTEM_WINDOWS: tb_export_coff(m, code_gen, path, debug_fmt); break;
-        case TB_SYSTEM_MACOS:   tb_export_macho(m, code_gen, path, debug_fmt); break;
-        case TB_SYSTEM_LINUX:   tb_export_elf64(m, code_gen, path, debug_fmt); break;
+        case TB_SYSTEM_WINDOWS: return tb_coff__make(m);
         default:                tb_panic("TinyBackend error: Unknown system!\n");
     }
+}
 
-    return true;
+TB_API bool tb_module_exporter_next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPacket* packet) {
+    switch (m->target_system) {
+        case TB_SYSTEM_WINDOWS: return tb_coff__next(m, exporter, packet);
+        default:                tb_panic("TinyBackend error: Unknown system!\n");
+    }
 }
 
 TB_API bool tb_module_export_exec(TB_Module* m, const char* path, const TB_LinkerInput* input) {
     const ICodeGen* restrict code_gen = tb__find_code_generator(m);
-    const IDebugFormat* restrict debug_fmt = tb_find_debug_format(m);
+    const IDebugFormat* restrict debug_fmt = tb__find_debug_format(m);
 
     switch (m->target_system) {
         case TB_SYSTEM_WINDOWS: tb_export_pe(m, code_gen, input, path, debug_fmt); break;
@@ -635,6 +635,12 @@ void tb_out8b(TB_Emitter* o, uint64_t i) {
 
     *((uint64_t*)&o->data[o->count]) = i;
     o->count += 8;
+}
+
+void tb_out_zero(TB_Emitter* o, size_t len) {
+    tb_out_reserve(o, len);
+    memset(&o->data[o->count], 0, len);
+    o->count += len;
 }
 
 void tb_outstr_UNSAFE(TB_Emitter* o, const char* str) {

@@ -1,0 +1,2 @@
+: foreach src/*.c |> clang %f -c -I deps/sokol -o %o |> bin/%B.obj
+: bin/*.obj |> clang %f -o %o |> bin/foo.exe

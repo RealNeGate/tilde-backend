@@ -2,7 +2,6 @@
 #include <assert.h>
 
 #include "BigInt.h"
-
 #define MaxBigIntWords 2
 
 /* Printing format strings */
@@ -33,25 +32,25 @@ static void _rshift_word(size_t NumWords, BigInt_t * A, int nwords);
 #ifdef BigIntWordSize
 #if (BigIntWordSize == 1)
 #define BigInt_FROM_INT(BigInt, Integer) { \
-((BigInt_t *)(void *)BigInt)[0] = (((BigInt_tmp_t)Integer) & 0x000000ff); \
-((BigInt_t *)(void *)BigInt)[1] = (((BigInt_tmp_t)Integer) & 0x0000ff00) >> 8; \
-((BigInt_t *)(void *)BigInt)[2] = (((BigInt_tmp_t)Integer) & 0x00ff0000) >> 16; \
-((BigInt_t *)(void *)BigInt)[3] = (((BigInt_tmp_t)Integer) & 0xff000000) >> 24; \
+    ((BigInt_t *)(void *)BigInt)[0] = (((BigInt_tmp_t)Integer) & 0x000000ff); \
+    ((BigInt_t *)(void *)BigInt)[1] = (((BigInt_tmp_t)Integer) & 0x0000ff00) >> 8; \
+    ((BigInt_t *)(void *)BigInt)[2] = (((BigInt_tmp_t)Integer) & 0x00ff0000) >> 16; \
+    ((BigInt_t *)(void *)BigInt)[3] = (((BigInt_tmp_t)Integer) & 0xff000000) >> 24; \
 }
 #elif (BigIntWordSize == 2)
 #define BigInt_FROM_INT(BigInt, Integer) { \
-((BigInt_t *)(void *)BigInt)[0] = (((BigInt_tmp_t)Integer) & 0x0000ffff); \
-((BigInt_t *)(void *)BigInt)[1] = (((BigInt_tmp_t)Integer) & 0xffff0000) >> 16; \
+    ((BigInt_t *)(void *)BigInt)[0] = (((BigInt_tmp_t)Integer) & 0x0000ffff); \
+    ((BigInt_t *)(void *)BigInt)[1] = (((BigInt_tmp_t)Integer) & 0xffff0000) >> 16; \
 }
 #elif (BigIntWordSize == 4)
 #define BigInt_FROM_INT(BigInt, Integer) { \
-((BigInt_t *)(void *)BigInt)[0] = ((BigInt_tmp_t)Integer); \
-((BigInt_t *)(void *)BigInt)[1] = ((BigInt_tmp_t)Integer) >> ((BigInt_tmp_t)32); \
+    ((BigInt_t *)(void *)BigInt)[0] = ((BigInt_tmp_t)Integer); \
+    ((BigInt_t *)(void *)BigInt)[1] = ((BigInt_tmp_t)Integer) >> ((BigInt_tmp_t)32); \
 }
 #elif (BigIntWordSize == 8)
 #define BigInt_FROM_INT(BigInt, Integer) { \
-((BigInt_t *)(void *)BigInt)[0] = ((BigInt_tmp_t)Integer); \
-((BigInt_t *)(void *)BigInt)[1] = ((BigInt_tmp_t)Integer) >> ((BigInt_tmp_t)64); \
+    ((BigInt_t *)(void *)BigInt)[0] = ((BigInt_tmp_t)Integer); \
+    ((BigInt_t *)(void *)BigInt)[1] = ((BigInt_tmp_t)Integer) >> ((BigInt_tmp_t)64); \
 }
 #endif
 #endif
@@ -75,19 +74,19 @@ int BigInt_to_int(size_t NumWords, BigInt_t * BigInt)
     int ret = 0;
 
 	/* Endianness issue if machine is not little-endian? */
-#if (BigIntWordSize == 1)
+    #if (BigIntWordSize == 1)
     ret += BigInt[0];
     ret += BigInt[1] << 8;
     ret += BigInt[2] << 16;
     ret += BigInt[3] << 24;
-#elif (BigIntWordSize == 2)
+    #elif (BigIntWordSize == 2)
     ret += BigInt[0];
     ret += BigInt[1] << 16;
-#elif (BigIntWordSize == 4)
+    #elif (BigIntWordSize == 4)
     ret += BigInt[0];
-#elif (BigIntWordSize == 8)
+    #elif (BigIntWordSize == 8)
     ret += BigInt[0];
-#endif
+    #endif
 
     return ret;
 }
@@ -359,7 +358,7 @@ void BigInt_sub(size_t AWords, BigInt_t * A, size_t BWords, BigInt_t * B, size_t
 void BigInt_mul_basic(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * Out)
 {
 	assert(NumWords <= MaxBigIntWords);
-	
+
     BigInt_t row[MaxBigIntWords];
     BigInt_t tmp[MaxBigIntWords];
     size_t i, j;
@@ -426,15 +425,15 @@ static void BigInt_Karatsuba_internal(size_t num1_NumWords, BigInt_t * num1, siz
     size_t z0_NumWords = low1_NumWords + low2_NumWords;
 	assert(z0_NumWords <= MaxBigIntWords);
     BigInt_t z0[MaxBigIntWords];
-	
+
     size_t z1_NumWords = (MAX(low1_NumWords, high1_NumWords)+1) + (MAX(low2_NumWords, high2_NumWords)+1);
 	assert(z1_NumWords <= MaxBigIntWords);
     BigInt_t z1[MaxBigIntWords];
-	
+
     size_t z2_NumWords =  high1_NumWords + high2_NumWords;
     int use_out_as_z2 = (Out_NumWords >= z2_NumWords); /* Sometimes we can use Out to store z2, then we don't have to copy from z2 to out later (2X SPEEDUP!) */
     if (use_out_as_z2) {BigInt_zero(Out_NumWords-(z2_NumWords),Out+z2_NumWords);}/* The remaining part of Out must be ZERO'D */
-	
+
 	assert(z2_NumWords <= MaxBigIntWords);
 	BigInt_t tmp[MaxBigIntWords];
     BigInt_t * z2 = (use_out_as_z2) ? Out : tmp;

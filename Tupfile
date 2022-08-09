@@ -1,2 +1,34 @@
-: foreach src/*.c |> clang %f -c -I deps/sokol -o %o |> bin/%B.obj
-: bin/*.obj |> clang %f -o %o |> bin/foo.exe
+import CC=clang
+
+ifeq ($(CC),cl)
+	error CL is not supported with TB's Tup builds... yet
+else
+	CFLAGS += -I include
+	CFLAGS += -I deps/luajit/src
+	CFLAGS += -Wall -Werror -Wno-unused-function
+
+	!cc = |> $(CC) $(CFLAGS) %f -g -c -o %o |> bin/%B.o
+endif
+
+# core
+: foreach src/tb/*.c         |> !cc |>
+: foreach src/tb/codegen/*.c |> !cc |>
+: foreach src/tb/bigint/*.c  |> !cc |>
+
+# export format
+: foreach src/tb/objects/*.c |> !cc |>
+: foreach src/tb/debug/*.c   |> !cc |>
+
+# targets
+: foreach src/tb/x64/*.c     |> !cc |>
+: foreach src/tb/aarch64/*.c |> !cc |>
+
+# optimizer
+: foreach src/tb/opt/*.c     |> !cc |>
+
+# host-specific code
+: src/tb/system/win32.c      |> !cc |>
+
+# combine into a lib
+: bin/*.o deps/tbbmalloc.lib deps/luajit/src/lua51.lib |> lib /nologo /out:%o %f |> bin/tildebackend.lib
+

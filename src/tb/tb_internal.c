@@ -186,7 +186,7 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace) {
                 X(n->vcall.target);
 
                 FOREACH_N(it, n->call.param_start, n->call.param_end) {
-                    X(f->vla.data[n->call.param_start + it]);
+                    X(f->vla.data[it]);
                 }
                 break;
             }

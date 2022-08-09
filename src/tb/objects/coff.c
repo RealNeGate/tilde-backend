@@ -16,6 +16,10 @@ typedef struct TB_ModuleExporterCOFF {
         STAGE__WRITE_DEBUG_HEADERS,
 
         STAGE__WRITE_CODE_SECTION,
+        STAGE__WRITE_RDATA_SECTION,
+        STAGE__WRITE_DATA_SECTION,
+        STAGE__WRITE_TLS_SECTION,
+        STAGE__WRITE_DEBUG_SECTION,
     } stage;
     // depends on the stage, go check the code for them
     size_t tick[2];
@@ -42,7 +46,9 @@ typedef struct TB_ModuleExporterCOFF {
     TB_SectionGroup debug_sections;
     COFF_SectionHeader* debug_section_headers;
 
-    char proepi_buffer[PROEPI_BUFFER];
+    char* temporary_memory;
+
+    uint8_t proepi_buffer[PROEPI_BUFFER];
 } TB_ModuleExporterCOFF;
 
 static void send_write_message(TB_ModuleExportPacket* packet, const void* data, size_t length) {
@@ -280,7 +286,13 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
             e->stage += 1;
             return true;
         }
-        case STAGE__WRITE_DEBUG_HEADERS: {
+        case STAGE__WRITE_CODE_SECTION: {
+            const ICodeGen* restrict code_gen = tb__find_code_generator(m);
+
+            TB_FunctionOutput* out_f = m->functions.data[e->tick[0]].output;
+            uint64_t meta = out_f->prologue_epilogue_metadata;
+            uint64_t stack_usage = out_f->stack_usage;
+
             // tick[0]
             //   is the function index
             //
@@ -289,41 +301,135 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
             //   1 is body
             //   2 is epilogue
             switch (e->tick[1]++) {
-                case 0:
-                size_t len = code_gen->emit_prologue(e->proepi_buffer, meta, stack_usage);
-                send_write_message(packet, e->proepi_buffer, len);
-                break;
-
-                case 1:
-                TB_FunctionOutput* out_f = m->functions.data[i].output;
-                if (!out_f) continue;
-                break;
-
-                case 2:
-
-                // next compiled function
-                size_t i = e->tick[0] + 1;
-                while (i < m->functions.count && m->functions.data[i].output == NULL) {
-                    i += 1;
+                case 0: {
+                    size_t len = code_gen->emit_prologue(e->proepi_buffer, meta, stack_usage);
+                    send_write_message(packet, e->proepi_buffer, len);
+                    break;
                 }
-                e->tick[0] = i;
 
-                if (i >= m->functions.count) {
-                    // reset tickers and advance
-                    e->tick[0] = 0, e->tick[1] = 0;
-                    e->state += 1;
+                case 1: {
+                    send_write_message(packet, out_f->code, out_f->code_size);
+                    break;
                 }
-                break;
+
+                case 2: {
+                    size_t len = code_gen->emit_epilogue(e->proepi_buffer, meta, stack_usage);
+                    send_write_message(packet, e->proepi_buffer, len);
+
+                    // next compiled function
+                    size_t i = e->tick[0] + 1;
+                    while (i < m->functions.count && m->functions.data[i].output == NULL) {
+                        i += 1;
+                    }
+                    e->tick[0] = i;
+
+                    if (i >= m->functions.count) {
+                        // reset tickers and advance
+                        e->tick[0] = 0, e->tick[1] = 0;
+                        e->stage += 1;
+                    }
+                    break;
+                }
+            }
+
+            return true;
+        }
+        case STAGE__WRITE_RDATA_SECTION: {
+            // we shouldn't use the heap here, *beg* the user for free memory
+            char* rdata = e->temporary_memory = tb_platform_heap_alloc(m->rdata_region_size);
+
+            loop(i, m->max_threads) {
+                loop(j, dyn_array_length(m->thread_info[i].const_patches)) {
+                    TB_ConstPoolPatch* p = &m->thread_info[i].const_patches[j];
+                    memcpy(&rdata[p->rdata_pos], p->data, p->length);
+                }
+            }
+
+            send_write_message(packet, rdata, m->rdata_region_size);
+            e->stage += 1;
+            return true;
+        }
+        case STAGE__WRITE_DATA_SECTION: {
+            // TODO(NeGate): Optimize this for size and speed, sometimes
+            // there's huge sections will be filled with just empty regions
+            // so it's probably best not to represent everything in a big
+            // buffer.
+            char* data = e->temporary_memory = tb_platform_heap_realloc(e->temporary_memory, m->data_region_size);
+
+            loop(i, m->max_threads) {
+                pool_for(TB_Global, g, m->thread_info[i].globals) {
+                    if (g->storage != TB_STORAGE_DATA) continue;
+
+                    TB_Initializer* init = g->init;
+
+                    // clear out space
+                    memset(&data[g->pos], 0, init->size);
+
+                    loop(k, init->obj_count) {
+                        if (init->objects[k].type == TB_INIT_OBJ_REGION) {
+                            memcpy(
+                                &data[g->pos + init->objects[k].offset],
+                                init->objects[k].region.ptr,
+                                init->objects[k].region.size
+                            );
+                        }
+                    }
+                }
+            }
+
+            send_write_message(packet, data, m->data_region_size);
+            e->stage += 1;
+            return true;
+        }
+        case STAGE__WRITE_TLS_SECTION: {
+            char* data = e->temporary_memory = tb_platform_heap_realloc(e->temporary_memory, m->tls_region_size);
+
+            loop(i, m->max_threads) {
+                pool_for(TB_Global, g, m->thread_info[i].globals) {
+                    if (g->storage != TB_STORAGE_TLS) continue;
+
+                    TB_Initializer* init = g->init;
+
+                    // clear out space
+                    memset(&data[g->pos], 0, init->size);
+
+                    loop(k, init->obj_count) {
+                        const TB_InitObj* o = &init->objects[k];
+                        if (o->type == TB_INIT_OBJ_REGION) {
+                            memcpy(&data[g->pos + o->offset], o->region.ptr, o->region.size);
+                        }
+                    }
+                }
+            }
+
+            send_write_message(packet, data, m->tls_region_size);
+            // tb_platform_heap_free(data);
+
+            // next section *unironically* uses the ticker
+            e->tick[0] = 0;
+            if (e->debug_sections.length == 0) {
+                // skip the WRITE_DEBUG_SECTION stage
+                e->stage += 2;
+            } else {
+                e->stage += 1;
             }
             return true;
         }
+        case STAGE__WRITE_DEBUG_SECTION: {
+            size_t i = e->tick[0]++;
+            send_write_message(packet, e->debug_sections.data[i].raw_data.data, e->debug_sections.data[i].raw_data.length);
+
+            if (i >= e->debug_sections.length) {
+                e->tick[0] = 0;
+                e->stage += 1;
+            }
+            return true;
+        }
+        default: tb_todo();
     }
 }
 
-void tb_export_coff(TB_Module* m, const char* path) {
-    const ICodeGen* restrict code_gen = tb__find_code_generator(m);
-    const IDebugFormat* restrict debug_fmt = tb__find_debug_format(m);
-
+void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt) {
     TB_TemporaryStorage* tls = tb_tls_allocate();
 
     // The prologue and epilogue generators need some storage

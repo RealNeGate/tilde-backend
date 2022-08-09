@@ -237,9 +237,9 @@ TB_API bool tb_function_optimize(TB_Function* f, size_t pass_count, const TB_Fun
         passes = default_passes;
     }
 
-    bool diff_opts = false;//!strcmp(f->name, "set_defines");
+    bool diff_opts = false;// !strcmp(f->name, "WinMain");
     if (diff_opts) {
-        log_function(debug_file, "initial", f);
+        log_function(stdout, "initial", f);
     }
 
     bool changes = false;
@@ -265,7 +265,7 @@ TB_API bool tb_function_optimize(TB_Function* f, size_t pass_count, const TB_Fun
 
         if (success) {
             if (diff_opts) {
-                log_function(debug_file, passes[i].name ? passes[i].name : passes[i].l_state ? "lua unknown" : "C unknown", f);
+                log_function(stdout, passes[i].name ? passes[i].name : passes[i].l_state ? "lua unknown" : "C unknown", f);
             }
 
             changes = true;

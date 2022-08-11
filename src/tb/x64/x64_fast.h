@@ -42,7 +42,6 @@ typedef struct {
     // of memory operands:
     struct {
         TB_Reg  mapping;
-
         GPR     base : 8;
         GPR     index : 8;
         Scale   scale : 8;
@@ -588,7 +587,8 @@ static Val fast_get_tile_mapping(X64_FastCtx* restrict ctx, TB_Function* f, TB_R
     // printf("TILE USED UP! r%u\n", r);
     ctx->tile.mapping = 0;
 
-    return (Val) { VAL_MEM,
+    return (Val) {
+        VAL_MEM,
         .mem = {
             .base = ctx->tile.base,
             .index = ctx->tile.index,
@@ -2227,21 +2227,11 @@ static void fast_eval_terminator_phis(X64_FastCtx* restrict ctx, TB_Function* f,
                         Val dst;
                         if (ctx->addresses[r].type == ADDRESS_DESC_NONE) {
                             // TODO(NeGate): Fix up PHI node spill slot recycling
-                            /*if (ctx->use_count[src] == 1 && ctx->addresses[src].type == ADDRESS_DESC_SPILL) {
-                                //printf("%s:r%u: recycle!\n", f->name, r);
-
-                                ctx->addresses[r] = ctx->addresses[src];
-                                ctx->addresses[src].type = ADDRESS_DESC_NONE;
-
-                                dst = fast_eval(ctx, f, r);
-                                continue;
-                            } else {*/
                             int size = get_data_type_size(dt);
                             int pos  = STACK_ALLOC(size, size);
 
                             dst = val_stack(dt, pos);
                             fast_def_spill(ctx, f, r, pos, dt);
-                            //}
                         } else {
                             assert(ctx->addresses[r].type == ADDRESS_DESC_SPILL);
                             dst = val_stack(dt, ctx->addresses[r].spill);

@@ -187,13 +187,13 @@ static void html_print(void* user_data, const char* fmt, ...) {
 }
 
 static void log_function(FILE* out, const char* title, TB_Function* f) {
-    #if 1
-    tb_function_print(f, tb_default_print_callback, out);
+    #if 0
+    tb_function_print2(f, tb_default_print_callback, out, false);
     #else
     fprintf(out, "<td valign=\"top\">\n");
     fprintf(out, "%s:<br>\n", title);
     fprintf(out, "<pre>\n");
-    tb_function_print(f, html_print, out);
+    tb_function_print2(f, html_print, out, false);
     fprintf(out, "</pre>\n");
     fprintf(out, "</td>\n");
     #endif
@@ -208,8 +208,8 @@ static void end_crap() {
 }
 
 TB_API bool tb_function_optimize(TB_Function* f, size_t pass_count, const TB_FunctionPass* passes) {
-    /*if (debug_file == NULL) {
-        #if 1
+    if (debug_file == NULL) {
+        #if 0
         debug_file = stdout;
         #else
         debug_file = fopen("foo.html", "wb"); // stdout;
@@ -230,16 +230,16 @@ TB_API bool tb_function_optimize(TB_Function* f, size_t pass_count, const TB_Fun
 
         atexit(end_crap);
         #endif
-    }*/
+    }
 
     if (pass_count == 0) {
         pass_count = sizeof(default_passes) / sizeof(default_passes[0]);
         passes = default_passes;
     }
 
-    bool diff_opts = false;// !strcmp(f->name, "WinMain");
+    bool diff_opts = !strcmp(f->name, "StringsAreEqual");
     if (diff_opts) {
-        log_function(stdout, "initial", f);
+        log_function(debug_file, "initial", f);
     }
 
     bool changes = false;
@@ -265,7 +265,7 @@ TB_API bool tb_function_optimize(TB_Function* f, size_t pass_count, const TB_Fun
 
         if (success) {
             if (diff_opts) {
-                log_function(stdout, passes[i].name ? passes[i].name : passes[i].l_state ? "lua unknown" : "C unknown", f);
+                log_function(debug_file, passes[i].name ? passes[i].name : passes[i].l_state ? "lua unknown" : "C unknown", f);
             }
 
             changes = true;

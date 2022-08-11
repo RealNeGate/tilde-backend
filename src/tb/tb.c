@@ -20,7 +20,7 @@ const IDebugFormat* tb__find_debug_format(TB_Module* m) {
 
 ICodeGen* tb__find_code_generator(TB_Module* m) {
     switch (m->target_arch) {
-        case TB_ARCH_X86_64: return &tb__x64_codegen;
+        case TB_ARCH_X86_64: return &tb__x64v2_codegen;
         case TB_ARCH_AARCH64: return &tb__aarch64_codegen;
         default: return NULL;
     }

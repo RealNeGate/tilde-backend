@@ -457,13 +457,15 @@ do {                     \
 #endif
 #endif
 
-#define tb_assert(condition, ...) \
-do {                              \
-    if (!(condition)) {           \
-        printf(__VA_ARGS__);      \
-        abort();                  \
-    }                             \
+#define tb_assert(condition, ...)    \
+do {                                 \
+    if (!(condition)) {              \
+        fprintf(stderr, __VA_ARGS__);\
+        abort();                     \
+    }                                \
 } while (0)
+
+#define tb_assert_once(msg) (fprintf(stderr, "%s:%d: assert_once \"%s\"\n", __FILE__, __LINE__, msg), abort())
 
 #ifdef _WIN32
 #define tb_panic(...)                     \
@@ -483,8 +485,11 @@ do {                                      \
 #define COUNTOF(...) (sizeof(__VA_ARGS__) / sizeof((__VA_ARGS__)[0]))
 #endif
 
-#define FOREACH_N(it, start, count) \
-for (ptrdiff_t it = (start), end__ = (count); it < end__; ++it)
+#define FOREACH_N(it, start, end) \
+for (ptrdiff_t it = (start), end__ = (end); it < end__; ++it)
+
+#define FOREACH_REVERSE_N(it, start, end) \
+for (ptrdiff_t it = (end), start__ = (start); (it--) > start__;)
 
 #define loop(iterator, count) \
 for (size_t iterator = 0, end__ = (count); iterator < end__; ++iterator)
@@ -669,6 +674,7 @@ inline static bool tb_data_type_match(const TB_DataType* a, const TB_DataType* b
 
 // NOTE(NeGate): Place all the codegen interfaces down here
 extern ICodeGen tb__x64_codegen;
+extern ICodeGen tb__x64v2_codegen;
 extern ICodeGen tb__aarch64_codegen;
 
 // And all debug formats here

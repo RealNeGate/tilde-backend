@@ -2,6 +2,7 @@
 #include "../codegen/tree.h"
 #include "../tb_internal.h"
 
+#define USE_X64_V2 1
 #define TB_TEMP_REG INT_MAX
 
 static_assert(sizeof(float) == sizeof(uint32_t), "Float needs to be a 32-bit float!");
@@ -37,7 +38,7 @@ typedef enum {
 } XMM;
 
 typedef enum {
-    VAL_NONE, VAL_IMM, VAL_MEM, VAL_GPR, VAL_XMM, VAL_GLOBAL, VAL_FLAGS
+    VAL_NONE, VAL_FLAGS, VAL_GPR, VAL_XMM, VAL_IMM, VAL_MEM, VAL_GLOBAL
 } ValType;
 
 typedef enum {
@@ -60,10 +61,13 @@ typedef struct Val {
     uint8_t type;
     bool is_spill;
     TB_DataType dt;
+    TB_Reg r;
 
     union {
-        GPR  gpr;
-        XMM  xmm;
+        int reg;
+        GPR gpr;
+        XMM xmm;
+
         Cond cond;
         struct {
             bool is_rvalue;
@@ -81,9 +85,11 @@ typedef struct Val {
         int32_t imm;
     };
 } Val;
-static_assert(offsetof(Val, gpr) == offsetof(Val, xmm), "Val::gpr and Val::xmm must alias!");
+static_assert(offsetof(Val, reg) == offsetof(Val, gpr), "Val::reg and Val::gpr must alias!");
+static_assert(offsetof(Val, reg) == offsetof(Val, xmm), "Val::reg and Val::xmm must alias!");
 static_assert(offsetof(Val, global.is_rvalue) == offsetof(Val, mem.is_rvalue), "Val::mem.is_rvalue and Val::global.is_rvalue must alias!");
 
+#if !USE_X64_V2
 // We really only need the position where to patch
 // it since it's all internal and the target is implicit.
 typedef uint32_t ReturnPatch;
@@ -92,6 +98,7 @@ typedef struct LabelPatch {
     int pos;
     TB_Label target_lbl;
 } LabelPatch;
+#endif
 
 typedef enum Inst2Type {
     // Integer data processing
@@ -132,7 +139,7 @@ typedef struct Inst2 {
 } Inst2;
 
 // Both ISel contexts have this as a header
-typedef struct {
+/*typedef struct {
     // Header that
     uint8_t* out;
     uint8_t* start_out;
@@ -154,7 +161,7 @@ typedef struct {
     uint32_t* labels;
     LabelPatch* label_patches;
     ReturnPatch* ret_patches;
-} X64_CtxHeader;
+} X64_CtxHeader;*/
 
 static const GPR WIN64_GPR_PARAMETERS[4] = { RCX, RDX, R8, R9 };
 static const GPR SYSV_GPR_PARAMETERS[6] = { RDI, RSI, RCX, RDX, R8, R9 };
@@ -278,9 +285,6 @@ inline static bool is_value_match(const Val* a, const Val* b) {
 
 static int get_data_type_size(const TB_DataType dt);
 
-// used to add patches since there's separate arrays per thread
-static thread_local size_t s_local_thread_id;
-
 #ifdef __GNUC__
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-variable"
@@ -292,14 +296,14 @@ static const char* GPR_NAMES[] = { "RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RS
 
 // shorthand macros
 #define STACK_ALLOC(size, align) \
-(ctx->header.stack_usage = align_up(ctx->header.stack_usage + (size), align), - ctx->header.stack_usage)
+(ctx->stack_usage = align_up(ctx->stack_usage + (size), align), - ctx->stack_usage)
 
-#define INST1(op, a)              inst1(&ctx->header, op, a)
-#define INST2(op, a, b, dt)       inst2(&ctx->header, op, a, b, dt)
-#define INST2SSE(op, a, b, flags) inst2sse(&ctx->header, op, a, b, flags)
-#define JCC(cc, label)            jcc(&ctx->header, cc, label)
-#define JMP(label)                jmp(&ctx->header, label)
-#define RET_JMP()                 ret_jmp(&ctx->header)
+#define INST1(op, a)              inst1(ctx, op, a)
+#define INST2(op, a, b, dt)       inst2(ctx, op, a, b, dt)
+#define INST2SSE(op, a, b, flags) inst2sse(ctx, op, a, b, flags)
+#define JCC(cc, label)            jcc(ctx, cc, label)
+#define JMP(label)                jmp(ctx, label)
+#define RET_JMP()                 ret_jmp(ctx)
 
-#define GET_CODE_POS() (ctx->header.out - ctx->header.start_out)
-#define PATCH4(p, b)   (*((uint32_t*)&ctx->header.start_out[p]) = (b))
+#define GET_CODE_POS() (ctx->out - ctx->start_out)
+#define PATCH4(p, b)   (*((uint32_t*)&ctx->start_out[p]) = (b))

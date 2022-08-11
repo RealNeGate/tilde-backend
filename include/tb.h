@@ -678,9 +678,23 @@ extern "C" {
         enum {
             TB_EXPORT_PACKET_NONE,
 
+            // allocates a region of memory
+            //
+            // NOTE: the lifetime is until the next call to tb_module_exporter_next
+            // after the PACKET_ALLOC is received
+            TB_EXPORT_PACKET_ALLOC,
+
+            // writes to the output following directly after the previous by a PACKET_WRITE
             TB_EXPORT_PACKET_WRITE,
         } type;
         union {
+            struct {
+                // input
+                size_t request_size;
+
+                // output
+                void* memory;
+            } alloc;
             struct {
                 // input
                 size_t length;
@@ -744,7 +758,6 @@ extern "C" {
     // dont and the tls_index is used, it'll crash
     TB_API void tb_module_set_tls_index(TB_Module* m, TB_External* e);
 
-    // Exports an relocatable object file
     TB_API TB_ModuleExporter* tb_module_make_exporter(TB_Module* m);
     TB_API bool tb_module_exporter_next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPacket* packet);
 
@@ -858,8 +871,8 @@ extern "C" {
         TB_Reg parent_;
     } TB_NodeInputIter;
 
-    #define TB_FOR_INPUT_IN_REG(it, f, parent) for (TB_NodeInputIter it = { .parent_ = (n) }; tb_next_node_input(f, &it);)
-    #define TB_FOR_INPUT_IN_NODE(it, f, parent) for (TB_NodeInputIter it = { .parent_ = (n) - f->nodes }; tb_next_node_input(f, &it);)
+    #define TB_FOR_INPUT_IN_REG(it, f, parent) for (TB_NodeInputIter it = { .parent_ = (parent) }; tb_next_node_input(f, &it);)
+    #define TB_FOR_INPUT_IN_NODE(it, f, parent) for (TB_NodeInputIter it = { .parent_ = (parent) - f->nodes }; tb_next_node_input(f, &it);)
 
     TB_API TB_NodeInputIter tb_node_input_iter(TB_Reg r);
     TB_API bool tb_next_node_input(const TB_Function* f, TB_NodeInputIter* iter);

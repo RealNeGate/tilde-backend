@@ -1,8 +1,12 @@
+#if 0
 // This entire module is one translation unit so that it doesn't have to worry
 // about C's crappy support for public and private interfaces. Because it's a
 // separate TU completely from the rest of the project, it means that we can use
 // tiny function names so long as they don't internally collide since they're static.
 #define USING_FAST_PATH (0)
+
+// used to add patches since there's separate arrays per thread
+static thread_local size_t s_local_thread_id;
 
 #include "x64.h"
 #include "x64_emitter.h"
@@ -120,4 +124,5 @@ ICodeGen tb__x64_codegen = {
 };
 #if _MSC_VER
 _Pragma("warning (pop)")
+#endif
 #endif

@@ -35,6 +35,15 @@ static void postorder(TB_Function* f, DomContext* ctx, TB_Reg bb) {
     } else if (end->type == TB_IF) {
         postorder(f, ctx, tb_find_reg_from_label(f, end->if_.if_true));
         postorder(f, ctx, tb_find_reg_from_label(f, end->if_.if_false));
+    } else if (end->type == TB_SWITCH) {
+        size_t entry_count = (end->switch_.entries_end - end->switch_.entries_start) / 2;
+        TB_SwitchEntry* entries = (TB_SwitchEntry*) &f->vla.data[end->switch_.entries_start];
+
+        FOREACH_N(i, 0, entry_count) {
+            postorder(f, ctx, tb_find_reg_from_label(f, entries[i].value));
+        }
+
+        postorder(f, ctx, tb_find_reg_from_label(f, end->switch_.default_label));
     } else tb_todo();
 
     ctx->traversal[ctx->traversal_filled++] = label_id;

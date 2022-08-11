@@ -1,17 +1,85 @@
 #include "../tb_internal.h"
 
-static bool try_jump_thread(TB_Function* f, TB_Label label, TB_Label* new_label) {
+// TODO(NeGate): clean up this code
+static bool try_jump_thread(TB_Function* f, TB_TemporaryStorage* tls, TB_Label* dst_label) {
+    TB_Label label = *dst_label;
     TB_Reg target_reg = tb_find_reg_from_label(f, label);
+    assert(target_reg != 0);
+
     TB_Node* target = &f->nodes[target_reg];
 
     // skip any NULL slots
     while (f->nodes[target->next].type == TB_NULL) {
-        target_reg = target->next;
-        target = &f->nodes[target_reg];
+        target = &f->nodes[target->next];
     }
 
     if (f->nodes[target->next].type == TB_GOTO) {
-        *new_label = f->nodes[target->next].goto_.label;
+        if (label == 13) __debugbreak();
+
+        TB_Label new_target_label = f->nodes[target->next].goto_.label;
+        TB_Reg new_target_reg = tb_find_reg_from_label(f, new_target_label);
+        assert(new_target_reg != 0);
+
+        *dst_label = new_target_label;
+
+        // figure out if we've removed all paths from the old label
+        bool replace_old = true;
+        {
+            // TODO(NeGate): Create a proper caching system for this info
+            int pred_count = 0;
+            TB_Label* preds = tb_tls_push(tls, 0);
+            tb_calculate_immediate_predeccessors(f, tls, new_target_label, &pred_count);
+
+            FOREACH_N(i, 0, pred_count) {
+                if (preds[i] == label) {
+                    replace_old = false;
+                    break;
+                }
+            }
+
+            tb_tls_restore(tls, preds);
+        }
+
+        // reorganize PHI nodes
+        TB_Reg terminator = f->nodes[new_target_reg].label.terminator;
+        TB_FOR_EACH_NODE_RANGE(n, f, new_target_reg, terminator) {
+            TB_Reg r = n - f->nodes;
+
+            if (tb_node_is_phi_node(f, r)) {
+                int count = tb_node_get_phi_width(f, r);
+                TB_PhiInput* inputs = tb_node_get_phi_inputs(f, r);
+
+                if (replace_old) {
+                    OPTIMIZER_LOG(r, "Replaced extra path to the phi node via jump threading");
+                    FOREACH_N(j, 0, count) {
+                        if (inputs[j].label == target_reg) inputs[j].label = new_target_label;
+                    }
+                } else {
+                    TB_Reg found = 0;
+                    FOREACH_N(j, 0, count) {
+                        if (inputs[j].label == target_reg) {
+                            found = inputs[j].val;
+                            break;
+                        }
+                    }
+
+                    if (found) {
+                        OPTIMIZER_LOG(r, "Added extra path to the phi node via jump threading");
+
+                        TB_PhiInput* new_inputs = tb_platform_heap_alloc((count + 1) * sizeof(TB_PhiInput));
+                        memcpy(new_inputs, inputs, count * sizeof(TB_PhiInput));
+                        new_inputs[count] = (TB_PhiInput){ .label = new_target_reg, .val = found };
+
+                        n->type = TB_PHIN;
+                        n->phi.count = count + 1;
+                        n->phi.inputs = new_inputs;
+                    } else {
+                        OPTIMIZER_LOG(r, "Jump threading didn't add extra path since it leads to NULL node");
+                    }
+                }
+            }
+        }
+
         return true;
     }
 
@@ -84,6 +152,34 @@ bool tb_opt_remove_pass_node(TB_Function* f) {
 
             n->type = TB_NULL;
             changes++;
+        }
+    }
+
+    return changes;
+}
+
+bool tb_opt_jump_threading(TB_Function* f) {
+    TB_TemporaryStorage* tls = tb_tls_allocate();
+    int changes = 0;
+
+    TB_FOR_EACH_NODE(n, f) {
+        TB_Reg i = (n - f->nodes);
+
+        if (n->type == TB_IF) {
+            if (try_jump_thread(f, tls, &n->if_.if_true)) {
+                OPTIMIZER_LOG(i, "jump threading");
+                changes++;
+            }
+
+            if (try_jump_thread(f, tls, &n->if_.if_false)) {
+                OPTIMIZER_LOG(i, "jump threading");
+                changes++;
+            }
+        } else if (n->type == TB_GOTO) {
+            if (try_jump_thread(f, tls, &n->goto_.label)) {
+                OPTIMIZER_LOG(i, "jump threading");
+                changes++;
+            }
         }
     }
 
@@ -389,19 +485,6 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
                 n->if_.cond = cond->cmp.a;
                 tb_swap(TB_Label, n->if_.if_true, n->if_.if_false);
                 changes++;
-            } else {
-                TB_Label new_label;
-                if (try_jump_thread(f, n->if_.if_true, &new_label)) {
-                    OPTIMIZER_LOG(i, "jump threading");
-                    n->if_.if_true = new_label;
-                    changes++;
-                }
-
-                if (try_jump_thread(f, n->if_.if_false, &new_label)) {
-                    OPTIMIZER_LOG(i, "jump threading");
-                    n->if_.if_false = new_label;
-                    changes++;
-                }
             }
         } else if (tb_node_is_phi_node(f, i)) {
             int count = tb_node_get_phi_width(f, i);
@@ -435,7 +518,7 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
                         duplicate = true;
                     } else if (f->nodes[a].type != TB_NULL) {
 	                    loop_range(k, 0, j) {
-	                        if (inputs[k].val == a) {
+	                        if (inputs[k].val == a && inputs[k].label == b) {
 	                            duplicate = true;
 	                            break;
 	                        }
@@ -475,13 +558,6 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
                     }
                 }
                 tb_tls_restore(tls, new_inputs);
-            }
-        } else if (n->type == TB_GOTO) {
-            TB_Label new_label;
-            if (try_jump_thread(f, n->goto_.label, &new_label)) {
-                OPTIMIZER_LOG(i, "jump threading");
-                n->goto_.label = new_label;
-                changes++;
             }
         } else if (n->type == TB_LABEL) {
             if (f->nodes[n->label.terminator].type == TB_GOTO) {
@@ -590,6 +666,7 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
 TB_API bool tb_opt_canonicalize(TB_Function* f) {
     static TB_FunctionPass opts[] = {
         { "canonicalize_phase1", tb_opt_canonicalize_phase1 },
+        // { "jump_threading",      tb_opt_jump_threading },
         { "subexpr_elim",        tb_opt_subexpr_elim },
         { "remove_pass_node",    tb_opt_remove_pass_node },
         { "fold",                tb_opt_fold },

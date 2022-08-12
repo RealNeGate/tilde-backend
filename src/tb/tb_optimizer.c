@@ -208,7 +208,7 @@ static void end_crap() {
 }
 
 TB_API bool tb_function_optimize(TB_Function* f, size_t pass_count, const TB_FunctionPass* passes) {
-    if (debug_file == NULL) {
+    /* if (debug_file == NULL) {
         #if 0
         debug_file = stdout;
         #else
@@ -230,17 +230,17 @@ TB_API bool tb_function_optimize(TB_Function* f, size_t pass_count, const TB_Fun
 
         atexit(end_crap);
         #endif
-    }
+    } */
 
     if (pass_count == 0) {
         pass_count = sizeof(default_passes) / sizeof(default_passes[0]);
         passes = default_passes;
     }
 
-    bool diff_opts = !strcmp(f->name, "StringsAreEqual");
+    /* bool diff_opts = false; // !strcmp(f->name, "StringsAreEqual");
     if (diff_opts) {
         log_function(debug_file, "initial", f);
-    }
+    } */
 
     bool changes = false;
     for (size_t i = 0; i < pass_count; i++) {
@@ -264,9 +264,9 @@ TB_API bool tb_function_optimize(TB_Function* f, size_t pass_count, const TB_Fun
         }
 
         if (success) {
-            if (diff_opts) {
+            /* if (diff_opts) {
                 log_function(debug_file, passes[i].name ? passes[i].name : passes[i].l_state ? "lua unknown" : "C unknown", f);
-            }
+            } */
 
             changes = true;
         }

@@ -781,9 +781,9 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 ctx->header.out += 8;
             }
             break;
-            case TB_FLOAT_CONST: {
+            case TB_FLOAT32_CONST: {
                 assert(dt.type == TB_FLOAT && dt.width == 0);
-                uint64_t imm = (Cvt_F64U64) { .f = n->flt.value }.i;
+                uint32_t imm = (Cvt_F32U32) { .f = n->flt32.value }.i;
 
                 XMM dst_xmm = fast_alloc_xmm(ctx, f, r);
                 fast_def_xmm(ctx, f, r, dst_xmm, TB_TYPE_PTR);
@@ -797,30 +797,54 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, dst_xmm, dst_xmm);
                 } else {
                     // Convert it to raw bits
-                    *ctx->header.out++ = dt.data == TB_FLT_64 ? 0xF2 : 0xF3;
+                    *ctx->header.out++ = 0xF3;
                     if (dst_xmm >= 8) *ctx->header.out++ = 0x44;
                     *ctx->header.out++ = 0x0F;
                     *ctx->header.out++ = 0x10;
                     *ctx->header.out++ = mod_rx_rm(MOD_INDIRECT, dst_xmm, RBP);
 
-                    uint32_t disp = 0;
-                    if (dt.data == TB_FLT_64) {
-                        uint64_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint64_t));
-                        *rdata_payload = imm;
+                    uint32_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint32_t));
+                    *rdata_payload = imm;
 
-                        disp = tb_emit_const_patch(f->module, f, GET_CODE_POS(), rdata_payload, sizeof(uint64_t), s_local_thread_id);
-                    } else if (dt.data == TB_FLT_32) {
-                        uint32_t imm32 = (Cvt_F32U32) { .f = n->flt.value }.i;
+                    *((uint32_t*)ctx->header.out) = tb_emit_const_patch(
+                        f->module, f, GET_CODE_POS(),
+                        rdata_payload, sizeof(uint32_t),
+                        s_local_thread_id
+                    );
+                    ctx->header.out += 4;
+                }
+                break;
+            }
+            case TB_FLOAT64_CONST: {
+                assert(dt.type == TB_FLOAT && dt.width == 0);
+                uint64_t imm = (Cvt_F64U64) { .f = n->flt64.value }.i;
 
-                        uint32_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint32_t));
-                        *rdata_payload = imm32;
+                XMM dst_xmm = fast_alloc_xmm(ctx, f, r);
+                fast_def_xmm(ctx, f, r, dst_xmm, TB_TYPE_PTR);
 
-                        disp = tb_emit_const_patch(f->module, f, GET_CODE_POS(), rdata_payload, sizeof(uint32_t), s_local_thread_id);
-                    } else {
-                        tb_unreachable();
+                if (imm == 0) {
+                    if (dst_xmm >= 8) {
+                        *ctx->header.out++ = rex(true, dst_xmm, dst_xmm, 0);
                     }
+                    *ctx->header.out++ = 0x0F;
+                    *ctx->header.out++ = 0x57;
+                    *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, dst_xmm, dst_xmm);
+                } else {
+                    // Convert it to raw bits
+                    *ctx->header.out++ = 0xF2;
+                    if (dst_xmm >= 8) *ctx->header.out++ = 0x44;
+                    *ctx->header.out++ = 0x0F;
+                    *ctx->header.out++ = 0x10;
+                    *ctx->header.out++ = mod_rx_rm(MOD_INDIRECT, dst_xmm, RBP);
 
-                    *((uint32_t*)ctx->header.out) = disp;
+                    uint64_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint64_t));
+                    *rdata_payload = imm;
+
+                    *((uint32_t*)ctx->header.out) = tb_emit_const_patch(
+                        f->module, f, GET_CODE_POS(),
+                        rdata_payload, sizeof(uint64_t),
+                        s_local_thread_id
+                    );
                     ctx->header.out += 4;
                 }
                 break;
@@ -1584,10 +1608,10 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 fast_def_gpr(ctx, f, r, val.gpr, dt);
 
                 // it's either 32bit or 64bit conversion
-                // F3 0F 2D /r            CVTSS2SI xmm1, r/m32
-                // F3 REX.W 0F 2D /r      CVTSS2SI xmm1, r/m64
-                // F2 0F 2D /r            CVTSD2SI xmm1, r/m32
-                // F2 REX.W 0F 2D /r      CVTSD2SI xmm1, r/m64
+                // F3 0F 2C /r            CVTTSS2SI xmm1, r/m32
+                // F3 REX.W 0F 2C /r      CVTTSS2SI xmm1, r/m64
+                // F2 0F 2C /r            CVTTSD2SI xmm1, r/m32
+                // F2 REX.W 0F 2C /r      CVTTSD2SI xmm1, r/m64
                 if (src.dt.width == 0) {
                     *ctx->header.out++ = (src.dt.data == TB_FLT_64) ? 0xF2 : 0xF3;
                 } else if (src.dt.data == TB_FLT_64) {
@@ -1611,7 +1635,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 }
 
                 *ctx->header.out++ = 0x0F;
-                *ctx->header.out++ = 0x2D;
+                *ctx->header.out++ = 0x2C;
                 emit_memory_operand(&ctx->header, rx, &src);
 
                 fast_kill_temp_gpr(ctx, f, src.gpr);

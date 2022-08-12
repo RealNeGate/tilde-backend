@@ -91,10 +91,16 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
             callback(user_data, "  # line %s:%d", f->module->files.data[n->line_info.file].path, n->line_info.line);
             break;
         }
-        case TB_FLOAT_CONST: {
+        case TB_FLOAT32_CONST: {
             callback(user_data, "  r%-8u = float ", i);
             tb_print_type(dt, callback, user_data);
-            callback(user_data, " %f", n->flt.value);
+            callback(user_data, " %f", n->flt32.value);
+            break;
+        }
+        case TB_FLOAT64_CONST: {
+            callback(user_data, "  r%-8u = float ", i);
+            tb_print_type(dt, callback, user_data);
+            callback(user_data, " %f", n->flt64.value);
             break;
         }
         case TB_MEMSET: {

@@ -77,7 +77,8 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
                     case TB_ARRAY_ACCESS:
                     case TB_MEMBER_ACCESS:
                     case TB_STRING_CONST:
-                    case TB_FLOAT_CONST:
+                    case TB_FLOAT32_CONST:
+                    case TB_FLOAT64_CONST:
                     case TB_INT2PTR:
                     case TB_PTR2INT:
                     case TB_INT2FLOAT:

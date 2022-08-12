@@ -31,4 +31,3 @@ endif
 
 # combine into a lib
 : bin/*.o deps/tbbmalloc.lib deps/luajit/src/lua51.lib |> lib /nologo /out:%o %f |> bin/tildebackend.lib
-

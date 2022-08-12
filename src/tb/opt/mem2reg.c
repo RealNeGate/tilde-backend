@@ -362,10 +362,14 @@ bool tb_opt_mem2reg(TB_Function* f) {
                     // this stores the "primary type" of the specific address
                     TB_DataType dt = f->nodes[to_promote[var]].dt;
 
-                    if (TB_IS_FLOAT_TYPE(dt)) {
-                        f->nodes[i].type = TB_FLOAT_CONST;
+                    if (dt.type == TB_FLOAT && dt.data == TB_FLT_32) {
+                        f->nodes[i].type = TB_FLOAT32_CONST;
                         f->nodes[i].dt = dt;
-                        f->nodes[i].flt.value = 0.0;
+                        f->nodes[i].flt32.value = 0.0;
+                    } else if (dt.type == TB_FLOAT && dt.data == TB_FLT_64) {
+                        f->nodes[i].type = TB_FLOAT64_CONST;
+                        f->nodes[i].dt = dt;
+                        f->nodes[i].flt64.value = 0.0;
                     } else {
                         f->nodes[i].type = TB_INTEGER_CONST;
                         f->nodes[i].dt = dt;

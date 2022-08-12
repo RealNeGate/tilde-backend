@@ -31,7 +31,8 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace) {
         switch (n->type) {
             case TB_NULL:
             case TB_INTEGER_CONST:
-            case TB_FLOAT_CONST:
+            case TB_FLOAT32_CONST:
+            case TB_FLOAT64_CONST:
             case TB_STRING_CONST:
             case TB_LOCAL:
             case TB_PARAM:

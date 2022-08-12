@@ -47,7 +47,12 @@ static void x64v2_resolve_stack_slot(Ctx* restrict ctx, TB_Function* f, TB_Node*
 #define GAD_VAL Val
 #include "../codegen/generic_addrdesc.h"
 #include "x64_emitter.h"
-#include "x64_proepi.h"
+// #include "x64_proepi.h"
+
+size_t x64_get_prologue_length(uint64_t saved, uint64_t stack_usage);
+size_t x64_get_epilogue_length(uint64_t saved, uint64_t stack_usage);
+size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usage);
+size_t x64_emit_epilogue(uint8_t* out, uint64_t saved, uint64_t stack_usage);
 
 enum {
     X64_REG_CLASS_GPR,

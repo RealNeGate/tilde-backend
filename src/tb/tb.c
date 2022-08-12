@@ -20,7 +20,11 @@ const IDebugFormat* tb__find_debug_format(TB_Module* m) {
 
 ICodeGen* tb__find_code_generator(TB_Module* m) {
     switch (m->target_arch) {
+        #if 0
         case TB_ARCH_X86_64: return &tb__x64v2_codegen;
+        #else
+        case TB_ARCH_X86_64: return &tb__x64_codegen;
+        #endif
         case TB_ARCH_AARCH64: return &tb__aarch64_codegen;
         default: return NULL;
     }
@@ -130,21 +134,21 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f, TB_ISelMode ise
     return true;
 }
 
-TB_API TB_ModuleExporter* tb_module_make_exporter(TB_Module* m) {
+TB_API TB_ModuleExporter* tb_make_exporter(TB_Module* m) {
     switch (m->target_system) {
         case TB_SYSTEM_WINDOWS: return tb_coff__make(m);
-        default:                tb_panic("TinyBackend error: Unknown system!\n");
+        default: tb_panic("TinyBackend error: Unknown system!\n");
     }
 }
 
-TB_API bool tb_module_exporter_next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPacket* packet) {
+TB_API bool tb_exporter_next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPacket* packet) {
     switch (m->target_system) {
         case TB_SYSTEM_WINDOWS: return tb_coff__next(m, exporter, packet);
-        default:                tb_panic("TinyBackend error: Unknown system!\n");
+        default: tb_panic("TinyBackend error: Unknown system!\n");
     }
 }
 
-TB_API void tb_module_export(TB_Module* m, const char* path) {
+/*TB_API void tb_module_export(TB_Module* m, const char* path) {
     const ICodeGen* restrict code_gen = tb__find_code_generator(m);
     const IDebugFormat* restrict debug_fmt = tb__find_debug_format(m);
 
@@ -166,7 +170,7 @@ TB_API bool tb_module_export_exec(TB_Module* m, const char* path, const TB_Linke
     }
 
     return true;
-}
+}*/
 
 TB_API void tb_module_destroy(TB_Module* m) {
     tb_platform_arena_free();

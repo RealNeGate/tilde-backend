@@ -21,15 +21,14 @@ typedef struct TB_ModuleExporterCOFF {
         STAGE__WRITE_TLS_SECTION,
         STAGE__WRITE_DEBUG_SECTION,
 
-        STAGE__WRITE_CONST_PATCHES,
-        STAGE__WRITE_EXTERN_PATCHES,
-        STAGE__WRITE_GLOBAL_PATCHES,
+        STAGE__WRITE_TEXT_PATCHES,
         STAGE__WRITE_DATA_PATCHES,
         STAGE__WRITE_DEBUG_PATCHES,
 
         STAGE__WRITE_SECTION_SYMBOLS,
         STAGE__WRITE_SYMBOLS,
         STAGE__WRITE_STRING_TABLE,
+        STAGE__DONE,
     } stage;
     // depends on the stage, go check the code for them
     size_t tick[2];
@@ -97,7 +96,7 @@ static bool send_alloc_message(TB_ModuleExporterCOFF* e, TB_ModuleExportPacket* 
 #define COPY_ADVANCE(buffer, pos, T, ...) (memcpy(&buffer[pos], &(T) __VA_ARGS__, sizeof(T)), pos += sizeof(T))
 
 TB_ModuleExporter* tb_coff__make(TB_Module* m) {
-    return memset(malloc(sizeof(TB_ModuleExporterCOFF)), 0, sizeof(TB_ModuleExporterCOFF));
+    return memset(tb_platform_heap_alloc(sizeof(TB_ModuleExporterCOFF)), 0, sizeof(TB_ModuleExporterCOFF));
 }
 
 bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPacket* packet) {
@@ -108,7 +107,7 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
             ////////////////////////////////
             // Layout work
             ////////////////////////////////
-            const char* path = "wack.obj";
+            const char* path = "fallback.obj";
             e->string_table_mark = 4;
 
             // tally up .data relocations
@@ -299,7 +298,7 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
 
         case STAGE__WRITE_SECTION_HEADERS: {
             // figure out how many section headers to write out
-            int count = (e->sections[S_TLS].raw_data_size > 0 ? S_TLS+1 : S_DATA+1);
+            int count = (e->header.num_sections - e->debug_sections.length);
 
             send_write_message(e, packet, e->sections, count * sizeof(COFF_SectionHeader));
             e->stage += 1;
@@ -307,7 +306,7 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
         }
 
         case STAGE__WRITE_DEBUG_HEADERS: {
-            send_write_message(e, packet, e->debug_section_headers, sizeof(COFF_SectionHeader) * e->debug_sections.length);
+            send_write_message(e, packet, e->debug_section_headers, e->debug_sections.length * sizeof(COFF_SectionHeader));
 
             // find first non-empty function
             size_t i = 0;
@@ -371,7 +370,8 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
         }
         case STAGE__WRITE_RDATA_SECTION: {
             // we shouldn't use the heap here, *beg* the user for free memory
-            char* rdata = e->temporary_memory = tb_platform_heap_alloc(m->rdata_region_size);
+            if (send_alloc_message(e, packet, m->rdata_region_size)) return true;
+            char* rdata = e->temporary_memory;
 
             assert(e->write_pos == e->sections[S_RDATA].raw_data_pos);
             loop(i, m->max_threads) {
@@ -466,103 +466,78 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
             }
             break;
         }
-        case STAGE__WRITE_CONST_PATCHES: {
-            const ICodeGen* restrict code_gen = tb__find_code_generator(m);
-
-            size_t i = e->tick[0]++;
-            size_t count = dyn_array_length(m->thread_info[i].const_patches);
-
-            if (send_alloc_message(e, packet, count * sizeof(COFF_ImageReloc))) return true;
-            COFF_ImageReloc* relocs = e->temporary_memory;
-
-            FOREACH_N(j, 0, count) {
-                TB_ConstPoolPatch* p = &m->thread_info[i].const_patches[j];
-                TB_FunctionOutput* out_f = p->source->output;
-
-                uint64_t meta = out_f->prologue_epilogue_metadata;
-                uint64_t stack_usage = out_f->stack_usage;
-
-                size_t actual_pos = e->func_layout[p->source - m->functions.data] + code_gen->get_prologue_length(meta, stack_usage) + p->pos;
-                relocs[j] = (COFF_ImageReloc) {
-                    .Type = IMAGE_REL_AMD64_REL32,
-                    .SymbolTableIndex = 2, // rdata section
-                    .VirtualAddress = actual_pos
-                };
-            }
-            send_write_message(e, packet, relocs, count * sizeof(COFF_ImageReloc));
-
-            if (i + 1 >= m->max_threads) {
-                e->tick[0] = 0;
-                e->stage += 1;
-            }
-            break;
-        }
-        case STAGE__WRITE_EXTERN_PATCHES: {
-            size_t count = dyn_array_length(m->thread_info[e->tick[0]].ecall_patches);
-            if (send_alloc_message(e, packet, count * sizeof(COFF_ImageReloc))) return true;
+        case STAGE__WRITE_TEXT_PATCHES: {
+            size_t capacity = e->sections[S_TEXT].num_reloc;
+            if (send_alloc_message(e, packet, capacity * sizeof(COFF_ImageReloc))) return true;
 
             const ICodeGen* restrict code_gen = tb__find_code_generator(m);
-            size_t i = e->tick[0]++;
-
             COFF_ImageReloc* relocs = e->temporary_memory;
-            FOREACH_N(j, 0, count) {
-                TB_ExternFunctionPatch* p = &m->thread_info[i].ecall_patches[j];
-                TB_FunctionOutput* out_f = p->source->output;
 
-                uint64_t meta = out_f->prologue_epilogue_metadata;
-                uint64_t stack_usage = out_f->stack_usage;
+            size_t count = 0;
+            assert(e->write_pos == e->sections[S_TEXT].pointer_to_reloc);
+            FOREACH_N(i, 0, m->max_threads) {
+                FOREACH_N(j, 0, dyn_array_length(m->thread_info[i].const_patches)) {
+                    TB_ConstPoolPatch* p = &m->thread_info[i].const_patches[j];
+                    TB_FunctionOutput* out_f = p->source->output;
 
-                size_t actual_pos = e->func_layout[p->source - m->functions.data] + code_gen->get_prologue_length(meta, stack_usage) + p->pos;
-                int symbol_id = (uintptr_t) p->target->address;
-                assert(symbol_id != 0);
+                    uint64_t meta = out_f->prologue_epilogue_metadata;
+                    uint64_t stack_usage = out_f->stack_usage;
 
-                relocs[j] = (COFF_ImageReloc) {
-                    .Type = IMAGE_REL_AMD64_REL32,
-                    .SymbolTableIndex = symbol_id,
-                    .VirtualAddress = actual_pos
-                };
+                    size_t actual_pos = e->func_layout[p->source - m->functions.data] + code_gen->get_prologue_length(meta, stack_usage) + p->pos;
+
+                    assert(count < capacity);
+                    relocs[count++] = (COFF_ImageReloc) {
+                        .Type = IMAGE_REL_AMD64_REL32,
+                        .SymbolTableIndex = 2, // rdata section
+                        .VirtualAddress = actual_pos
+                    };
+                }
+
+                FOREACH_N(j, 0, dyn_array_length(m->thread_info[i].ecall_patches)) {
+                    TB_ExternFunctionPatch* p = &m->thread_info[i].ecall_patches[j];
+                    TB_FunctionOutput* out_f = p->source->output;
+
+                    uint64_t meta = out_f->prologue_epilogue_metadata;
+                    uint64_t stack_usage = out_f->stack_usage;
+
+                    size_t actual_pos = e->func_layout[p->source - m->functions.data] + code_gen->get_prologue_length(meta, stack_usage) + p->pos;
+                    int symbol_id = (uintptr_t) p->target->address;
+                    assert(symbol_id != 0);
+
+                    assert(count < capacity);
+                    relocs[count++] = (COFF_ImageReloc) {
+                        .Type = IMAGE_REL_AMD64_REL32,
+                        .SymbolTableIndex = symbol_id,
+                        .VirtualAddress = actual_pos
+                    };
+                }
+
+                FOREACH_N(j, 0, dyn_array_length(m->thread_info[i].global_patches)) {
+                    TB_GlobalPatch* p = &m->thread_info[i].global_patches[j];
+                    TB_FunctionOutput* out_f = p->source->output;
+
+                    uint64_t meta = out_f->prologue_epilogue_metadata;
+                    uint64_t stack_usage = out_f->stack_usage;
+
+                    size_t actual_pos = e->func_layout[p->source - m->functions.data] + code_gen->get_prologue_length(meta, stack_usage) + p->pos;
+                    const TB_Global* global = p->target;
+
+                    int symbol_id = global->id;
+                    assert(symbol_id != 0);
+
+                    assert(count < capacity);
+                    relocs[count++] = (COFF_ImageReloc) {
+                        .Type = global->storage == TB_STORAGE_TLS ? IMAGE_REL_AMD64_SECREL : IMAGE_REL_AMD64_REL32,
+                        .SymbolTableIndex = symbol_id,
+                        .VirtualAddress = actual_pos
+                    };
+                }
             }
+
+            assert(count == capacity);
             send_write_message(e, packet, relocs, count * sizeof(COFF_ImageReloc));
 
-            if (i + 1 >= m->max_threads) {
-                e->tick[0] = 0;
-                e->stage += 1;
-            }
-            break;
-        }
-        case STAGE__WRITE_GLOBAL_PATCHES: {
-            size_t count = dyn_array_length(m->thread_info[e->tick[0]].global_patches);
-            if (send_alloc_message(e, packet, count * sizeof(COFF_ImageReloc))) return true;
-
-            const ICodeGen* restrict code_gen = tb__find_code_generator(m);
-            size_t i = e->tick[0]++;
-
-            COFF_ImageReloc* relocs = e->temporary_memory;
-            FOREACH_N(j, 0, count) {
-                TB_GlobalPatch* p = &m->thread_info[i].global_patches[j];
-                TB_FunctionOutput* out_f = p->source->output;
-
-                uint64_t meta = out_f->prologue_epilogue_metadata;
-                uint64_t stack_usage = out_f->stack_usage;
-
-                size_t actual_pos = e->func_layout[p->source - m->functions.data] + code_gen->get_prologue_length(meta, stack_usage) + p->pos;
-                const TB_Global* global = p->target;
-
-                int symbol_id = global->id;
-                assert(symbol_id != 0);
-
-                relocs[j] = (COFF_ImageReloc) {
-                    .Type = global->storage == TB_STORAGE_TLS ? IMAGE_REL_AMD64_SECREL : IMAGE_REL_AMD64_REL32,
-                    .SymbolTableIndex = symbol_id,
-                    .VirtualAddress = actual_pos
-                };
-            }
-            send_write_message(e, packet, relocs, count * sizeof(COFF_ImageReloc));
-
-            if (i + 1 >= m->max_threads) {
-                e->tick[0] = 0;
-                e->stage += 1;
-            }
+            e->stage += 1;
             break;
         }
         case STAGE__WRITE_DATA_PATCHES: {
@@ -572,6 +547,10 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
             size_t i = e->tick[0]++;
             size_t count = 0;
 
+            if (i == 0) {
+                assert(e->write_pos == e->sections[S_DATA].pointer_to_reloc);
+            }
+
             COFF_ImageReloc* relocs = e->temporary_memory;
             pool_for(TB_Global, g, m->thread_info[i].globals) {
                 TB_Initializer* init = g->init;
@@ -579,11 +558,11 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
                 FOREACH_N(k, 0, init->obj_count) {
                     size_t actual_pos = g->pos + init->objects[k].offset;
 
-                    assert(count < capacity);
                     switch (init->objects[k].type) {
                         case TB_INIT_OBJ_RELOC_GLOBAL: {
                             const TB_Global* g = init->objects[k].reloc_global;
 
+                            assert(count < capacity);
                             relocs[count++] = (COFF_ImageReloc) {
                                 .Type = IMAGE_REL_AMD64_ADDR64,
                                 .SymbolTableIndex = g->id,
@@ -596,6 +575,7 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
                             const TB_External* e = init->objects[k].reloc_extern;
                             int id = (uintptr_t) e->address;
 
+                            assert(count < capacity);
                             relocs[count++] = (COFF_ImageReloc) {
                                 .Type = IMAGE_REL_AMD64_ADDR64,
                                 .SymbolTableIndex = id,
@@ -607,6 +587,7 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
                         case TB_INIT_OBJ_RELOC_FUNCTION: {
                             int symbol_id = init->objects[k].reloc_function - m->functions.data;
 
+                            assert(count < capacity);
                             relocs[count++] = (COFF_ImageReloc) {
                                 .Type = IMAGE_REL_AMD64_ADDR64,
                                 .SymbolTableIndex = e->function_sym_start + symbol_id,
@@ -637,7 +618,7 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
             assert(e->write_pos == e->debug_section_headers[i].pointer_to_reloc);
 
             COFF_ImageReloc* relocs = e->temporary_memory;
-            FOREACH_N(j, 0, e->debug_sections.data[i].relocation_count) {
+            FOREACH_N(j, 0, count) {
                 TB_ObjectReloc* in_reloc = &e->debug_sections.data[i].relocations[j];
 
                 relocs[j] = (COFF_ImageReloc){
@@ -856,12 +837,10 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
             break;
         }
         case STAGE__WRITE_STRING_TABLE: {
-            if (send_alloc_message(e, packet, 4 + e->string_table_length)) return true;
+            if (send_alloc_message(e, packet, e->string_table_mark)) return true;
             assert(e->write_pos == e->string_table_pos);
 
-            char* start = e->temporary_memory;
-            char* buffer = start;
-
+            char *start = e->temporary_memory, *buffer = start;
             memcpy(buffer, &e->string_table_mark, sizeof(uint32_t));
             buffer += 4;
 
@@ -873,7 +852,13 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
                 buffer += l;
             }
 
-            send_write_message(e, packet, start, 4 + e->string_table_length);
+            assert((buffer - start) == e->string_table_mark);
+            send_write_message(e, packet, start, e->string_table_mark);
+            e->stage += 1;
+            return true;
+        }
+        case STAGE__DONE: {
+            tb_platform_heap_free(e);
             return false;
         }
 
@@ -885,6 +870,7 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
     return true;
 }
 
+#if 0
 void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt) {
     TB_TemporaryStorage* tls = tb_tls_allocate();
 
@@ -1354,7 +1340,7 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
         }, sizeof(COFF_Symbol), 1, f);
 
     fwrite(&(COFF_AuxSectionSymbol) {
-            .length = data_section.raw_data_size,
+            .length = rdata_section.raw_data_size,
             .number = section_num
         }, sizeof(COFF_AuxSectionSymbol), 1, f);
 
@@ -1511,3 +1497,5 @@ void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char*
     tb_platform_heap_free(string_table);
     tb_platform_heap_free(func_layout);
 }
+#endif
+

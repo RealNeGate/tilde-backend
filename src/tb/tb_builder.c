@@ -301,15 +301,24 @@ TB_API TB_Reg tb_inst_ptr2int(TB_Function* f, TB_Reg src, TB_DataType dt) {
 }
 
 TB_API TB_Reg tb_inst_int2float(TB_Function* f, TB_Reg src, TB_DataType dt, bool is_signed) {
+    tb_assume(dt.type == TB_FLOAT);
     tb_assume(f->nodes[src].dt.width == dt.width);
 
     if (f->nodes[src].type == TB_INTEGER_CONST &&
         f->nodes[src].integer.num_words == 1) {
-        double x;
-        if (is_signed) x = (int64_t) f->nodes[src].integer.single_word;
-        else x = (uint64_t) f->nodes[src].integer.single_word;
+        if (dt.data == TB_FLT_32) {
+            float x;
+            if (is_signed) x = (int64_t) f->nodes[src].integer.single_word;
+            else x = (uint64_t) f->nodes[src].integer.single_word;
 
-        return tb_inst_float(f, dt, x);
+            return tb_inst_float32(f, x);
+        } else if (dt.data == TB_FLT_64) {
+            double x;
+            if (is_signed) x = (int64_t) f->nodes[src].integer.single_word;
+            else x = (uint64_t) f->nodes[src].integer.single_word;
+
+            return tb_inst_float64(f, x);
+        }
     }
 
     TB_Reg r = tb_make_reg(f, is_signed ? TB_INT2FLOAT : TB_UINT2FLOAT, dt);
@@ -488,9 +497,15 @@ TB_API TB_Reg tb_inst_sint(TB_Function* f, TB_DataType dt, int64_t imm) {
     return r;
 }
 
-TB_API TB_Reg tb_inst_float(TB_Function* f, TB_DataType dt, double imm) {
-    TB_Reg r = tb_make_reg(f, TB_FLOAT_CONST, dt);
-    f->nodes[r].flt.value = imm;
+TB_API TB_Reg tb_inst_float32(TB_Function* f, float imm) {
+    TB_Reg r = tb_make_reg(f, TB_FLOAT32_CONST, TB_TYPE_F32);
+    f->nodes[r].flt32.value = imm;
+    return r;
+}
+
+TB_API TB_Reg tb_inst_float64(TB_Function* f, double imm) {
+    TB_Reg r = tb_make_reg(f, TB_FLOAT64_CONST, TB_TYPE_F64);
+    f->nodes[r].flt64.value = imm;
     return r;
 }
 
@@ -637,8 +652,10 @@ TB_API TB_Reg tb_inst_neg(TB_Function* f, TB_Reg n) {
         uint64_t negated = (~src + 1) & mask;
 
         return tb_inst_sint(f, dt, negated);
-    } else if (f->nodes[n].type == TB_FLOAT_CONST) {
-        return tb_inst_float(f, dt, -f->nodes[n].flt.value);
+    } else if (f->nodes[n].type == TB_FLOAT32_CONST) {
+        return tb_inst_float32(f, -f->nodes[n].flt32.value);
+    } else if (f->nodes[n].type == TB_FLOAT64_CONST) {
+        return tb_inst_float64(f, -f->nodes[n].flt64.value);
     }
 
     TB_Reg r = tb_make_reg(f, TB_NEG, dt);

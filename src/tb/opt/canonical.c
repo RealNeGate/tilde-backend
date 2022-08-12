@@ -268,6 +268,20 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
                 n->i_arith.b = extra_reg;
                 changes++;
             }
+        } else if (type == TB_UDIV || type == TB_SDIV) {
+            TB_Node* b = &f->nodes[n->i_arith.b];
+
+            // (div a 1) => a
+            if (b->type == TB_INTEGER_CONST && b->integer.num_words == 1 && b->integer.single_word == 1) {
+                OPTIMIZER_LOG(i, "removed divide-by-one");
+
+                TB_Reg src = n->i_arith.a;
+
+                n = &f->nodes[i];
+                n->type = TB_AND;
+                n->pass.value = src;
+                changes++;
+            }
         } else if (type == TB_UMOD || type == TB_SMOD) {
             TB_Node* b = &f->nodes[n->i_arith.b];
 
@@ -517,12 +531,12 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
                     if (a == i) {
                         duplicate = true;
                     } else if (f->nodes[a].type != TB_NULL) {
-	                    loop_range(k, 0, j) {
-	                        if (inputs[k].val == a && inputs[k].label == b) {
-	                            duplicate = true;
-	                            break;
-	                        }
-	                    }
+                        loop_range(k, 0, j) {
+                            if (inputs[k].val == a && inputs[k].label == b) {
+                                duplicate = true;
+                                break;
+                            }
+                        }
                     } else {
                         duplicate = true;
                     }

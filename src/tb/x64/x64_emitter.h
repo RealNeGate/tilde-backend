@@ -1,5 +1,4 @@
 
-// these are all local to this file btw
 #define EMIT(b)  (*ctx->out = (b), ctx->out += 1)
 #define EMIT2(b) (*((uint16_t*)ctx->out) = (b), ctx->out += 2)
 #define EMIT4(b) (*((uint32_t*)ctx->out) = (b), ctx->out += 4)
@@ -51,7 +50,7 @@ inline static void emit_memory_operand(Ctx* restrict ctx, uint8_t rx, const Val*
     }
 }
 
-void inst1(Ctx* restrict ctx, Inst1 op, const Val* r) {
+static void inst1(Ctx* restrict ctx, Inst1 op, const Val* r) {
     if (r->type == VAL_GPR) {
         EMIT(rex(true, 0x00, r->gpr, 0x00));
         EMIT((op >> 8) & 0xFF);
@@ -92,7 +91,7 @@ void inst1(Ctx* restrict ctx, Inst1 op, const Val* r) {
         tb_unreachable();
 }
 
-void inst2(Ctx* restrict ctx, Inst2Type op, const Val* a, const Val* b, TB_DataType dt) {
+static void inst2(Ctx* restrict ctx, Inst2Type op, const Val* a, const Val* b, TB_DataType dt) {
     assert(op < (sizeof(inst2_tbl) / sizeof(inst2_tbl[0])));
     assert(dt.type == TB_INT || dt.type == TB_PTR);
 
@@ -214,7 +213,7 @@ void inst2(Ctx* restrict ctx, Inst2Type op, const Val* a, const Val* b, TB_DataT
     }
 }
 
-void inst2sse(Ctx* restrict ctx, Inst2FPType op, const Val* a, const Val* b, uint8_t flags) {
+static void inst2sse(Ctx* restrict ctx, Inst2FPType op, const Val* a, const Val* b, uint8_t flags) {
     const static uint8_t OPCODES[] = {
         [FP_MOV]   = 0x10,
         [FP_ADD]   = 0x58,

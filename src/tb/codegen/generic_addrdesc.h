@@ -52,6 +52,8 @@ struct Ctx {
     uint8_t* start_out;
 
     TB_Function* f;
+    TB_Predeccesors preds;
+    TB_TemporaryStorage* tls;
 
     // some analysis
     TB_Reg* use_count;
@@ -97,6 +99,8 @@ typedef struct {
     size_t label_patch_count;
 } FunctionTallySimple;
 
+const static char reg_priorities[GAD_NUM_REG_FAMILIES][GAD_REGS_IN_FAMILY] = GAD_REG_PRIORITIES;
+
 static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
     size_t locals_count = 0;
     size_t return_count = 0;
@@ -134,10 +138,6 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
     tally += f->node_count * sizeof(TB_Reg);
     tally = (tally + align_mask) & ~align_mask;
 
-    // intervals
-    tally += f->node_count * sizeof(TB_Reg);
-    tally = (tally + align_mask) & ~align_mask;
-
     // labels
     tally += f->label_count * sizeof(uint32_t);
     tally = (tally + align_mask) & ~align_mask;
@@ -159,11 +159,16 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
     };
 }
 
+// user-defined forward decls
 static void GAD_FN(store)(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
 static void GAD_FN(return)(Ctx* restrict ctx, TB_Function* f, TB_Node* restrict n);
-static void GAD_FN(phi_move)(Ctx* restrict ctx, TB_Function* f, GAD_VAL* dst, TB_Reg src);
+static void GAD_FN(phi_move)(Ctx* restrict ctx, TB_Function* f, GAD_VAL* dst_val, TB_Reg dst, TB_Reg src);
+static void GAD_FN(spill_move)(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, GAD_VAL* dst_val, GAD_VAL* src_val, GAD_VAL* reg_val);
 static void GAD_FN(branch_if)(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_Label fallthrough, TB_Label if_true, TB_Label if_false);
-static void GAD_FN(cond_to_reg)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int cc);
+static GAD_VAL GAD_FN(cond_to_reg)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int cc);
+
+// internal
+static ptrdiff_t GAD_FN(find)(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
 
 static void GAD_FN(get_data_type_size)(TB_DataType dt, TB_CharUnits* out_size, TB_CharUnits* out_align) {
     switch (dt.type) {
@@ -218,7 +223,16 @@ static void GAD_FN(set_flags)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int c
 
 static void GAD_FN(kill_flags)(Ctx* restrict ctx, TB_Function* f) {
     if (ctx->flags_bound) {
-        GAD_FN(cond_to_reg)(ctx, f, ctx->flags_bound, ctx->flags_code);
+        printf("Kill flags: r%d\n", ctx->flags_bound);
+
+        // write value to a more persistent space
+        GAD_VAL v = GAD_FN(cond_to_reg)(ctx, f, ctx->flags_bound, ctx->flags_code);
+        assert(v.type != GAD_VAL_UNRESOLVED);
+
+        v.r = ctx->flags_bound;
+        ctx->queue[ctx->queue_length++] = v;
+
+        // reset flags
         ctx->flags_bound = TB_NULL_REG;
         ctx->flags_code = -1;
     }
@@ -235,6 +249,7 @@ static GAD_VAL GAD_FN(alloc_spill)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, 
 
     GAD_VAL v = GAD_MAKE_STACK_SLOT(ctx, f, r, -ctx->stack_usage);
     v.is_spill = true;
+    v.mem.is_rvalue = true;
 
     ctx->queue[ctx->queue_length++] = v;
     return v;
@@ -250,10 +265,9 @@ static GAD_VAL GAD_FN(alloc_stack)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, 
 
 static GAD_VAL GAD_FN(alloc_reg)(Ctx* restrict ctx, TB_Function* f, int reg_class, TB_Reg r) {
     assert(ctx->regs_available[reg_class] > 0);
-    const static char priorities[GAD_NUM_REG_FAMILIES][GAD_REGS_IN_FAMILY] = GAD_REG_PRIORITIES;
 
-    FOREACH_N(i, 0, COUNTOF(priorities[reg_class])) {
-        int reg = priorities[reg_class][i];
+    FOREACH_N(i, 0, COUNTOF(reg_priorities[reg_class])) {
+        int reg = reg_priorities[reg_class][i];
 
         if (ctx->reg_allocator[reg_class][reg] == TB_NULL_REG) {
             ctx->reg_allocator[reg_class][reg] = r;
@@ -300,12 +314,9 @@ static GAD_VAL GAD_FN(steal_register)(Ctx* restrict ctx, TB_Function* f, TB_Data
     };
 }
 
-static void GAD_FN(spill_if_running_out)(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Reg bb_end) {
-    loop(i, GAD_NUM_REG_FAMILIES) {
-        if (ctx->regs_available[i] < 4) {
-            tb_todo();
-        }
-    }
+static void GAD_FN(expend)(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
+    assert(ctx->use_count[r] > 0);
+    ctx->use_count[r] -= 1;
 }
 
 // TODO(NeGate): maybe we want a lightweight hashmap instead of a queue
@@ -316,6 +327,61 @@ static ptrdiff_t GAD_FN(find)(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
     }
 
     return -1;
+}
+
+static void GAD_FN(spill_if_running_out)(Ctx* restrict ctx, TB_Function* f) {
+    printf("Progress: %d / 14\n", ctx->regs_available[0]);
+
+    FOREACH_N(i, 0, GAD_NUM_REG_FAMILIES) {
+        while (ctx->regs_available[i] < 4) {
+            // find the values with the most uses left
+            int most_uses = 0;
+            int most_used_reg_num = GPR_NONE;
+            TB_Reg most_used_reg = TB_NULL_REG;
+
+            FOREACH_N(j, 0, COUNTOF(reg_priorities[i])) {
+                int reg_num = reg_priorities[i][j];
+                TB_Reg r = ctx->reg_allocator[i][reg_num];
+
+                if (r != TB_NULL_REG && r != TB_TEMP_REG) {
+                    if (most_uses < ctx->use_count[r]) {
+                        most_uses = ctx->use_count[r];
+                        most_used_reg_num = reg_num;
+                        most_used_reg = r;
+                    }
+                }
+            }
+
+            assert(most_used_reg != TB_NULL_REG);
+            printf("## SPILL r%d ##\n", most_used_reg);
+
+            ptrdiff_t search = GAD_FN(find)(ctx, f, most_used_reg);
+            assert(search >= 0 && "Expected to find a value to spill");
+            GAD_VAL* val = &ctx->queue[search];
+
+            // Allocate spill slot
+            GAD_VAL spill_slot;
+            {
+                TB_CharUnits size, align;
+                GAD_FN(get_data_type_size)(val->dt, &size, &align);
+
+                ctx->stack_usage = align_up(ctx->stack_usage + size, align);
+
+                spill_slot = GAD_MAKE_STACK_SLOT(ctx, f, most_used_reg, -ctx->stack_usage);
+                spill_slot.is_spill = true;
+                spill_slot.mem.is_rvalue = true;
+            }
+
+            GAD_VAL reg_val = {
+                .type = GAD_VAL_REGISTER + i, .r = most_used_reg, .dt = val->dt, .reg = most_used_reg_num
+            };
+            GAD_FN(spill_move)(ctx, f, val->dt, &spill_slot, val, &reg_val);
+            *val = spill_slot;
+
+            ctx->reg_allocator[i][most_used_reg_num] = 0;
+            ctx->regs_available[i] += 1;
+        }
+    }
 }
 
 // add value to the queue to be resolved once relevant
@@ -357,11 +423,20 @@ static ptrdiff_t GAD_FN(await)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int 
     print_indent(depth);
     printf("Await: r%d\n", r);
 
+    size_t death_row_count = 0;
+    ptrdiff_t* death_row = tb_tls_push(ctx->tls, 0);
+
     // we don't walk past a phi node
     if (!tb_node_is_phi_node(f, r)) {
         // resolve dependencies first
         TB_FOR_INPUT_IN_REG(it, f, r) {
-            GAD_FN(await)(ctx, f, it.r, depth+1);
+            ptrdiff_t a = GAD_FN(await)(ctx, f, it.r, depth+1);
+
+            ctx->use_count[it.r] -= 1;
+            if (!tb_node_is_phi_node(f, it.r) && ctx->use_count[it.r] == 0) {
+                tb_tls_push(ctx->tls, sizeof(ptrdiff_t));
+                death_row[death_row_count++] = a;
+            }
         }
     }
 
@@ -373,6 +448,30 @@ static ptrdiff_t GAD_FN(await)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int 
 
     v.r = r;
     ctx->queue[i] = v;
+
+    // murder the kids now
+    FOREACH_N(j, 0, death_row_count) {
+        GAD_VAL* restrict kid = &ctx->queue[death_row[j]];
+
+        if (kid->type >= GAD_VAL_REGISTER &&
+            kid->type <  GAD_VAL_REGISTER + GAD_NUM_REG_FAMILIES) {
+            int reg_class = kid->type - GAD_VAL_REGISTER;
+            int reg_num = kid->reg;
+
+            if (ctx->reg_allocator[reg_class][reg_num] == kid->r) {
+                // kill reg
+                ctx->reg_allocator[reg_class][reg_num] = 0;
+                ctx->regs_available[reg_class] += 1;
+            }
+        }
+
+        printf("Kill: r%d\n", kid->r);
+        kid->type = GAD_VAL_UNRESOLVED;
+    }
+
+    // try to make room if there's none
+    GAD_FN(spill_if_running_out)(ctx, f);
+
     return i;
 }
 
@@ -404,14 +503,16 @@ static void GAD_FN(eval_bb_edge)(Ctx* restrict ctx, TB_Function* f, TB_Reg from,
                 TB_CharUnits size, align;
                 GAD_FN(get_data_type_size)(dt, &size, &align);
 
-                ctx->queue[i] = GAD_FN(alloc_spill)(ctx, f, r, size, size);
+                ctx->queue[i] = GAD_FN(alloc_spill)(ctx, f, r, size, align);
             }
 
             FOREACH_N(j, 0, count) {
                 if (inputs[j].label == from) {
                     TB_Reg src = inputs[j].val;
 
-                    if (src != TB_NULL_REG) GAD_FN(phi_move)(ctx, f, &ctx->queue[i], src);
+                    if (src != TB_NULL_REG) {
+                        GAD_FN(phi_move)(ctx, f, &ctx->queue[i], r, src);
+                    }
                 }
             }
         }
@@ -421,9 +522,11 @@ static void GAD_FN(eval_bb_edge)(Ctx* restrict ctx, TB_Function* f, TB_Reg from,
 static void GAD_FN(resolve_leftover)(Ctx* restrict ctx, TB_Function* f, int queue_restore_point) {
     // resolve all entries in the queue which aren't resolved yet
     FOREACH_N(it, queue_restore_point, ctx->queue_length) {
-        if (ctx->queue[it].type == GAD_VAL_UNRESOLVED) {
+        if (ctx->queue[it].type == GAD_VAL_UNRESOLVED &&
+            ctx->use_count[ctx->queue[it].r] != 0) {
             GAD_FN(kill_flags)(ctx, f);
 
+            printf("Resolved leftover: r%d\n", ctx->queue[it].r);
             GAD_VAL v = GAD_RESOLVE_VALUE(ctx, f, ctx->queue[it].r);
             assert(v.type != GAD_VAL_UNRESOLVED);
 
@@ -461,9 +564,6 @@ static TB_Reg GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Reg bb) {
 
         GAD_FN(kill_flags)(ctx, f);
 
-        // spilling
-        GAD_FN(spill_if_running_out)(ctx, f, bb, bb_end);
-
         switch (reg_type) {
             case TB_NULL:
             case TB_PARAM:
@@ -478,12 +578,13 @@ static TB_Reg GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Reg bb) {
                 f->lines[f->line_count++] = (TB_Line) {
                     .file = n->line_info.file,
                     .line = n->line_info.line,
-                    // .pos = GET_CODE_POS()
+                    .pos = GET_CODE_POS()
                 };
                 break;
             }
 
             case TB_STORE: {
+                GAD_FN(resolve_leftover)(ctx, f, queue_length_before);
                 GAD_FN(store)(ctx, f, r);
                 break;
             }
@@ -507,13 +608,30 @@ static TB_Reg GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Reg bb) {
 
     switch (end_type) {
         case TB_LABEL: {
-            // TODO(NeGate): place PHI values into the correct slots
-            GAD_FN(resolve_leftover)(ctx, f, queue_length_before);
+            GAD_FN(kill_flags)(ctx, f);
             GAD_FN(eval_bb_edge)(ctx, f, bb, bb_end);
+            GAD_FN(resolve_leftover)(ctx, f, queue_length_before);
+            break;
+        }
+
+        case TB_GOTO: {
+            GAD_FN(kill_flags)(ctx, f);
+            GAD_FN(eval_bb_edge)(ctx, f, bb, tb_find_reg_from_label(f, end->goto_.label));
+            GAD_FN(resolve_leftover)(ctx, f, queue_length_before);
+
+            TB_Label fallthrough_label = 0;
+            if (end->next != 0) {
+                fallthrough_label = f->nodes[end->next].label.id;
+            }
+
+            if (fallthrough_label != end->goto_.label) {
+                GAD_GOTO(ctx, end->goto_.label);
+            }
             break;
         }
 
         case TB_RET: {
+            GAD_FN(kill_flags)(ctx, f);
             GAD_FN(resolve_leftover)(ctx, f, queue_length_before);
 
             if (end->ret.value) {
@@ -530,6 +648,10 @@ static TB_Reg GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Reg bb) {
         case TB_IF: {
             TB_Label if_true = end->if_.if_true;
             TB_Label if_false = end->if_.if_false;
+
+            if (end->if_.cond != ctx->flags_bound) {
+                GAD_FN(kill_flags)(ctx, f);
+            }
 
             // Resolve edges
             GAD_FN(eval_bb_edge)(ctx, f, bb, tb_find_reg_from_label(f, if_true));
@@ -556,6 +678,7 @@ static TB_Reg GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Reg bb) {
 static TB_FunctionOutput GAD_FN(compile_function)(TB_FunctionID id, TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
     s_local_thread_id = local_thread_id;
     TB_TemporaryStorage* tls = tb_tls_allocate();
+    TB_Predeccesors preds = tb_get_temp_predeccesors(f, tls);
 
     //bool is_ctx_heap_allocated = false;
     Ctx* restrict ctx = NULL;
@@ -565,8 +688,11 @@ static TB_FunctionOutput GAD_FN(compile_function)(TB_FunctionID id, TB_Function*
 
         ctx = tb_tls_push(tls, ctx_size);
         *ctx = (Ctx){
+            .f             = f,
+            .tls           = tls,
             .out           = out,
             .start_out     = out,
+            .preds         = preds,
             .labels        = tb_tls_push(tls, f->label_count * sizeof(uint32_t)),
             .label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch)),
             .ret_patches   = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch)),

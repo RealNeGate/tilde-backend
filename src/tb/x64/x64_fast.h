@@ -2396,19 +2396,46 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
     // Analyze function for stack, use counts and phi nodes
     tb_function_calculate_use_count(f, ctx->use_count);
 
-    int counter = 0;
-    TB_FOR_EACH_NODE(n, f) {
-        ctx->ordinal[n - f->nodes] = counter++;
-    }
-
     // Create phi lookup table for later evaluation stages
     // and calculate the maximum parameter usage for a call
     size_t caller_usage = 0;
+    int counter = 0;
     TB_FOR_EACH_NODE(n, f) {
-        if (EITHER3(n->type, TB_CALL, TB_ECALL, TB_VCALL)) {
+        TB_Reg r = n - f->nodes;
+
+        if (n->type == TB_PARAM) {
+            size_t i = n->param.id;
+            TB_DataType dt = n->dt;
+            assert(get_data_type_size(dt) <= 8 && "ABI BUG: Parameter too big");
+
+            if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
+                // xmm parameters
+                if (i < 4) {
+                    fast_def_xmm(ctx, f, r, (XMM)i, dt);
+                    ctx->xmm_allocator[(XMM)i] = r;
+                    ctx->xmm_available -= 1;
+                } else
+                    fast_def_stack(ctx, f, r, 16 + (i * 8), dt);
+            } else {
+                // gpr parameters
+                if (ctx->is_sysv && i < 6) {
+                    fast_def_gpr(ctx, f, r, (GPR)SYSV_GPR_PARAMETERS[i], dt);
+                    ctx->gpr_allocator[(GPR)SYSV_GPR_PARAMETERS[i]] = r;
+                    ctx->gpr_available -= 1;
+                } else if (i < 4) {
+                    fast_def_gpr(ctx, f, r, (GPR)WIN64_GPR_PARAMETERS[i], dt);
+                    ctx->gpr_allocator[(GPR)WIN64_GPR_PARAMETERS[i]] = r;
+                    ctx->gpr_available -= 1;
+                } else {
+                    fast_def_stack(ctx, f, r, 16 + (i * 8), dt);
+                }
+            }
+        } else if (EITHER3(n->type, TB_CALL, TB_ECALL, TB_VCALL)) {
             int param_usage = CALL_NODE_PARAM_COUNT(n);
             if (caller_usage < param_usage) { caller_usage = param_usage; }
         }
+
+        ctx->ordinal[n - f->nodes] = counter++;
     }
 
     // On Win64 if we have at least one parameter in any of it's calls, the
@@ -2416,38 +2443,9 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
     if (!ctx->is_sysv && caller_usage > 0 && caller_usage < 4) caller_usage = 4;
 
     const TB_FunctionPrototype* restrict proto = f->prototype;
-    loop(i, (size_t)proto->param_count) {
-        TB_DataType dt = proto->params[i];
-        TB_Reg r = TB_FIRST_PARAMETER_REG + i;
-
-        // Allocate space in stack
-        assert(get_data_type_size(dt) <= 8 && "Parameter too big");
-
-        if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
-            // xmm parameters
-            if (i < 4) {
-                fast_def_xmm(ctx, f, r, (XMM)i, dt);
-                ctx->xmm_allocator[(XMM)i] = r;
-                ctx->xmm_available -= 1;
-            } else
-                fast_def_stack(ctx, f, r, 16 + (i * 8), dt);
-        } else {
-            // gpr parameters
-            if (ctx->is_sysv && i < 6) {
-                fast_def_gpr(ctx, f, r, (GPR)SYSV_GPR_PARAMETERS[i], dt);
-                ctx->gpr_allocator[(GPR)SYSV_GPR_PARAMETERS[i]] = r;
-                ctx->gpr_available -= 1;
-            } else if (i < 4) {
-                fast_def_gpr(ctx, f, r, (GPR)WIN64_GPR_PARAMETERS[i], dt);
-                ctx->gpr_allocator[(GPR)WIN64_GPR_PARAMETERS[i]] = r;
-                ctx->gpr_available -= 1;
-            } else {
-                fast_def_stack(ctx, f, r, 16 + (i * 8), dt);
-            }
-        }
+    if (proto->param_count) {
+        ctx->header.stack_usage += 16 + (proto->param_count * 8);
     }
-
-    if (proto->param_count) { ctx->header.stack_usage += 16 + (proto->param_count * 8); }
 
     if (proto->has_varargs) {
         const GPR* parameter_gprs = ctx->is_sysv ? SYSV_GPR_PARAMETERS : WIN64_GPR_PARAMETERS;
@@ -2473,7 +2471,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         TB_Reg r = n - f->nodes;
 
         if (n->type == TB_PARAM_ADDR) {
-            int id = n->param_addr.param - TB_FIRST_PARAMETER_REG;
+            int id = f->nodes[n->param_addr.param].param.id;
             TB_DataType dt = n->dt;
 
             if (dt.width || TB_IS_FLOAT_TYPE(dt)) {

@@ -37,11 +37,12 @@ typedef struct Mem2Reg_Ctx {
     TB_Label** preds;
 } Mem2Reg_Ctx;
 
-static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_DataType* dt);
+static int bits_in_data_type(int pointer_size, TB_DataType dt);
+static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_DataType* dt, int* out_use_count);
 
 static int get_variable_id(Mem2Reg_Ctx* restrict c, TB_Reg r) {
     // TODO(NeGate): Maybe we speed this up... maybe it doesn't matter :P
-    loop(i, c->to_promote_count) {
+    FOREACH_N(i, 0, c->to_promote_count) {
         if (c->to_promote[i] == r) return (int)i;
     }
 
@@ -110,7 +111,7 @@ static TB_Reg read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_Label
 
 static TB_Reg add_phi_operands(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg, TB_Label block, int var) {
     // Determine operands from predecessors
-    loop(i, c->pred_count[block]) {
+    FOREACH_N(i, 0, c->pred_count[block]) {
         TB_Reg val = read_variable(c, var, c->preds[block][i]);
         if (val) add_phi_operand(c, c->f, phi_reg, c->preds[block][i], val);
     }
@@ -135,7 +136,7 @@ static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB
     TB_PhiInput* inputs = tb_node_get_phi_inputs(f, phi_reg);
 
     TB_Reg same = TB_NULL_REG;
-    loop(i, count) {
+    FOREACH_N(i, 0, count) {
         // Unique value or self-reference
         if (inputs[i].val == phi_reg || inputs[i].val == same) continue;
 
@@ -163,7 +164,7 @@ static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB
     phi_node->pass.value = same;
 
     // Try to recursively remove all phi users, which might have become trivial
-    loop(i, use_count) if (uses[i] == phi_reg) {
+    FOREACH_N(i, 0, use_count) if (uses[i] == phi_reg) {
         try_remove_trivial_phi(c, f, uses[i]);
     }
 
@@ -219,12 +220,134 @@ static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_
 static void seal_block(Mem2Reg_Ctx* restrict c, TB_Label block) {
     //printf("SEAL_BLOCK L%d\n", block);
 
-    loop(i, c->to_promote_count) {
+    FOREACH_N(i, 0, c->to_promote_count) {
         TB_Reg phi_reg = c->incomplete_phis[(block * c->to_promote_count) + i];
         if (phi_reg) add_phi_operands(c, c->f, phi_reg, block, i);
     }
 
     c->sealed_blocks[block] = true;
+}
+
+typedef struct {
+    TB_Reg new_reg;
+
+    int32_t offset;
+    TB_CharUnits size;
+    TB_DataType dt;
+} AggregateConfig;
+
+static ptrdiff_t find_config(size_t config_count, AggregateConfig* configs, int32_t offset) {
+    FOREACH_N(i, 0, config_count) {
+        if (configs[i].offset == offset) return i;
+    }
+
+    tb_unreachable();
+    return -1;
+}
+
+// -1 is a bad match
+// -2 is no match, so we can add a new config
+static ptrdiff_t compatible_with_configs(size_t config_count, AggregateConfig* configs, int32_t offset, TB_CharUnits size, TB_DataType dt) {
+    int32_t max = offset + size;
+
+    FOREACH_N(i, 0, config_count) {
+        int32_t max2 = configs[i].offset + configs[i].size;
+
+        if (offset >= configs[i].offset && max <= max2) {
+            // they overlap... but is it a clean overlap?
+            if (offset == configs[i].offset && max == max2 && TB_DATA_TYPE_EQUALS(dt, configs[i].dt)) {
+                return i;
+            }
+
+            return -1;
+        }
+    }
+
+    return -2;
+}
+
+static bool attempt_sroa(TB_Function* f, TB_TemporaryStorage* tls, TB_Reg address, int use_count) {
+    size_t config_count = 0;
+    AggregateConfig* configs = tb_tls_push(tls, 0);
+
+    int pointer_size = tb__find_code_generator(f->module)->pointer_size;
+
+    int acceptable_use_count = 0;
+    TB_FOR_EACH_NODE(n, f) {
+        if (n->type == TB_MEMSET && n->mem_op.dst == address) {
+            // we can assume memset is valid since the COHERENCY_BAD_DATA_TYPE
+            // wouldn't have let us get this far
+            //
+            // TODO(NeGate): handle this case correctly
+            // acceptable_use_count += 1;
+            return false;
+        } else if (n->type == TB_LOAD || n->type == TB_STORE) {
+            int size = (bits_in_data_type(pointer_size, n->dt) + 7) / 8;
+
+            // we don't need to worry about volatile either since COHERENCY_VOLATILE
+            // handled it earlier
+            int32_t offset = 0;
+            if (n->load.address == address) {
+                offset = 0;
+            } else if (f->nodes[n->load.address].type == TB_MEMBER_ACCESS &&
+                f->nodes[n->load.address].member_access.base == address) {
+                offset = f->nodes[n->load.address].member_access.offset;
+            } else {
+                continue;
+            }
+
+            // see if it's a compatible configuration
+            int match = compatible_with_configs(config_count, configs, offset, size, n->dt);
+            if (match == -1) {
+                return false;
+            } else if (match == -2) {
+                // add new config
+                tb_tls_push(tls, sizeof(AggregateConfig));
+                configs[config_count++] = (AggregateConfig){ TB_NULL_REG, offset, size, n->dt };
+            }
+            acceptable_use_count += 1;
+        }
+    }
+
+    if (acceptable_use_count != use_count) {
+        return false;
+    }
+
+    // split configurations
+    uint32_t alignment = f->nodes[address].local.alignment;
+
+    FOREACH_N(i, 0, config_count) {
+        TB_Reg split = tb_function_insert_after(f, address);
+        f->nodes[split].type = TB_LOCAL;
+        f->nodes[split].dt = TB_TYPE_PTR;
+        f->nodes[split].local.alignment = alignment;
+        f->nodes[split].local.size = configs[i].size;
+        f->nodes[split].local.name = NULL;
+
+        configs[i].new_reg = split;
+    }
+
+    TB_FOR_EACH_NODE(n, f) {
+        if (n->type == TB_LOAD || n->type == TB_STORE) {
+            if (n->load.address == address) {
+                ptrdiff_t slot = find_config(config_count, configs, 0);
+
+                n->load.address = configs[slot].new_reg;
+            } else if (f->nodes[n->load.address].type == TB_MEMBER_ACCESS &&
+                f->nodes[n->load.address].member_access.base == address) {
+                // replace the old member access with a clean stack slot
+                ptrdiff_t slot = find_config(config_count, configs, f->nodes[n->load.address].member_access.offset);
+
+                tb_murder_reg(f, n->load.address);
+                n->load.address = configs[slot].new_reg;
+            } else {
+                continue;
+            }
+        }
+    }
+
+    tb_murder_reg(f, address);
+    return true;
 }
 
 // NOTE(NeGate): All locals were moved into the first basic block by
@@ -238,13 +361,17 @@ bool tb_opt_mem2reg(TB_Function* f) {
     size_t to_promote_count = 0;
     TB_Reg* to_promote = tb_tls_push(tls, 0);
 
+    //tb_function_print2(f, tb_default_print_callback, stdout, false);
+
+    int changes = 0;
     TB_Node* entry_terminator = &f->nodes[f->nodes[1].label.terminator];
     for (TB_Node* n = &f->nodes[1]; n != entry_terminator; n = &f->nodes[n->next]) {
         TB_Reg i = n - f->nodes;
 
         if (n->type == TB_LOCAL || n->type == TB_PARAM_ADDR) {
             TB_DataType dt;
-            Coherency coherence = tb_get_stack_slot_coherency(f, i, &dt);
+            int use_count;
+            Coherency coherence = tb_get_stack_slot_coherency(f, i, &dt, &use_count);
 
             switch (coherence) {
                 case COHERENCY_GOOD: {
@@ -265,7 +392,14 @@ bool tb_opt_mem2reg(TB_Function* f) {
                     break;
                 }
                 case COHERENCY_USES_ADDRESS: {
-                    OPTIMIZER_LOG(i, "could not mem2reg a stack slot (uses pointer arithmatic)");
+                    if (n->type == TB_LOCAL && attempt_sroa(f, tls, i, use_count)) {
+                        //tb_function_print2(f, tb_default_print_callback, stdout, false);
+
+                        OPTIMIZER_LOG(i, "SROA on stack structure");
+                        changes++;
+                    } else {
+                        OPTIMIZER_LOG(i, "could not mem2reg a stack slot (uses pointer arithmatic)");
+                    }
                     break;
                 }
                 case COHERENCY_BAD_DATA_TYPE: {
@@ -279,7 +413,7 @@ bool tb_opt_mem2reg(TB_Function* f) {
 
     if (to_promote_count == 0) {
         // doesn't need to mem2reg
-        return false;
+        return (changes != 0);
     }
 
     Mem2Reg_Ctx c = { 0 };
@@ -310,7 +444,7 @@ bool tb_opt_mem2reg(TB_Function* f) {
         c.pred_count[0] = 0;
         c.preds[0] = NULL;
 
-        loop_range(j, 1, c.label_count) {
+        FOREACH_N(j, 1, c.label_count) {
             c.preds[j] = (TB_Label*)tb_tls_push(tls, 0);
             tb_calculate_immediate_predeccessors(f, tls, j, &c.pred_count[j]);
         }
@@ -392,7 +526,7 @@ bool tb_opt_mem2reg(TB_Function* f) {
         }
     }
 
-    loop_range(j, 1, c.label_count) {
+    FOREACH_N(j, 1, c.label_count) {
         seal_block(&c, j);
         //assert(c.sealed_blocks[j]);
     }
@@ -414,17 +548,17 @@ static int bits_in_data_type(int pointer_size, TB_DataType dt) {
 
 // NOTE(NeGate): a stack slot is coherent when all loads and stores share
 // the same type and alignment along with not needing any address usage.
-static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_DataType* out_dt) {
+static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_DataType* out_dt, int* out_use_count) {
     // if there's a difference between the times we want the value and the
     // times we want the address, then some address calculations are being done
     // and thus we can't mem2reg
     int use_count = 0;
-
     TB_FOR_EACH_NODE(n, f) {
         TB_FOR_INPUT_IN_NODE(it, f, n) {
             if (it.r == address) use_count += 1;
         }
     }
+    *out_use_count = use_count;
 
     int value_based_use_count = 0;
     int pointer_size = tb__find_code_generator(f->module)->pointer_size;
@@ -433,7 +567,7 @@ static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_
     TB_DataType dt = TB_TYPE_VOID;
     bool initialized = false;
     int dt_bits = 0;
-    for (TB_Node* n = &f->nodes[address]; n != &f->nodes[0]; n = &f->nodes[n->next]) {
+    TB_FOR_EACH_NODE(n, f) {
         static_assert(offsetof(TB_Node, load.address) == offsetof(TB_Node, store.address),
             "TB_Node::load.address == TB_Node::store.address");
 
@@ -446,8 +580,7 @@ static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_
             f->nodes[n->mem_op.size].integer.num_words == 1) {
             // untyped zeroing store
             // we're hoping all data types match in size to continue along
-            int bits = 8 *
-                bits_in_data_type(pointer_size, f->nodes[n->mem_op.src].dt) *
+            int bits = bits_in_data_type(pointer_size, f->nodes[n->mem_op.src].dt) *
                 f->nodes[n->mem_op.size].integer.single_word;
 
             if (bits == 0 || (dt_bits > 0 && bits != dt_bits)) {
@@ -467,7 +600,7 @@ static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_
                 }
 
                 // we're hoping all data types match in size to continue along
-                int bits = 8 * bits_in_data_type(pointer_size, dt);
+                int bits = bits_in_data_type(pointer_size, dt);
                 if (bits == 0 || (dt_bits > 0 && bits != dt_bits)) {
                     return COHERENCY_BAD_DATA_TYPE;
                 }
@@ -476,12 +609,12 @@ static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_
         }
     }
 
-    if (!initialized) {
-        return COHERENCY_UNINITIALIZED;
-    }
-
     if (value_based_use_count != use_count) {
         return COHERENCY_USES_ADDRESS;
+    }
+
+    if (!initialized) {
+        return COHERENCY_UNINITIALIZED;
     }
 
     *out_dt = dt;

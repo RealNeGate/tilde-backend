@@ -149,6 +149,8 @@ TB_API size_t tb_get_dominators(TB_Function* f, TB_Predeccesors preds, TB_Label*
 
         tb_tls_restore(tls, ctx.visited);
         ctx.visited = NULL;
+
+        // ctx.traversal is kept
     }
 
     bool changed = true;

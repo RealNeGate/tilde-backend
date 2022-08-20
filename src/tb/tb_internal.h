@@ -85,7 +85,6 @@ typedef struct TB_Emitter {
 
 // first is the null register, then the entry
 // label, then parameters, then everything else
-#define TB_FIRST_PARAMETER_REG 2
 #define TB_NEXT_INST(node, f) (&(f)->nodes[(node)->next])
 
 // get's the binding id from a TB_Node*
@@ -266,6 +265,9 @@ struct TB_Function {
 
     const TB_FunctionPrototype* prototype;
     TB_Linkage linkage;
+
+    // Parameter acceleration structure
+    TB_Reg* params;
 
     // Nodes array
     TB_Reg node_capacity;

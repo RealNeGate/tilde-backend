@@ -9,6 +9,7 @@
 
 typedef struct Ctx Ctx;
 
+static void jmp(Ctx* restrict ctx, int label);
 static void ret_jmp(Ctx* restrict ctx);
 
 static void x64v2_initial_reg_alloc(Ctx* restrict ctx);
@@ -42,7 +43,8 @@ static void x64v2_resolve_stack_slot(Ctx* restrict ctx, TB_Function* f, TB_Node*
 #define GAD_RESOLVE_PARAMS(ctx, f) x64v2_resolve_params(ctx, f)
 #define GAD_RESOLVE_VALUE(ctx, f, r) x64v2_resolve_value(ctx, f, r)
 #define GAD_RESOLVE_STACK_SLOT(ctx, f, n) x64v2_resolve_stack_slot(ctx, f, n)
-#define GAD_MAKE_STACK_SLOT(ctx, f, r, pos) (Val){ VAL_MEM, .r = r, .mem = { .base = RBP, .index = GPR_NONE, .disp = (pos) } }
+#define GAD_MAKE_STACK_SLOT(ctx, f, r_, pos) (Val){ VAL_MEM, .r = (r_), .mem = { .base = RBP, .index = GPR_NONE, .disp = (pos) } }
+#define GAD_GOTO(ctx, label) jmp(ctx, label)
 #define GAD_RET_JMP(ctx) ret_jmp(ctx)
 #define GAD_VAL Val
 #include "../codegen/generic_addrdesc.h"
@@ -137,29 +139,38 @@ static void x64v2_resolve_params(Ctx* restrict ctx, TB_Function* f) {
     bool is_sysv = (f->module->target_abi == TB_ABI_SYSTEMV);
     const TB_FunctionPrototype* restrict proto = f->prototype;
 
-    FOREACH_N(i, 0, proto->param_count) {
-        TB_DataType dt = proto->params[i];
-        TB_Reg r = TB_FIRST_PARAMETER_REG + i;
+    size_t param_count = proto->param_count;
+    TB_FOR_EACH_NODE(n, f) {
+        TB_Reg r = n - f->nodes;
 
-        // Allocate space in stack
-        assert(get_data_type_size(dt) <= 8 && "Parameter too big");
+        if (n->type == TB_PARAM) {
+            size_t i = n->param.id;
+            TB_DataType dt = proto->params[i];
 
-        if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
-            // xmm parameters
-            if (i < 4) {
-                GAD_FN(reserve_register)(ctx, f, r, X64_REG_CLASS_XMM, i);
+            // Allocate space in stack
+            assert(get_data_type_size(dt) <= 8 && "Parameter too big");
+
+            if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
+                // xmm parameters
+                if (i < 4) {
+                    GAD_FN(reserve_register)(ctx, f, r, X64_REG_CLASS_XMM, i);
+                } else {
+                    GAD_FN(force_stack)(ctx, f, r, 16 + (i * 8));
+                }
             } else {
-                GAD_FN(force_stack)(ctx, f, r, 16 + (i * 8));
+                // gpr parameters
+                if (is_sysv && i < 6) {
+                    GAD_FN(reserve_register)(ctx, f, r, X64_REG_CLASS_GPR, SYSV_GPR_PARAMETERS[i]);
+                } else if (i < 4) {
+                    GAD_FN(reserve_register)(ctx, f, r, X64_REG_CLASS_GPR, WIN64_GPR_PARAMETERS[i]);
+                } else {
+                    GAD_FN(force_stack)(ctx, f, r, 16 + (i * 8));
+                }
             }
-        } else {
-            // gpr parameters
-            if (is_sysv && i < 6) {
-                GAD_FN(reserve_register)(ctx, f, r, X64_REG_CLASS_GPR, SYSV_GPR_PARAMETERS[i]);
-            } else if (i < 4) {
-                GAD_FN(reserve_register)(ctx, f, r, X64_REG_CLASS_GPR, WIN64_GPR_PARAMETERS[i]);
-            } else {
-                GAD_FN(force_stack)(ctx, f, r, 16 + (i * 8));
-            }
+
+            // short circuit
+            param_count -= 1;
+            if (param_count == 0) break;
         }
     }
 
@@ -188,7 +199,7 @@ static void x64v2_resolve_stack_slot(Ctx* restrict ctx, TB_Function* f, TB_Node*
     bool is_sysv = (f->module->target_abi == TB_ABI_SYSTEMV);
 
     if (n->type == TB_PARAM_ADDR) {
-        int id = n->param_addr.param - TB_FIRST_PARAMETER_REG;
+        int id = f->nodes[n->param_addr.param].param.id;
         TB_DataType dt = n->dt;
 
         GAD_VAL dst = GAD_FN(force_stack)(ctx, f, n - f->nodes, 16 + (id * 8));
@@ -252,13 +263,14 @@ static void x64v2_return(Ctx* restrict ctx, TB_Function* f, TB_Node* restrict n)
     } else tb_todo();
 }
 
-static void x64v2_cond_to_reg(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int cc) {
+static GAD_VAL x64v2_cond_to_reg(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int cc) {
     GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
 
     EMIT((dst.gpr >= 8) ? 0x41 : 0x40);
     EMIT(0x0F);
     EMIT(0x90 + cc);
     EMIT(mod_rx_rm(MOD_DIRECT, 0, dst.gpr));
+    return dst;
 }
 
 static void x64v2_branch_if(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_Label fallthrough, TB_Label if_true, TB_Label if_false) {
@@ -285,9 +297,27 @@ static void x64v2_branch_if(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_L
     if (!has_fallthrough) JMP(if_false);
 }
 
-static void x64v2_phi_move(Ctx* restrict ctx, TB_Function* f, GAD_VAL* dst, TB_Reg src) {
-    GAD_VAL src_val = GAD_FN(get_val_gpr)(ctx, f, src);
-    INST2(MOV, dst, &src_val, f->nodes[src].dt);
+static void GAD_FN(spill_move)(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, GAD_VAL* dst_val, GAD_VAL* src_val, GAD_VAL* reg_val) {
+    if (src_val->type == VAL_MEM) {
+        // spilling an address is kinda cringe but yea
+        INST2(LEA, reg_val, src_val, TB_TYPE_PTR);
+        INST2(MOV, dst_val, reg_val, TB_TYPE_PTR);
+    } else {
+        INST2(MOV, dst_val, src_val, dt);
+    }
+}
+
+static void x64v2_phi_move(Ctx* restrict ctx, TB_Function* f, GAD_VAL* dst_val, TB_Reg dst, TB_Reg src) {
+    if (f->nodes[src].type == TB_ADD && f->nodes[src].i_arith.a == dst) {
+        GAD_FN(expend)(ctx, f, src);
+        GAD_FN(expend)(ctx, f, f->nodes[src].i_arith.a);
+
+        GAD_VAL src_val = GAD_FN(get_val_gpr)(ctx, f, f->nodes[src].i_arith.b);
+        INST2(ADD, dst_val, &src_val, f->nodes[src].dt);
+    } else {
+        GAD_VAL src_val = GAD_FN(get_val_gpr)(ctx, f, src);
+        INST2(MOV, dst_val, &src_val, f->nodes[src].dt);
+    }
 }
 
 static void x64v2_store(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
@@ -343,6 +373,35 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
             } else {
                 tb_todo();
             }
+        }
+
+        case TB_INT2PTR:
+        case TB_SIGN_EXT:
+        case TB_ZERO_EXT: {
+            TB_DataType src_dt = f->nodes[n->unary.src].dt;
+            bool sign_ext = (type == TB_SIGN_EXT);
+
+            // figure out if we can use the cool instructions
+            // or if we gotta emulate it like a bitch
+            LegalInt l = legalize_int(src_dt);
+            int bits_in_type = l.dt.type == TB_PTR ? 64 : l.dt.data;
+
+            // gonna be either MOV, MOVSX or MOVZX
+            Inst2Type op = MOV;
+
+            switch (bits_in_type) {
+                case 64: op = MOV; break;
+                case 32: op = sign_ext ? MOVSXD : MOV; break;
+                case 16: op = sign_ext ? MOVSXW : MOVZXW; break;
+                case 8:  op = sign_ext ? MOVSXB : MOVZXB; break;
+                default: tb_todo();
+            }
+
+            GAD_VAL src = GAD_FN(get_val_gpr)(ctx, f, n->unary.src);
+            GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
+
+            INST2(op, &dst, &src, l.dt);
+            return dst;
         }
 
         case TB_LOAD: {
@@ -437,6 +496,16 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
                     // INST2(LEA, &dst, &addr, TB_TYPE_PTR);
                 }
             }
+        }
+
+        case TB_ADD: {
+            GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
+            GAD_VAL a = GAD_FN(get_val_gpr)(ctx, f, n->i_arith.a);
+            GAD_VAL b = GAD_FN(get_val_gpr)(ctx, f, n->i_arith.b);
+
+            INST2(MOV, &dst, &a, n->dt);
+            INST2(ADD, &dst, &b, n->dt);
+            return dst;
         }
 
         case TB_CMP_EQ:

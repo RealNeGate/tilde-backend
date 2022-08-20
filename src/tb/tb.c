@@ -265,47 +265,103 @@ TB_API void tb_prototype_add_params(TB_FunctionPrototype* p, size_t count, const
     p->param_count += count;
 }
 
-TB_API TB_Function* tb_prototype_build(TB_Module* m, TB_FunctionPrototype* p, const char* name, TB_Linkage linkage) {
+TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_Linkage linkage) {
     size_t i = tb_atomic_size_add(&m->functions.count, 1);
     if (i >= TB_MAX_FUNCTIONS) {
         tb_panic("cannot spawn more TB functions\n");
     }
 
-    assert(p->param_count == p->param_capacity);
-
     TB_Function* f = &m->functions.data[i];
     *f = (TB_Function) {
-        .module = m, .linkage = linkage, .prototype = p, .name = tb_platform_string_alloc(name)
+        .module = m, .linkage = linkage, .name = tb_platform_string_alloc(name)
     };
 
     f->node_capacity = 64;
-    f->node_count = 2 + p->param_count;
+    f->node_count = 2;
     f->nodes = tb_platform_heap_alloc(f->node_capacity * sizeof(TB_Node));
 
     f->attrib_pool_capacity = 64;
     f->attrib_pool_count = 1; // 0 is reserved
     f->attrib_pool = tb_platform_heap_alloc(64 * sizeof(TB_Attrib));
 
-    // Null slot, Entry label & Parameters
+    // Null slot, Entry label
     f->nodes[0] = (TB_Node) { .next = 1 };
     f->nodes[1] = (TB_Node) { .type = TB_LABEL, .dt = TB_TYPE_PTR, .label = { 0, 0 } };
 
-    const ICodeGen* restrict code_gen = tb__find_code_generator(m);
-    loop(i, p->param_count) {
-        TB_DataType dt = p->params[i];
+    f->node_end = 1;
+    f->label_count = f->current_label = 1;
+    return f;
+}
 
+TB_API void tb_function_set_name(TB_Function* f, const char* name) {
+    f->name = tb_platform_string_alloc(name);
+}
+
+TB_API const char* tb_function_get_name(TB_Function* f) {
+    return f->name;
+}
+
+TB_API void tb_function_set_prototype(TB_Function* f, const TB_FunctionPrototype* p) {
+    size_t old_param_count = f->prototype != NULL ? f->prototype->param_count : 0;
+    size_t new_param_count = p->param_count;
+
+    const ICodeGen* restrict code_gen = tb__find_code_generator(f->module);
+
+    f->params = tb_platform_heap_realloc(f->params, sizeof(TB_Reg) * new_param_count);
+    if (f->params == NULL) {
+        tb_panic("Out of memory!");
+    }
+
+    // walk to the end of the param list (it starts directly after the entry label)
+    TB_Reg prev = 1, r = f->nodes[1].next;
+    size_t count = 0;
+    FOREACH_N(i, 0, old_param_count) {
+        // reassign these old slots
+        TB_DataType dt = p->params[i];
         TB_CharUnits size, align;
         code_gen->get_data_type_size(dt, &size, &align);
 
-        f->nodes[1 + i].next = 2 + i;
-        f->nodes[2 + i] = (TB_Node) {
-            .type = TB_PARAM, .dt = dt, .next = 2, .param = { .id = i, .size = size }
-        };
+        assert(r != TB_NULL_REG);
+        // fill in acceleration structure
+        f->params[count++] = r;
+
+        // reinitialize node
+        f->nodes[r].type = TB_PARAM;
+        f->nodes[r].dt = dt;
+        f->nodes[r].param = (struct TB_NodeParam) { .id = i, .size = size };
+
+        prev = r;
+        r = f->nodes[r].next;
     }
 
-    f->node_end = 2 + (p->param_count - 1);
-    f->label_count = f->current_label = 1;
-    return f;
+    bool are_we_at_the_end = (f->node_end == prev);
+    FOREACH_N(i, old_param_count, new_param_count) {
+        TB_Reg new_reg = tb_function_insert_after(f, prev);
+        TB_Node* new_node = &f->nodes[new_reg];
+
+        TB_DataType dt = p->params[i];
+        TB_CharUnits size, align;
+        code_gen->get_data_type_size(dt, &size, &align);
+
+        // fill in acceleration structure
+        f->params[count++] = new_reg;
+
+        // initialize node
+        new_node->type = TB_PARAM;
+        new_node->dt = dt;
+        new_node->param = (struct TB_NodeParam){ .id = i, .size = size };
+        prev = new_reg;
+    }
+
+    if (are_we_at_the_end) {
+        f->node_end = prev;
+    }
+
+    f->prototype = p;
+}
+
+TB_API const TB_FunctionPrototype* tb_function_get_prototype(TB_Function* f) {
+    return f->prototype;
 }
 
 TB_API TB_Initializer* tb_initializer_create(TB_Module* m, size_t size, size_t align, size_t max_objects) {
@@ -413,22 +469,71 @@ TB_API TB_External* tb_extern_create(TB_Module* m, const char* name) {
     return e;
 }
 
-TB_API void* tb_module_get_jit_func_by_name(TB_Module* m, const char* name) {
-    for (size_t i = 0; i < m->functions.count; i++) {
-        if (strcmp(m->functions.data[i].name, name) == 0) return m->compiled_function_pos[i];
+TB_API TB_FunctionIter tb_function_iter(TB_Module* m) {
+    return (TB_FunctionIter){ .module_ = m };
+}
+
+TB_API bool tb_next_function(TB_FunctionIter* it) {
+    TB_Module* m = it->module_;
+    if (it->index_ < m->functions.count) {
+        it->f = &m->functions.data[it->index_];
+        return true;
     }
 
-    return NULL;
+    return false;
 }
 
-TB_API void* tb_module_get_jit_func_by_id(TB_Module* m, size_t i) {
-    assert(m->compiled_function_pos);
-    return m->compiled_function_pos[i];
+TB_API TB_ExternalIter tb_external_iter(TB_Module* m) {
+    return (TB_ExternalIter){ .module_ = m, .p_ = m->thread_info[0].externals };
 }
 
-TB_API void* tb_module_get_jit_func(TB_Module* m, TB_Function* f) {
-    assert(m->compiled_function_pos);
-    return m->compiled_function_pos[f - m->functions.data];
+// TODO(NeGate): Redo this bs
+TB_API bool tb_next_external(TB_ExternalIter* it) {
+    for (;;) {
+        if (it->p_ != NULL) {
+            PoolHeader* hdr = ((PoolHeader*) it->p_) - 1;
+
+            // you basically just have to write the iterator backwards from the for loop
+            // go check pool.h for the original
+            size_t a = it->a_;
+            if (a < MAX_SLOTS) {
+                if (hdr->allocated[a] != 0) {
+                    size_t b = it->b_++;
+                    if (b < 64) {
+                        if ((hdr->allocated[it->a_] & (1ull << b)) == 0) {
+                            continue;
+                        }
+
+                        it->e = &((TB_External*) hdr->data)[(it->a_ * 64) + b];
+                        return true;
+                    }
+                }
+
+                it->b_ = 0;
+                it->a_ += 1;
+                continue;
+            }
+
+            PoolHeader* next = hdr->next;
+            if (next != NULL) {
+                it->a_ = 0;
+                it->p_ = next->data;
+                continue;
+            }
+        }
+
+        size_t c = ++it->c_;
+        if (c < it->module_->max_threads) {
+            it->p_ = it->module_->thread_info[c].externals;
+            continue;
+        }
+
+        return false;
+    }
+}
+
+TB_API const char* tb_extern_get_name(TB_External* e) {
+    return e->name;
 }
 
 TB_API TB_Label tb_inst_get_current_label(TB_Function* f) {

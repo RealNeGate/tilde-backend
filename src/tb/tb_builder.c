@@ -6,6 +6,10 @@
 // the machine code output or later analysis stages.
 #include "tb_internal.h"
 
+TB_API int tb_function_get_label_count(TB_Function* f) {
+    return f->label_count;
+}
+
 TB_API TB_FunctionID tb_function_get_id(TB_Module* m, TB_Function* f) {
     intptr_t id = f - m->functions.data;
     tb_assume(id == (TB_FunctionID)id);
@@ -367,13 +371,13 @@ TB_API TB_Reg tb_inst_bitcast(TB_Function* f, TB_Reg src, TB_DataType dt) {
 
 TB_API TB_Reg tb_inst_param(TB_Function* f, int param_id) {
     tb_assume(param_id < f->prototype->param_count);
-    return 2 + param_id;
+    return f->params[param_id];
 }
 
 TB_API TB_Reg tb_inst_param_addr(TB_Function* f, int param_id) {
     tb_assume(param_id < f->prototype->param_count);
 
-    TB_Reg param = 2 + param_id;
+    TB_Reg param = f->params[param_id];
     int param_size = f->nodes[param].param.size;
 
     TB_Reg r = tb_make_reg(f, TB_PARAM_ADDR, TB_TYPE_PTR);

@@ -334,7 +334,6 @@ TB_API void tb_function_set_prototype(TB_Function* f, const TB_FunctionPrototype
         r = f->nodes[r].next;
     }
 
-    bool are_we_at_the_end = (f->node_end == prev);
     FOREACH_N(i, old_param_count, new_param_count) {
         TB_Reg new_reg = tb_function_insert_after(f, prev);
         TB_Node* new_node = &f->nodes[new_reg];
@@ -351,10 +350,6 @@ TB_API void tb_function_set_prototype(TB_Function* f, const TB_FunctionPrototype
         new_node->dt = dt;
         new_node->param = (struct TB_NodeParam){ .id = i, .size = size };
         prev = new_reg;
-    }
-
-    if (are_we_at_the_end) {
-        f->node_end = prev;
     }
 
     f->prototype = p;

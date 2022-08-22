@@ -12,23 +12,23 @@
 
 #ifdef __cplusplus
 extern "C" {
-    #endif
+#endif
 
     // https://semver.org/
-    #define TB_VERSION_MAJOR 0
-    #define TB_VERSION_MINOR 2
-    #define TB_VERSION_PATCH 0
+#define TB_VERSION_MAJOR 0
+#define TB_VERSION_MINOR 2
+#define TB_VERSION_PATCH 0
 
-    #define TB_API extern
+#define TB_API extern
 
-    #define TB_HOST_UNKNOWN 0
-    #define TB_HOST_X86_64  1
+#define TB_HOST_UNKNOWN 0
+#define TB_HOST_X86_64  1
 
-    #if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64)
-    #define TB_HOST_ARCH TB_HOST_X86_64
-    #else
-    #define TB_HOST_ARCH TB_HOST_UNKNOWN
-    #endif
+#if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64)
+#define TB_HOST_ARCH TB_HOST_X86_64
+#else
+#define TB_HOST_ARCH TB_HOST_UNKNOWN
+#endif
 
     // These are flags
     typedef enum TB_ArithmaticBehavior {
@@ -173,16 +173,16 @@ extern "C" {
     static_assert(sizeof(TB_DataType) == sizeof(uint16_t), "TB_DataType isn't 16bits...");
 
     // classify data types
-    #define TB_IS_VOID_TYPE(x)     ((x).type == TB_INT && (x).data == 0)
-    #define TB_IS_BOOL_TYPE(x)     ((x).type == TB_INT && (x).data == 1)
-    #define TB_IS_INTEGER_TYPE(x)  ((x).type == TB_INT)
-    #define TB_IS_FLOAT_TYPE(x)    ((x).type == TB_FLOAT)
-    #define TB_IS_POINTER_TYPE(x)  ((x).type == TB_PTR)
+#define TB_IS_VOID_TYPE(x)     ((x).type == TB_INT && (x).data == 0)
+#define TB_IS_BOOL_TYPE(x)     ((x).type == TB_INT && (x).data == 1)
+#define TB_IS_INTEGER_TYPE(x)  ((x).type == TB_INT)
+#define TB_IS_FLOAT_TYPE(x)    ((x).type == TB_FLOAT)
+#define TB_IS_POINTER_TYPE(x)  ((x).type == TB_PTR)
 
     // accessors
-    #define TB_GET_INT_BITWIDTH(x) ((x).data)
-    #define TB_GET_FLOAT_FORMAT(x) ((x).data)
-    #define TB_GET_PTR_ADDRSPACE(x) ((x).data)
+#define TB_GET_INT_BITWIDTH(x) ((x).data)
+#define TB_GET_FLOAT_FORMAT(x) ((x).data)
+#define TB_GET_PTR_ADDRSPACE(x) ((x).data)
 
     typedef enum TB_NodeTypeEnum {
         TB_NULL = 0,
@@ -327,8 +327,8 @@ extern "C" {
     } TB_NodeTypeEnum;
     typedef uint8_t TB_NodeType;
 
-    #define TB_IS_NODE_SIDE_EFFECT(type) ((type) >= TB_LINE_INFO && (type) <= TB_DEBUGBREAK)
-    #define TB_IS_NODE_TERMINATOR(type)  ((type) >= TB_LABEL && (type) <= TB_RET)
+#define TB_IS_NODE_SIDE_EFFECT(type) ((type) >= TB_LINE_INFO && (type) <= TB_DEBUGBREAK)
+#define TB_IS_NODE_TERMINATOR(type)  ((type) >= TB_LABEL && (type) <= TB_RET)
 
     typedef int TB_Label;
 
@@ -365,8 +365,8 @@ extern "C" {
     // map to any hardware but instead represent some operation
     typedef int TB_Reg, TB_Register;
 
-    #define TB_NULL_REG ((TB_Reg)0)
-    #define TB_REG_MAX  ((TB_Reg)INT_MAX)
+#define TB_NULL_REG ((TB_Reg)0)
+#define TB_REG_MAX  ((TB_Reg)INT_MAX)
 
     typedef struct {
         TB_Reg label, val;
@@ -707,33 +707,33 @@ extern "C" {
     // *******************************
     // Public macros
     // *******************************
-    #ifdef __cplusplus
+#ifdef __cplusplus
 
-    #define TB_TYPE_VOID    TB_DataType{ { TB_INT,   0, 0 } }
-    #define TB_TYPE_I8      TB_DataType{ { TB_INT,   0, 8 } }
-    #define TB_TYPE_I16     TB_DataType{ { TB_INT,   0, 16 } }
-    #define TB_TYPE_I32     TB_DataType{ { TB_INT,   0, 32 } }
-    #define TB_TYPE_I64     TB_DataType{ { TB_INT,   0, 64 } }
-    #define TB_TYPE_F32     TB_DataType{ { TB_FLOAT, 0, TB_FLT_32 } }
-    #define TB_TYPE_F64     TB_DataType{ { TB_FLOAT, 0, TB_FLT_64 } }
-    #define TB_TYPE_BOOL    TB_DataType{ { TB_INT,   0, 1 } }
-    #define TB_TYPE_PTR     TB_DataType{ { TB_PTR,   0, 0 } }
-    #define TB_TYPE_PTRN(N) TB_DataType{ { TB_PTR,   0, (N) } }
+#define TB_TYPE_VOID    TB_DataType{ { TB_INT,   0, 0 } }
+#define TB_TYPE_I8      TB_DataType{ { TB_INT,   0, 8 } }
+#define TB_TYPE_I16     TB_DataType{ { TB_INT,   0, 16 } }
+#define TB_TYPE_I32     TB_DataType{ { TB_INT,   0, 32 } }
+#define TB_TYPE_I64     TB_DataType{ { TB_INT,   0, 64 } }
+#define TB_TYPE_F32     TB_DataType{ { TB_FLOAT, 0, TB_FLT_32 } }
+#define TB_TYPE_F64     TB_DataType{ { TB_FLOAT, 0, TB_FLT_64 } }
+#define TB_TYPE_BOOL    TB_DataType{ { TB_INT,   0, 1 } }
+#define TB_TYPE_PTR     TB_DataType{ { TB_PTR,   0, 0 } }
+#define TB_TYPE_PTRN(N) TB_DataType{ { TB_PTR,   0, (N) } }
 
-    #else
+#else
 
-    #define TB_TYPE_VOID (TB_DataType){ { TB_INT,   0, 0 } }
-    #define TB_TYPE_I8   (TB_DataType){ { TB_INT,   0, 8 } }
-    #define TB_TYPE_I16  (TB_DataType){ { TB_INT,   0, 16 } }
-    #define TB_TYPE_I32  (TB_DataType){ { TB_INT,   0, 32 } }
-    #define TB_TYPE_I64  (TB_DataType){ { TB_INT,   0, 64 } }
-    #define TB_TYPE_F32  (TB_DataType){ { TB_FLOAT, 0, TB_FLT_32 } }
-    #define TB_TYPE_F64  (TB_DataType){ { TB_FLOAT, 0, TB_FLT_64 } }
-    #define TB_TYPE_BOOL (TB_DataType){ { TB_INT,   0, 1 } }
-    #define TB_TYPE_PTR  (TB_DataType){ { TB_PTR,   0, 0 } }
-    #define TB_TYPE_PTRN(N) (TB_DataType){ { TB_PTR,  0, (N) } }
+#define TB_TYPE_VOID (TB_DataType){ { TB_INT,   0, 0 } }
+#define TB_TYPE_I8   (TB_DataType){ { TB_INT,   0, 8 } }
+#define TB_TYPE_I16  (TB_DataType){ { TB_INT,   0, 16 } }
+#define TB_TYPE_I32  (TB_DataType){ { TB_INT,   0, 32 } }
+#define TB_TYPE_I64  (TB_DataType){ { TB_INT,   0, 64 } }
+#define TB_TYPE_F32  (TB_DataType){ { TB_FLOAT, 0, TB_FLT_32 } }
+#define TB_TYPE_F64  (TB_DataType){ { TB_FLOAT, 0, TB_FLT_64 } }
+#define TB_TYPE_BOOL (TB_DataType){ { TB_INT,   0, 1 } }
+#define TB_TYPE_PTR  (TB_DataType){ { TB_PTR,   0, 0 } }
+#define TB_TYPE_PTRN(N) (TB_DataType){ { TB_PTR,  0, (N) } }
 
-    #endif
+#endif
 
     typedef void (*TB_PrintCallback)(void* user_data, const char* fmt, ...);
 
@@ -778,7 +778,7 @@ extern "C" {
         size_t index_;
     } TB_FunctionIter;
 
-    #define TB_FOR_FUNCTIONS(it, module) for (TB_FunctionIter it = { .module_ = (module) }; tb_next_function(&it);)
+#define TB_FOR_FUNCTIONS(it, module) for (TB_FunctionIter it = { .module_ = (module) }; tb_next_function(&it);)
     TB_API TB_FunctionIter tb_function_iter(TB_Module* m);
     TB_API bool tb_next_function(TB_FunctionIter* it);
 
@@ -792,7 +792,7 @@ extern "C" {
         size_t a_, b_, c_;
     } TB_ExternalIter;
 
-    #define TB_FOR_EXTERNALS(it, module) for (TB_ExternalIter it = tb_external_iter(module); tb_next_external(&it);)
+#define TB_FOR_EXTERNALS(it, module) for (TB_ExternalIter it = tb_external_iter(module); tb_next_external(&it);)
     TB_API TB_ExternalIter tb_external_iter(TB_Module* m);
     TB_API bool tb_next_external(TB_ExternalIter* it);
 
@@ -890,8 +890,8 @@ extern "C" {
         TB_Reg parent_;
     } TB_NodeInputIter;
 
-    #define TB_FOR_INPUT_IN_REG(it, f, parent) for (TB_NodeInputIter it = { .parent_ = (parent) }; tb_next_node_input(f, &it);)
-    #define TB_FOR_INPUT_IN_NODE(it, f, parent) for (TB_NodeInputIter it = { .parent_ = (parent) - f->nodes }; tb_next_node_input(f, &it);)
+#define TB_FOR_INPUT_IN_REG(it, f, parent) for (TB_NodeInputIter it = { .parent_ = (parent) }; tb_next_node_input(f, &it);)
+#define TB_FOR_INPUT_IN_NODE(it, f, parent) for (TB_NodeInputIter it = { .parent_ = (parent) - f->nodes }; tb_next_node_input(f, &it);)
 
     TB_API TB_NodeInputIter tb_node_input_iter(TB_Reg r);
     TB_API bool tb_next_node_input(const TB_Function* f, TB_NodeInputIter* iter);
@@ -1129,7 +1129,6 @@ extern "C" {
     TB_API bool tb_opt_fold(TB_Function* f);
     TB_API bool tb_opt_refinement(TB_Function* f);
     TB_API bool tb_opt_load_elim(TB_Function* f);
-    TB_API bool tb_opt_hoist_invariants(TB_Function* f);
     TB_API bool tb_opt_hoist_locals(TB_Function* f);
     TB_API bool tb_opt_deshort_circuit(TB_Function* f);
     TB_API bool tb_opt_remove_pass_node(TB_Function* f);
@@ -1184,7 +1183,7 @@ extern "C" {
     TB_ObjectFile* tb_object_parse_coff(const TB_Slice file);
     void tb_object_free(TB_ObjectFile* obj);
 
-    #ifdef __cplusplus
+#ifdef __cplusplus
 }
 #endif
 #endif /* TB_CORE_H */

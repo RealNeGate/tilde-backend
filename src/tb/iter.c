@@ -56,6 +56,9 @@ TB_API bool tb_next_node_input(const TB_Function* f, TB_NodeInputIter* iter) {
         case TB_TRUNCATE:
         case TB_X86INTRIN_LDMXCSR:
         case TB_BITCAST:
+        case TB_ZERO_EXT:
+        case TB_SIGN_EXT:
+        case TB_FLOAT_EXT:
         switch (iter->index_++) {
             case 0: return (iter->r = n->unary.src, true);
             case 1: return false;
@@ -173,16 +176,6 @@ TB_API bool tb_next_node_input(const TB_Function* f, TB_NodeInputIter* iter) {
             case 0: return (iter->r = n->store.address, true);
             case 1: return (iter->r = n->store.value, true);
             case 2: return false;
-            default: tb_unreachable();
-        }
-        break;
-
-        case TB_ZERO_EXT:
-        case TB_SIGN_EXT:
-        case TB_FLOAT_EXT:
-        switch (iter->index_++) {
-            case 0: return (iter->r = n->unary.src, true);
-            case 1: return false;
             default: tb_unreachable();
         }
         break;

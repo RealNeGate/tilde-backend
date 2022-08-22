@@ -14,8 +14,6 @@ static bool try_jump_thread(TB_Function* f, TB_TemporaryStorage* tls, TB_Label* 
     }
 
     if (f->nodes[target->next].type == TB_GOTO) {
-        if (label == 13) __debugbreak();
-
         TB_Label new_target_label = f->nodes[target->next].goto_.label;
         TB_Reg new_target_reg = tb_find_reg_from_label(f, new_target_label);
         assert(new_target_reg != 0);
@@ -519,59 +517,78 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
                 n->pass.value = r;
                 changes++;
             } else {
-                // Check for any duplicate inputs
-                size_t new_length = 0;
-                TB_PhiInput* new_inputs = tb_tls_push(tls, 0);
+                // check if none of the paths diverge
+                TB_Reg first = inputs[0].val;
+                bool match = true;
+                FOREACH_N(j, 1, count) {
+                    if (first != inputs[j].val) {
+                        match = false;
+                        break;
+                    }
+                }
 
-                loop(j, count) {
-                    TB_Reg a = inputs[j].val;
-                    TB_Reg b = inputs[j].label;
+                if (match) {
+                    // replace with a simple PASS
+                    OPTIMIZER_LOG(i, "removed phi with no divergent paths");
 
-                    bool duplicate = false;
-                    if (a == i) {
-                        duplicate = true;
-                    } else if (f->nodes[a].type != TB_NULL) {
-                        loop_range(k, 0, j) {
-                            if (inputs[k].val == a && inputs[k].label == b) {
-                                duplicate = true;
-                                break;
+                    n->type = TB_PASS;
+                    n->pass.value = first;
+                    changes++;
+                } else {
+                    // Check for any duplicate inputs
+                    size_t new_length = 0;
+                    TB_PhiInput* new_inputs = tb_tls_push(tls, 0);
+
+                    FOREACH_N(j, 0, count) {
+                        TB_Reg a = inputs[j].val;
+                        TB_Reg b = inputs[j].label;
+
+                        bool duplicate = false;
+                        if (a == i) {
+                            duplicate = true;
+                        } else if (f->nodes[a].type != TB_NULL) {
+                            FOREACH_N(k, 0, j) {
+                                if (inputs[k].val == a && inputs[k].label == b) {
+                                    duplicate = true;
+                                    break;
+                                }
                             }
-                        }
-                    } else {
-                        duplicate = true;
-                    }
-
-                    if (!duplicate) {
-                        if (a != TB_NULL_REG && f->nodes[a].type == TB_NULL) {
-                            a = TB_NULL_REG;
+                        } else {
+                            duplicate = true;
                         }
 
-                        tb_tls_push(tls, sizeof(TB_PhiInput));
-                        new_inputs[new_length++] = (TB_PhiInput){ .label = b, .val = a };
+                        if (!duplicate) {
+                            if (a != TB_NULL_REG && f->nodes[a].type == TB_NULL) {
+                                a = TB_NULL_REG;
+                            }
+
+                            tb_tls_push(tls, sizeof(TB_PhiInput));
+                            new_inputs[new_length++] = (TB_PhiInput){ .label = b, .val = a };
+                        }
                     }
+
+                    if (new_length != count) {
+                        // Pass it off to more permanent storage
+                        if (n->type == TB_PHIN) {
+                            tb_platform_heap_free(inputs);
+                        }
+
+                        if (new_length == 0) {
+                            OPTIMIZER_LOG(i, "Deduplicated away the PHI node");
+                            n->type = TB_NULL;
+                        } else {
+                            OPTIMIZER_LOG(i, "Deduplicated PHI node entries");
+                            TB_PhiInput* more_permanent_store = tb_platform_heap_alloc(new_length * sizeof(TB_PhiInput));
+                            memcpy(more_permanent_store, new_inputs, new_length * sizeof(TB_PhiInput));
+
+                            n->type = TB_PHIN;
+                            n->phi.count = new_length;
+                            n->phi.inputs = more_permanent_store;
+                            changes++;
+                        }
+                    }
+                    tb_tls_restore(tls, new_inputs);
                 }
-
-                if (new_length != count) {
-                    // Pass it off to more permanent storage
-                    if (n->type == TB_PHIN) {
-                        tb_platform_heap_free(inputs);
-                    }
-
-                    if (new_length == 0) {
-                        OPTIMIZER_LOG(i, "Deduplicated away the PHI node");
-                        n->type = TB_NULL;
-                    } else {
-                        OPTIMIZER_LOG(i, "Deduplicated PHI node entries");
-                        TB_PhiInput* more_permanent_store = tb_platform_heap_alloc(new_length * sizeof(TB_PhiInput));
-                        memcpy(more_permanent_store, new_inputs, new_length * sizeof(TB_PhiInput));
-
-                        n->type = TB_PHIN;
-                        n->phi.count = new_length;
-                        n->phi.inputs = more_permanent_store;
-                        changes++;
-                    }
-                }
-                tb_tls_restore(tls, new_inputs);
             }
         } else if (n->type == TB_LABEL) {
             if (f->nodes[n->label.terminator].type == TB_GOTO) {
@@ -648,7 +665,7 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
             {
                 TB_Node* seq = n;
                 while (seq = &f->nodes[seq->next],
-                    seq->type == TB_LABEL && seq != end) {
+                       seq->type == TB_LABEL && seq != end) {
                     bb_end = seq->label.terminator;
                     count += 1;
                 }

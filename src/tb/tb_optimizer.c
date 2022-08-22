@@ -21,7 +21,6 @@ static const TB_FunctionPass default_passes[] = {
     // canonicalization
     OPT(hoist_locals),
     OPT(merge_rets),
-    OPT(hoist_invariants),
     OPT(canonicalize),
 
     // real optimizations
@@ -187,16 +186,16 @@ static void html_print(void* user_data, const char* fmt, ...) {
 }
 
 static void log_function(FILE* out, const char* title, TB_Function* f) {
-    #if 0
+#if 0
     tb_function_print2(f, tb_default_print_callback, out, false);
-    #else
+#else
     fprintf(out, "<td valign=\"top\">\n");
     fprintf(out, "%s:<br>\n", title);
     fprintf(out, "<pre>\n");
     tb_function_print2(f, html_print, out, false);
     fprintf(out, "</pre>\n");
     fprintf(out, "</td>\n");
-    #endif
+#endif
 }
 
 static FILE* debug_file;

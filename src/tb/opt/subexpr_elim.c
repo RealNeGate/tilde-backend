@@ -127,7 +127,7 @@ static BasicBlockDefs* generate_def_table(TB_Function* f, TB_TemporaryStorage* t
     return table;
 }
 
-TB_Reg find_similar_def_in_bb(TB_Function* f, BasicBlockDefs* bb_defs, TB_Reg r) {
+static TB_Reg find_similar_def_in_bb(TB_Function* f, BasicBlockDefs* bb_defs, TB_Reg r) {
     TB_Node* restrict n = &f->nodes[r];
 
     FOREACH_N(i, 0, bb_defs->count) {
@@ -140,71 +140,76 @@ TB_Reg find_similar_def_in_bb(TB_Function* f, BasicBlockDefs* bb_defs, TB_Reg r)
     return 0;
 }
 
-bool tb_opt_subexpr_elim(TB_Function* f) {
-    bool has_ever_changed = false;
-    bool changes;
-    do {
-        changes = false;
+static TB_Reg walk_dominators_for_similar_def(TB_Function* f, BasicBlockDefs* defs, TB_Label* doms, TB_Label curr, TB_Reg r) {
+    TB_Label parent = doms[curr];
 
-        // we use the dominators to figure out the search space of computed values at
-        // any BB
-        TB_TemporaryStorage* tls = tb_tls_allocate();
-        TB_Predeccesors preds = tb_get_temp_predeccesors(f, tls);
-        TB_Label* doms = tb_tls_push(tls, f->label_count * sizeof(TB_Label));
-        tb_get_dominators(f, preds, doms);
-
-        // list of defined nodes in for every basic block relevant to global CSE
-        BasicBlockDefs* defs = generate_def_table(f, tls);
-
-        // list of resolved nodes in this basic block, used for local CSE
-        size_t resolved_reg_count = 0;
-        TB_Reg* resolved_regs = tb_tls_push(tls, 0);
-
-        TB_Label bb = 0;
-        TB_FOR_EACH_NODE(n, f) {
-            TB_Reg r = (n - f->nodes);
-
-            if (n->type == TB_LABEL) {
-                bb = n->label.id;
-
-                // reset list
-                tb_tls_restore(tls, resolved_regs);
-                resolved_reg_count = 0;
-            } else if (!TB_IS_NODE_SIDE_EFFECT(n->type) && n->type != TB_LOAD) {
-                // try the Global CSE:
-                // check dominators for value, we dont need the same checks of resolution
-                // as local CSE since we can guarentee the entire BB is resolved at this point
-                TB_Label curr = doms[bb];
-                TB_Reg found = 0;
-                for (; curr != 0; curr = doms[curr]) {
-                    found = find_similar_def_in_bb(f, &defs[curr], r);
-                    if (found != TB_NULL_REG) goto done_with_cse;
-                }
-
-                // try local CSE:
-                FOREACH_N(i, 0, resolved_reg_count) {
-                    TB_Reg other = resolved_regs[i];
-                    if (is_node_the_same(n, &f->nodes[other])) {
-                        found = other;
-                        goto done_with_cse;
-                    }
-                }
-
-                tb_tls_push(tls, resolved_reg_count);
-                resolved_regs[resolved_reg_count++] = r;
-                continue;
-
-                // replace with PASS node
-                done_with_cse:
-                OPTIMIZER_LOG(r, "Removed duplicate expression");
-                f->nodes[r].type = TB_PASS;
-                f->nodes[r].pass.value = found;
-                changes++;
-            }
+    if (parent != 0) {
+        TB_Reg result = walk_dominators_for_similar_def(f, defs, doms, parent, r);
+        if (result != TB_NULL_REG) {
+            return result;
         }
+    }
 
-        has_ever_changed = (changes > 0);
-    } while (changes);
+    return find_similar_def_in_bb(f, &defs[curr], r);
+}
 
-    return has_ever_changed;
+bool tb_opt_subexpr_elim(TB_Function* f) {
+    bool changes = false;
+
+    // we use the dominators to figure out the search space of computed values at
+    // any BB
+    TB_TemporaryStorage* tls = tb_tls_allocate();
+    TB_Predeccesors preds = tb_get_temp_predeccesors(f, tls);
+    TB_Label* doms = tb_tls_push(tls, f->label_count * sizeof(TB_Label));
+    tb_get_dominators(f, preds, doms);
+
+    // list of defined nodes in for every basic block relevant to global CSE
+    BasicBlockDefs* defs = generate_def_table(f, tls);
+
+    // list of resolved nodes in this basic block, used for local CSE
+    size_t resolved_reg_count = 0;
+    TB_Reg* resolved_regs = tb_tls_push(tls, 0);
+
+    TB_Label bb = 0;
+    TB_FOR_EACH_NODE(n, f) {
+        TB_Reg r = (n - f->nodes);
+
+        if (n->type == TB_LABEL) {
+            bb = n->label.id;
+
+            // reset list
+            tb_tls_restore(tls, resolved_regs);
+            resolved_reg_count = 0;
+        } else if (!TB_IS_NODE_SIDE_EFFECT(n->type) && n->type != TB_LOAD) {
+            // try the Global CSE:
+            // check dominators for value, we dont need the same checks of resolution
+            // as local CSE since we can guarentee the entire BB is resolved at this point
+            TB_Reg found = walk_dominators_for_similar_def(f, defs, doms, doms[bb], r);
+            if (found != TB_NULL_REG) {
+                goto done_with_cse;
+            }
+
+            // try local CSE:
+            FOREACH_N(i, 0, resolved_reg_count) {
+                TB_Reg other = resolved_regs[i];
+                if (is_node_the_same(n, &f->nodes[other])) {
+                    found = other;
+                    goto done_with_cse;
+                }
+            }
+
+            tb_tls_push(tls, resolved_reg_count);
+            resolved_regs[resolved_reg_count++] = r;
+            continue;
+
+            // replace with PASS node
+            done_with_cse:
+            OPTIMIZER_LOG(r, "Removed duplicate expression");
+            f->nodes[r].type = TB_PASS;
+            f->nodes[r].pass.value = found;
+            changes = true;
+        }
+    }
+
+    return changes;
 }

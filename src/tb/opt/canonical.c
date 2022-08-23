@@ -1,4 +1,5 @@
 #include "../tb_internal.h"
+#include "fold.h"
 
 // TODO(NeGate): clean up this code
 static bool try_jump_thread(TB_Function* f, TB_TemporaryStorage* tls, TB_Label* dst_label) {
@@ -184,7 +185,7 @@ bool tb_opt_jump_threading(TB_Function* f) {
     return changes;
 }
 
-static bool tb_opt_canonicalize_phase1(TB_Function* f) {
+static bool inst_combine(TB_Function* f) {
     TB_TemporaryStorage* tls = tb_tls_allocate();
 
     int changes = 0;
@@ -192,14 +193,12 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
         TB_Reg i = (n - f->nodes);
         TB_NodeTypeEnum type = n->type;
 
-        // TODO(NeGate): Maybe we should have a proper function/macro
-        // for detecting integer compares like this
-        if (type >= TB_CMP_EQ && type <= TB_CMP_ULE) {
+        if (n->type >= TB_CMP_EQ && n->type <= TB_CMP_ULE) {
             TB_Node* a = &f->nodes[n->cmp.a];
             TB_Node* b = &f->nodes[n->cmp.b];
 
             // (cmpeq (cmpeq a 0) 0) => a
-            if (type == TB_CMP_EQ && tb_node_is_constant_zero(f, n->cmp.b) &&
+            if (n->type == TB_CMP_EQ && tb_node_is_constant_zero(f, n->cmp.b) &&
                 a->type == TB_CMP_EQ && tb_node_is_constant_zero(f, a->cmp.b)) {
                 OPTIMIZER_LOG(i, "removed redundant comparisons");
 
@@ -215,56 +214,93 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
 
                     n->cmp.a = a->unary.src;
                     changes++;
-                    continue;
                 } else if (a->type == TB_ZERO_EXT && b->type == TB_INTEGER_CONST && TB_DATA_TYPE_EQUALS(f->nodes[a->unary.src].dt, b->dt)) {
                     OPTIMIZER_LOG(i, "removed unnecessary zero extension for compare against constants");
 
                     n->cmp.a = a->unary.src;
                     changes++;
-                    continue;
                 }
             }
         }
 
+        if (reassoc(f, n)) {
+            changes++;
+        }
+
+        if (const_fold(f, n)) {
+            changes++;
+        }
+
+        TB_NodeTypeEnum type = n->type;
         if (type == TB_ADD || type == TB_MUL ||
             type == TB_AND || type == TB_XOR ||
             type == TB_CMP_NE || type == TB_CMP_EQ) {
             // NOTE(NeGate): compares alias the operands with i_arith so it's
             // alright to group them here.
-            TB_Node* a = &f->nodes[n->i_arith.a];
-            TB_Node* b = &f->nodes[n->i_arith.b];
-            TB_ArithmaticBehavior ab = n->i_arith.arith_behavior;
+            {
+                TB_Node* a = &f->nodes[n->i_arith.a];
+                TB_Node* b = &f->nodes[n->i_arith.b];
+                TB_ArithmaticBehavior ab = n->i_arith.arith_behavior;
 
-            // Move all integer constants to the right side
-            bool is_aconst = (a->type == TB_INTEGER_CONST);
-            bool is_bconst = (b->type == TB_INTEGER_CONST);
+                // Move all integer constants to the right side
+                bool is_aconst = (a->type == TB_INTEGER_CONST);
+                bool is_bconst = (b->type == TB_INTEGER_CONST);
 
-            if (is_aconst && !is_bconst) {
-                OPTIMIZER_LOG(i, "moved constants to right hand side.");
+                if (is_aconst && !is_bconst) {
+                    OPTIMIZER_LOG(i, "moved constants to right hand side.");
 
-                tb_swap(TB_Reg, n->i_arith.a, n->i_arith.b);
-                changes++;
-            } else if (a->type == type && is_bconst) {
-                // Reshuffle the adds from
-                // (x + y) + z => x + (y + z)
-                OPTIMIZER_LOG(i, "Reassociated expressions");
+                    tb_swap(TB_Reg, n->i_arith.a, n->i_arith.b);
+                    changes++;
+                } else if (a->type == type && is_bconst) {
+                    // Reshuffle the adds from
+                    // (x + y) + z => x + (y + z)
+                    OPTIMIZER_LOG(i, "Reassociated expressions");
 
-                TB_Reg x = a->i_arith.a;
-                TB_Reg y = a->i_arith.b;
-                TB_Reg z = b - f->nodes;
+                    TB_Reg x = a->i_arith.a;
+                    TB_Reg y = a->i_arith.b;
+                    TB_Reg z = b - f->nodes;
 
-                TB_Reg extra_reg = tb_function_insert_after(f, n->i_arith.b);
-                TB_Node* extra = &f->nodes[extra_reg];
-                extra->type = type;
-                extra->dt = n->dt;
-                extra->i_arith.a = y;
-                extra->i_arith.b = z;
-                extra->i_arith.arith_behavior = ab;
+                    TB_Reg extra_reg = tb_function_insert_after(f, n->i_arith.b);
+                    TB_Node* extra = &f->nodes[extra_reg];
+                    extra->type = type;
+                    extra->dt = n->dt;
+                    extra->i_arith.a = y;
+                    extra->i_arith.b = z;
+                    extra->i_arith.arith_behavior = ab;
 
-                n = &f->nodes[i];
-                n->i_arith.a = x;
-                n->i_arith.b = extra_reg;
-                changes++;
+                    n = &f->nodes[i];
+                    n->i_arith.a = x;
+                    n->i_arith.b = extra_reg;
+                    changes++;
+                }
+            }
+
+            TB_Reg ar = n->i_arith.a, br = n->i_arith.b;
+            if (tb_node_is_constant_zero(f, br)) {
+                TB_Reg new_r = i;
+
+                switch (type) {
+                    case TB_ADD: case TB_SUB:
+                    new_r = ar;
+                    break;
+
+                    case TB_MUL:
+                    n->type = TB_INTEGER_CONST;
+                    n->integer.num_words = 1;
+                    n->integer.single_word = 0;
+                    break;
+
+                    case TB_SDIV: case TB_UDIV:
+                    n->type = TB_POISON;
+                    break;
+
+                    default: break;
+                }
+
+                if (new_r != i) {
+                    n->type = TB_PASS;
+                    n->pass.value = new_r;
+                }
             }
         } else if (type == TB_UDIV || type == TB_SDIV) {
             TB_Node* b = &f->nodes[n->i_arith.b];
@@ -665,7 +701,7 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
             {
                 TB_Node* seq = n;
                 while (seq = &f->nodes[seq->next],
-                       seq->type == TB_LABEL && seq != end) {
+                    seq->type == TB_LABEL && seq != end) {
                     bb_end = seq->label.terminator;
                     count += 1;
                 }
@@ -694,13 +730,18 @@ static bool tb_opt_canonicalize_phase1(TB_Function* f) {
     return (changes > 0);
 }
 
-TB_API bool tb_opt_canonicalize(TB_Function* f) {
+TB_API TB_Pass tb_opt_instcombine(void) {
+    return (TB_Pass){
+        .mode = TB_FUNCTION_PASS,
+        .name = "InstCombine",
+        .func_run = inst_combine,
+    };
+
     static TB_FunctionPass opts[] = {
         { "canonicalize_phase1", tb_opt_canonicalize_phase1 },
         // { "jump_threading",      tb_opt_jump_threading },
         { "subexpr_elim",        tb_opt_subexpr_elim },
         { "remove_pass_node",    tb_opt_remove_pass_node },
-        { "fold",                tb_opt_fold },
         { "strength",            tb_opt_strength_reduction },
         { "dead_expr_elim",      tb_opt_dead_expr_elim }
     };

@@ -186,16 +186,16 @@ static void html_print(void* user_data, const char* fmt, ...) {
 }
 
 static void log_function(FILE* out, const char* title, TB_Function* f) {
-#if 0
+    #if 0
     tb_function_print2(f, tb_default_print_callback, out, false);
-#else
+    #else
     fprintf(out, "<td valign=\"top\">\n");
     fprintf(out, "%s:<br>\n", title);
     fprintf(out, "<pre>\n");
     tb_function_print2(f, html_print, out, false);
     fprintf(out, "</pre>\n");
     fprintf(out, "</td>\n");
-#endif
+    #endif
 }
 
 static FILE* debug_file;
@@ -246,18 +246,6 @@ TB_API bool tb_function_optimize(TB_Function* f, size_t pass_count, const TB_Fun
         bool success = false;
 
         if (passes[i].l_state != NULL) {
-            // Invokes the pass
-            lua_State* L = lua_newthread(passes[i].l_state);
-
-            lua_getglobal(L, "DA_FUNC");
-            lua_pushlightuserdata(L, f);
-            int ret = lua_pcall(L, 1, 0, 0);
-            if (ret > 1) {
-                const char* str = lua_tostring(L, -1);
-                tb_panic("Lua runtime exited with %d\n%s\n", ret, str);
-            } else if (ret == 1) {
-                success = true;
-            }
         } else {
             success = passes[i].execute(f);
         }
@@ -275,8 +263,143 @@ TB_API bool tb_function_optimize(TB_Function* f, size_t pass_count, const TB_Fun
     return changes;
 }
 
-TB_API bool tb_module_optimize(TB_Module* m) {
-    return false;
+static lua_State* begin_lua_pass(void* l_state) {
+    lua_State* L = lua_newthread(l_state);
+    lua_getglobal(L, "DA_FUNC");
+    return L;
+}
+
+static bool end_lua_pass(lua_State* L, int arg_count) {
+    int ret = lua_pcall(L, arg_count, 0, 0);
+    if (ret > 1) {
+        const char* str = lua_tostring(L, -1);
+        tb_panic("Lua runtime exited with %d\n%s\n", ret, str);
+    } else if (ret == 1) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const TB_Pass passes[]) {
+    TB_Function* functions = m->functions.data;
+    bool changes = false;
+
+    FOREACH_N(i, 0, m->functions.count) {
+        TB_Function* f = &functions[i];
+
+        FOREACH_N(j, 0, pass_count) {
+            switch (passes[j].mode) {
+                case TB_BASIC_BLOCK_PASS:
+                TB_Reg bb = 1;
+                while (bb != 0) {
+                    TB_Node* start = &f->nodes[bb];
+                    assert(start->type == TB_LABEL);
+
+                    if (passes[j].l_state != NULL) {
+                        lua_State* L = begin_lua_pass(passes[j].l_state);
+                        lua_pushlightuserdata(L, f);
+                        lua_pushinteger(L, bb);
+                        changes |= end_lua_pass(L, 2);
+                    } else {
+                        changes |= passes[j].bb_run(f, bb);
+                    }
+
+                    TB_Reg terminator = start->label.terminator;
+                    bb = start->type == TB_LABEL ? terminator : f->nodes[terminator].next;
+                }
+                break;
+
+                case TB_LOOP_PASS:
+                // We probably want a function to get all this info together
+                TB_TemporaryStorage* tls = tb_tls_allocate();
+                TB_Predeccesors preds = tb_get_temp_predeccesors(f, tls);
+
+                TB_Label* doms = tb_tls_push(tls, f->label_count * sizeof(TB_Label));
+                tb_get_dominators(f, preds, doms);
+
+                // probably don't wanna do this using heap allocations
+                TB_LoopInfo loops = tb_get_loop_info(f, preds, doms);
+
+                FOREACH_N(k, 0, loops.count) {
+                    const TB_Loop* l = &loops.loops[i];
+
+                    if (passes[j].l_state != NULL) {
+                        lua_State* L = begin_lua_pass(passes[j].l_state);
+                        lua_pushlightuserdata(L, f);
+                        lua_pushlightuserdata(L, (void*) l);
+                        changes |= end_lua_pass(L, 2);
+                    } else {
+                        changes |= passes[j].loop_run(f, l);
+                    }
+                }
+
+                tb_free_loop_info(loops);
+                break;
+
+                case TB_FUNCTION_PASS:
+                if (passes[j].l_state != NULL) {
+                    lua_State* L = begin_lua_pass(passes[j].l_state);
+                    lua_pushlightuserdata(L, f);
+                    changes |= end_lua_pass(L, 1);
+                } else {
+                    changes |= passes[j].func_run(f);
+                }
+                break;
+
+                default: tb_unreachable();
+            }
+        }
+    }
+
+    return changes;
+}
+
+static bool schedule_module_level_opt(TB_Module* m, const TB_Pass* pass) {
+    // this is the only module level mode we have rn
+    if (pass->mode != TB_MODULE_PASS) {
+        tb_unreachable();
+    }
+
+    if (pass->l_state != NULL) {
+        lua_State* L = begin_lua_pass(pass->l_state);
+        lua_pushlightuserdata(L, m);
+        return end_lua_pass(L, 1);
+    } else {
+        return pass->mod_run(m);
+    }
+}
+
+TB_API bool tb_module_optimize(TB_Module* m, size_t pass_count, const TB_Pass passes[]) {
+    bool changes = false;
+
+    size_t i = 0;
+    while (i < pass_count) {
+        // anything below or equal to function-level passes can be trivially
+        // parallel and thus we handle this as a
+        size_t sync = i;
+        for (; sync < pass_count; sync++) {
+            if (passes[sync].mode > TB_FUNCTION_PASS) break;
+        }
+
+        // TODO(NeGate): convert this into a trivial parallel dispatch
+        if (sync != i) {
+            changes |= schedule_function_level_opts(m, sync - i, &passes[i]);
+            i = sync;
+        }
+
+        // synchronize and handle the module level stuff
+        // TODO(NeGate): this requires special scheduling to be threaded
+        // but it's completely possible
+        for (; i < pass_count; i++) {
+            if (passes[i].mode <= TB_FUNCTION_PASS) break;
+
+            // run module level
+            changes |= schedule_module_level_opt(m, &passes[i]);
+        }
+    }
+
+    return changes;
 }
 
 TB_API TB_FunctionPass tb_opt_load_lua_pass(const char* path) {

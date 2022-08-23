@@ -1088,6 +1088,37 @@ extern "C" {
         void* l_state;
     } TB_FunctionPass;
 
+    typedef struct TB_Pass {
+        // the pass modes tell us what things the pass can modify
+        // and what it's being scheduled to run on
+        enum {
+            // basic blocks
+            TB_BASIC_BLOCK_PASS,
+
+            // loops' basic blocks
+            TB_LOOP_PASS,
+
+            // this is where a majority of optimizations live
+            // applied to all functions in a module but any execution
+            // shall not affect functions outside of the one it's applied on
+            TB_FUNCTION_PASS,
+
+            // unstructured and applied to the entire module
+            // can modify the entire module data
+            TB_MODULE_PASS,
+        } mode;
+        const char* name;
+
+        // if l_state is not NULL, it'll run the lua function described
+        void* l_state;
+        union {
+            bool(*bb_run)(TB_Function* f, TB_Reg bb);
+            bool(*loop_run)(TB_Function* f, const TB_Loop* l);
+            bool(*func_run)(TB_Function* f);
+            bool(*mod_run)(TB_Module* m);
+        };
+    } TB_Pass;
+
     typedef struct TB_OptimizerCallback {
         // invoked once before any passes are run in tb_function_optimize
         void (*start)(void* user_data, TB_Function* f, const TB_FunctionPass* pass);
@@ -1102,8 +1133,8 @@ extern "C" {
     // Applies single function optimizations until it runs out
     TB_API bool tb_function_optimize(TB_Function* f, size_t pass_count, const TB_FunctionPass* passes);
 
-    // Applies whole program optimizations until it runs out
-    TB_API bool tb_module_optimize(TB_Module* m);
+    // Applies optimizations to the entire module
+    TB_API bool tb_module_optimize(TB_Module* m, size_t pass_count, const TB_Pass passes[]);
 
     TB_API TB_FunctionPass tb_opt_load_lua_pass(const char* path);
     TB_API void tb_opt_unload_lua_pass(TB_FunctionPass* p);
@@ -1118,23 +1149,26 @@ extern "C" {
     TB_API TB_LoopInfo tb_get_loop_info(TB_Function* f, TB_Predeccesors preds, TB_Label* doms);
     TB_API void tb_free_loop_info(TB_LoopInfo loops);
 
-    // passes
-    TB_API bool tb_opt_canonicalize(TB_Function* f);
-    TB_API bool tb_opt_merge_rets(TB_Function* f);
-    TB_API bool tb_opt_mem2reg(TB_Function* f);
-    TB_API bool tb_opt_branchless(TB_Function* f);
-    TB_API bool tb_opt_subexpr_elim(TB_Function* f);
-    TB_API bool tb_opt_dead_expr_elim(TB_Function* f);
-    TB_API bool tb_opt_dead_block_elim(TB_Function* f);
-    TB_API bool tb_opt_fold(TB_Function* f);
-    TB_API bool tb_opt_refinement(TB_Function* f);
-    TB_API bool tb_opt_load_elim(TB_Function* f);
-    TB_API bool tb_opt_hoist_locals(TB_Function* f);
-    TB_API bool tb_opt_deshort_circuit(TB_Function* f);
-    TB_API bool tb_opt_remove_pass_node(TB_Function* f);
-    TB_API bool tb_opt_strength_reduction(TB_Function* f);
-    TB_API bool tb_opt_compact_dead_regs(TB_Function* f);
-    TB_API bool tb_opt_copy_elision(TB_Function* f);
+    ////////////////////////////////
+    // Transformation pass library
+    ////////////////////////////////
+    // function level
+    TB_API TB_Pass tb_opt_instcombine(void);
+
+    TB_API TB_Pass tb_opt_merge_rets(void);
+    TB_API TB_Pass tb_opt_mem2reg(void);
+    TB_API TB_Pass tb_opt_subexpr_elim(void);
+    TB_API TB_Pass tb_opt_dead_expr_elim(void);
+    TB_API TB_Pass tb_opt_dead_block_elim(void);
+    TB_API TB_Pass tb_opt_refinement(void);
+    TB_API TB_Pass tb_opt_load_elim(void);
+    TB_API TB_Pass tb_opt_hoist_locals(void);
+    TB_API TB_Pass tb_opt_remove_pass_node(void);
+    TB_API TB_Pass tb_opt_strength_reduction(void);
+    TB_API TB_Pass tb_opt_compact_dead_regs(void);
+
+    // module level
+    TB_API TB_Pass tb_opt_inline(void);
 
     ////////////////////////////////
     // IR access

@@ -1,7 +1,7 @@
 #include "../tb_internal.h"
 
 // We just move them up because it's slightly easier to think about them
-bool tb_opt_hoist_locals(TB_Function* f) {
+static bool hoist_locals(TB_Function* f) {
     size_t locals_to_move = 0;
 
     TB_Node* entry_terminator = &f->nodes[f->nodes[1].label.terminator];
@@ -46,4 +46,12 @@ bool tb_opt_hoist_locals(TB_Function* f) {
     }
 
     return true;
+}
+
+TB_API TB_Pass tb_opt_hoist_locals(void) {
+    return (TB_Pass){
+        .mode = TB_FUNCTION_PASS,
+        .name = "HoistLocals",
+        .func_run = hoist_locals,
+    };
 }

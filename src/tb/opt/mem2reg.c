@@ -352,7 +352,7 @@ static bool attempt_sroa(TB_Function* f, TB_TemporaryStorage* tls, TB_Reg addres
 
 // NOTE(NeGate): All locals were moved into the first basic block by
 // opt_hoist_locals earlier
-bool tb_opt_mem2reg(TB_Function* f) {
+bool mem2reg(TB_Function* f) {
     TB_TemporaryStorage* tls = tb_tls_allocate();
 
     ////////////////////////////////
@@ -619,4 +619,12 @@ static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_
 
     *out_dt = dt;
     return COHERENCY_GOOD;
+}
+
+TB_API TB_Pass tb_opt_mem2reg(void) {
+    return (TB_Pass){
+        .mode = TB_FUNCTION_PASS,
+        .name = "Mem2Reg",
+        .func_run = mem2reg,
+    };
 }

@@ -5,7 +5,7 @@ static bool tb_address_may_alias(TB_Function* f, TB_Reg r, TB_Reg target) {
     return true;
 }
 
-bool tb_opt_load_elim(TB_Function* f) {
+static bool load_store_elim(TB_Function* f) {
     int changes = 0;
 
     TB_FOR_EACH_NODE(n, f) {
@@ -116,4 +116,12 @@ bool tb_opt_load_elim(TB_Function* f) {
     }
 
     return changes;
+}
+
+TB_API TB_Pass tb_opt_load_store_elim(void) {
+    return (TB_Pass){
+        .mode = TB_FUNCTION_PASS,
+        .name = "LoadStoreElimination",
+        .func_run = load_store_elim,
+    };
 }

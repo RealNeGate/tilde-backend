@@ -153,63 +153,95 @@ static TB_Reg walk_dominators_for_similar_def(TB_Function* f, BasicBlockDefs* de
     return find_similar_def_in_bb(f, &defs[curr], r);
 }
 
-bool tb_opt_subexpr_elim(TB_Function* f) {
-    bool changes = false;
+typedef struct {
+    void* start;
+    BasicBlockDefs* defs;
 
-    // we use the dominators to figure out the search space of computed values at
-    // any BB
-    TB_TemporaryStorage* tls = tb_tls_allocate();
+    size_t resolved_reg_count;
+    TB_Reg* resolved_regs;
+    TB_Reg bb;
+} CSE_Context;
+
+static void cse_create(CSE_Context* ctx, TB_TemporaryStorage* tls) {
+    void* start = tb_tls_push(tls, 0);
+
     TB_Predeccesors preds = tb_get_temp_predeccesors(f, tls);
     TB_Label* doms = tb_tls_push(tls, f->label_count * sizeof(TB_Label));
     tb_get_dominators(f, preds, doms);
 
+    memset(ctx, 0, sizeof(CSE_Context));
+
     // list of defined nodes in for every basic block relevant to global CSE
-    BasicBlockDefs* defs = generate_def_table(f, tls);
+    ctx->start = start;
+    ctx->defs = generate_def_table(f, tls);
 
     // list of resolved nodes in this basic block, used for local CSE
-    size_t resolved_reg_count = 0;
-    TB_Reg* resolved_regs = tb_tls_push(tls, 0);
+    ctx->resolved_reg_count = 0;
+    ctx->resolved_regs = tb_tls_push(tls, 0);
+}
 
-    TB_Label bb = 0;
-    TB_FOR_EACH_NODE(n, f) {
-        TB_Reg r = (n - f->nodes);
+static void cse_destroy(CSE_Context* ctx, TB_TemporaryStorage* tls) {
+    tb_tls_restore(start);
+}
 
-        if (n->type == TB_LABEL) {
-            bb = n->label.id;
+static void cse_set_bb(CSE_Context* ctx, TB_TemporaryStorage* tls, TB_Label id) {
+    ctx->bb = id;
 
-            // reset list
-            tb_tls_restore(tls, resolved_regs);
-            resolved_reg_count = 0;
-        } else if (!TB_IS_NODE_SIDE_EFFECT(n->type) && n->type != TB_LOAD) {
-            // try the Global CSE:
-            // check dominators for value, we dont need the same checks of resolution
-            // as local CSE since we can guarentee the entire BB is resolved at this point
-            TB_Reg found = walk_dominators_for_similar_def(f, defs, doms, doms[bb], r);
-            if (found != TB_NULL_REG) {
-                goto done_with_cse;
-            }
+    // reset list
+    tb_tls_restore(tls, ctx->resolved_regs);
+    ctx->resolved_reg_count = 0;
+}
 
-            // try local CSE:
-            FOREACH_N(i, 0, resolved_reg_count) {
-                TB_Reg other = resolved_regs[i];
-                if (is_node_the_same(n, &f->nodes[other])) {
-                    found = other;
-                    goto done_with_cse;
-                }
-            }
+static TB_Reg cse_attempt(TB_Function* f, CSE_Context* ctx, TB_TemporaryStorage* tls, TB_Node* n) {
+    if (!TB_IS_NODE_SIDE_EFFECT(n->type) && n->type != TB_LOAD) {
+        return false;
+    }
 
-            tb_tls_push(tls, resolved_reg_count);
-            resolved_regs[resolved_reg_count++] = r;
-            continue;
+    TB_Reg r = n - f->nodes;
 
-            // replace with PASS node
-            done_with_cse:
-            OPTIMIZER_LOG(r, "Removed duplicate expression");
-            f->nodes[r].type = TB_PASS;
-            f->nodes[r].pass.value = found;
-            changes = true;
+    // try the Global CSE:
+    // check dominators for value, we dont need the same checks of resolution
+    // as local CSE since we can guarentee the entire BB is resolved at this point
+    TB_Reg found = walk_dominators_for_similar_def(f, defs, doms, doms[bb], r);
+    if (found != TB_NULL_REG) {
+        OPTIMIZER_LOG(r, "Removed BB-global duplicate expression");
+        n->type = TB_PASS;
+        n->pass.value = found;
+        return true;
+    }
+
+    // try local CSE:
+    FOREACH_N(i, 0, ctx->resolved_reg_count) {
+        TB_Reg other = ctx->resolved_regs[i];
+
+        if (is_node_the_same(n, &f->nodes[other])) {
+            OPTIMIZER_LOG(r, "Removed BB-local duplicate expression");
+            n->type = TB_PASS;
+            n->pass.value = other;
+            return true;
         }
     }
 
+    tb_tls_push(tls, sizeof(TB_Reg));
+    ctx->resolved_regs[ctx->resolved_reg_count++] = r;
+    return false;
+}
+
+static bool cse(TB_Function* f) {
+    TB_TemporaryStorage* tls = tb_tls_allocate();
+
+    CSE_Context cse;
+    cse_create(&cse, tls);
+
+    int changes = 0;
+    TB_FOR_EACH_NODE(n, f) {
+        if (n->type == TB_LABEL) {
+            cse_set_bb();
+        } else if (cse_attempt(f, ctx, tls, n)) {
+            changes++;
+        }
+    }
+
+    // don't free CSE, doesn't matter
     return changes;
 }

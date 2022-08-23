@@ -100,7 +100,7 @@ static ArithResult single_word_arith_fold(TB_NodeTypeEnum node_type, TB_DataType
 }
 
 static bool is_associative(TB_NodeTypeEnum type) {
-    switch (n->type) {
+    switch (type) {
         case TB_ADD: case TB_MUL:
         case TB_AND: case TB_XOR: case TB_OR:
         case TB_CMP_NE: case TB_CMP_EQ:
@@ -116,33 +116,33 @@ static bool reassoc(TB_Function* f, TB_Node* n) {
 
     bool changes = false;
     TB_Reg r = n - f->nodes;
-    TB_Node* a = &f->nodes[n->i_arith.a];
-    TB_Node* b = &f->nodes[n->i_arith.b];
+    TB_Reg a = n->i_arith.a;
+    TB_Reg b = n->i_arith.b;
 
     // Move all integer constants to the right side
-    if (a->type == TB_INTEGER_CONST && b->type != TB_INTEGER_CONST) {
-        OPTIMIZER_LOG(i, "moved constants to right hand side.");
-        tb_swap(a, b);
+    if (f->nodes[a].type == TB_INTEGER_CONST && f->nodes[b].type != TB_INTEGER_CONST) {
+        OPTIMIZER_LOG(r, "moved constants to right hand side.");
+        tb_swap(TB_Reg, a, b);
         changes = true;
     }
 
-    if (is_associative(a->type) && !is_associative(b->type)) {
+    if (f->nodes[a].type == f->nodes[r].type && f->nodes[b].type != f->nodes[r].type) {
         // Reshuffle the adds from
         // (x + y) + z => x + (y + z)
-        OPTIMIZER_LOG(i, "Reassociated expressions");
+        OPTIMIZER_LOG(r, "Reassociated expressions");
 
-        TB_Reg x = a->i_arith.a;
-        TB_Reg y = a->i_arith.b;
-        TB_Reg z = b - f->nodes;
+        TB_Reg x = f->nodes[a].i_arith.a;
+        TB_Reg y = f->nodes[a].i_arith.b;
+        TB_Reg z = b;
 
         // this invalidates n so let's just not use it past this point
-        TB_Reg extra_reg = tb_function_insert_after(f, n->i_arith.b);
+        TB_Reg extra_reg = tb_function_insert_after(f, f->nodes[r].i_arith.b);
         TB_Node* extra = &f->nodes[extra_reg];
-        extra->type = type;
-        extra->dt = f->nodes[i].dt;
+        extra->type = f->nodes[r].type;
+        extra->dt = f->nodes[r].dt;
         extra->i_arith.a = y;
         extra->i_arith.b = z;
-        extra->i_arith.arith_behavior = ab;
+        extra->i_arith.arith_behavior = f->nodes[r].i_arith.arith_behavior;
 
         a = x;
         b = extra_reg;
@@ -150,8 +150,8 @@ static bool reassoc(TB_Function* f, TB_Node* n) {
     }
 
     if (changes) {
-        f->nodes[i].i_arith.a = x;
-        f->nodes[i].i_arith.b = extra_reg;
+        f->nodes[r].i_arith.a = a;
+        f->nodes[r].i_arith.b = b;
         return true;
     }
 
@@ -161,7 +161,7 @@ static bool reassoc(TB_Function* f, TB_Node* n) {
 static bool const_fold(TB_Function* f, TB_Node* n) {
     TB_DataType dt = n->dt;
 
-    if ((n->type >= TB_CMP_EQ && n->type <= TB_CMP_ULE) || (n->type >= TB_ADD && n->type <= TB_SDIV)) {
+    if ((n->type >= TB_CMP_EQ && n->type <= TB_CMP_ULE) || (n->type >= TB_ADD && n->type <= TB_SMOD)) {
         // we don't fold anything but integers
         if (dt.type == TB_INT) return false;
 
@@ -198,8 +198,87 @@ static bool const_fold(TB_Function* f, TB_Node* n) {
             } else {
                 OPTIMIZER_LOG(n - f->nodes, "TODO implement large int fold");
             }
-        } else if (b->type == TB_INTEGER_CONST) {
+        } else if (b->type == TB_INTEGER_CONST && b->integer.num_words == 1) {
             OPTIMIZER_LOG(n - f->nodes, "partial folding");
+
+            if (b->integer.single_word == 0) {
+                TB_Reg ar = n->i_arith.a;
+
+                switch (n->type) {
+                    case TB_ADD: case TB_SUB:
+                    case TB_XOR: case TB_OR:
+                    case TB_SHL: case TB_SHR:
+                    case TB_SAR:
+                    n->type = TB_PASS;
+                    n->pass.value = ar;
+                    return true;
+
+                    case TB_MUL: case TB_AND:
+                    n->type = TB_INTEGER_CONST;
+                    n->integer.num_words = 1;
+                    n->integer.single_word = 0;
+                    return true;
+
+                    case TB_SDIV: case TB_UDIV:
+                    n->type = TB_POISON;
+                    return true;
+
+                    default: break;
+                }
+            } else if (b->integer.single_word == 1) {
+                TB_Reg ar = n->i_arith.a;
+
+                switch (n->type) {
+                    case TB_MUL: case TB_SDIV: case TB_UDIV:
+                    n->type = TB_PASS;
+                    n->pass.value = ar;
+                    return true;
+
+                    default: break;
+                }
+            }
+
+            if (n->type == TB_MUL) {
+                // (a * b) => (a << log2(b)) where b is a power of two
+                uint64_t log2 = tb_ffs(b->integer.single_word) - 1;
+                if (b_const == (UINT64_C(1) << log2)) {
+                    OPTIMIZER_LOG(i, "converted power-of-two multiply into left shift");
+
+                    // It's a power of two, swap in a left-shift
+                    // just slap it right after the label
+                    TB_Reg new_op = tb_function_insert_after(f, i);
+
+                    f->nodes[new_op].type = TB_INTEGER_CONST;
+                    f->nodes[new_op].dt = dt;
+                    f->nodes[new_op].integer.num_words = 1;
+                    f->nodes[new_op].integer.single_word = log2;
+
+                    n->type = TB_SHL;
+                    n->dt = dt;
+                    n->i_arith = (struct TB_NodeIArith) { .a = a - f->nodes, .b = new_op };
+                    return true;
+                }
+            } else if (type == TB_UMOD || type == TB_SMOD) {
+                // (mod a N) => (and a N-1) where N is a power of two
+                uint64_t mask = b->integer.single_word;
+                if (tb_is_power_of_two(mask)) {
+                    OPTIMIZER_LOG(i, "converted modulo into AND with constant mask");
+
+                    // generate mask
+                    TB_Reg extra_reg = tb_function_insert_after(f, n->i_arith.b);
+                    TB_Node* extra = &f->nodes[extra_reg];
+                    extra->type = TB_INTEGER_CONST;
+                    extra->dt = n->dt;
+                    extra->integer.num_words = 1;
+                    extra->integer.single_word = mask - 1;
+
+                    // new AND operation to replace old MOD
+                    n = &f->nodes[i];
+                    n->type = TB_AND;
+                    n->i_arith.b = extra_reg;
+                    return true;
+                }
+            }
         }
     } else if (n->type == TB_SIGN_EXT) {
         TB_Node* src = &f->nodes[n->unary.src];

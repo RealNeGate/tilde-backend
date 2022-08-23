@@ -16,34 +16,6 @@
 
 #define DIFF_BUFFER_SIZE 131072
 
-#define OPT(x) { #x, tb_opt_ ## x }
-static const TB_FunctionPass default_passes[] = {
-    // canonicalization
-    OPT(hoist_locals),
-    OPT(merge_rets),
-    OPT(canonicalize),
-
-    // real optimizations
-    OPT(mem2reg),
-    OPT(remove_pass_node),
-    OPT(canonicalize),
-
-    /*
-    OPT(load_elim),
-    OPT(copy_elision),
-    OPT(deshort_circuit),
-    */
-
-    OPT(dead_expr_elim),
-    OPT(dead_block_elim),
-
-    OPT(refinement),
-
-    OPT(compact_dead_regs),
-};
-enum { OPTIMIZATION_COUNT = COUNTOF(default_passes) };
-#undef OPT
-
 static void print_to_buffer(void* user_data, const char* fmt, ...) {
     char* buffer = (char*) user_data;
     size_t len = strlen(buffer);
@@ -206,63 +178,6 @@ static void end_crap() {
     fclose(debug_file);
 }
 
-TB_API bool tb_function_optimize(TB_Function* f, size_t pass_count, const TB_FunctionPass* passes) {
-    /* if (debug_file == NULL) {
-        #if 0
-        debug_file = stdout;
-        #else
-        debug_file = fopen("foo.html", "wb"); // stdout;
-        assert(debug_file);
-
-        fprintf(debug_file, "<html>\n");
-        fprintf(debug_file, "<style>\n");
-        fprintf(debug_file, "table, th {\n");
-        fprintf(debug_file, "border:1px solid black;\n");
-        fprintf(debug_file, "}\n");
-        fprintf(debug_file, "td {\n");
-        fprintf(debug_file, "border:1px solid black;\n");
-        fprintf(debug_file, "padding: 0.5em;\n");
-        fprintf(debug_file, "}\n");
-        fprintf(debug_file, "</style>\n");
-        fprintf(debug_file, "<body>\n");
-        fprintf(debug_file, "<table>\n");
-
-        atexit(end_crap);
-        #endif
-    } */
-
-    if (pass_count == 0) {
-        pass_count = sizeof(default_passes) / sizeof(default_passes[0]);
-        passes = default_passes;
-    }
-
-    /* bool diff_opts = false; // !strcmp(f->name, "StringsAreEqual");
-    if (diff_opts) {
-        log_function(debug_file, "initial", f);
-    } */
-
-    bool changes = false;
-    for (size_t i = 0; i < pass_count; i++) {
-        bool success = false;
-
-        if (passes[i].l_state != NULL) {
-        } else {
-            success = passes[i].execute(f);
-        }
-
-        if (success) {
-            /* if (diff_opts) {
-                log_function(debug_file, passes[i].name ? passes[i].name : passes[i].l_state ? "lua unknown" : "C unknown", f);
-            } */
-
-            changes = true;
-        }
-    }
-
-    changes |= tb_opt_remove_pass_node(f);
-    return changes;
-}
-
 static lua_State* begin_lua_pass(void* l_state) {
     lua_State* L = lua_newthread(l_state);
     lua_getglobal(L, "DA_FUNC");
@@ -402,7 +317,7 @@ TB_API bool tb_module_optimize(TB_Module* m, size_t pass_count, const TB_Pass pa
     return changes;
 }
 
-TB_API TB_FunctionPass tb_opt_load_lua_pass(const char* path) {
+TB_API TB_Pass tb_opt_load_lua_pass(const char* path, enum TB_PassMode mode) {
     lua_State *L = luaL_newstate();
     if (L == NULL) abort();
 
@@ -436,9 +351,9 @@ TB_API TB_FunctionPass tb_opt_load_lua_pass(const char* path) {
     }
 
     lua_setglobal(L, "DA_FUNC");
-    return (TB_FunctionPass){ .name = NULL, .l_state = L };
+    return (TB_Pass){ .mode = mode, .name = NULL, .l_state = L };
 }
 
-TB_API void tb_opt_unload_lua_pass(TB_FunctionPass* p) {
+TB_API void tb_opt_unload_lua_pass(TB_Pass* p) {
     lua_close((lua_State*) p->l_state);
 }

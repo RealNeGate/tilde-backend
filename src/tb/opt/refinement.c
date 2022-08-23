@@ -1,3 +1,4 @@
+#if 0
 #include "../tb_internal.h"
 
 static bool is_outside_of_loop(TB_Function* f, const TB_Loop* l, TB_Label bb) {
@@ -77,3 +78,4 @@ bool tb_opt_refinement(TB_Function* f) {
     tb_free_loop_info(loops);
     return false;
 }
+#endif

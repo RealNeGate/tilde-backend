@@ -1141,7 +1141,7 @@ extern "C" {
     TB_API TB_Pass tb_opt_merge_rets(void);
     TB_API TB_Pass tb_opt_instcombine(void);
     TB_API TB_Pass tb_opt_subexpr_elim(void);
-    TB_API TB_Pass tb_opt_remove_pass_node(void);
+    TB_API TB_Pass tb_opt_remove_pass_nodes(void);
     TB_API TB_Pass tb_opt_mem2reg(void);
     TB_API TB_Pass tb_opt_compact_dead_regs(void);
     TB_API TB_Pass tb_opt_dead_expr_elim(void);

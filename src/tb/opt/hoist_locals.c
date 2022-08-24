@@ -15,7 +15,7 @@ static bool hoist_locals(TB_Function* f) {
 
     // place to start putting all the locals
     // must go after the parameters
-    TB_Reg local_basepoint = 1;
+    TB_Reg local_basepoint = 1, prev = 1;
     bool is_past_entry_bb = false;
 
     // keep moving locals until we run out
@@ -38,11 +38,17 @@ static bool hoist_locals(TB_Function* f) {
             }
         } else {
             if (n->type == TB_LABEL) {
-                is_past_entry_bb = (n->label.id != 0);
+                if (n->label.id != 0) {
+                    if (local_basepoint == 1) local_basepoint = prev;
+
+                    is_past_entry_bb = true;
+                }
             } else if (n->type != TB_PARAM && n->type != TB_PARAM_ADDR) {
                 local_basepoint = (n - f->nodes);
             }
         }
+
+        prev = (n - f->nodes);
     }
 
     return true;

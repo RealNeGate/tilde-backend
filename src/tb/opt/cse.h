@@ -192,37 +192,40 @@ static void cse_set_bb(CSE_Context* ctx, TB_TemporaryStorage* tls, TB_Label id) 
 }
 
 static TB_Reg cse_attempt(TB_Function* f, CSE_Context* ctx, TB_TemporaryStorage* tls, TB_Node* n) {
+    while (n->type == TB_PASS) {
+        n = &f->nodes[n->pass.value];
+    }
+
     if (!TB_IS_NODE_SIDE_EFFECT(n->type) && n->type != TB_LOAD) {
-        return false;
-    }
+        TB_Reg r = n - f->nodes;
 
-    TB_Reg r = n - f->nodes;
-
-    // try the Global CSE:
-    // check dominators for value, we dont need the same checks of resolution
-    // as local CSE since we can guarentee the entire BB is resolved at this point
-    TB_Reg found = walk_dominators_for_similar_def(f, ctx->defs, ctx->doms, ctx->doms[ctx->bb], r);
-    if (found != TB_NULL_REG) {
-        OPTIMIZER_LOG(r, "Removed BB-global duplicate expression");
-        n->type = TB_PASS;
-        n->pass.value = found;
-        return true;
-    }
-
-    // try local CSE:
-    FOREACH_N(i, 0, ctx->resolved_reg_count) {
-        TB_Reg other = ctx->resolved_regs[i];
-
-        if (is_node_the_same(n, &f->nodes[other])) {
-            OPTIMIZER_LOG(r, "Removed BB-local duplicate expression");
+        // try the Global CSE:
+        // check dominators for value, we dont need the same checks of resolution
+        // as local CSE since we can guarentee the entire BB is resolved at this point
+        TB_Reg found = walk_dominators_for_similar_def(f, ctx->defs, ctx->doms, ctx->doms[ctx->bb], r);
+        if (found != TB_NULL_REG) {
+            OPTIMIZER_LOG(r, "Removed BB-global duplicate expression");
             n->type = TB_PASS;
-            n->pass.value = other;
+            n->pass.value = found;
             return true;
         }
+
+        // try local CSE:
+        FOREACH_N(i, 0, ctx->resolved_reg_count) {
+            TB_Reg other = ctx->resolved_regs[i];
+
+            if (is_node_the_same(n, &f->nodes[other])) {
+                OPTIMIZER_LOG(r, "Removed BB-local duplicate expression");
+                n->type = TB_PASS;
+                n->pass.value = other;
+                return true;
+            }
+        }
+
+        tb_tls_push(tls, sizeof(TB_Reg));
+        ctx->resolved_regs[ctx->resolved_reg_count++] = r;
     }
 
-    tb_tls_push(tls, sizeof(TB_Reg));
-    ctx->resolved_regs[ctx->resolved_reg_count++] = r;
     return false;
 }
 

@@ -229,6 +229,19 @@ TB_API bool tb_next_node_input(const TB_Function* f, TB_NodeInputIter* iter) {
         }
         break;
 
+        case TB_SCALL: {
+            size_t i = iter->index_++;
+            size_t count = n->scall.param_end - n->scall.param_start;
+
+            if (i == 0) {
+                return (iter->r = n->scall.target, true);
+            } else if (i - 1 < count) {
+                return (iter->r = f->vla.data[n->scall.param_start + (i - 1)], true);
+            } else {
+                return false;
+            }
+        }
+
         case TB_VCALL: {
             size_t i = iter->index_++;
             size_t count = n->call.param_end - n->call.param_start;

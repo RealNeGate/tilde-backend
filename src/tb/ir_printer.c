@@ -335,6 +335,18 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
             callback(user_data, ")");
             break;
         }
+        case TB_SCALL: {
+            callback(user_data, "  r%-8u = suscall.", i);
+            tb_print_type(dt, callback, user_data);
+            callback(user_data, " r%u(", n->scall.target);
+            for (size_t j = n->scall.param_start; j < n->scall.param_end; j++) {
+                if (j != n->vcall.param_start) callback(user_data, ", ");
+
+                callback(user_data, "r%u", f->vla.data[j]);
+            }
+            callback(user_data, ")");
+            break;
+        }
         case TB_SWITCH: {
             callback(user_data, " switch.");
             tb_print_type(dt, callback, user_data);

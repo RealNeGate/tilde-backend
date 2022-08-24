@@ -53,6 +53,7 @@ static bool dead_expr_elim(TB_Function* f) {
                     break;
 
                     case TB_CALL:
+                    case TB_SCALL:
                     case TB_VCALL:
                     case TB_ECALL: {
                         // convert it to a void CALL just because

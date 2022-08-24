@@ -580,6 +580,20 @@ TB_Reg* tb_vla_reserve(TB_Function* f, size_t count) {
     return &f->vla.data[f->vla.count];
 }
 
+TB_API TB_Reg tb_inst_syscall(TB_Function* f, TB_DataType dt, TB_Reg syscall_num, size_t param_count, const TB_Reg* params) {
+    int param_start = f->vla.count;
+
+    TB_Reg* vla = tb_vla_reserve(f, param_count);
+    memcpy(vla, params, param_count * sizeof(TB_Reg));
+    f->vla.count += param_count;
+
+    int param_end = f->vla.count;
+
+    TB_Reg r = tb_make_reg(f, TB_SCALL, dt);
+    f->nodes[r].scall = (struct TB_NodeSysCall) { param_start, param_end, syscall_num };
+    return r;
+}
+
 TB_API TB_Reg tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Reg* params) {
     int param_start = f->vla.count;
 

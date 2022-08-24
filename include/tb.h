@@ -194,6 +194,7 @@ extern "C" {
 
         TB_ICALL, /* internal use only, inline call */
         TB_CALL,  /* standard function call */
+        TB_SCALL, /* system call */
         TB_VCALL, /* virtual call */
         TB_ECALL, /* extern call */
 
@@ -522,6 +523,10 @@ extern "C" {
                 int param_start, param_end;
                 const TB_Function* target;
             } call;
+            struct TB_NodeSysCall {
+                int param_start, param_end;
+                TB_Reg target;
+            } scall;
             struct TB_NodeSwitch {
                 TB_Reg key;
                 TB_Label default_label;
@@ -1066,6 +1071,7 @@ extern "C" {
 
     // Control flow
     TB_API TB_Reg tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Reg* params);
+    TB_API TB_Reg tb_inst_syscall(TB_Function* f, TB_DataType dt, TB_Reg syscall_num, size_t param_count, const TB_Reg* params);
     TB_API TB_Reg tb_inst_vcall(TB_Function* f, TB_DataType dt, TB_Reg target, size_t param_count, const TB_Reg* params);
     TB_API TB_Reg tb_inst_ecall(TB_Function* f, TB_DataType dt, const TB_External* target, size_t param_count, const TB_Reg* params);
 

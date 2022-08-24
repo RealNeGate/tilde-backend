@@ -1,15 +1,17 @@
 #include "../tb_internal.h"
 
-bool tb_opt_dead_expr_elim(TB_Function* f) {
-    bool changes;
+static bool dead_expr_elim(TB_Function* f) {
     TB_TemporaryStorage* tls = tb_tls_allocate();
 
     // TODO(NeGate): rewrite this such that we don't do this loop and instead just mark
     // when objects are murdered such that we change the time complexity of this crap
+    bool changes = false;
+    int* use_count = tb_tls_push(tls, f->node_count * sizeof(int));
+    tb_function_calculate_use_count(f, use_count);
+
+    bool local_changes;
     do {
-        changes = false;
-        int* use_count = tb_tls_push(tls, f->node_count * sizeof(int));
-        tb_function_calculate_use_count(f, use_count);
+        local_changes = false;
 
         TB_FOR_EACH_NODE(n, f) {
             TB_Reg i = TB_GET_REG(n, f);
@@ -57,6 +59,7 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
                         n->dt = TB_TYPE_VOID;
                         break;
                     }
+
                     // don't delete volatile loads
                     case TB_LOAD: {
                         if (n->load.is_volatile) {
@@ -64,8 +67,9 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
                         } else {
                             OPTIMIZER_LOG(i, "removed unused expression node");
 
+                            use_count[n->load.address] -= 1;
                             tb_murder_node(f, n);
-                            changes = true;
+                            local_changes = true;
                         }
                         break;
                     }
@@ -117,74 +121,29 @@ bool tb_opt_dead_expr_elim(TB_Function* f) {
                     case TB_CMP_FLE: {
                         OPTIMIZER_LOG(i, "removed unused expression node");
 
+                        TB_FOR_INPUT_IN_NODE(it, f, n) {
+                            use_count[it.r] -= 1;
+                        }
+
                         tb_murder_node(f, n);
-                        changes = true;
+                        local_changes = true;
                         break;
                     }
                     default: tb_todo();
                 }
             }
         }
-    } while (changes);
+
+        changes |= local_changes;
+    } while (local_changes);
 
     return changes;
 }
 
-bool tb_opt_dead_block_elim(TB_Function* f) {
-    tb_panic("Fuck off");
-
-    TB_TemporaryStorage* tls = tb_tls_allocate();
-
-    int* pred_count = tb_tls_push(tls, f->label_count * sizeof(int));
-    TB_Label** preds = tb_tls_push(tls, f->label_count * sizeof(TB_Label*));
-
-    // entry label has no predecessors
-    pred_count[0] = 0;
-    preds[0] = NULL;
-
-    loop_range(j, 1, f->label_count) {
-        preds[j] = (TB_Label*)tb_tls_push(tls, 0);
-        tb_calculate_immediate_predeccessors(f, tls, j, &pred_count[j]);
-    }
-
-    bool changes = false;
-    TB_Reg block = 0;
-    TB_FOR_EACH_NODE(n, f) {
-        TB_Reg i = TB_GET_REG(n, f);
-
-        switch (n->type) {
-            case TB_LABEL: {
-                if (n->label.id != 0 && pred_count[n->label.id] == 0) {
-                    OPTIMIZER_LOG(i, "Killed unused BB");
-
-                    //tb_function_print2(f, tb_default_print_callback, stdout, true);
-
-                    TB_Reg old_terminator = f->nodes[block].label.terminator;
-                    TB_Reg new_terminator = n->label.terminator;
-                    TB_Reg terminator_next = f->nodes[new_terminator].next;
-
-                    // just murder every node in the BB and we should be good
-                    TB_FOR_EACH_NODE_RANGE(m, f, i, terminator_next) {
-                        tb_murder_node(f, m);
-                    }
-
-                    // extend previous label
-                    f->nodes[block].label.terminator = new_terminator;
-                    memcpy(&f->nodes[new_terminator], &f->nodes[old_terminator], sizeof(TB_Node));
-                    f->nodes[new_terminator].next = terminator_next;
-
-                    tb_murder_reg(f, old_terminator);
-
-                    tb_function_find_replace_reg(f, i, block);
-                    //tb_function_print2(f, tb_default_print_callback, stdout, true);
-                    changes = true;
-                } else {
-                    block = i;
-                }
-                break;
-            }
-        }
-    }
-
-    return changes;
+TB_API TB_Pass tb_opt_dead_expr_elim(void) {
+    return (TB_Pass){
+        .mode = TB_FUNCTION_PASS,
+        .name = "DeadExprElimination",
+        .func_run = dead_expr_elim,
+    };
 }

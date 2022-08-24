@@ -231,7 +231,14 @@ static bool inst_combine(TB_Function* f) {
             changes++;
         }
 
-        if (type == TB_INITIALIZE) {
+        TB_NodeTypeEnum type = n->type;
+        if (n->type == TB_PASS) {
+            OPTIMIZER_LOG(i, "Replacing PASS with r%d", n->unary.src);
+            tb_function_find_replace_reg(f, i, n->unary.src);
+
+            n->type = TB_NULL;
+            changes++;
+        } else if (type == TB_INITIALIZE) {
             TB_Reg addr = n->init.addr;
             TB_Initializer* init = n->init.src;
 

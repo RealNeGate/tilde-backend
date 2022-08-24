@@ -471,7 +471,7 @@ TB_API TB_FunctionIter tb_function_iter(TB_Module* m) {
 TB_API bool tb_next_function(TB_FunctionIter* it) {
     TB_Module* m = it->module_;
     if (it->index_ < m->functions.count) {
-        it->f = &m->functions.data[it->index_];
+        it->f = &m->functions.data[it->index_++];
         return true;
     }
 

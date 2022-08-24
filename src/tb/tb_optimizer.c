@@ -259,6 +259,10 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
                     changes |= end_lua_pass(L, 1);
                 } else {
                     changes |= passes[j].func_run(f);
+
+                    //printf("%s\n", passes[j].name);
+                    //tb_function_print2(f, tb_default_print_callback, stdout, false);
+                    //printf("\n\n");
                 }
                 break;
 

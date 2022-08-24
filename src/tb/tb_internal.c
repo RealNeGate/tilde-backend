@@ -220,6 +220,20 @@ TB_Reg tb_find_reg_from_label(TB_Function* f, TB_Label id) {
     return TB_NULL_REG;
 }
 
+TB_Reg tb_node_get_previous(TB_Function* f, TB_Reg at) {
+    TB_Reg prev = 0;
+    TB_FOR_EACH_NODE(n, f) {
+        TB_Reg r = (n - f->nodes);
+        if (r == at) {
+            return prev;
+        }
+
+        prev = r;
+    }
+
+    return 0;
+}
+
 TB_Reg tb_function_insert_after(TB_Function* f, TB_Reg at) {
     tb_function_reserve_nodes(f, 1);
 

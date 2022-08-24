@@ -111,51 +111,74 @@ static bool is_associative(TB_NodeTypeEnum type) {
     }
 }
 
-static bool reassoc(TB_Function* f, TB_Node* n) {
-    if (!is_associative(n->type)) return false;
+typedef struct {
+    TB_Reg r;
+    bool changes;
+} BinOpReg;
+
+static bool const_fold(TB_Function* f, TB_Node* n);
+
+static BinOpReg create_binop(TB_Function* f, TB_Reg r, TB_Reg x, TB_Reg y) {
+    TB_NodeTypeEnum type = f->nodes[r].type;
+    TB_DataType dt = f->nodes[r].dt;
 
     bool changes = false;
-    TB_Reg r = n - f->nodes;
-    TB_Reg a = n->i_arith.a;
-    TB_Reg b = n->i_arith.b;
-
-    // Move all integer constants to the right side
-    if (f->nodes[a].type == TB_INTEGER_CONST && f->nodes[b].type != TB_INTEGER_CONST) {
+    if (f->nodes[x].type == TB_INTEGER_CONST && f->nodes[y].type != TB_INTEGER_CONST) {
         OPTIMIZER_LOG(r, "moved constants to right hand side.");
-        tb_swap(TB_Reg, a, b);
+        tb_swap(TB_Reg, x, y);
+
+        f->nodes[r].i_arith.a = x;
+        f->nodes[r].i_arith.b = y;
         changes = true;
     }
 
-    if (f->nodes[a].type == f->nodes[r].type && f->nodes[b].type != f->nodes[r].type) {
+    if (f->nodes[x].type == type && f->nodes[y].type != type) {
         // Reshuffle the adds from
         // (x + y) + z => x + (y + z)
         OPTIMIZER_LOG(r, "Reassociated expressions");
 
-        TB_Reg x = f->nodes[a].i_arith.a;
-        TB_Reg y = f->nodes[a].i_arith.b;
-        TB_Reg z = b;
+        TB_Reg xx = f->nodes[x].i_arith.a;
+        TB_Reg yy = f->nodes[x].i_arith.b;
+        TB_Reg zz = y;
 
-        // this invalidates n so let's just not use it past this point
-        TB_Reg extra_reg = tb_function_insert_after(f, f->nodes[r].i_arith.b);
-        TB_Node* extra = &f->nodes[extra_reg];
-        extra->type = f->nodes[r].type;
-        extra->dt = f->nodes[r].dt;
-        extra->i_arith.a = y;
-        extra->i_arith.b = z;
-        extra->i_arith.arith_behavior = f->nodes[r].i_arith.arith_behavior;
+        TB_Reg prev = tb_node_get_previous(f, r);
+        TB_Reg xy_reg = tb_function_insert_after(f, prev);
 
-        a = x;
-        b = extra_reg;
+        TB_Node* xy = &f->nodes[xy_reg];
+        xy->type = type;
+        xy->dt = dt;
+        xy->i_arith.a = yy;
+        xy->i_arith.b = zz;
+        if (type >= TB_ADD && type <= TB_SMOD) {
+            xy->i_arith.arith_behavior = f->nodes[r].i_arith.arith_behavior;
+        }
+
+        BinOpReg new_xy = create_binop(f, xy_reg, xx, yy);
+        const_fold(f, &f->nodes[new_xy.r]);
+
+        TB_Node* n = &f->nodes[r];
+        n->i_arith.a = xx;
+        n->i_arith.b = new_xy.r;
         changes = true;
     }
 
-    if (changes) {
-        f->nodes[r].i_arith.a = a;
-        f->nodes[r].i_arith.b = b;
+    return (BinOpReg){ r, changes };
+}
+
+static bool reassoc(TB_Function* f, TB_Node* n) {
+    if (!is_associative(n->type)) {
+        return false;
+    }
+
+    TB_Reg old = n - f->nodes;
+    BinOpReg result = create_binop(f, old, n->i_arith.a, n->i_arith.b);
+    if (old != result.r) {
+        f->nodes[old].type = TB_PASS;
+        f->nodes[old].pass.value = result.r;
         return true;
     }
 
-    return false;
+    return result.changes;
 }
 
 static bool const_fold(TB_Function* f, TB_Node* n) {
@@ -163,13 +186,13 @@ static bool const_fold(TB_Function* f, TB_Node* n) {
 
     if ((n->type >= TB_CMP_EQ && n->type <= TB_CMP_ULE) || (n->type >= TB_ADD && n->type <= TB_SMOD)) {
         // we don't fold anything but integers
-        if (dt.type == TB_INT) return false;
+        if (dt.type != TB_INT) return false;
 
         TB_Node* a = &f->nodes[n->i_arith.a];
         TB_Node* b = &f->nodes[n->i_arith.b];
+        // printf("TRY FOLD? r%d OP r%d\n", n->i_arith.a, n->i_arith.b);
 
-        // expects reassoc to be done so a being INT means that b is also INT
-        if (a->type == TB_INTEGER_CONST) {
+        if (a->type == TB_INTEGER_CONST && b->type == TB_INTEGER_CONST) {
             if (a->integer.num_words == 1) {
                 OPTIMIZER_LOG(n - f->nodes, "constant fold");
                 assert(b->integer.num_words == 1);
@@ -191,7 +214,7 @@ static bool const_fold(TB_Function* f, TB_Node* n) {
                 }
 
                 n->type = TB_INTEGER_CONST;
-                n->dt = TB_TYPE_BOOL;
+                n->dt = dt;
                 n->integer.num_words = 1;
                 n->integer.single_word = result;
                 return true;
@@ -201,9 +224,8 @@ static bool const_fold(TB_Function* f, TB_Node* n) {
         } else if (b->type == TB_INTEGER_CONST && b->integer.num_words == 1) {
             OPTIMIZER_LOG(n - f->nodes, "partial folding");
 
+            TB_Reg ar = n->i_arith.a;
             if (b->integer.single_word == 0) {
-                TB_Reg ar = n->i_arith.a;
-
                 switch (n->type) {
                     case TB_ADD: case TB_SUB:
                     case TB_XOR: case TB_OR:
@@ -226,8 +248,6 @@ static bool const_fold(TB_Function* f, TB_Node* n) {
                     default: break;
                 }
             } else if (b->integer.single_word == 1) {
-                TB_Reg ar = n->i_arith.a;
-
                 switch (n->type) {
                     case TB_MUL: case TB_SDIV: case TB_UDIV:
                     n->type = TB_PASS;
@@ -238,15 +258,16 @@ static bool const_fold(TB_Function* f, TB_Node* n) {
                 }
             }
 
+            TB_Reg r = n - f->nodes;
             if (n->type == TB_MUL) {
                 // (a * b) => (a << log2(b)) where b is a power of two
                 uint64_t log2 = tb_ffs(b->integer.single_word) - 1;
-                if (b_const == (UINT64_C(1) << log2)) {
-                    OPTIMIZER_LOG(i, "converted power-of-two multiply into left shift");
+                if (b->integer.single_word == (UINT64_C(1) << log2)) {
+                    OPTIMIZER_LOG(r, "converted power-of-two multiply into left shift");
 
                     // It's a power of two, swap in a left-shift
                     // just slap it right after the label
-                    TB_Reg new_op = tb_function_insert_after(f, i);
+                    TB_Reg new_op = tb_function_insert_after(f, ar);
 
                     f->nodes[new_op].type = TB_INTEGER_CONST;
                     f->nodes[new_op].dt = dt;
@@ -258,14 +279,14 @@ static bool const_fold(TB_Function* f, TB_Node* n) {
                     n->i_arith = (struct TB_NodeIArith) { .a = a - f->nodes, .b = new_op };
                     return true;
                 }
-            } else if (type == TB_UMOD || type == TB_SMOD) {
+            } else if (n->type == TB_UMOD || n->type == TB_SMOD) {
                 // (mod a N) => (and a N-1) where N is a power of two
                 uint64_t mask = b->integer.single_word;
                 if (tb_is_power_of_two(mask)) {
-                    OPTIMIZER_LOG(i, "converted modulo into AND with constant mask");
+                    OPTIMIZER_LOG(r, "converted modulo into AND with constant mask");
 
                     // generate mask
-                    TB_Reg extra_reg = tb_function_insert_after(f, n->i_arith.b);
+                    TB_Reg extra_reg = tb_function_insert_after(f, ar);
                     TB_Node* extra = &f->nodes[extra_reg];
                     extra->type = TB_INTEGER_CONST;
                     extra->dt = n->dt;
@@ -273,7 +294,7 @@ static bool const_fold(TB_Function* f, TB_Node* n) {
                     extra->integer.single_word = mask - 1;
 
                     // new AND operation to replace old MOD
-                    n = &f->nodes[i];
+                    n = &f->nodes[r];
                     n->type = TB_AND;
                     n->i_arith.b = extra_reg;
                     return true;

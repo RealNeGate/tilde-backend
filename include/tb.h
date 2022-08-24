@@ -1151,6 +1151,7 @@ extern "C" {
     TB_API TB_Function* tb_function_from_id(TB_Module* m, TB_FunctionID id);
 
     TB_API TB_Reg tb_node_get_last_register(TB_Function* f);
+    TB_API TB_Reg tb_node_get_previous(TB_Function* f, TB_Reg at);
 
     TB_API TB_Node* tb_function_get_node(TB_Function* f, TB_Reg r);
     TB_API int tb_function_get_label_count(TB_Function* f);

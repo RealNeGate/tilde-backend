@@ -159,20 +159,19 @@ typedef struct {
 
     size_t resolved_reg_count;
     TB_Reg* resolved_regs;
+    TB_Reg* doms;
     TB_Reg bb;
 } CSE_Context;
 
-static void cse_create(CSE_Context* ctx, TB_TemporaryStorage* tls) {
-    void* start = tb_tls_push(tls, 0);
-
-    TB_Predeccesors preds = tb_get_temp_predeccesors(f, tls);
-    TB_Label* doms = tb_tls_push(tls, f->label_count * sizeof(TB_Label));
-    tb_get_dominators(f, preds, doms);
-
+static void cse_create(CSE_Context* ctx, TB_TemporaryStorage* tls, TB_Function* f) {
     memset(ctx, 0, sizeof(CSE_Context));
 
+    TB_Predeccesors preds = tb_get_temp_predeccesors(f, tls);
+    ctx->doms = tb_tls_push(tls, f->label_count * sizeof(TB_Label));
+    tb_get_dominators(f, preds, ctx->doms);
+
     // list of defined nodes in for every basic block relevant to global CSE
-    ctx->start = start;
+    ctx->start = tb_tls_push(tls, 0);
     ctx->defs = generate_def_table(f, tls);
 
     // list of resolved nodes in this basic block, used for local CSE
@@ -181,7 +180,7 @@ static void cse_create(CSE_Context* ctx, TB_TemporaryStorage* tls) {
 }
 
 static void cse_destroy(CSE_Context* ctx, TB_TemporaryStorage* tls) {
-    tb_tls_restore(start);
+    tb_tls_restore(tls, ctx->start);
 }
 
 static void cse_set_bb(CSE_Context* ctx, TB_TemporaryStorage* tls, TB_Label id) {
@@ -202,7 +201,7 @@ static TB_Reg cse_attempt(TB_Function* f, CSE_Context* ctx, TB_TemporaryStorage*
     // try the Global CSE:
     // check dominators for value, we dont need the same checks of resolution
     // as local CSE since we can guarentee the entire BB is resolved at this point
-    TB_Reg found = walk_dominators_for_similar_def(f, defs, doms, doms[bb], r);
+    TB_Reg found = walk_dominators_for_similar_def(f, ctx->defs, ctx->doms, ctx->doms[ctx->bb], r);
     if (found != TB_NULL_REG) {
         OPTIMIZER_LOG(r, "Removed BB-global duplicate expression");
         n->type = TB_PASS;
@@ -231,13 +230,13 @@ static bool cse(TB_Function* f) {
     TB_TemporaryStorage* tls = tb_tls_allocate();
 
     CSE_Context cse;
-    cse_create(&cse, tls);
+    cse_create(&cse, tls, f);
 
     int changes = 0;
     TB_FOR_EACH_NODE(n, f) {
         if (n->type == TB_LABEL) {
-            cse_set_bb();
-        } else if (cse_attempt(f, ctx, tls, n)) {
+            cse_set_bb(&cse, tls, n->label.id);
+        } else if (cse_attempt(f, &cse, tls, n)) {
             changes++;
         }
     }

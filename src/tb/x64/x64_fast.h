@@ -221,8 +221,7 @@ static GPR fast_alloc_gpr(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r) {
             ctx->gpr_available -= 1;
 
             // mark register as to be saved
-            ctx->header.regs_to_save |=
-            (1u << gpr) & (ctx->is_sysv ? SYSV_ABI_CALLEE_SAVED : WIN64_ABI_CALLEE_SAVED);
+            ctx->header.regs_to_save |= (1u << gpr) & (ctx->is_sysv ? SYSV_ABI_CALLEE_SAVED : WIN64_ABI_CALLEE_SAVED);
 
             return gpr;
         }

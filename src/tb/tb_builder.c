@@ -77,7 +77,7 @@ TB_API bool tb_node_is_label(TB_Function* f, TB_Reg r) {
 }
 
 TB_API TB_Reg tb_node_get_last_register(TB_Function* f) {
-    return f->node_count - 1;
+    return f->node_end;
 }
 
 TB_API TB_Reg tb_node_load_get_address(TB_Function* f, TB_Reg r) {
@@ -397,6 +397,19 @@ TB_API void tb_inst_unreachable(TB_Function* f) {
 
 TB_API void tb_inst_debugbreak(TB_Function* f) {
     tb_make_reg(f, TB_DEBUGBREAK, TB_TYPE_VOID);
+}
+
+TB_API void tb_inst_trap(TB_Function* f) {
+    tb_make_reg(f, TB_TRAP, TB_TYPE_VOID);
+}
+
+TB_API void tb_inst_keep_alive(TB_Function* f, TB_Reg src) {
+    TB_Reg r = tb_make_reg(f, TB_KEEPALIVE, TB_TYPE_VOID);
+    f->nodes[r].unary.src = src;
+}
+
+TB_API TB_Reg tb_inst_poison(TB_Function* f) {
+    return tb_make_reg(f, TB_POISON, TB_TYPE_VOID);
 }
 
 TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line) {

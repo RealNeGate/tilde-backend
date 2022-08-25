@@ -159,6 +159,7 @@ static void html_print(void* user_data, const char* fmt, ...) {
 
 static void log_function(FILE* out, const char* title, TB_Function* f) {
     #if 0
+    printf("\x1b[H");
     tb_function_print2(f, tb_default_print_callback, out, false);
     #else
     fprintf(out, "<td valign=\"top\">\n");

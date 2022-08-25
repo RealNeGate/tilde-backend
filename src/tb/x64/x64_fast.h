@@ -748,6 +748,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
             case TB_GLOBAL_ADDRESS:
             case TB_PARAM_ADDR:
             case TB_LOCAL:
+            case TB_KEEPALIVE:
+            case TB_POISON:
             break;
             case TB_EXTERN_ADDRESS:
             case TB_FUNC_ADDRESS: {
@@ -870,6 +872,12 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 f->lines[f->line_count++] = (TB_Line) {
                     .file = n->line_info.file, .line = n->line_info.line, .pos = GET_CODE_POS()
                 };
+                break;
+            }
+
+            case TB_TRAP: {
+                *ctx->header.out++ = 0x0F;
+                *ctx->header.out++ = 0x0B;
                 break;
             }
 
@@ -2668,7 +2676,9 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
 
                 JMP(end->switch_.default_label);
             }
-        } else tb_todo();
+        } else {
+            tb_todo();
+        }
 
         // Next Basic block
         bb = next_bb_reg;

@@ -544,70 +544,64 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
             size_t capacity = e->sections[S_DATA].num_reloc;
             if (send_alloc_message(e, packet, capacity * sizeof(COFF_ImageReloc))) return true;
 
-            size_t i = e->tick[0]++;
             size_t count = 0;
-
-            if (i == 0) {
-                assert(e->write_pos == e->sections[S_DATA].pointer_to_reloc);
-            }
-
             COFF_ImageReloc* relocs = e->temporary_memory;
-            pool_for(TB_Global, g, m->thread_info[i].globals) {
-                TB_Initializer* init = g->init;
 
-                FOREACH_N(k, 0, init->obj_count) {
-                    size_t actual_pos = g->pos + init->objects[k].offset;
+            assert(e->write_pos == e->sections[S_DATA].pointer_to_reloc);
+            FOREACH_N(i, 0, m->max_threads) {
+                pool_for(TB_Global, g, m->thread_info[i].globals) {
+                    TB_Initializer* init = g->init;
 
-                    switch (init->objects[k].type) {
-                        case TB_INIT_OBJ_RELOC_GLOBAL: {
-                            const TB_Global* g = init->objects[k].reloc_global;
+                    FOREACH_N(k, 0, init->obj_count) {
+                        size_t actual_pos = g->pos + init->objects[k].offset;
 
-                            assert(count < capacity);
-                            relocs[count++] = (COFF_ImageReloc) {
-                                .Type = IMAGE_REL_AMD64_ADDR64,
-                                .SymbolTableIndex = g->id,
-                                .VirtualAddress = actual_pos
-                            };
-                            break;
+                        switch (init->objects[k].type) {
+                            case TB_INIT_OBJ_RELOC_GLOBAL: {
+                                const TB_Global* g = init->objects[k].reloc_global;
+
+                                assert(count < capacity);
+                                relocs[count++] = (COFF_ImageReloc) {
+                                    .Type = IMAGE_REL_AMD64_ADDR64,
+                                    .SymbolTableIndex = g->id,
+                                    .VirtualAddress = actual_pos
+                                };
+                                break;
+                            }
+
+                            case TB_INIT_OBJ_RELOC_EXTERN: {
+                                const TB_External* e = init->objects[k].reloc_extern;
+                                int id = (uintptr_t) e->address;
+
+                                assert(count < capacity);
+                                relocs[count++] = (COFF_ImageReloc) {
+                                    .Type = IMAGE_REL_AMD64_ADDR64,
+                                    .SymbolTableIndex = id,
+                                    .VirtualAddress = actual_pos
+                                };
+                                break;
+                            }
+
+                            case TB_INIT_OBJ_RELOC_FUNCTION: {
+                                int symbol_id = init->objects[k].reloc_function - m->functions.data;
+
+                                assert(count < capacity);
+                                relocs[count++] = (COFF_ImageReloc) {
+                                    .Type = IMAGE_REL_AMD64_ADDR64,
+                                    .SymbolTableIndex = e->function_sym_start + symbol_id,
+                                    .VirtualAddress = actual_pos
+                                };
+                                break;
+                            }
+
+                            default: break;
                         }
-
-                        case TB_INIT_OBJ_RELOC_EXTERN: {
-                            const TB_External* e = init->objects[k].reloc_extern;
-                            int id = (uintptr_t) e->address;
-
-                            assert(count < capacity);
-                            relocs[count++] = (COFF_ImageReloc) {
-                                .Type = IMAGE_REL_AMD64_ADDR64,
-                                .SymbolTableIndex = id,
-                                .VirtualAddress = actual_pos
-                            };
-                            break;
-                        }
-
-                        case TB_INIT_OBJ_RELOC_FUNCTION: {
-                            int symbol_id = init->objects[k].reloc_function - m->functions.data;
-
-                            assert(count < capacity);
-                            relocs[count++] = (COFF_ImageReloc) {
-                                .Type = IMAGE_REL_AMD64_ADDR64,
-                                .SymbolTableIndex = e->function_sym_start + symbol_id,
-                                .VirtualAddress = actual_pos
-                            };
-                            break;
-                        }
-
-                        default: break;
                     }
                 }
             }
 
             assert(count == capacity);
             send_write_message(e, packet, relocs, count * sizeof(COFF_ImageReloc));
-
-            if (i + 1 >= m->max_threads) {
-                e->tick[0] = 0;
-                e->stage += 1;
-            }
+            e->stage += 1;
             break;
         }
         case STAGE__WRITE_DEBUG_PATCHES: {

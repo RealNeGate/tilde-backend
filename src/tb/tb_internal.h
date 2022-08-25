@@ -80,6 +80,12 @@ typedef struct TB_Emitter {
     uint8_t* data;
 } TB_Emitter;
 
+#define TB_FIXED_ARRAY(T) \
+struct { size_t cap, count; T* elems; }
+
+#define TB_FIXED_ARRAY_APPEND(arr, elem) \
+(((arr).count + 1 <= (arr).cap) ? ((arr).elems[(arr).count++] = (elem)) : (void) assert(!"out of bounds"))
+
 #define TB_DATA_TYPE_EQUALS(a, b) ((a).raw == (b).raw)
 #define TB_DT_EQUALS(a, b) ((a).raw == (b).raw)
 
@@ -527,6 +533,9 @@ const IDebugFormat* tb__find_debug_format(TB_Module* m);
 ICodeGen* tb__find_code_generator(TB_Module* m);
 
 // object file output
+TB_ModuleExporter* tb_elf64__make(TB_Module* m);
+bool tb_elf64__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPacket* packet);
+
 TB_ModuleExporter* tb_coff__make(TB_Module* m);
 bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPacket* packet);
 

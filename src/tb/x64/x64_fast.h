@@ -1883,14 +1883,23 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
             }
 
             case TB_CALL:
+            case TB_SCALL:
             case TB_ECALL:
             case TB_VCALL: {
                 int param_start = n->call.param_start;
                 int param_count = n->call.param_end - n->call.param_start;
 
+                static const GPR syscall_params[] = {
+                    RDI, RSI, RDX, R10, R8, R9
+                };
+
                 // Evict the GPRs that are caller saved
                 uint16_t caller_saved = (ctx->is_sysv ? SYSV_ABI_CALLER_SAVED : WIN64_ABI_CALLER_SAVED);
                 const GPR* parameter_gprs = ctx->is_sysv ? SYSV_GPR_PARAMETERS : WIN64_GPR_PARAMETERS;
+                if (reg_type == TB_SCALL) {
+                    caller_saved = SYSCALL_ABI_CALLER_SAVED;
+                    parameter_gprs = syscall_params;
+                }
 
                 // evaluate parameters
                 loop(j, param_count) {
@@ -1978,6 +1987,18 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     ctx->header.out[0] = 0xE8;
                     *((uint32_t*)&ctx->header.out[1]) = 0x0;
                     ctx->header.out += 5;
+                } else if (reg_type == TB_SCALL) {
+                    Val src = fast_eval_address(ctx, f, n->scall.target);
+                    Val dst = val_gpr(TB_TYPE_PTR, RAX);
+
+                    // MOV RAX, syscall number
+                    INST2(MOV, &dst, &src, TB_TYPE_I64);
+
+                    // SYSCALL
+                    *ctx->header.out++ = 0x0F;
+                    *ctx->header.out++ = 0x05;
+
+                    fast_kill_reg(ctx, f, n->scall.target);
                 } else if (reg_type == TB_VCALL) {
                     Val target = fast_eval_address(ctx, f, n->vcall.target);
 

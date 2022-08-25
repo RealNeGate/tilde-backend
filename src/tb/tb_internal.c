@@ -183,10 +183,19 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace) {
             X(n->cmp.b);
             break;
 
+            case TB_SCALL: {
+                X(n->scall.target);
+
+                FOREACH_N(it, n->scall.param_start, n->scall.param_end) {
+                    X(f->vla.data[it]);
+                }
+                break;
+            }
+
             case TB_VCALL: {
                 X(n->vcall.target);
 
-                FOREACH_N(it, n->call.param_start, n->call.param_end) {
+                FOREACH_N(it, n->vcall.param_start, n->vcall.param_end) {
                     X(f->vla.data[it]);
                 }
                 break;

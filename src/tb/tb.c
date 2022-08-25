@@ -137,6 +137,7 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f, TB_ISelMode ise
 TB_API TB_ModuleExporter* tb_make_exporter(TB_Module* m) {
     switch (m->target_system) {
         case TB_SYSTEM_WINDOWS: return tb_coff__make(m);
+        case TB_SYSTEM_LINUX: return tb_elf64__make(m);
         default: tb_panic("TinyBackend error: Unknown system!\n");
     }
 }
@@ -144,6 +145,7 @@ TB_API TB_ModuleExporter* tb_make_exporter(TB_Module* m) {
 TB_API bool tb_exporter_next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPacket* packet) {
     switch (m->target_system) {
         case TB_SYSTEM_WINDOWS: return tb_coff__next(m, exporter, packet);
+        case TB_SYSTEM_LINUX: return tb_elf64__next(m, exporter, packet);
         default: tb_panic("TinyBackend error: Unknown system!\n");
     }
 }

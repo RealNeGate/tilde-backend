@@ -852,6 +852,9 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
             return true;
         }
         case STAGE__DONE: {
+            tb_platform_heap_free(e->debug_section_headers);
+            tb_platform_heap_free(e->string_table);
+            tb_platform_heap_free(e->func_layout);
             tb_platform_heap_free(e);
             return false;
         }

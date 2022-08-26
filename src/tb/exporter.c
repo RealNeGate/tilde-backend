@@ -26,7 +26,7 @@ TB_API bool tb_exporter_to_file(TB_Module* m, TB_ModuleExporter exporter, const 
                 tmp_capacity = (packet.alloc.request_size * 2);
 
                 char* new_mem = realloc(tmp_memory, tmp_capacity);
-                if (tmp_memory == NULL) goto error;
+                if (new_mem == NULL) goto error;
 
                 tmp_memory = new_mem;
             }

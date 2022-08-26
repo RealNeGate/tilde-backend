@@ -1,16 +1,12 @@
 #include "tb_internal.h"
+#include "host.h"
 
 // NOTE(NeGate): This only currently supports the text and rdata sections,
 // it puts the rdata on the next 4KB page after the text section all within
 // the same memory mapping, this is actually very bad because it means that
 // read-only data is executable.
 void tb_module_export_jit(TB_Module* m, TB_ISelMode isel_mode) {
-    #if TB_HOST_ARCH == TB_HOST_X86_64
-    const ICodeGen* restrict codegen = &tb__x64_codegen;
-    #else
-    #error "Cannot compile JIT for this target architecture!"
-    #endif
-
+    ICodeGen* restrict codegen = tb__find_code_generator(m);
     TB_TemporaryStorage* tls = tb_tls_allocate();
     m->compiled_function_pos = tb_platform_heap_alloc(m->functions.count * sizeof(void*));
 

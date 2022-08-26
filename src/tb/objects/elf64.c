@@ -250,12 +250,12 @@ static bool send_alloc_message(TB_ModuleExporterELF* e, TB_ModuleExportPacket* p
     return false;
 }
 
-TB_ModuleExporter* tb_elf64__make(TB_Module* m) {
+void* tb_elf64__make(TB_Module* m) {
     return memset(tb_platform_heap_alloc(sizeof(TB_ModuleExporterELF)), 0, sizeof(TB_ModuleExporterELF));
 }
 
-bool tb_elf64__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPacket* packet) {
-    TB_ModuleExporterELF* restrict e = (TB_ModuleExporterELF*) exporter;
+bool tb_elf64__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet) {
+    TB_ModuleExporterELF* restrict e = exporter;
 
     switch (e->stage) {
         case STAGE__WRITE_FILE_HEADER: {

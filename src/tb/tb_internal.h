@@ -533,18 +533,11 @@ const IDebugFormat* tb__find_debug_format(TB_Module* m);
 ICodeGen* tb__find_code_generator(TB_Module* m);
 
 // object file output
-TB_ModuleExporter* tb_elf64__make(TB_Module* m);
-bool tb_elf64__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPacket* packet);
+void* tb_elf64__make(TB_Module* m);
+bool tb_elf64__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet);
 
-TB_ModuleExporter* tb_coff__make(TB_Module* m);
-bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPacket* packet);
-
-// void tb_export_coff(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt);
-void tb_export_macho(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt);
-void tb_export_elf64(TB_Module* m, const ICodeGen* restrict code_gen, const char* path, const IDebugFormat* debug_fmt);
-
-// executable file format
-void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_LinkerInput* restrict input, const char* path, const IDebugFormat* debug_fmt);
+void* tb_coff__make(TB_Module* m);
+bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet);
 
 // code generators
 ICodeGen* tb__find_code_generator(TB_Module* m);

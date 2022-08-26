@@ -1,10 +1,5 @@
 #include "tb_internal.h"
-#include <stdarg.h>
-
-// Used for some optimizations
-#if TB_HOST_ARCH == TB_HOST_X86_64
-#include <emmintrin.h>
-#endif
+#include "host.h"
 
 enum { BATCH_SIZE = 8192 };
 
@@ -68,6 +63,27 @@ TB_API TB_DataType tb_vector_type(TB_DataTypeEnum type, int width) {
     return (TB_DataType) { .type = type, .width = tb_ffs(width) - 1 };
 }
 
+TB_API TB_Module* tb_module_create_for_host(TB_DebugFormat debug_fmt, const TB_FeatureSet* features) {
+    #if defined(TB_HOST_X86_64)
+    TB_Arch arch = TB_ARCH_X86_64;
+    #else
+    TB_Arch arch = TB_ARCH_UNKNOWN;
+    tb_panic("tb_module_create_for_host: cannot detect host platform");
+    #endif
+
+    #if defined(TB_HOST_WINDOWS)
+    TB_System sys = TB_SYSTEM_WINDOWS;
+    #elif defined(TB_HOST_OSX)
+    TB_System sys = TB_SYSTEM_MACOS;
+    #elif defined(TB_HOST_LINUX)
+    TB_System sys = TB_SYSTEM_LINUX;
+    #else
+    tb_panic("tb_module_create_for_host: cannot detect host platform");
+    #endif
+
+    return tb_module_create(arch, sys, debug_fmt, features);
+}
+
 TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, TB_DebugFormat debug_fmt, const TB_FeatureSet* features) {
     TB_Module* m = tb_platform_heap_alloc(sizeof(TB_Module));
     memset(m, 0, sizeof(TB_Module));
@@ -77,7 +93,11 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
     m->target_arch = target_arch;
     m->target_system = target_system;
     m->debug_fmt = debug_fmt;
-    m->features = *features;
+    if (features == NULL) {
+        m->features = (TB_FeatureSet){ 0 };
+    } else {
+        m->features = *features;
+    }
 
     m->prototypes_arena = tb_platform_valloc(PROTOTYPES_ARENA_SIZE * sizeof(uint64_t));
 
@@ -143,46 +163,6 @@ TB_API bool tb_module_compile_functions(TB_Module* m, size_t count, TB_Function 
 
     return true;
 }
-
-TB_API TB_ModuleExporter* tb_make_exporter(TB_Module* m) {
-    switch (m->target_system) {
-        case TB_SYSTEM_WINDOWS: return tb_coff__make(m);
-        case TB_SYSTEM_LINUX: return tb_elf64__make(m);
-        default: tb_panic("TinyBackend error: Unknown system!\n");
-    }
-}
-
-TB_API bool tb_exporter_next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPacket* packet) {
-    switch (m->target_system) {
-        case TB_SYSTEM_WINDOWS: return tb_coff__next(m, exporter, packet);
-        case TB_SYSTEM_LINUX: return tb_elf64__next(m, exporter, packet);
-        default: tb_panic("TinyBackend error: Unknown system!\n");
-    }
-}
-
-/*TB_API void tb_module_export(TB_Module* m, const char* path) {
-    const ICodeGen* restrict code_gen = tb__find_code_generator(m);
-    const IDebugFormat* restrict debug_fmt = tb__find_debug_format(m);
-
-    switch (m->target_system) {
-        case TB_SYSTEM_WINDOWS: tb_export_coff(m, code_gen, path, debug_fmt); break;
-        case TB_SYSTEM_MACOS:   tb_export_macho(m, code_gen, path, debug_fmt); break;
-        case TB_SYSTEM_LINUX:   tb_export_elf64(m, code_gen, path, debug_fmt); break;
-        default:                tb_panic("TinyBackend error: Unknown system!\n");
-    }
-}
-
-TB_API bool tb_module_export_exec(TB_Module* m, const char* path, const TB_LinkerInput* input) {
-    const ICodeGen* restrict code_gen = tb__find_code_generator(m);
-    const IDebugFormat* restrict debug_fmt = tb__find_debug_format(m);
-
-    switch (m->target_system) {
-        case TB_SYSTEM_WINDOWS: tb_export_pe(m, code_gen, input, path, debug_fmt); break;
-        default:                tb_panic("TinyBackend error: Unknown system!\n");
-    }
-
-    return true;
-}*/
 
 TB_API void tb_module_destroy(TB_Module* m) {
     tb_platform_arena_free();

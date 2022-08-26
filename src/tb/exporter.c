@@ -24,12 +24,11 @@ TB_API bool tb_exporter_to_file(TB_Module* m, TB_ModuleExporter exporter, const 
             case TB_EXPORT_PACKET_ALLOC:
             if (packet.alloc.request_size > tmp_capacity) {
                 tmp_capacity = (packet.alloc.request_size * 2);
-                tmp_memory = realloc(tmp_memory, tmp_capacity);
 
-                // fprintf(stderr, "exporting: resized to %zu\n", tmp_capacity);
-                if (tmp_memory == NULL) {
-                    return false;
-                }
+                char* new_mem = realloc(tmp_memory, tmp_capacity);
+                if (tmp_memory == NULL) goto error;
+
+                tmp_memory = new_mem;
             }
 
             packet.alloc.memory = tmp_memory;
@@ -39,12 +38,19 @@ TB_API bool tb_exporter_to_file(TB_Module* m, TB_ModuleExporter exporter, const 
             fwrite(packet.write.data, packet.write.length, 1, file);
             break;
 
-            default: return false;
+            default: goto error;
         }
     }
 
     free(tmp_memory);
+    fclose(file);
     return true;
+
+    error:
+    if (file) fclose(file);
+
+    free(tmp_memory);
+    return false;
 }
 
 TB_API uint8_t* tb_exporter_to_buffer(TB_Module* m, TB_ModuleExporter exporter, size_t* out_length) {

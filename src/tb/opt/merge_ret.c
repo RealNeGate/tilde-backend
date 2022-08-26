@@ -1,6 +1,6 @@
 #include "../tb_internal.h"
 
-bool merge_rets(TB_Function* f) {
+static bool merge_rets(TB_Function* f) {
     TB_Label label_reg = 0;
 
     int count = 0;

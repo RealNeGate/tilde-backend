@@ -601,7 +601,12 @@ bool tb_coff__next(TB_Module* m, TB_ModuleExporter* exporter, TB_ModuleExportPac
 
             assert(count == capacity);
             send_write_message(e, packet, relocs, count * sizeof(COFF_ImageReloc));
-            e->stage += 1;
+            if (e->debug_sections.length == 0) {
+                // skip debug patches
+                e->stage += 2;
+            } else {
+                e->stage += 1;
+            }
             break;
         }
         case STAGE__WRITE_DEBUG_PATCHES: {

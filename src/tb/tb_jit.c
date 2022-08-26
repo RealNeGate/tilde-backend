@@ -47,7 +47,7 @@ void tb_module_export_jit(TB_Module* m, TB_ISelMode isel_mode) {
     // TODO(NeGate): Implement rdata
     // Output function
     m->jit_region_size = text_section_size;
-    m->jit_region      = tb_platform_valloc(text_section_size);
+    m->jit_region = tb_platform_valloc(text_section_size);
 
     uint8_t* text_section = m->jit_region;
     loop(i, m->functions.count) {

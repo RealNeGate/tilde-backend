@@ -30,4 +30,8 @@ endif
 : src/tb/system/win32.c      |> !cc |>
 
 # combine into a lib
-: bin/*.o deps/tbbmalloc.lib deps/luajit/src/lua51.lib |> lib /nologo /out:%o %f |> bin/tildebackend.lib
+ifeq (@(TUP_PLATFORM),win32)
+	: bin/*.o deps/tbbmalloc.lib deps/luajit/src/lua51.lib |> lib /nologo /out:%o %f |> bin/tildebackend.lib
+else
+	: bin/*.o deps/tbbmalloc.a deps/luajit/src/lua51.a |> ar -rcs %o %f |> bin/tildebackend.a
+endif

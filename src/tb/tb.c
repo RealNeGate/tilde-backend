@@ -6,6 +6,8 @@
 #include <emmintrin.h>
 #endif
 
+enum { BATCH_SIZE = 8192 };
+
 static thread_local uint8_t* tb_thread_storage;
 static thread_local int tid;
 static tb_atomic_int total_tid;
@@ -101,7 +103,7 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
     return m;
 }
 
-TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f, TB_ISelMode isel_mode) {
+TB_API bool tb_module_compile_function(TB_Module* m, TB_Function* f, TB_ISelMode isel_mode) {
     ICodeGen* restrict codegen = tb__find_code_generator(m);
 
     // Machine code gen
@@ -131,6 +133,14 @@ TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f, TB_ISelMode ise
     }
 
     f->output = func_out;
+    return true;
+}
+
+TB_API bool tb_module_compile_functions(TB_Module* m, size_t count, TB_Function funcs[], TB_ISelMode isel_mode) {
+    FOREACH_N(i, 0, count) {
+        tb_module_compile_function(m, &funcs[i], isel_mode);
+    }
+
     return true;
 }
 
@@ -393,19 +403,24 @@ TB_API void* tb_initializer_add_region(TB_Module* m, TB_Initializer* init, size_
 TB_API void tb_initializer_add_global(TB_Module* m, TB_Initializer* init, size_t offset, const TB_Global* global) {
     assert(offset == (uint32_t)offset);
     assert(init->obj_count + 1 <= init->obj_capacity);
+    assert(global != NULL);
+
     init->objects[init->obj_count++] = (TB_InitObj) { .type = TB_INIT_OBJ_RELOC_GLOBAL, .offset = offset, .reloc_global = global };
 }
 
 TB_API void tb_initializer_add_function(TB_Module* m, TB_Initializer* init, size_t offset, const TB_Function* func) {
     assert(offset == (uint32_t)offset);
     assert(init->obj_count + 1 <= init->obj_capacity);
+    assert(func != NULL);
+
     init->objects[init->obj_count++] = (TB_InitObj) {  .type = TB_INIT_OBJ_RELOC_FUNCTION, .offset = offset, .reloc_function = func };
 }
 
 TB_API void tb_initializer_add_extern(TB_Module* m, TB_Initializer* init, size_t offset, const TB_External* external) {
     assert(offset == (uint32_t)offset);
-
     assert(init->obj_count + 1 <= init->obj_capacity);
+    assert(external != NULL);
+
     init->objects[init->obj_count++] = (TB_InitObj) {
         .type = TB_INIT_OBJ_RELOC_EXTERN, .offset = offset, .reloc_extern = external
     };
@@ -478,6 +493,32 @@ TB_API bool tb_next_function(TB_FunctionIter* it) {
     }
 
     return false;
+}
+
+TB_API size_t tb_estimate_function_batch_count(TB_Module* m) {
+    return (m->functions.count + BATCH_SIZE - 1) / BATCH_SIZE;
+}
+
+TB_API TB_FunctionBatchIter tb_function_batch_iter(TB_Module* m) {
+    return (TB_FunctionBatchIter){ .module_ = m };
+}
+
+TB_API bool tb_next_function_batch(TB_FunctionBatchIter* it) {
+    TB_Module* m = it->module_;
+    size_t i = it->index_, limit = m->functions.count;
+    if (i >= limit) {
+        return false;
+    }
+
+    if (i + BATCH_SIZE >= limit) {
+        it->count = BATCH_SIZE - ((i + BATCH_SIZE) - limit);
+    } else {
+        it->count = BATCH_SIZE;
+    }
+
+    it->start = &m->functions.data[i];
+    it->index_ = i + BATCH_SIZE;
+    return true;
 }
 
 TB_API TB_ExternalIter tb_external_iter(TB_Module* m) {

@@ -753,7 +753,8 @@ extern "C" {
     // TB_ISEL_COMPLEX will compile slower but better codegen
     //
     // returns false if it fails.
-    TB_API bool tb_module_compile_func(TB_Module* m, TB_Function* f, TB_ISelMode isel_mode);
+    TB_API bool tb_module_compile_function(TB_Module* m, TB_Function* f, TB_ISelMode isel_mode);
+    TB_API bool tb_module_compile_functions(TB_Module* m, size_t count, TB_Function* funcs, TB_ISelMode isel_mode);
 
     // Frees all resources for the TB_Module and it's functions, globals and
     // compiled code.
@@ -786,6 +787,21 @@ extern "C" {
     #define TB_FOR_FUNCTIONS(it, module) for (TB_FunctionIter it = { .module_ = (module) }; tb_next_function(&it);)
     TB_API TB_FunctionIter tb_function_iter(TB_Module* m);
     TB_API bool tb_next_function(TB_FunctionIter* it);
+
+    typedef struct TB_FunctionBatchIter {
+        // public
+        TB_Function* start;
+        size_t count;
+
+        // internal
+        TB_Module* module_;
+        size_t index_;
+    } TB_FunctionBatchIter;
+
+    #define TB_FOR_FUNCTION_BATCH(it, module) for (TB_FunctionBatchIter it = { .module_ = (module) }; tb_next_function_batch(&it);)
+    TB_API size_t tb_estimate_function_batch_count(TB_Module* m);
+    TB_API TB_FunctionBatchIter tb_function_batch_iter(TB_Module* m);
+    TB_API bool tb_next_function_batch(TB_FunctionBatchIter* it);
 
     typedef struct TB_ExternalIter {
         // public

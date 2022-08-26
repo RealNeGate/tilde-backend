@@ -44,6 +44,8 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace) {
             case TB_X86INTRIN_STMXCSR:
             case TB_UNREACHABLE:
             case TB_DEBUGBREAK:
+            case TB_TRAP:
+            case TB_POISON:
             break;
 
             case TB_LABEL:

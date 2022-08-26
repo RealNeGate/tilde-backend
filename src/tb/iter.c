@@ -23,6 +23,8 @@ TB_API bool tb_next_node_input(const TB_Function* f, TB_NodeInputIter* iter) {
         case TB_X86INTRIN_STMXCSR:
         case TB_UNREACHABLE:
         case TB_DEBUGBREAK:
+        case TB_POISON:
+        case TB_TRAP:
         return false;
 
         case TB_LABEL:

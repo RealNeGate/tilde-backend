@@ -2,21 +2,17 @@
 #include "tb_internal.h"
 
 typedef struct {
+    TB_Function* f;
     int* doms;
-
-    size_t traversal_filled;
-    TB_Label* traversal;
-
-    bool* visited;
+    TB_PostorderWalk order;
 } DomContext;
 
 // ignores the start node when doing the traversal
-static void postorder(TB_Function* f, DomContext* ctx, TB_Reg bb) {
+static void postorder(TB_Function* f, TB_PostorderWalk* ctx, TB_Reg bb) {
     assert(f->nodes[bb].type == TB_LABEL);
 
     TB_Node* start = &f->nodes[bb];
     TB_Label label_id = start->label.id;
-
     if (ctx->visited[label_id]) {
         return;
     }
@@ -26,7 +22,7 @@ static void postorder(TB_Function* f, DomContext* ctx, TB_Reg bb) {
     TB_Reg bb_end = start->label.terminator;
     TB_Node* end = &f->nodes[bb_end];
 
-    if (end->type == TB_RET) {
+    if (end->type == TB_RET || end->type == TB_TRAP || end->type == TB_UNREACHABLE) {
         /* RET can't do shit in this context */
     } else if (end->type == TB_LABEL) {
         postorder(f, ctx, bb_end);
@@ -36,6 +32,7 @@ static void postorder(TB_Function* f, DomContext* ctx, TB_Reg bb) {
         postorder(f, ctx, tb_find_reg_from_label(f, end->if_.if_true));
         postorder(f, ctx, tb_find_reg_from_label(f, end->if_.if_false));
     } else if (end->type == TB_SWITCH) {
+        // each entry takes up two slots in the VLA storage (i just put random crap in there like arguments for function calls)
         size_t entry_count = (end->switch_.entries_end - end->switch_.entries_start) / 2;
         TB_SwitchEntry* entries = (TB_SwitchEntry*) &f->vla.data[end->switch_.entries_start];
 
@@ -44,17 +41,50 @@ static void postorder(TB_Function* f, DomContext* ctx, TB_Reg bb) {
         }
 
         postorder(f, ctx, tb_find_reg_from_label(f, end->switch_.default_label));
-    } else tb_todo();
+    } else {
+        tb_function_print(f, tb_default_print_callback, stdout);
+        tb_panic("Invalid IR :v(\n");
+    }
 
-    ctx->traversal[ctx->traversal_filled++] = label_id;
+    ctx->traversal[ctx->count++] = bb;
+}
+
+TB_API TB_PostorderWalk tb_function_get_postorder(TB_Function* f) {
+    TB_PostorderWalk walk = {
+        .traversal = tb_platform_heap_alloc(f->label_count * sizeof(TB_Reg)),
+        .visited = tb_platform_heap_alloc(f->label_count * sizeof(bool))
+    };
+
+    tb_function_get_postorder_explicit(f, &walk);
+    return walk;
+}
+
+TB_API void tb_function_free_postorder(TB_PostorderWalk* walk) {
+    tb_platform_heap_free(walk->visited);
+    tb_platform_heap_free(walk->traversal);
+}
+
+TB_API void tb_function_get_postorder_explicit(TB_Function* f, TB_PostorderWalk* walk) {
+    memset(walk->visited, 0, f->label_count * sizeof(bool));
+    return postorder(f, walk, 1);
+}
+
+static TB_Label label_id(TB_Function* f, TB_Reg r) {
+    assert(f->nodes[r].type == TB_LABEL);
+    return f->nodes[r].label.id;
 }
 
 static int find_traversal_index(DomContext* ctx, TB_Label l) {
-    loop(i, ctx->traversal_filled) {
-        if (ctx->traversal[i] == l) return i;
+    FOREACH_N(i, 0, ctx->order.count) {
+        if (label_id(ctx->f, ctx->order.traversal[i]) == l) return i;
     }
 
     tb_todo();
+}
+
+static int get_idom_in_postorder_index(DomContext* ctx, int x) {
+    TB_Label l = label_id(ctx->f, ctx->order.traversal[x]);
+    return find_traversal_index(ctx, ctx->doms[l]);
 }
 
 // this takes in postorder indices
@@ -63,13 +93,13 @@ static TB_Label intersect(DomContext* ctx, int a, int b) {
         // while (finger1 < finger2)
         //   finger1 = doms[finger1]
         while (a < b) {
-            a = find_traversal_index(ctx, ctx->doms[ctx->traversal[a]]);
+            a = get_idom_in_postorder_index(ctx, a);
         }
 
         // while (finger2 < finger1)
         //   finger2 = doms[finger2]
         while (b < a) {
-            b = find_traversal_index(ctx, ctx->doms[ctx->traversal[b]]);
+            b = get_idom_in_postorder_index(ctx, b);
         }
     }
 
@@ -116,41 +146,32 @@ TB_API size_t tb_get_dominators(TB_Function* f, TB_Predeccesors preds, TB_Label*
     }
 
     DomContext ctx = {
-        .doms = doms
+        .f = f, .doms = doms
     };
-
-    // undef all dominator entries
-    loop(i, f->label_count) {
-        doms[i] = -1;
-    }
 
     // entrypoint dominates itself
     doms[0] = 0;
+
+    // undef all dominator entries
+    FOREACH_N(i, 1, f->label_count) doms[i] = -1;
 
     // identify post order traversal order
     {
         TB_TemporaryStorage* tls = tb_tls_steal();
 
-        ctx.traversal_filled = 0;
-        ctx.traversal = tb_tls_push(tls, f->label_count * sizeof(TB_Label));
+        ctx.order.count = 0;
+        ctx.order.traversal = tb_tls_push(tls, f->label_count * sizeof(TB_Reg));
 
         // we only need the visited array for this scope, it's just to avoid
         // recursing forever on post order traversal stuff
-        ctx.visited = tb_tls_push(tls, f->label_count * sizeof(bool));
-        memset(ctx.visited, 0, f->label_count * sizeof(bool));
+        ctx.order.visited = tb_tls_push(tls, f->label_count * sizeof(bool));
+        memset(ctx.order.visited, 0, f->label_count * sizeof(bool));
 
-        postorder(f, &ctx, 1);
+        tb_function_get_postorder_explicit(f, &ctx.order);
 
-        /*printf("Post order traversal: \n");
-        loop(i, ctx.traversal_filled) {
-            printf("L%d ", ctx.traversal[i]);
-        }
-        printf("\n");*/
-
-        tb_tls_restore(tls, ctx.visited);
-        ctx.visited = NULL;
-
-        // ctx.traversal is kept
+        // NOTE: free ctx.order.visited but keep ctx.traversal
+        tb_tls_restore(tls, ctx.order.visited);
+        ctx.order.visited = NULL;
     }
 
     bool changed = true;
@@ -158,20 +179,21 @@ TB_API size_t tb_get_dominators(TB_Function* f, TB_Predeccesors preds, TB_Label*
         changed = false;
 
         // for all nodes, b, in reverse postorder (except start node)
-        loop_reverse(i, ctx.traversal_filled - 1) {
-            TB_Label b = ctx.traversal[i];
+        FOREACH_REVERSE_N(i, 0, ctx.order.count - 1) {
+            TB_Label b = label_id(f, ctx.order.traversal[i]);
             TB_Label new_idom = preds.preds[b][0];
 
             // for all other predecessors, p, of b
-            loop_range(j, 1, preds.count[b]) {
+            FOREACH_N(j, 1, preds.count[b]) {
                 TB_Label p = preds.preds[b][j];
 
-                if (doms[p] != -1) { // i.e., if doms[p] already calculated
-                    new_idom = ctx.traversal[intersect(
-                            &ctx,
-                            find_traversal_index(&ctx, p),
-                            find_traversal_index(&ctx, new_idom)
-                        )];
+                // i.e., if doms[p] already calculated
+                if (doms[p] != -1) {
+                    new_idom = label_id(f, ctx.order.traversal[intersect(
+                                &ctx,
+                                find_traversal_index(&ctx, p),
+                                find_traversal_index(&ctx, new_idom)
+                            )]);
                 }
             }
 

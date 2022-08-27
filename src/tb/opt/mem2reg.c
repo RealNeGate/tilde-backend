@@ -186,6 +186,12 @@ static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_
         phi_node->type = TB_PHI1;
         phi_node->phi2.inputs[0] = (TB_PhiInput){ label_reg, reg };
         return;
+    } else if (phi_node->type == TB_PASS) {
+        TB_Reg input_label_reg = tb_find_label_from_reg(f, phi_node->pass.value);
+
+        phi_node->type = TB_PHI2;
+        phi_node->phi2.inputs[0] = (TB_PhiInput){ input_label_reg, phi_node->pass.value };
+        phi_node->phi2.inputs[1] = (TB_PhiInput){ label_reg, reg };
     }
 
     int count = tb_node_get_phi_width(f, phi_reg);

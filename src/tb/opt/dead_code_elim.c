@@ -89,6 +89,7 @@ static bool dead_expr_elim(TB_Function* f) {
                     case TB_PTR2INT:
                     case TB_INT2FLOAT:
                     case TB_FLOAT2INT:
+                    case TB_FLOAT_EXT:
                     case TB_SIGN_EXT:
                     case TB_ZERO_EXT:
                     case TB_TRUNCATE:
@@ -139,6 +140,51 @@ static bool dead_expr_elim(TB_Function* f) {
     } while (local_changes);
 
     return changes;
+}
+
+static bool dead_block_elim(TB_Function* f) {
+    TB_TemporaryStorage* tls = tb_tls_allocate();
+
+    // TODO(NeGate): clean this up for speed purposes :(
+    bool changes = false;
+    bool local_changes;
+    do {
+        local_changes = false;
+
+        TB_Predeccesors preds = tb_get_temp_predeccesors(f, tls);
+        int kill_count = 0;
+        TB_Reg* mark_to_kill = tb_tls_push(tls, 0);
+
+        FOREACH_N(i, 0, f->label_count) {
+            if (i > 0 && preds.count[i] == 0) {
+                tb_tls_push(tls, sizeof(int));
+                TB_Reg r = tb_find_reg_from_label(f, i);
+                if (r) mark_to_kill[kill_count++] = r;
+            }
+        }
+
+        // actually delete them
+        FOREACH_N(i, 0, kill_count) {
+            TB_Reg bb_prev = tb_node_get_previous(f, mark_to_kill[i]);
+            TB_Reg bb = mark_to_kill[i];
+            TB_Reg bb_end = f->nodes[bb].label.terminator;
+
+            f->nodes[bb_prev].next = f->nodes[bb_end].type == TB_LABEL ? bb_end : f->nodes[bb_end].next;
+        }
+
+        local_changes = (kill_count > 0);
+        changes |= local_changes;
+    } while (local_changes);
+
+    return changes;
+}
+
+TB_API TB_Pass tb_opt_dead_block_elim(void) {
+    return (TB_Pass){
+        .mode = TB_FUNCTION_PASS,
+        .name = "DeadBlockElimination",
+        .func_run = dead_block_elim,
+    };
 }
 
 TB_API TB_Pass tb_opt_dead_expr_elim(void) {

@@ -165,6 +165,68 @@ static BinOpReg create_binop(TB_Function* f, TB_Reg r, TB_Reg x, TB_Reg y) {
     return (BinOpReg){ r, changes };
 }
 
+static bool phi_motion(TB_Function* f, TB_Node* n) {
+    TB_Reg r = (n - f->nodes);
+
+    if (tb_node_is_phi_node(f, r)) {
+        int count = tb_node_get_phi_width(f, r);
+        TB_PhiInput* inputs = tb_node_get_phi_inputs(f, r);
+
+        // (phi (add X A)), (add Y A)) => (add (phi(X, Y) A)
+        TB_NodeTypeEnum shared_type = 0;
+        TB_Reg shared_a = 0;
+        TB_ArithmaticBehavior shared_ab = 0;
+
+        bool success = (count > 0);
+        FOREACH_N(j, 0, count) {
+            TB_Reg a = inputs[j].val;
+
+            if (f->nodes[a].type >= TB_AND && f->nodes[a].type <= TB_SMOD) {
+                if (shared_type == 0) {
+                    // decide on a shared value
+                    shared_a = f->nodes[a].i_arith.a;
+                    shared_type = f->nodes[a].type;
+                    shared_ab = f->nodes[a].i_arith.arith_behavior;
+                } else if (shared_type != f->nodes[a].type || f->nodes[a].i_arith.arith_behavior == shared_ab) {
+                    // does it not share the left side?
+                    if (f->nodes[a].i_arith.a != shared_a) {
+                        success = false;
+                        break;
+                    }
+                }
+            } else {
+                success = false;
+                break;
+            }
+        }
+
+        if (success) {
+            FOREACH_N(j, 0, count) {
+                TB_Reg a = inputs[j].val;
+
+                if (f->nodes[a].type >= TB_AND && f->nodes[a].type <= TB_SMOD) {
+                    inputs[j].val = f->nodes[a].i_arith.b;
+                }
+            }
+
+            TB_Reg shared_op = tb_function_insert_after(f, r);
+            f->nodes[shared_op].type = shared_type;
+            f->nodes[shared_op].dt = f->nodes[r].dt;
+            f->nodes[shared_op].i_arith.a = shared_a;
+            f->nodes[shared_op].i_arith.b = 0;
+            f->nodes[shared_op].i_arith.arith_behavior = shared_ab;
+
+            tb_function_find_replace_reg(f, r, shared_op);
+
+            // set after the replace op
+            f->nodes[shared_op].i_arith.b = r;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static bool reassoc(TB_Function* f, TB_Node* n) {
     if (!is_associative(n->type)) {
         return false;

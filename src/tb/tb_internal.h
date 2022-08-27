@@ -577,6 +577,7 @@ uint32_t tb_get4b(TB_Emitter* o, uint32_t pos);
 // IR ANALYSIS
 ////////////////////////////////
 TB_Reg tb_find_reg_from_label(TB_Function* f, TB_Label id);
+TB_Reg tb_find_label_from_reg(TB_Function* f, TB_Reg target);
 TB_Reg tb_find_first_use(const TB_Function* f, TB_Reg find, size_t start, size_t end);
 void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace);
 size_t tb_count_uses(const TB_Function* f, TB_Reg find, size_t start, size_t end);

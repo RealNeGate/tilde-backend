@@ -203,7 +203,7 @@ static TB_Reg cse_attempt(TB_Function* f, CSE_Context* ctx, TB_TemporaryStorage*
         // check dominators for value, we dont need the same checks of resolution
         // as local CSE since we can guarentee the entire BB is resolved at this point
         TB_Reg found = walk_dominators_for_similar_def(f, ctx->defs, ctx->doms, ctx->doms[ctx->bb], r);
-        if (found != TB_NULL_REG) {
+        if (found != TB_NULL_REG && r != found) {
             OPTIMIZER_LOG(r, "Removed BB-global duplicate expression");
             n->type = TB_PASS;
             n->pass.value = found;
@@ -214,7 +214,7 @@ static TB_Reg cse_attempt(TB_Function* f, CSE_Context* ctx, TB_TemporaryStorage*
         FOREACH_N(i, 0, ctx->resolved_reg_count) {
             TB_Reg other = ctx->resolved_regs[i];
 
-            if (is_node_the_same(n, &f->nodes[other])) {
+            if (r != other && is_node_the_same(n, &f->nodes[other])) {
                 OPTIMIZER_LOG(r, "Removed BB-local duplicate expression");
                 n->type = TB_PASS;
                 n->pass.value = other;

@@ -223,6 +223,18 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace) {
     #undef X
 }
 
+TB_Reg tb_find_label_from_reg(TB_Function* f, TB_Reg target) {
+    TB_Reg bb = 0;
+    TB_FOR_EACH_NODE(n, f) {
+        TB_Reg r = (n - f->nodes);
+
+        if (n->type == TB_LABEL) bb = r;
+        else if (target == r) return bb;
+    }
+
+    return TB_NULL_REG;
+}
+
 TB_Reg tb_find_reg_from_label(TB_Function* f, TB_Label id) {
     TB_FOR_EACH_NODE(n, f) {
         if (n->type == TB_LABEL && n->label.id == id) return TB_GET_REG(n, f);

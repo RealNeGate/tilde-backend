@@ -875,12 +875,6 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 break;
             }
 
-            case TB_TRAP: {
-                *ctx->header.out++ = 0x0F;
-                *ctx->header.out++ = 0x0B;
-                break;
-            }
-
             case TB_DEBUGBREAK: {
                 *ctx->header.out++ = 0xCC;
                 break;
@@ -1543,7 +1537,9 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
                 if (is_src_int == is_dst_int) {
                     // just doesn't do anything really
-                    tb_todo();
+                    Val val = val_gpr(dt, fast_alloc_gpr(ctx, f, r));
+                    fast_def_gpr(ctx, f, r, val.gpr, dt);
+                    INST2(MOV, &val, &src, dt);
                 } else {
                     int bits_in_type = 64;
                     if (dt.type == TB_INT) bits_in_type = dt.data;
@@ -2564,7 +2560,12 @@ TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restr
         if (end->type != TB_LABEL) next_bb = &f->nodes[next_bb->next];
         TB_Reg next_bb_reg = next_bb - f->nodes;
 
-        if (end->type == TB_RET) {
+        if (end->type == TB_TRAP) {
+            *ctx->header.out++ = 0x0F;
+            *ctx->header.out++ = 0x0B;
+        } else if (end->type == TB_UNREACHABLE) {
+            /* lmao you thought we'd help you */
+        } else if (end->type == TB_RET) {
             TB_DataType dt = end->dt;
 
             // Evaluate return value

@@ -5,7 +5,7 @@ Modules are the largest logical unit of code in TB, they contain functions and g
 ```c
 	// this will use the host machine for the target architecture and system, this is
 	// helpful when doing JIT or non-cross AOT compilation
-    TB_Module* module = tb_module_create_for_host(arch, TB_SYSTEM_WINDOWS, TB_DEBUGFMT_NONE, NULL);
+	TB_Module* module = tb_module_create_for_host(arch, TB_SYSTEM_WINDOWS, TB_DEBUGFMT_NONE, NULL);
 ```
 
 ```c
@@ -23,7 +23,7 @@ Modules are the largest logical unit of code in TB, they contain functions and g
 	// AVX or BF16
 	TB_FeatureSet features = { 0 };
 
-    TB_Module* module = tb_module_create_for_host(arch, sys, debug_fmt, &features);
+	TB_Module* module = tb_module_create_for_host(arch, sys, debug_fmt, &features);
 ```
 
 # Exporter API

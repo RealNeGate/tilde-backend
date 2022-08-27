@@ -106,6 +106,11 @@ static uint8_t legalize_float(TB_DataType dt) {
     return flags;
 }
 
+static bool fits_into_int32(uint64_t x) {
+    int32_t y = x & 0xFFFFFFFF;
+    return (int64_t)y == x;
+}
+
 static int get_data_type_size(const TB_DataType dt) {
     assert(dt.width <= 2 && "Vector width too big!");
 
@@ -132,6 +137,20 @@ static int get_data_type_size(const TB_DataType dt) {
             tb_unreachable();
             return 0;
         }
+    }
+}
+
+static void x64v2_resolve_local_patches(Ctx* restrict ctx, TB_Function* f) {
+    FOREACH_N(i, 0, ctx->ret_patch_count) {
+        uint32_t pos = ctx->ret_patches[i];
+        PATCH4(pos, GET_CODE_POS() - (pos + 4));
+    }
+
+    FOREACH_N(i, 0, ctx->label_patch_count) {
+        uint32_t pos = ctx->label_patches[i].pos;
+        uint32_t target_lbl = ctx->label_patches[i].target_lbl;
+
+        PATCH4(pos, ctx->labels[target_lbl] - (pos + 4));
     }
 }
 
@@ -210,7 +229,7 @@ static void x64v2_resolve_stack_slot(Ctx* restrict ctx, TB_Function* f, TB_Node*
             // don't keep a reference of it in GPR if it's in memory
             if (is_sysv && id < 6) {
                 GAD_VAL src = GAD_FN(steal_register)(
-                    ctx, f, TB_TYPE_I64, X64_REG_CLASS_GPR, WIN64_GPR_PARAMETERS[id]
+                    ctx, f, TB_TYPE_I64, X64_REG_CLASS_GPR, SYSV_GPR_PARAMETERS[id]
                 );
                 INST2(MOV, &dst, &src, TB_TYPE_I64);
             } else if (id < 4) {
@@ -273,7 +292,7 @@ static GAD_VAL x64v2_cond_to_reg(Ctx* restrict ctx, TB_Function* f, TB_Reg r, in
     return dst;
 }
 
-static void x64v2_branch_if(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_Label fallthrough, TB_Label if_true, TB_Label if_false) {
+static void x64v2_branch_if(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_Label if_true, TB_Label if_false, TB_Reg fallthrough, TB_Reg if_true_reg, TB_Reg if_false_reg) {
     Cond cc = 0;
     if (ctx->flags_bound == cond) {
         cc = ctx->flags_code;
@@ -281,41 +300,64 @@ static void x64v2_branch_if(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_L
         tb_todo();
     }
 
-    // flip the condition and the labels if
-    // it allows for fallthrough
-    bool has_fallthrough = (fallthrough == if_false);
-    if (fallthrough == if_true) {
-        tb_swap(TB_Label, if_true, if_false);
-        cc ^= 1;
-
-        has_fallthrough = true;
+    if (fallthrough == if_true_reg) {
+        // invert condition and target to make fallthrough work
+        JCC(cc ^ 1, if_false);
+    } else {
+        // JCC .true
+        // JMP .false
+        JCC(cc, if_true);
+        if (fallthrough != if_false_reg) {
+            JMP(if_false);
+        }
     }
+}
 
-    // JCC .true
-    // JMP .false # elidable if it points to the next instruction
-    JCC(cc, if_true);
-    if (!has_fallthrough) JMP(if_false);
+static void x64v2_mask_out(Ctx* restrict ctx, TB_Function* f, const LegalInt l, const GAD_VAL* dst) {
+    if (fits_into_int32(l.mask)) {
+        Val mask = val_imm(l.dt, l.mask);
+        INST2(AND, dst, &mask, l.dt);
+    } else {
+        GAD_VAL tmp = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);
+
+        // MOVABS     REX.W B8+r imm64
+        EMIT(tmp.gpr >= 8 ? 0x49 : 0x48), EMIT(0xB8 + (tmp.gpr & 7)), EMIT8(l.mask);
+        INST2(AND, dst, &tmp, l.dt);
+
+        GAD_FN(unlock_register)(ctx, f, X64_REG_CLASS_GPR, tmp.gpr);
+    }
 }
 
 static void GAD_FN(spill_move)(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, GAD_VAL* dst_val, GAD_VAL* src_val, GAD_VAL* reg_val) {
+    LegalInt l = legalize_int(dt);
+
     if (src_val->type == VAL_MEM) {
         // spilling an address is kinda cringe but yea
         INST2(LEA, reg_val, src_val, TB_TYPE_PTR);
         INST2(MOV, dst_val, reg_val, TB_TYPE_PTR);
     } else {
-        INST2(MOV, dst_val, src_val, dt);
+        // Mask is unnecessary due to type safety
+        // if (l.mask) x64v2_mask_out(ctx, f, l, src_val);
+        INST2(MOV, dst_val, src_val, l.dt);
     }
 }
 
 static void x64v2_phi_move(Ctx* restrict ctx, TB_Function* f, GAD_VAL* dst_val, TB_Reg dst, TB_Reg src) {
+    LegalInt l = legalize_int(f->nodes[src].dt);
+
     if (f->nodes[src].type == TB_ADD && f->nodes[src].i_arith.a == dst) {
         GAD_FN(expend)(ctx, f, src);
         GAD_FN(expend)(ctx, f, f->nodes[src].i_arith.a);
 
         GAD_VAL src_val = GAD_FN(get_val_gpr)(ctx, f, f->nodes[src].i_arith.b);
+
         INST2(ADD, dst_val, &src_val, f->nodes[src].dt);
+        if (l.mask) x64v2_mask_out(ctx, f, l, dst_val);
     } else {
         GAD_VAL src_val = GAD_FN(get_val_gpr)(ctx, f, src);
+
+        // mask is unnecessary due to type safety
+        // if (l.mask) x64v2_mask_out(ctx, f, l, &src_val);
         INST2(MOV, dst_val, &src_val, f->nodes[src].dt);
     }
 }
@@ -330,6 +372,7 @@ static void x64v2_store(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
         INST2(MOV, &tmp, &addr, TB_TYPE_PTR);
 
         addr = val_base_disp(TB_TYPE_PTR, tmp.gpr, 0);
+        addr.is_spill = true;
     } else if (addr.type == VAL_GPR) {
         addr = val_base_disp(TB_TYPE_PTR, addr.gpr, 0);
     }
@@ -337,6 +380,8 @@ static void x64v2_store(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
     LegalInt l = legalize_int(n->dt);
 
     GAD_VAL src = GAD_FN(get_val_gpr)(ctx, f, n->store.value);
+
+    if (l.mask) x64v2_mask_out(ctx, f, l, &src);
     INST2(MOV, &addr, &src, l.dt);
 
     if (addr.is_spill) {
@@ -344,16 +389,172 @@ static void x64v2_store(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
     }
 }
 
-static bool fits_into_int32(TB_Node* n) {
-    if (n->type == TB_INTEGER_CONST &&
-        n->integer.num_words == 1) {
-        uint64_t x = n->integer.single_word;
-        int32_t y = x & 0xFFFFFFFF;
+static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r, size_t queue_length_before) {
+    TB_Node* restrict n = &f->nodes[r];
+    TB_NodeTypeEnum type = n->type;
 
-        return (int64_t)y == x;
+    static const struct ParamDescriptor {
+        int gpr_count;
+        int xmm_count;
+        uint16_t callee_saved_xmm_count; // XMM0 - XMMwhatever
+        uint16_t caller_saved_gprs;      // bitfield
+
+        GPR gprs[6];
+    } param_descs[] = {
+        // win64
+        { 4, 4, 16, WIN64_ABI_CALLER_SAVED,   { RCX, RDX, R8, R9 } },
+        // system v
+        { 6, 4, 5, SYSV_ABI_CALLER_SAVED,    { RDI, RSI, RCX, RDX, R8, R9 } },
+        // syscall
+        { 6, 4, 5, SYSCALL_ABI_CALLER_SAVED, { RDI, RSI, RDX, R10, R8, R9 } },
+    };
+
+    bool is_sysv = (f->module->target_abi == TB_ABI_SYSTEMV);
+    const struct ParamDescriptor* restrict params = &param_descs[is_sysv ? 1 : 0];
+    if (type == TB_SCALL) {
+        params = &param_descs[2];
     }
 
-    return false;
+    // Evict the GPRs that are caller saved
+    uint16_t caller_saved = params->caller_saved_gprs;
+
+    int param_start = n->call.param_start;
+    int param_count = n->call.param_end - n->call.param_start;
+    FOREACH_N(i, 0, param_count) {
+        TB_Reg param_reg = f->vla.data[param_start + i];
+        TB_DataType param_dt = f->nodes[param_reg].dt;
+
+        if (TB_IS_FLOAT_TYPE(param_dt) || param_dt.width) {
+            tb_todo();
+            /*if (j < params->xmm_count) {
+                tb_todo();
+            } else {
+                GAD_VAL dst = val_base_disp(param_dt, RSP, 8 * i);
+                GAD_VAL src = GAD_FN(get_val_gpr)(ctx, f, param_reg);
+                INST2(MOV, &dst, &src, param_dt);
+            }*/
+        } else {
+            Val dst;
+            if (i < params->gpr_count) {
+                dst = val_gpr(param_dt, params->gprs[i]);
+
+                // don't evict if the guy in the slot is based
+                if (ctx->reg_allocator[X64_REG_CLASS_GPR][dst.gpr] != param_reg) {
+                    // since we evict now we don't need to later
+                    GAD_FN(evict)(ctx, f, X64_REG_CLASS_GPR, dst.gpr);
+                    caller_saved &= ~(1u << dst.gpr);
+                }
+
+                GAD_FN(lock_register)(ctx, f, param_reg, X64_REG_CLASS_GPR, dst.gpr);
+            } else {
+                dst = val_base_disp(param_dt, RSP, 8 * i);
+            }
+
+            GAD_VAL src = GAD_FN(get_val_gpr)(ctx, f, param_reg);
+            INST2(MOV, &dst, &src, param_dt);
+        }
+    }
+
+    GAD_FN(resolve_leftover)(ctx, f, queue_length_before);
+
+    // Spill anything else
+    FOREACH_N(j, 0, 16) {
+        if (caller_saved & (1u << j)) {
+            GAD_FN(evict)(ctx, f, X64_REG_CLASS_GPR, j);
+        }
+    }
+
+    // Evict the XMMs that are caller saved
+    FOREACH_N(j, params->callee_saved_xmm_count, 16) {
+        GAD_FN(evict)(ctx, f, X64_REG_CLASS_GPR, j);
+    }
+
+    switch (type) {
+        case TB_CALL: {
+            const TB_Function* target = n->call.target;
+            tb_emit_call_patch(f->module, f, target, GET_CODE_POS() + 1, s_local_thread_id);
+
+            // CALL rel32
+            EMIT(0xE8), EMIT4(0x0);
+            break;
+        }
+        case TB_ECALL: {
+            const TB_External* target = n->ecall.target;
+            tb_emit_ecall_patch(f->module, f, target, GET_CODE_POS() + 1, s_local_thread_id);
+
+            // CALL rel32
+            EMIT(0xE8), EMIT4(0x0);
+            break;
+        }
+        case TB_SCALL: {
+            GAD_VAL src = GAD_FN(get_val_gpr)(ctx, f, n->scall.target);
+            GAD_VAL dst = val_gpr(TB_TYPE_PTR, RAX);
+
+            // MOV RAX, syscall number
+            INST2(MOV, &dst, &src, TB_TYPE_I64);
+
+            // SYSCALL
+            EMIT(0x0F), EMIT(0x05);
+            break;
+        }
+        case TB_VCALL: {
+            GAD_VAL target = GAD_FN(get_val)(ctx, f, n->vcall.target);
+
+            assert(target.type == VAL_MEM && target.mem.index == GPR_NONE && target.mem.disp == 0);
+            target = val_gpr(TB_TYPE_PTR, target.mem.base);
+
+            // call r/m64
+            INST1(CALL_RM, &target);
+            break;
+        }
+        default: tb_todo();
+    }
+
+    // get rid of all those reserved TEMP_REGs
+    FOREACH_N(i, 0, 16) {
+        if (ctx->reg_allocator[X64_REG_CLASS_GPR][i] == TB_TEMP_REG) {
+            ctx->reg_allocator[X64_REG_CLASS_GPR][i] = TB_NULL_REG;
+            ctx->regs_available[X64_REG_CLASS_GPR] += 1;
+        }
+
+        if (ctx->reg_allocator[X64_REG_CLASS_XMM][i] == TB_TEMP_REG) {
+            ctx->reg_allocator[X64_REG_CLASS_XMM][i] = TB_NULL_REG;
+            ctx->regs_available[X64_REG_CLASS_XMM] += 1;
+        }
+    }
+
+    // the return value
+    TB_DataType dt = f->nodes[r].dt;
+    if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
+        if (ctx->reg_allocator[X64_REG_CLASS_XMM][XMM0] == 0) {
+            ctx->regs_available[X64_REG_CLASS_XMM] -= 1;
+        }
+
+        ctx->reg_allocator[X64_REG_CLASS_XMM][XMM0] = r;
+        ctx->queue[ctx->queue_length++] = (GAD_VAL){
+            .type = GAD_VAL_REGISTER + X64_REG_CLASS_GPR,
+            .dt = dt,
+            .r = r,
+            .reg = XMM0
+        };
+    } else {
+        int bits_in_type = dt.type == TB_PTR ? 8 : dt.data;
+
+        // VOID is technically just
+        if (bits_in_type > 0) {
+            if (ctx->reg_allocator[X64_REG_CLASS_GPR][RAX] == 0) {
+                ctx->regs_available[X64_REG_CLASS_GPR] -= 1;
+            }
+            ctx->reg_allocator[X64_REG_CLASS_GPR][RAX] = r;
+
+            ctx->queue[ctx->queue_length++] = (GAD_VAL){
+                .type = GAD_VAL_REGISTER + X64_REG_CLASS_GPR,
+                .dt = dt,
+                .r = r,
+                .reg = RAX
+            };
+        }
+    }
 }
 
 static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
@@ -362,7 +563,7 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
 
     switch (type) {
         case TB_INTEGER_CONST: {
-            if (fits_into_int32(n)) {
+            if (n->integer.num_words == 1 && fits_into_int32(n->integer.single_word)) {
                 LegalInt l = legalize_int(n->dt);
                 uint64_t imm = n->integer.single_word;
                 if (l.mask) {
@@ -498,13 +699,20 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
             }
         }
 
-        case TB_ADD: {
+        case TB_AND:
+        case TB_OR:
+        case TB_XOR:
+        case TB_ADD:
+        case TB_SUB:
+        case TB_MUL: {
+            const static Inst2Type ops[] = { AND, OR, XOR, ADD, SUB, IMUL };
+
             GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
             GAD_VAL a = GAD_FN(get_val_gpr)(ctx, f, n->i_arith.a);
             GAD_VAL b = GAD_FN(get_val_gpr)(ctx, f, n->i_arith.b);
 
             INST2(MOV, &dst, &a, n->dt);
-            INST2(ADD, &dst, &b, n->dt);
+            INST2(ops[type - TB_AND], &dst, &b, n->dt);
             return dst;
         }
 

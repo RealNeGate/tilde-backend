@@ -223,11 +223,18 @@ static bool inst_combine(TB_Function* f) {
             }
         }
 
+        if (phi_motion(f, n)) {
+            n = &f->nodes[i];
+            changes++;
+        }
+
         if (reassoc(f, n)) {
+            n = &f->nodes[i];
             changes++;
         }
 
         if (const_fold(f, n)) {
+            n = &f->nodes[i];
             changes++;
         }
 

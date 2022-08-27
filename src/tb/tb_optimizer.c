@@ -204,6 +204,10 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
     FOREACH_N(i, 0, m->functions.count) {
         TB_Function* f = &functions[i];
 
+        //printf("ORIGINAL\n");
+        //tb_function_print2(f, tb_default_print_callback, stdout, false);
+        //printf("\n\n");
+
         FOREACH_N(j, 0, pass_count) {
             switch (passes[j].mode) {
                 case TB_BASIC_BLOCK_PASS:

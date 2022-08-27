@@ -2,7 +2,6 @@
 .tup/
 bin/
 negate/
-deps/luajit/
 
 *.swp
 *.out

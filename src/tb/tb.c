@@ -17,7 +17,7 @@ const IDebugFormat* tb__find_debug_format(TB_Module* m) {
 
 ICodeGen* tb__find_code_generator(TB_Module* m) {
     switch (m->target_arch) {
-        #if 1
+        #if 0
         case TB_ARCH_X86_64: return &tb__x64v2_codegen;
         #else
         case TB_ARCH_X86_64: return &tb__x64_codegen;
@@ -438,18 +438,12 @@ TB_API void tb_module_set_tls_index(TB_Module* m, TB_External* e) {
     m->tls_index_extern = e;
 }
 
-TB_API bool tb_jit_import(TB_Module* m, const char* name, void* address) {
-    // TODO(NeGate): Maybe speed this up but also maybe don't... idk
-    loop(i, m->max_threads) {
-        pool_for(TB_External, e, m->thread_info[i].externals) {
-            if (strcmp(e->name, name) == 0) {
-                e->address = address;
-                return true;
-            }
-        }
-    }
+TB_API void tb_extern_bind_ptr(TB_External* e, void* ptr) {
+    e->address = ptr;
+}
 
-    return false;
+TB_API void* tb_function_get_jit_pos(TB_Function* f) {
+    return f->compiled_pos;
 }
 
 TB_API TB_External* tb_extern_create(TB_Module* m, const char* name) {

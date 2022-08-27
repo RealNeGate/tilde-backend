@@ -8,7 +8,6 @@
 void tb_module_export_jit(TB_Module* m, TB_ISelMode isel_mode) {
     ICodeGen* restrict codegen = tb__find_code_generator(m);
     TB_TemporaryStorage* tls = tb_tls_allocate();
-    m->compiled_function_pos = tb_platform_heap_alloc(m->functions.count * sizeof(void*));
 
     // The prologue and epilogue generators need some storage
     uint8_t* proepi_buffer = tb_tls_push(tls, PROEPI_BUFFER);
@@ -48,7 +47,7 @@ void tb_module_export_jit(TB_Module* m, TB_ISelMode isel_mode) {
     uint8_t* text_section = m->jit_region;
     loop(i, m->functions.count) {
         TB_FunctionOutput* out_f = m->functions.data[i].output;
-        m->compiled_function_pos[i] = (void*)text_section;
+        m->functions.data[i].compiled_pos = (void*)text_section;
 
         uint64_t meta = out_f->prologue_epilogue_metadata;
         uint64_t stack_usage = out_f->stack_usage;

@@ -307,6 +307,7 @@ struct TB_Function {
     TB_Line* lines;
 
     // Compilation output
+    void* compiled_pos;
     TB_FunctionOutput* output;
 };
 
@@ -363,10 +364,6 @@ struct TB_Module {
 
     void* jit_region;
     size_t jit_region_size;
-
-    // If not NULL, there's JITted functions in each
-    // non NULL entry which map to the `compiled_functions`
-    void** compiled_function_pos;
 
     // we need to keep track of these for layout reasons
     tb_atomic_size_t data_region_size;

@@ -67,6 +67,28 @@ typedef struct {
     uint64_t mask;
 } LegalInt;
 
+typedef enum {
+    SHL, SHR, SAR
+} ShiftType;
+
+static void emit_shift_gpr_imm(Ctx* restrict ctx, TB_Function* f, ShiftType type, GPR dst, uint8_t imm, TB_DataType dt) {
+    int bits_in_type = dt.type == TB_PTR ? 64 : dt.data;
+
+    if (bits_in_type <= 16) EMIT(0x66);
+    EMIT(rex(bits_in_type > 32, 0x00, dst, 0x00));
+    EMIT((bits_in_type <= 8 ? 0xC0 : 0xC1));
+
+    uint8_t op = 0x00;
+    switch (type) {
+        case SHL: op = 0x04; break;
+        case SHR: op = 0x05; break;
+        case SAR: op = 0x07; break;
+        default: tb_unreachable();
+    }
+    EMIT(mod_rx_rm(MOD_DIRECT, op, dst));
+    EMIT(imm);
+}
+
 // returns a mask to remove the "out of bounds" bits
 static LegalInt legalize_int(TB_DataType dt) {
     if (dt.type != TB_INT) return (LegalInt){ dt, 0 };
@@ -253,7 +275,7 @@ static Val x64v2_get_val_gpr(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
     ptrdiff_t i = GAD_FN(await)(ctx, f, r, 0);
     assert(i >= 0);
 
-    if (ctx->queue[i].type == VAL_MEM) {
+    if (ctx->queue[i].type == VAL_MEM || ctx->queue[i].type == VAL_GLOBAL) {
         GAD_VAL addr = ctx->queue[i];
         GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);
         dst.dt = f->nodes[r].dt;
@@ -263,6 +285,32 @@ static Val x64v2_get_val_gpr(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
     }
 
     assert(ctx->queue[i].type == VAL_GPR || ctx->queue[i].type == VAL_IMM);
+    return ctx->queue[i];
+}
+
+static Val x64v2_get_val2(Ctx* restrict ctx, TB_Function* f, TB_Reg r, bool will_mutate) {
+    ptrdiff_t i = GAD_FN(await)(ctx, f, r, 0);
+    assert(i >= 0);
+
+    if (ctx->queue[i].type == VAL_MEM || ctx->queue[i].type == VAL_GLOBAL) {
+        GAD_VAL addr = ctx->queue[i];
+        GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);
+        dst.dt = f->nodes[r].dt;
+
+        if (!ctx->queue[i].mem.is_rvalue || will_mutate) {
+            INST2(ctx->queue[i].mem.is_rvalue ? MOV : LEA, &dst, &addr, f->nodes[r].dt);
+            return dst;
+        }
+    }
+
+    assert(ctx->queue[i].type == VAL_GPR || ctx->queue[i].type == VAL_IMM);
+    if (will_mutate) {
+        GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);
+
+        INST2(MOV, &dst, &ctx->queue[i], f->nodes[r].dt);
+        return dst;
+    }
+
     return ctx->queue[i];
 }
 
@@ -297,7 +345,35 @@ static void x64v2_branch_if(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_L
     if (ctx->flags_bound == cond) {
         cc = ctx->flags_code;
     } else {
-        tb_todo();
+        LegalInt l = legalize_int(f->nodes[cond].dt);
+        GAD_VAL src = GAD_FN(get_val)(ctx, f, cond);
+
+        if (is_value_mem(&src)) {
+            if (src.mem.is_rvalue) {
+                Val imm = val_imm(TB_TYPE_I32, 0);
+                INST2(CMP, &src, &imm, l.dt);
+            } else {
+                GAD_VAL tmp = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);
+                INST2(LEA, &tmp, &src, l.dt);
+                INST2(TEST, &tmp, &tmp, l.dt);
+                GAD_FN(unlock_register)(ctx, f, X64_REG_CLASS_GPR, tmp.gpr);
+            }
+
+            cc = NE;
+        } else if (src.type == VAL_GPR) {
+            INST2(TEST, &src, &src, l.dt);
+            cc = NE;
+        } else if (src.type == VAL_IMM) {
+            GAD_VAL tmp = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);
+
+            // 'xor a, a' will set ZF to 1
+            INST2(XOR, &tmp, &tmp, l.dt);
+            GAD_FN(unlock_register)(ctx, f, X64_REG_CLASS_GPR, tmp.gpr);
+
+            cc = (src.imm ? E : NE);
+        } else {
+            tb_todo();
+        }
     }
 
     if (fallthrough == if_true_reg) {
@@ -427,8 +503,8 @@ static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r, size_t queue
         if (TB_IS_FLOAT_TYPE(param_dt) || param_dt.width) {
             tb_todo();
             /*if (j < params->xmm_count) {
-                tb_todo();
-            } else {
+                    tb_todo();
+                } else {
                 GAD_VAL dst = val_base_disp(param_dt, RSP, 8 * i);
                 GAD_VAL src = GAD_FN(get_val_gpr)(ctx, f, param_reg);
                 INST2(MOV, &dst, &src, param_dt);
@@ -445,7 +521,7 @@ static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r, size_t queue
                     caller_saved &= ~(1u << dst.gpr);
                 }
 
-                GAD_FN(lock_register)(ctx, f, param_reg, X64_REG_CLASS_GPR, dst.gpr);
+                GAD_FN(lock_register)(ctx, f, param_dt, X64_REG_CLASS_GPR, dst.gpr);
             } else {
                 dst = val_base_disp(param_dt, RSP, 8 * i);
             }
@@ -538,10 +614,7 @@ static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r, size_t queue
             .reg = XMM0
         };
     } else {
-        int bits_in_type = dt.type == TB_PTR ? 8 : dt.data;
-
-        // VOID is technically just
-        if (bits_in_type > 0) {
+        if (dt.type == TB_PTR || (dt.type == TB_INT && dt.data > 0)) {
             if (ctx->reg_allocator[X64_REG_CLASS_GPR][RAX] == 0) {
                 ctx->regs_available[X64_REG_CLASS_GPR] -= 1;
             }
@@ -572,7 +645,103 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
 
                 return val_imm(n->dt, imm);
             } else {
+                assert(n->integer.num_words == 1);
+                GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
+
+                // MOVABS REX.W B8+r imm64
+                EMIT(dst.gpr >= 8 ? 0x49 : 0x48);
+                EMIT(0xB8 + (dst.gpr & 7));
+                EMIT8(n->integer.single_word);
+                return dst;
+            }
+        }
+        case TB_STRING_CONST: {
+            const char* str = n->string.data;
+            size_t len = n->string.length;
+
+            GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
+            EMIT(rex(true, dst.gpr, RBP, 0));
+            EMIT(0x8D);
+            EMIT(mod_rx_rm(MOD_INDIRECT, dst.gpr, RBP));
+
+            uint32_t disp = tb_emit_const_patch(f->module, f, GET_CODE_POS(), str, len, s_local_thread_id);
+            EMIT4(disp);
+            return dst;
+        }
+
+        case TB_VA_START: {
+            assert(f->module->target_abi == TB_ABI_WIN64 && "How does va_start even work on SysV?");
+
+            // on Win64 va_start just means whatever is one parameter away from
+            // the parameter you give it (plus in Win64 the parameters in the stack
+            // are 8bytes, no fanciness like in SysV):
+            // void printf(const char* fmt, ...) {
+            //     va_list args;
+            //     va_start(args, fmt); // args = ((char*) &fmt) + 8;
+            //     ...
+            // }
+            GAD_VAL addr = GAD_FN(get_val)(ctx, f, n->member_access.base);
+            GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
+
+            if (addr.type == VAL_MEM && !addr.mem.is_rvalue) {
+                addr.mem.disp += 8;
+
+                INST2(LEA, &dst, &addr, n->dt);
+            } else if (addr.type == VAL_GPR) {
+                GAD_VAL arith = val_base_disp(TB_TYPE_PTR, addr.gpr, 8);
+
+                INST2(LEA, &dst, &arith, n->dt);
+            } else {
                 tb_todo();
+            }
+            return dst;
+        }
+
+        case TB_GLOBAL_ADDRESS: {
+            TB_Module* m = f->module;
+            const TB_Global* g = n->global.value;
+
+            if (g->storage == TB_STORAGE_TLS) {
+                if (m->tls_index_extern == 0) {
+                    tb_panic("TB error: no tls_index provided\n");
+                }
+
+                // since t0 dies before dst is allocated we just recycle it
+                // mov t0, dword    [_tls_index]
+                GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
+
+                if (dst.gpr >= 8) EMIT(0x41);
+                EMIT(0x8B), EMIT(((dst.gpr & 7) << 3) | RBP), EMIT4(0x00);
+                tb_emit_ecall_patch(f->module, f, m->tls_index_extern, GET_CODE_POS() - 4, s_local_thread_id);
+
+                // mov t1, qword gs:[58h]
+                GAD_VAL t1 = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);
+                EMIT(0x65);
+                EMIT(t1.gpr >= 8 ? 0x4C : 0x48);
+                EMIT(0x8B);
+                EMIT(mod_rx_rm(MOD_INDIRECT, t1.gpr, RSP));
+                EMIT(mod_rx_rm(SCALE_X1, RSP, RBP));
+                EMIT4(0x58);
+
+                // mov t1, qword [t1+t0*8]
+                Val mem = val_base_index(TB_TYPE_PTR, t1.gpr, dst.gpr, SCALE_X8);
+                INST2(MOV, &t1, &mem, TB_TYPE_I64);
+
+                // lea addr, [t1+relocation]
+                EMIT(rex(true, dst.gpr, t1.gpr, 0)), EMIT(0x8D);
+                if ((t1.gpr & 7) == RSP) {
+                    EMIT(mod_rx_rm(MOD_INDIRECT_DISP32, dst.gpr, RSP));
+                    EMIT(mod_rx_rm(SCALE_X1, RSP, t1.gpr));
+                } else {
+                    EMIT(mod_rx_rm(MOD_INDIRECT_DISP32, dst.gpr, t1.gpr));
+                }
+                EMIT4(0);
+                tb_emit_global_patch(f->module, f, GET_CODE_POS() - 4, n->global.value, s_local_thread_id);
+
+                GAD_FN(unlock_register)(ctx, f, X64_REG_CLASS_GPR, t1.gpr);
+                return dst;
+            } else {
+                return val_global(n->global.value);
             }
         }
 
@@ -595,13 +764,26 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
                 case 32: op = sign_ext ? MOVSXD : MOV; break;
                 case 16: op = sign_ext ? MOVSXW : MOVZXW; break;
                 case 8:  op = sign_ext ? MOVSXB : MOVZXB; break;
-                default: tb_todo();
+                default: op = MOV; break;
             }
 
             GAD_VAL src = GAD_FN(get_val_gpr)(ctx, f, n->unary.src);
             GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
 
             INST2(op, &dst, &src, l.dt);
+            if (op == MOV && l.mask != 0) {
+                // complex extensions
+                if (sign_ext) {
+                    LegalInt dst_l = legalize_int(n->dt);
+                    int dst_bits_in_type = dst_l.dt.type == TB_PTR ? 64 : dst_l.dt.data;
+                    int shift_amt = dst_bits_in_type - bits_in_type;
+
+                    emit_shift_gpr_imm(ctx, f, SHL, dst.gpr, shift_amt, dst_l.dt);
+                    emit_shift_gpr_imm(ctx, f, SAR, dst.gpr, shift_amt, dst_l.dt);
+                } else {
+                    x64v2_mask_out(ctx, f, l, &dst);
+                }
+            }
             return dst;
         }
 
@@ -716,6 +898,77 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
             return dst;
         }
 
+        case TB_NOT:
+        case TB_NEG: {
+            GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
+            GAD_VAL a = GAD_FN(get_val_gpr)(ctx, f, n->unary.src);
+
+            INST2(MOV, &dst, &a, n->dt);
+            INST1(type == TB_NOT ? NOT : NEG, &dst);
+            return dst;
+        }
+
+        case TB_SHR:
+        case TB_SHL:
+        case TB_SAR: {
+            LegalInt l = legalize_int(n->dt);
+            int bits_in_type = l.dt.type == TB_PTR ? 64 : l.dt.data;
+
+            GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
+
+            if (f->nodes[n->i_arith.b].type == TB_INTEGER_CONST &&
+                f->nodes[n->i_arith.b].integer.num_words == 1) {
+                uint64_t imm = f->nodes[n->i_arith.b].integer.single_word;
+                assert(imm < 64);
+
+                GAD_VAL a = GAD_FN(get_val_gpr)(ctx, f, n->i_arith.a);
+                INST2(MOV, &dst, &a, n->dt);
+
+                ShiftType shift_type = SHL;
+                switch (type) {
+                    case TB_SHR: shift_type = SHR; break;
+                    case TB_SHL: shift_type = SHL; break;
+                    case TB_SAR: shift_type = SAR; break;
+                    default: tb_unreachable();
+                }
+                emit_shift_gpr_imm(ctx, f, shift_type, dst.gpr, imm, l.dt);
+                if (l.mask) x64v2_mask_out(ctx, f, l, &dst);
+
+                return dst;
+            } else {
+                // the shift instruction uses RCX (well CL) for the shift amount
+                GAD_FN(evict)(ctx, f, X64_REG_CLASS_GPR, RCX);
+                GAD_FN(lock_register)(ctx, f, l.dt, X64_REG_CLASS_GPR, RCX);
+
+                // resolve this after the eviction to avoid it getting caught up in it
+                GAD_VAL a = GAD_FN(get_val_gpr)(ctx, f, n->i_arith.a);
+                INST2(MOV, &dst, &a, l.dt);
+
+                // MOV rcx, b
+                GAD_VAL rcx = val_gpr(l.dt, RCX);
+                GAD_VAL b = GAD_FN(get_val_gpr)(ctx, f, n->i_arith.b);
+                INST2(MOV, &rcx, &b, l.dt);
+
+                // D2 /4       shl r/m, cl
+                // D2 /5       shr r/m, cl
+                // D2 /7       sar r/m, cl
+                if (bits_in_type == 16) EMIT(0x66);
+                EMIT(rex(bits_in_type == 64, 0x00, dst.gpr, 0x00));
+                EMIT((bits_in_type == 8 ? 0xD2 : 0xD3));
+                switch (type) {
+                    case TB_SHL: EMIT(mod_rx_rm(MOD_DIRECT, 0x04, dst.gpr)); break;
+                    case TB_SHR: EMIT(mod_rx_rm(MOD_DIRECT, 0x05, dst.gpr)); break;
+                    case TB_SAR: EMIT(mod_rx_rm(MOD_DIRECT, 0x07, dst.gpr)); break;
+                    default: tb_unreachable();
+                }
+
+                if (l.mask) x64v2_mask_out(ctx, f, l, &dst);
+                GAD_FN(unlock_register)(ctx, f, X64_REG_CLASS_GPR, RCX);
+
+                return dst;
+            }
+        }
+
         case TB_CMP_EQ:
         case TB_CMP_NE:
         case TB_CMP_SLT:
@@ -763,6 +1016,7 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
         default: tb_todo();
     }
 
+    tb_panic("You're not supposed to break out of the switch in x64v2_resolve_value, return a proper GAD_VAL");
     return (Val){ 0 };
 }
 

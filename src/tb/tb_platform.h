@@ -1,6 +1,22 @@
 // If you're trying to port TB on to a new platform you'll need to fill in these
 // functions with their correct behavior.
 #pragma once
+#include <setjmp.h>
+
+////////////////////////////////
+// Exception handling
+////////////////////////////////
+// This is used every so often to sandbox an action, kinda
+// like the C++ stuff except i don't use it as the core form
+// of error handling because it makes for weird control flow
+typedef struct {
+    jmp_buf state;
+    void* handle; // platform specific
+} RestorePoint;
+
+// returns true if it's returning to the restore point
+bool tb_platform_push_restore_point(RestorePoint* r);
+void tb_platform_pop_restore_point(RestorePoint* r);
 
 ////////////////////////////////
 // Virtual memory management

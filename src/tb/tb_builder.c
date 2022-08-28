@@ -400,7 +400,11 @@ TB_API void tb_inst_debugbreak(TB_Function* f) {
 }
 
 TB_API void tb_inst_trap(TB_Function* f) {
-    tb_make_reg(f, TB_TRAP, TB_TYPE_VOID);
+    TB_Reg r = tb_make_reg(f, TB_TRAP, TB_TYPE_VOID);
+
+    tb_assume(f->current_label);
+    f->nodes[f->current_label].label.terminator = r;
+    f->current_label = TB_NULL_REG;
 }
 
 TB_API void tb_inst_keep_alive(TB_Function* f, TB_Reg src) {

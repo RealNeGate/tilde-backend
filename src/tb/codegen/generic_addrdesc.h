@@ -294,6 +294,10 @@ static void GAD_FN(evict)(Ctx* restrict ctx, TB_Function* f, int reg_class, int 
     {
         TB_CharUnits size, align;
         GAD_FN(get_data_type_size)(val->dt, &size, &align);
+        if (size == 0 || align == 0) {
+            // TODO(NeGate): make the client choose this default value
+            size = 8, align = 8;
+        }
 
         ctx->stack_usage = align_up(ctx->stack_usage + size, align);
 
@@ -335,10 +339,10 @@ static GAD_VAL GAD_FN(alloc_reg)(Ctx* restrict ctx, TB_Function* f, int reg_clas
     return (GAD_VAL){ 0 };
 }
 
-static void GAD_FN(lock_register)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int reg_class, int reg_num) {
+static void GAD_FN(lock_register)(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, int reg_class, int reg_num) {
     ctx->queue[ctx->queue_length++] = (GAD_VAL){
         .type = GAD_VAL_REGISTER + reg_class,
-        .dt = f->nodes[r].dt,
+        .dt = dt,
         .r = TB_TEMP_REG,
         .reg = reg_num
     };
@@ -592,6 +596,9 @@ static void GAD_FN(resolve_leftover)(Ctx* restrict ctx, TB_Function* f, int queu
             GAD_FN(kill_flags)(ctx, f);
 
             printf("Resolved leftover: r%d\n", ctx->queue[it].r);
+            GAD_FN(await)(ctx, f, ctx->queue[it].r, 0);
+
+            #if 0
             GAD_VAL v = GAD_RESOLVE_VALUE(ctx, f, ctx->queue[it].r);
             assert(v.type != GAD_VAL_UNRESOLVED);
 
@@ -600,6 +607,7 @@ static void GAD_FN(resolve_leftover)(Ctx* restrict ctx, TB_Function* f, int queu
 
             assert(ctx->use_count[v.r] > 0);
             ctx->use_count[v.r] -= 1;
+            #endif
         }
     }
 }

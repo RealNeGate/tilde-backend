@@ -553,7 +553,7 @@ static ptrdiff_t GAD_FN(await)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int 
 
     // murder the kids
     TB_FOR_INPUT_IN_REG(it, f, r) {
-        GAD_FN(try_kill)(ctx, f, r, depth + 1);
+        GAD_FN(try_kill)(ctx, f, it.r, depth + 1);
     }
 
     // try to make room if there's none
@@ -663,11 +663,11 @@ static TB_Reg GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_R
     TB_Reg bb_end = start->label.terminator;
 
     // mark label
-    TB_Label label_id = f->nodes[bb].label.id;
+    TB_Label label_id = start->label.id;
     ctx->labels[label_id] = GET_CODE_POS();
 
     // first node in the basic block
-    TB_Reg body = f->nodes[bb].next;
+    TB_Reg body = start->next;
     if (body == bb_end) {
         return f->nodes[bb_end].type != TB_LABEL ? f->nodes[bb_end].next : bb_end;
     }
@@ -779,7 +779,7 @@ static TB_Reg GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_R
             }
 
             // Only jump if we aren't literally about to end the function
-            if (end->next != 0) {
+            if (end->next != fallthrough) {
                 GAD_RET_JMP(ctx);
             }
             break;
@@ -839,7 +839,7 @@ static TB_Reg GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_R
     return end->type != TB_LABEL ? end->next : bb_end;
 }
 
-static TB_FunctionOutput GAD_FN(compile_function)(TB_FunctionID id, TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
+static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
     s_local_thread_id = local_thread_id;
     TB_TemporaryStorage* tls = tb_tls_allocate();
     TB_Predeccesors preds = tb_get_temp_predeccesors(f, tls);

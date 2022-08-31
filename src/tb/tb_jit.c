@@ -5,7 +5,7 @@
 // it puts the rdata on the next 4KB page after the text section all within
 // the same memory mapping, this is actually very bad because it means that
 // read-only data is executable.
-void tb_module_export_jit(TB_Module* m, TB_ISelMode isel_mode) {
+void tb_module_export_jit(TB_Module* m) {
     ICodeGen* restrict codegen = tb__find_code_generator(m);
     TB_TemporaryStorage* tls = tb_tls_allocate();
 
@@ -80,7 +80,7 @@ void tb_module_export_jit(TB_Module* m, TB_ISelMode isel_mode) {
             uint64_t meta = out_f->prologue_epilogue_metadata;
             uint64_t stack_usage = out_f->stack_usage;
 
-            uintptr_t actual_pos = func_layout[p->source - m->functions.data] +
+            ptrdiff_t actual_pos = func_layout[p->source - m->functions.data] +
                 codegen->get_prologue_length(meta, stack_usage) + p->pos;
 
             // TODO(NeGate): Implement something smarter... this will break

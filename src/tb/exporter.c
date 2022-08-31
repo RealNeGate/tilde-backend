@@ -1,10 +1,20 @@
 #include "tb_internal.h"
 
-TB_API TB_ModuleExporter tb_make_exporter(TB_Module* m, TB_OutputFlavor flavor) {
-    assert(flavor == TB_FLAVOR_OBJECT);
+static const IDebugFormat* find_debug_format(TB_DebugFormat debug_fmt) {
+    switch (debug_fmt) {
+        //case TB_DEBUGFMT_DWARF: return &tb__dwarf_debug_format;
+        case TB_DEBUGFMT_CODEVIEW: return &tb__codeview_debug_format;
+        default: return NULL;
+    }
+}
+
+TB_API TB_ModuleExporter tb_make_exporter(TB_Module* m, TB_DebugFormat debug_fmt, TB_OutputFlavor flavor) {
+    assert(flavor == TB_FLAVOR_OBJECT && "TODO");
+
+    const IDebugFormat* dbg = find_debug_format(debug_fmt);
     switch (m->target_system) {
-        case TB_SYSTEM_WINDOWS: return (TB_ModuleExporter){ tb_coff__make(m), tb_coff__next };
-        case TB_SYSTEM_LINUX: return (TB_ModuleExporter){ tb_elf64__make(m), tb_elf64__next };
+        case TB_SYSTEM_WINDOWS: return (TB_ModuleExporter){ tb_coff__make(m, dbg), tb_coff__next };
+        case TB_SYSTEM_LINUX: return (TB_ModuleExporter){ tb_elf64__make(m, dbg), tb_elf64__next };
         default: tb_todo();
     }
 }

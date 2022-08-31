@@ -324,11 +324,11 @@ typedef struct {
 
 struct TB_Module {
     int max_threads;
+    bool is_jit;
 
     TB_ABI target_abi;
     TB_Arch target_arch;
     TB_System target_system;
-    TB_DebugFormat debug_fmt;
     TB_FeatureSet features;
 
     // This is a hack for windows since they've got this idea
@@ -403,8 +403,8 @@ typedef struct {
     size_t (*emit_prologue)(uint8_t* out, uint64_t saved, uint64_t stack_usage);
     size_t (*emit_epilogue)(uint8_t* out, uint64_t saved, uint64_t stack_usage);
 
-    TB_FunctionOutput (*fast_path)(TB_FunctionID id, TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
-    TB_FunctionOutput (*complex_path)(TB_FunctionID id, TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
+    TB_FunctionOutput (*fast_path)(TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
+    TB_FunctionOutput (*complex_path)(TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
 } ICodeGen;
 
 // All debug formats i know of boil down to adding some extra sections to the object file
@@ -526,14 +526,13 @@ void* tb_tls_pop(TB_TemporaryStorage* store, size_t size);
 void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance);
 bool tb_tls_can_fit(TB_TemporaryStorage* store, size_t size);
 
-const IDebugFormat* tb__find_debug_format(TB_Module* m);
 ICodeGen* tb__find_code_generator(TB_Module* m);
 
 // object file output
-void* tb_elf64__make(TB_Module* m);
+void* tb_elf64__make(TB_Module* m, const IDebugFormat* dbg);
 bool tb_elf64__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet);
 
-void* tb_coff__make(TB_Module* m);
+void* tb_coff__make(TB_Module* m, const IDebugFormat* dbg);
 bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet);
 
 // code generators

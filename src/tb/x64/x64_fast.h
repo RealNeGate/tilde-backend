@@ -2363,7 +2363,7 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
 // entry point to the x64 fast isel, it's got some nice features like when the
 // temporary storage can't fit the necessary memory, it'll fallback to the heap
 // to avoid just crashing.
-TB_FunctionOutput x64_fast_compile_function(TB_FunctionID id, TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
+TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
     s_local_thread_id = local_thread_id;
 
     TB_TemporaryStorage* tls = tb_tls_allocate();

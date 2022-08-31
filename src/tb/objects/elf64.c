@@ -172,6 +172,7 @@ typedef struct TB_ModuleExporterELF {
     void* temporary_memory;
 
     // [m->functions.count + 1] last slot is the size of the text section
+    const IDebugFormat* dbg;
     uint32_t* func_layout;
 
     Elf64_Ehdr header;
@@ -250,8 +251,10 @@ static bool send_alloc_message(TB_ModuleExporterELF* e, TB_ModuleExportPacket* p
     return false;
 }
 
-void* tb_elf64__make(TB_Module* m) {
-    return memset(tb_platform_heap_alloc(sizeof(TB_ModuleExporterELF)), 0, sizeof(TB_ModuleExporterELF));
+void* tb_elf64__make(TB_Module* m, const IDebugFormat* dbg) {
+    TB_ModuleExporterELF* e = memset(tb_platform_heap_alloc(sizeof(TB_ModuleExporterELF)), 0, sizeof(TB_ModuleExporterELF));
+    e->dbg = dbg;
+    return e;
 }
 
 bool tb_elf64__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet) {

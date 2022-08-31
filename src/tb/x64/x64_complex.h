@@ -596,7 +596,7 @@ static Val complex_resolve_operand(X64_ComplexCtx* restrict ctx, TB_Function* f,
     tb_todo();
 }
 
-TB_FunctionOutput x64_complex_compile_function(TB_FunctionID id, TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
+TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
     s_local_thread_id = local_thread_id;
 
     TB_TemporaryStorage* tls = tb_tls_allocate();

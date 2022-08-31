@@ -7,17 +7,9 @@ static thread_local uint8_t* tb_thread_storage;
 static thread_local int tid;
 static tb_atomic_int total_tid;
 
-const IDebugFormat* tb__find_debug_format(TB_Module* m) {
-    switch (m->debug_fmt) {
-        //case TB_DEBUGFMT_DWARF: return &tb__dwarf_debug_format;
-        case TB_DEBUGFMT_CODEVIEW: return &tb__codeview_debug_format;
-        default: return NULL;
-    }
-}
-
 ICodeGen* tb__find_code_generator(TB_Module* m) {
     switch (m->target_arch) {
-        #if 1
+        #if 0
         case TB_ARCH_X86_64: return &tb__x64v2_codegen;
         #else
         case TB_ARCH_X86_64: return &tb__x64_codegen;
@@ -63,7 +55,7 @@ TB_API TB_DataType tb_vector_type(TB_DataTypeEnum type, int width) {
     return (TB_DataType) { .type = type, .width = tb_ffs(width) - 1 };
 }
 
-TB_API TB_Module* tb_module_create_for_host(TB_DebugFormat debug_fmt, const TB_FeatureSet* features) {
+TB_API TB_Module* tb_module_create_for_host(const TB_FeatureSet* features, bool is_jit) {
     #if defined(TB_HOST_X86_64)
     TB_Arch arch = TB_ARCH_X86_64;
     #else
@@ -81,10 +73,10 @@ TB_API TB_Module* tb_module_create_for_host(TB_DebugFormat debug_fmt, const TB_F
     tb_panic("tb_module_create_for_host: cannot detect host platform");
     #endif
 
-    return tb_module_create(arch, sys, debug_fmt, features);
+    return tb_module_create(arch, sys, features, is_jit);
 }
 
-TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, TB_DebugFormat debug_fmt, const TB_FeatureSet* features) {
+TB_API TB_Module* tb_module_create(TB_Arch arch, TB_System sys, const TB_FeatureSet* features, bool is_jit) {
     TB_Module* m = tb_platform_heap_alloc(sizeof(TB_Module));
     if (m == NULL) {
         fprintf(stderr, "tb_module_create: Out of memory!\n");
@@ -93,10 +85,11 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
     memset(m, 0, sizeof(TB_Module));
 
     m->max_threads = TB_MAX_THREADS;
-    m->target_abi = (target_system == TB_SYSTEM_WINDOWS) ? TB_ABI_WIN64 : TB_ABI_SYSTEMV;
-    m->target_arch = target_arch;
-    m->target_system = target_system;
-    m->debug_fmt = debug_fmt;
+    m->is_jit = is_jit;
+
+    m->target_abi = (sys == TB_SYSTEM_WINDOWS) ? TB_ABI_WIN64 : TB_ABI_SYSTEMV;
+    m->target_arch = arch;
+    m->target_system = sys;
     if (features == NULL) {
         m->features = (TB_FeatureSet){ 0 };
     } else {
@@ -141,7 +134,6 @@ TB_API bool tb_module_compile_function(TB_Module* m, TB_Function* f, TB_ISelMode
     TB_CodeRegion* region = get_or_allocate_code_region(m, id);
     TB_FunctionOutput* func_out = tb_platform_arena_alloc(sizeof(TB_FunctionOutput));
 
-    TB_FunctionID index = tb_function_get_id(m, f);
     if (isel_mode == TB_ISEL_COMPLEX && codegen->complex_path == NULL) {
         // TODO(NeGate): we need better logging...
         fprintf(stderr, "TB warning: complex path is missing, defaulting to fast path.\n");
@@ -149,9 +141,9 @@ TB_API bool tb_module_compile_function(TB_Module* m, TB_Function* f, TB_ISelMode
     }
 
     if (isel_mode == TB_ISEL_COMPLEX) {
-        *func_out = codegen->complex_path(index, f, &m->features, &region->data[region->size], id);
+        *func_out = codegen->complex_path(f, &m->features, &region->data[region->size], id);
     } else {
-        *func_out = codegen->fast_path(index, f, &m->features, &region->data[region->size], id);
+        *func_out = codegen->fast_path(f, &m->features, &region->data[region->size], id);
     }
     tb_atomic_size_add(&m->functions.compiled_count, 1);
     region->size += func_out->code_size;

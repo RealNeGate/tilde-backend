@@ -40,6 +40,7 @@ typedef struct TB_ModuleExporterCOFF {
     void* temporary_memory;
 
     // [m->functions.count + 1] last slot is the size of the text section
+    const IDebugFormat* dbg;
     uint32_t* func_layout;
 
     // String table array, stores the strings which will be put
@@ -95,8 +96,10 @@ static bool send_alloc_message(TB_ModuleExporterCOFF* e, TB_ModuleExportPacket* 
 
 #define COPY_ADVANCE(buffer, pos, T, ...) (memcpy(&buffer[pos], &(T) __VA_ARGS__, sizeof(T)), pos += sizeof(T))
 
-void* tb_coff__make(TB_Module* m) {
-    return memset(tb_platform_heap_alloc(sizeof(TB_ModuleExporterCOFF)), 0, sizeof(TB_ModuleExporterCOFF));
+void* tb_coff__make(TB_Module* m, const IDebugFormat* dbg) {
+    TB_ModuleExporterCOFF* e = memset(tb_platform_heap_alloc(sizeof(TB_ModuleExporterCOFF)), 0, sizeof(TB_ModuleExporterCOFF));
+    e->dbg = dbg;
+    return e;
 }
 
 bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet) {
@@ -122,8 +125,7 @@ bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet) 
                 }
             }
 
-            const IDebugFormat* restrict debug_fmt = tb__find_debug_format(m);
-
+            const IDebugFormat* debug_fmt = e->dbg;
             int number_of_sections = 3
                 + (m->tls_region_size ? 1 : 0)
                 + (debug_fmt != NULL ? debug_fmt->number_of_debug_sections(m) : 0);

@@ -10,17 +10,6 @@ TB_API int tb_function_get_label_count(TB_Function* f) {
     return f->label_count;
 }
 
-TB_API TB_FunctionID tb_function_get_id(TB_Module* m, TB_Function* f) {
-    intptr_t id = f - m->functions.data;
-    tb_assume(id == (TB_FunctionID)id);
-    return id;
-}
-
-TB_API TB_Function* tb_function_from_id(TB_Module* m, TB_FunctionID id) {
-    tb_assume(id < m->functions.count);
-    return &m->functions.data[id];
-}
-
 TB_API TB_Node* tb_function_get_node(TB_Function* f, TB_Reg r) {
     tb_assume(r >= 0 && r < f->node_count);
     return &f->nodes[r];

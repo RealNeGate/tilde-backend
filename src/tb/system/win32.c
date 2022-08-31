@@ -1,5 +1,13 @@
 #include "../tb_internal.h"
-#include "../scalable_allocator.h"
+#include <mimalloc.h>
+#include <ctype.h>
+
+// NOTE(NeGate): i'm sorry but i had to do it to em
+// this is just a random hack around mimalloc needing toupper but having weird
+// CRT compat issues
+int __imp_toupper(int c) {
+    return toupper(c);
+}
 
 void* tb_platform_valloc(size_t size) {
     return VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
@@ -32,10 +40,12 @@ void* tb_platform_heap_alloc(size_t size) {
     #if USING_DA_ASAN
     void* ptr = malloc(size);
     #else
-    void* ptr = scalable_malloc(size);
+    void* ptr = mi_malloc(size);
     #endif
 
-    if (ptr == NULL) tb_panic("out of memory!");
+    if (ptr == NULL) {
+        tb_panic("tb_platform_heap_alloc: out of memory!");
+    }
     return ptr;
 }
 
@@ -43,7 +53,7 @@ void* tb_platform_heap_realloc(void* ptr, size_t size) {
     #if USING_DA_ASAN
     return realloc(ptr, size);
     #else
-    return scalable_realloc(ptr, size);
+    return mi_realloc(ptr, size);
     #endif
 }
 
@@ -51,7 +61,7 @@ void tb_platform_heap_free(void* ptr) {
     #if USING_DA_ASAN
     free(ptr);
     #else
-    scalable_free(ptr);
+    mi_free(ptr);
     #endif
 }
 

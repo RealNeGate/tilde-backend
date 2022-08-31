@@ -215,7 +215,7 @@ static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_
         size_t index = phi_node->phi.count++;
         phi_node->phi.inputs = tb_platform_heap_realloc(phi_node->phi.inputs, phi_node->phi.count * sizeof(TB_PhiInput));
         if (phi_node->phi.inputs == NULL) {
-            tb_panic("Out of memory!\n");
+            tb_panic("add_phi_operand: Out of memory!");
         }
 
         phi_node->phi.inputs[index] = (TB_PhiInput) { label_reg, reg };

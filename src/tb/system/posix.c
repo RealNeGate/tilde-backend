@@ -90,8 +90,7 @@ void* tb_platform_arena_alloc(size_t size) {
         // Add new page
         Segment* s = (Segment*)mmap(NULL, ARENA_SEGMENT_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (!s) {
-            printf("Out of memory!\n");
-            abort();
+            tb_panic("tb_platform_arena_alloc: Out of memory!");
         }
 
         s->next = NULL;

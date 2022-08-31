@@ -86,6 +86,10 @@ TB_API TB_Module* tb_module_create_for_host(TB_DebugFormat debug_fmt, const TB_F
 
 TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system, TB_DebugFormat debug_fmt, const TB_FeatureSet* features) {
     TB_Module* m = tb_platform_heap_alloc(sizeof(TB_Module));
+    if (m == NULL) {
+        fprintf(stderr, "tb_module_create: Out of memory!\n");
+        return NULL;
+    }
     memset(m, 0, sizeof(TB_Module));
 
     m->max_threads = TB_MAX_THREADS;
@@ -100,6 +104,10 @@ TB_API TB_Module* tb_module_create(TB_Arch target_arch, TB_System target_system,
     }
 
     m->prototypes_arena = tb_platform_valloc(PROTOTYPES_ARENA_SIZE * sizeof(uint64_t));
+    if (m->prototypes_arena == NULL) {
+        fprintf(stderr, "tb_module_create: Out of memory!\n");
+        return NULL;
+    }
 
     m->files.count = 1;
     m->files.capacity = 64;
@@ -300,8 +308,8 @@ TB_API void tb_function_set_prototype(TB_Function* f, const TB_FunctionPrototype
     const ICodeGen* restrict code_gen = tb__find_code_generator(f->module);
 
     f->params = tb_platform_heap_realloc(f->params, sizeof(TB_Reg) * new_param_count);
-    if (f->params == NULL) {
-        tb_panic("Out of memory!");
+    if (new_param_count > 0 && f->params == NULL) {
+        tb_panic("tb_function_set_prototype: Out of memory!");
     }
 
     // walk to the end of the param list (it starts directly after the entry label)

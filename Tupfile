@@ -1,11 +1,16 @@
 import CC=clang
+import OPT=no
 
 ifeq ($(CC),cl)
 	error CL is not supported with TB's Tup builds... yet
 else
 	CFLAGS += -I include
+	CFLAGS += -I deps/mimalloc/include
 	CFLAGS += -I deps/luajit/src
 	CFLAGS += -Wall -Werror -Wno-unused-function
+	ifeq ($(OPT),yes)
+		CFLAGS += -O2 -DNDEBUG
+	endif
 
 	!cc = |> $(CC) $(CFLAGS) %f -g -c -o %o |> bin/%B.o
 endif
@@ -29,9 +34,22 @@ endif
 # host-specific code
 : src/tb/system/win32.c      |> !cc |>
 
-# combine into a lib
 ifeq (@(TUP_PLATFORM),win32)
-	: bin/*.o deps/tbbmalloc.lib deps/luajit/src/lua51.lib |> lib /nologo /out:%o %f |> bin/tildebackend.lib
+	# compile dependencies
+	LUAJIT = deps/luajit/src
+
+	LUAJIT_EXTRA_OUT += $(LUAJIT)/minilua.exp
+	LUAJIT_EXTRA_OUT += $(LUAJIT)/minilua.lib
+	LUAJIT_EXTRA_OUT += $(LUAJIT)/buildvm.exp
+	LUAJIT_EXTRA_OUT += $(LUAJIT)/buildvm.lib
+	LUAJIT_EXTRA_OUT += $(LUAJIT)/luajit.exe
+	LUAJIT_EXTRA_OUT += $(LUAJIT)/luajit.exp
+	LUAJIT_EXTRA_OUT += $(LUAJIT)/luajit.lib
+	LUAJIT_EXTRA_OUT += $(LUAJIT)/jit/vmdef.lua
+	: $(LUAJIT)/*.c |> cd $(LUAJIT) && msvcbuild.bat static |> $(LUAJIT)/lua51.lib | $(LUAJIT_EXTRA_OUT) ^.*\.cache
+
+	# combine into a lib
+	: bin/*.o deps/mimalloc/out/Release/mimalloc-static.lib $(LUAJIT)/lua51.lib |> lib /nologo /out:%o %f |> bin/tildebackend.lib
 else
-	: bin/*.o deps/tbbmalloc.a deps/luajit/src/lua51.a |> ar -rcs %o %f |> bin/tildebackend.a
+	: bin/*.o deps/tbbmalloc.a $(LUAJIT)/lua51.a |> ar -rcs %o %f |> bin/tildebackend.a
 endif

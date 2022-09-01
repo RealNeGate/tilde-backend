@@ -29,18 +29,18 @@ static void postorder(TB_Function* f, TB_PostorderWalk* ctx, TB_Reg bb) {
     } else if (end->type == TB_GOTO) {
         postorder(f, ctx, tb_find_reg_from_label(f, end->goto_.label));
     } else if (end->type == TB_IF) {
-        postorder(f, ctx, tb_find_reg_from_label(f, end->if_.if_true));
         postorder(f, ctx, tb_find_reg_from_label(f, end->if_.if_false));
+        postorder(f, ctx, tb_find_reg_from_label(f, end->if_.if_true));
     } else if (end->type == TB_SWITCH) {
         // each entry takes up two slots in the VLA storage (i just put random crap in there like arguments for function calls)
         size_t entry_count = (end->switch_.entries_end - end->switch_.entries_start) / 2;
         TB_SwitchEntry* entries = (TB_SwitchEntry*) &f->vla.data[end->switch_.entries_start];
 
-        FOREACH_N(i, 0, entry_count) {
+        postorder(f, ctx, tb_find_reg_from_label(f, end->switch_.default_label));
+
+        FOREACH_REVERSE_N(i, 0, entry_count) {
             postorder(f, ctx, tb_find_reg_from_label(f, entries[i].value));
         }
-
-        postorder(f, ctx, tb_find_reg_from_label(f, end->switch_.default_label));
     } else {
         tb_function_print(f, tb_default_print_callback, stdout);
         tb_panic("Invalid IR :v(\n");

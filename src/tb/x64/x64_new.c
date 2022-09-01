@@ -1,12 +1,6 @@
 #include "../tb_internal.h"
 #include "x64.h"
 
-#if 1
-#define LISTING(...) printf(__VA_ARGS__)
-#else
-#define LISTING(fmt, ...)
-#endif
-
 typedef struct Ctx Ctx;
 
 static void jmp(Ctx* restrict ctx, int label);
@@ -162,6 +156,21 @@ static int get_data_type_size(const TB_DataType dt) {
     }
 }
 
+static void x64v2_mask_out(Ctx* restrict ctx, TB_Function* f, const LegalInt l, const GAD_VAL* dst) {
+    if (fits_into_int32(l.mask)) {
+        Val mask = val_imm(l.dt, l.mask);
+        INST2(AND, dst, &mask, l.dt);
+    } else {
+        GAD_VAL tmp = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);
+
+        // MOVABS     REX.W B8+r imm64
+        EMIT(tmp.gpr >= 8 ? 0x49 : 0x48), EMIT(0xB8 + (tmp.gpr & 7)), EMIT8(l.mask);
+        INST2(AND, dst, &tmp, l.dt);
+
+        GAD_FN(unlock_register)(ctx, f, X64_REG_CLASS_GPR, tmp.gpr);
+    }
+}
+
 static size_t x64v2_resolve_stack_usage(Ctx* restrict ctx, TB_Function* f, size_t stack_usage, size_t caller_usage) {
     size_t usage = stack_usage + (caller_usage * 8);
 
@@ -284,48 +293,70 @@ static void x64v2_initial_reg_alloc(Ctx* restrict ctx) {
     ctx->regs_available[1] = 16;
 }
 
+static GAD_VAL x64v2_cond_to_reg(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int cc) {
+    GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
+
+    EMIT((dst.gpr >= 8) ? 0x41 : 0x40);
+    EMIT(0x0F);
+    EMIT(0x90 + cc);
+    EMIT(mod_rx_rm(MOD_DIRECT, 0, dst.gpr));
+    return dst;
+}
+
 static Val x64v2_get_val_gpr(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
+    LegalInt l = legalize_int(f->nodes[r].dt);
     ptrdiff_t i = GAD_FN(await)(ctx, f, r, 0);
     assert(i >= 0);
 
     if (ctx->queue[i].type == VAL_MEM || ctx->queue[i].type == VAL_GLOBAL) {
         GAD_VAL addr = ctx->queue[i];
         GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
-        dst.dt = f->nodes[r].dt;
-
+        dst.dt = l.dt;
         ctx->queue[i] = dst;
-        INST2(addr.mem.is_rvalue ? MOV : LEA, &dst, &addr, f->nodes[r].dt);
-        return dst;
-    }
 
-    assert(ctx->queue[i].type == VAL_GPR || ctx->queue[i].type == VAL_IMM);
-    return ctx->queue[i];
+        INST2(addr.mem.is_rvalue ? MOV : LEA, &dst, &addr, l.dt);
+        if (l.mask) x64v2_mask_out(ctx, f, l, &dst);
+        return dst;
+    } else if (ctx->queue[i].type == VAL_FLAGS) {
+        return x64v2_cond_to_reg(ctx, f, r, ctx->queue[i].cond);
+    } else {
+        assert(ctx->queue[i].type == VAL_GPR || ctx->queue[i].type == VAL_IMM);
+        return ctx->queue[i];
+    }
 }
 
 static Val x64v2_get_val2(Ctx* restrict ctx, TB_Function* f, TB_Reg r, bool will_mutate) {
+    LegalInt l = legalize_int(f->nodes[r].dt);
     ptrdiff_t i = GAD_FN(await)(ctx, f, r, 0);
     assert(i >= 0);
 
     if (ctx->queue[i].type == VAL_MEM || ctx->queue[i].type == VAL_GLOBAL) {
         GAD_VAL addr = ctx->queue[i];
-        GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);
-        dst.dt = f->nodes[r].dt;
 
         if (!ctx->queue[i].mem.is_rvalue || will_mutate) {
-            INST2(ctx->queue[i].mem.is_rvalue ? MOV : LEA, &dst, &addr, f->nodes[r].dt);
+            GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);
+            dst.dt = l.dt;
+
+            INST2(ctx->queue[i].mem.is_rvalue ? MOV : LEA, &dst, &addr, l.dt);
+            if (l.mask) x64v2_mask_out(ctx, f, l, &dst);
             return dst;
         }
+
+        return addr;
+    } else if (ctx->queue[i].type == VAL_FLAGS) {
+        return x64v2_cond_to_reg(ctx, f, r, ctx->queue[i].cond);
+    } else {
+        assert(ctx->queue[i].type == VAL_GPR || ctx->queue[i].type == VAL_IMM);
+        if (will_mutate) {
+            GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);
+
+            INST2(MOV, &dst, &ctx->queue[i], l.dt);
+            if (l.mask) x64v2_mask_out(ctx, f, l, &dst);
+            return dst;
+        }
+
+        return ctx->queue[i];
     }
-
-    assert(ctx->queue[i].type == VAL_GPR || ctx->queue[i].type == VAL_IMM);
-    if (will_mutate) {
-        GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);
-
-        INST2(MOV, &dst, &ctx->queue[i], f->nodes[r].dt);
-        return dst;
-    }
-
-    return ctx->queue[i];
 }
 
 static void x64v2_mov_to_explicit_gpr(Ctx* restrict ctx, TB_Function* f, GPR dst_gpr, TB_Reg r) {
@@ -334,15 +365,20 @@ static void x64v2_mov_to_explicit_gpr(Ctx* restrict ctx, TB_Function* f, GPR dst
 
     GAD_VAL dst = val_gpr(f->nodes[r].dt, dst_gpr);
     GAD_VAL* src = &ctx->queue[i];
-    TB_DataType dt = f->nodes[r].dt;
+    LegalInt l = legalize_int(f->nodes[r].dt);
 
     if (src->type == VAL_MEM || src->type == VAL_GLOBAL) {
-        INST2(src->mem.is_rvalue ? MOV : LEA, &dst, src, dt);
+        INST2(src->mem.is_rvalue ? MOV : LEA, &dst, src, l.dt);
+    } else if (src->type == VAL_FLAGS) {
+        EMIT((dst_gpr >= 8) ? 0x41 : 0x40);
+        EMIT(0x0F);
+        EMIT(0x90 + src->cond);
+        EMIT(mod_rx_rm(MOD_DIRECT, 0, dst_gpr));
     } else {
         assert(src->type == VAL_GPR || src->type == VAL_IMM);
 
         if (src->type != VAL_GPR || (src->type == VAL_GPR && src->gpr != dst_gpr)) {
-            INST2(MOV, &dst, &ctx->queue[i], dt);
+            INST2(MOV, &dst, &ctx->queue[i], l.dt);
         }
     }
 }
@@ -362,16 +398,6 @@ static void x64v2_return(Ctx* restrict ctx, TB_Function* f, TB_Node* restrict n)
         GAD_FN(unlock_register)(ctx, f, X64_REG_CLASS_GPR, RAX);
         GAD_FN(unhint)(ctx, f, r);
     } else tb_todo();
-}
-
-static GAD_VAL x64v2_cond_to_reg(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int cc) {
-    GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
-
-    EMIT((dst.gpr >= 8) ? 0x41 : 0x40);
-    EMIT(0x0F);
-    EMIT(0x90 + cc);
-    EMIT(mod_rx_rm(MOD_DIRECT, 0, dst.gpr));
-    return dst;
 }
 
 static void x64v2_branch_if(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_Label if_true, TB_Label if_false, TB_Reg fallthrough, TB_Reg if_true_reg, TB_Reg if_false_reg) {
@@ -423,21 +449,6 @@ static void x64v2_branch_if(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_L
     }
 }
 
-static void x64v2_mask_out(Ctx* restrict ctx, TB_Function* f, const LegalInt l, const GAD_VAL* dst) {
-    if (fits_into_int32(l.mask)) {
-        Val mask = val_imm(l.dt, l.mask);
-        INST2(AND, dst, &mask, l.dt);
-    } else {
-        GAD_VAL tmp = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);
-
-        // MOVABS     REX.W B8+r imm64
-        EMIT(tmp.gpr >= 8 ? 0x49 : 0x48), EMIT(0xB8 + (tmp.gpr & 7)), EMIT8(l.mask);
-        INST2(AND, dst, &tmp, l.dt);
-
-        GAD_FN(unlock_register)(ctx, f, X64_REG_CLASS_GPR, tmp.gpr);
-    }
-}
-
 static void GAD_FN(spill_move)(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, GAD_VAL* dst_val, GAD_VAL* src_val, GAD_VAL* reg_val) {
     LegalInt l = legalize_int(dt);
 
@@ -465,7 +476,7 @@ static void x64v2_phi_move(Ctx* restrict ctx, TB_Function* f, GAD_VAL* dst_val, 
 
         // mask is unnecessary due to type safety
         // if (l.mask) x64v2_mask_out(ctx, f, l, &src_val);
-        INST2(MOV, dst_val, &src_val, f->nodes[src].dt);
+        INST2(MOV, dst_val, &src_val, l.dt);
     }
 }
 
@@ -584,7 +595,7 @@ static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r, size_t queue
     // Spill anything else
     FOREACH_N(j, 0, 16) {
         if (caller_saved & (1u << j)) {
-            printf("EVICT %s\n", GPR_NAMES[j]);
+            LISTING("  # EVICT %s\n", GPR_NAMES[j]);
             GAD_FN(evict)(ctx, f, X64_REG_CLASS_GPR, j);
         }
     }
@@ -841,6 +852,8 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
         }
 
         case TB_LOAD: {
+            LegalInt l = legalize_int(n->dt);
+
             // convert entry into memory slot
             GAD_VAL src = GAD_FN(get_val)(ctx, f, n->load.address);
             GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
@@ -854,7 +867,8 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
                 src = val_base_disp(TB_TYPE_PTR, src.gpr, 0);
             }
 
-            INST2(MOV, &dst, &src, f->nodes[r].dt);
+            if (l.mask) x64v2_mask_out(ctx, f, l, &src);
+            INST2(MOV, &dst, &src, l.dt);
             return dst;
         }
 

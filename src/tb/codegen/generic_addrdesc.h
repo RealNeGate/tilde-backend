@@ -16,6 +16,12 @@ static_assert(sizeof(double) == sizeof(uint64_t), "big bitch... double gotta be 
 
 static thread_local size_t s_local_thread_id;
 
+#if 0
+#define LISTING(...) printf(__VA_ARGS__)
+#else
+#define LISTING(fmt, ...)
+#endif
+
 #define EITHER2(a, b, c)    ((a) == (b) || (a) == (c))
 #define EITHER3(a, b, c, d) ((a) == (b) || (a) == (c) || (a) == (d))
 #define FITS_INTO(a, type)  ((a) == ((type)(a)))
@@ -252,13 +258,13 @@ static void GAD_FN(kill_value)(Ctx* restrict ctx, TB_Function* f, GAD_VAL* val) 
         }
     }
 
-    printf("Kill: r%d\n", val->r);
+    LISTING("Kill: r%d\n", val->r);
     val->type = GAD_VAL_UNRESOLVED;
 }
 
 static void GAD_FN(kill_flags)(Ctx* restrict ctx, TB_Function* f) {
     if (ctx->flags_bound) {
-        printf("Kill flags: r%d\n", ctx->flags_bound);
+        LISTING("Kill flags: r%d\n", ctx->flags_bound);
 
         // write value to a more persistent space
         GAD_VAL v = GAD_FN(cond_to_reg)(ctx, f, ctx->flags_bound, ctx->flags_code);
@@ -439,7 +445,7 @@ static ptrdiff_t GAD_FN(find)(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
 }
 
 static void GAD_FN(spill_if_running_out)(Ctx* restrict ctx, TB_Function* f) {
-    printf("Progress: %d / 14\n", ctx->regs_available[0]);
+    LISTING("Progress: %d / 14\n", ctx->regs_available[0]);
 
     FOREACH_N(i, 0, GAD_NUM_REG_FAMILIES) {
         while (ctx->regs_available[i] < 4) {
@@ -462,7 +468,7 @@ static void GAD_FN(spill_if_running_out)(Ctx* restrict ctx, TB_Function* f) {
             }
 
             assert(most_used_reg != TB_NULL_REG);
-            printf("## SPILL r%d ##\n", most_used_reg);
+            LISTING("## SPILL r%d ##\n", most_used_reg);
 
             ptrdiff_t search = GAD_FN(find)(ctx, f, most_used_reg);
             assert(search >= 0 && "Expected to find a value to spill");
@@ -500,7 +506,7 @@ static void GAD_FN(spill_if_running_out)(Ctx* restrict ctx, TB_Function* f) {
 static void GAD_FN(enqueue)(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
     ptrdiff_t search = GAD_FN(find)(ctx, f, r);
     if (search >= 0) {
-        printf("Reuse: r%d\n", r);
+        LISTING("Reuse: r%d\n", r);
     }
 
     assert(ctx->queue_length < f->node_count);
@@ -509,11 +515,11 @@ static void GAD_FN(enqueue)(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
         .r = r
     };
 
-    printf("Enqueue: r%d\n", r);
+    LISTING("Enqueue: r%d\n", r);
 }
 
 static void print_indent(int depth) {
-    FOREACH_N(i, 0, depth) printf("  ");
+    FOREACH_N(i, 0, depth) LISTING("  ");
 }
 
 // resolves all the values necessary for r, then resolves r
@@ -522,18 +528,18 @@ static ptrdiff_t GAD_FN(await)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int 
     ptrdiff_t i = GAD_FN(find)(ctx, f, r);
     if (i < 0) {
         print_indent(depth);
-        printf("Not found: r%d\n", r);
+        LISTING("Not found: r%d\n", r);
         return i;
     }
 
     if (ctx->queue[i].type != GAD_VAL_UNRESOLVED) {
         print_indent(depth);
-        printf("Readback: r%d\n", r);
+        LISTING("Readback: r%d\n", r);
         return i;
     }
 
     print_indent(depth);
-    printf("Await: r%d\n", r);
+    LISTING("Await: r%d\n", r);
 
     // we don't walk past a phi node
     if (!tb_node_is_phi_node(f, r)) {
@@ -543,7 +549,7 @@ static ptrdiff_t GAD_FN(await)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int 
     }
 
     print_indent(depth);
-    printf("Resolve: r%d\n", r);
+    LISTING("Resolve: r%d\n", r);
 
     GAD_VAL v = GAD_RESOLVE_VALUE(ctx, f, r);
     assert(v.type != GAD_VAL_UNRESOLVED);
@@ -620,7 +626,7 @@ static void GAD_FN(resolve_leftover)(Ctx* restrict ctx, TB_Function* f, int queu
             GAD_FN(kill_flags)(ctx, f);
 
             TB_Reg r = ctx->queue[it].r;
-            printf("Resolved leftover: r%d\n", r);
+            LISTING("Resolved leftover: r%d\n", r);
 
             ptrdiff_t i = GAD_FN(await)(ctx, f, r, 0);
             assert(i >= 0);
@@ -812,7 +818,7 @@ static TB_Reg GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_R
     while (i < ctx->queue_length) {
         TB_Reg r = ctx->queue[i].r;
         if (ctx->queue[i].type == 0 || r == TB_TEMP_REG || ctx->use_count[r] == 0) {
-            printf("Release: r%d\n", ctx->queue[i].r);
+            LISTING("Release: r%d\n", ctx->queue[i].r);
 
             if (ctx->queue[i].type >= GAD_VAL_REGISTER &&
                 ctx->queue[i].type < GAD_VAL_REGISTER + GAD_NUM_REG_FAMILIES) {
@@ -914,7 +920,7 @@ static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const
     FOREACH_REVERSE_N(i, 0, walk.count) {
         TB_Reg bb = walk.traversal[i];
 
-        printf("Eval BB: L%d\n", f->nodes[bb].label.id);
+        LISTING("Eval BB: L%d\n", f->nodes[bb].label.id);
         GAD_FN(eval_bb)(ctx, f, bb, i > 0 ? walk.traversal[i - 1] : 0);
     }
 

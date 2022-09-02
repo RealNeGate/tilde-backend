@@ -16,23 +16,16 @@ else
 endif
 
 # core
-: foreach src/tb/*.c         |> !cc |>
-: foreach src/tb/codegen/*.c |> !cc |>
-: foreach src/tb/bigint/*.c  |> !cc |>
+srcs = src/tb/*.c src/tb/codegen/*.c src/tb/bigint/*.c src/tb/objects/*.c src/tb/debug/*.c
+srcs += src/tb/x64/*.c
+srcs += src/tb/aarch64/*.c
+srcs += src/tb/opt/*.c
 
-# export format
-: foreach src/tb/objects/*.c |> !cc |>
-: foreach src/tb/debug/*.c   |> !cc |>
-
-# targets
-: foreach src/tb/x64/*.c     |> !cc |>
-: foreach src/tb/aarch64/*.c |> !cc |>
-
-# optimizer
-: foreach src/tb/opt/*.c     |> !cc |>
-
-# host-specific code
-: src/tb/system/win32.c      |> !cc |>
+ifeq (@(TUP_PLATFORM),win32)
+	: foreach $(srcs) src/tb/system/win32.c |> !cc |>
+else
+	: foreach $(srcs) src/tb/system/posix.c |> !cc |>
+endif
 
 ifeq (@(TUP_PLATFORM),win32)
 	# compile dependencies
@@ -49,7 +42,7 @@ ifeq (@(TUP_PLATFORM),win32)
 	: $(LUAJIT)/*.c |> cd $(LUAJIT) && msvcbuild.bat static |> $(LUAJIT)/lua51.lib | $(LUAJIT_EXTRA_OUT) ^.*\.cache
 
 	# combine into a lib
-	: bin/*.o deps/mimalloc/out/Release/mimalloc-static.lib $(LUAJIT)/lua51.lib |> lib /nologo /out:%o %f |> bin/tildebackend.lib
+	: bin/*.o $(LUAJIT)/lua51.lib |> lib /nologo /out:%o %f deps/mimalloc-static.lib |> tildebackend.lib
 else
-	: bin/*.o deps/tbbmalloc.a $(LUAJIT)/lua51.a |> ar -rcs %o %f |> bin/tildebackend.a
+	: bin/*.o deps/mimalloc.a $(LUAJIT)/lua51.a |> ar -rcs %o %f |> tildebackend.a
 endif

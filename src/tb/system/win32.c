@@ -5,9 +5,7 @@
 // NOTE(NeGate): i'm sorry but i had to do it to em
 // this is just a random hack around mimalloc needing toupper but having weird
 // CRT compat issues
-int __imp_toupper(int c) {
-    return toupper(c);
-}
+#pragma comment(linker, "/alternatename:__imp_toupper=toupper")
 
 void* tb_platform_valloc(size_t size) {
     return VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);

@@ -217,7 +217,6 @@ extern "C" {
         TB_DEBUGBREAK,
 
         /* Terminators */
-        TB_LABEL,
         TB_GOTO,
         TB_SWITCH,
         TB_IF,
@@ -322,7 +321,7 @@ extern "C" {
     typedef uint8_t TB_NodeType;
 
     #define TB_IS_NODE_SIDE_EFFECT(type) ((type) >= TB_LINE_INFO && (type) <= TB_DEBUGBREAK)
-    #define TB_IS_NODE_TERMINATOR(type)  ((type) >= TB_LABEL && (type) <= TB_TRAP)
+    #define TB_IS_NODE_TERMINATOR(type)  ((type) >= TB_GOTO && (type) <= TB_TRAP)
 
     typedef int TB_Label;
 
@@ -361,8 +360,13 @@ extern "C" {
     #define TB_REG_MAX  ((TB_Reg)INT_MAX)
 
     typedef struct {
-        TB_Reg label, val;
+        TB_Label label;
+        TB_Reg val;
     } TB_PhiInput;
+
+    typedef struct TB_BasicBlock {
+        TB_Reg start, end;
+    } TB_BasicBlock;
 
     typedef struct TB_Node {
         TB_NodeType    type;
@@ -491,10 +495,6 @@ extern "C" {
                 size_t count;
                 TB_PhiInput* inputs;
             } phi;
-            struct TB_NodeLabel {
-                TB_Label id;
-                TB_Reg   terminator;
-            } label;
             struct TB_NodeIf {
                 TB_Reg cond;
                 TB_Label if_true;
@@ -905,6 +905,16 @@ extern "C" {
     ////////////////////////////////
     // IR access
     ////////////////////////////////
+    typedef struct TB_BBIter {
+        TB_Label l;
+
+        // private
+        int state;
+    } TB_BBIter;
+
+    #define TB_FOR_BASIC_BLOCK(it, f) for (TB_BBIter it = { 0 }; tb_next_bb(f, &it);)
+    TB_API bool tb_next_bb(TB_Function* f, TB_BBIter* it);
+
     typedef struct TB_NodeInputIter {
         TB_Reg r;
 
@@ -918,6 +928,38 @@ extern "C" {
 
     TB_API TB_NodeInputIter tb_node_input_iter(TB_Reg r);
     TB_API bool tb_next_node_input(const TB_Function* f, TB_NodeInputIter* iter);
+
+    ////////////////////////////////
+    // Function Validation
+    ////////////////////////////////
+    typedef struct {
+        // public state
+        enum {
+            TB_VALIDATION_SUCCESS = 0,
+
+            TB_VALIDATION_TERMINATOR_HAS_NEXT,
+            TB_VALIDATION_NON_TERMINATOR_HAS_NO_NEXT,
+            TB_VALIDATION_OUT_OF_PLACE_TERMINATOR,
+            TB_VALIDATION_NO_TERMINATOR,
+        } type;
+        union {
+            TB_Label no_terminator_label;
+            TB_Reg terminator_has_next;
+            TB_Reg non_terminator_no_next;
+            TB_Reg out_of_place_terminator;
+        };
+
+        // private
+        int state;
+        TB_Label l;
+        TB_Reg r, end, next;
+    } TB_Validator;
+
+    TB_API bool tb_validator_next(TB_Function* f, TB_Validator* validator);
+
+    // runs entire validator and returns the number of errors along with printing
+    // to stderr
+    TB_API int tb_function_validate(TB_Function* f);
 
     ////////////////////////////////
     // Function IR Generation
@@ -938,15 +980,19 @@ extern "C" {
     TB_API void tb_function_set_prototype(TB_Function* f, const TB_FunctionPrototype* p);
     TB_API const TB_FunctionPrototype* tb_function_get_prototype(TB_Function* f);
 
+    TB_API TB_Label tb_basic_block_create(TB_Function* f);
+    TB_API bool tb_basic_block_is_complete(TB_Function* f, TB_Label bb);
+
+    TB_API TB_Label tb_inst_get_label(TB_Function* f);
+    TB_API void tb_inst_set_label(TB_Function* f, TB_Label l);
+
     TB_API TB_Reg tb_function_insert(TB_Function* f, TB_Reg r, const TB_Node n);
     TB_API TB_Reg tb_function_set(TB_Function* f, TB_Reg r, const TB_Node n);
     TB_API TB_Reg tb_function_append(TB_Function* f, const TB_Node n);
 
-    TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* user_data);
-    TB_API void tb_function_print2(TB_Function* f, TB_PrintCallback callback, void* user_data, bool display_nops);
+    TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* user_data, bool display_nops);
     TB_API void tb_function_free(TB_Function* f);
 
-    TB_API TB_Label tb_inst_get_current_label(TB_Function* f);
     TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line);
 
     TB_API void tb_inst_set_scope(TB_Function* f, TB_AttributeID scope);
@@ -1099,9 +1145,7 @@ extern "C" {
     TB_API TB_Reg tb_inst_vcall(TB_Function* f, TB_DataType dt, TB_Reg target, size_t param_count, const TB_Reg* params);
     TB_API TB_Reg tb_inst_ecall(TB_Function* f, TB_DataType dt, const TB_External* target, size_t param_count, const TB_Reg* params);
 
-    TB_API TB_Label tb_inst_new_label_id(TB_Function* f);
     TB_API TB_Reg tb_inst_phi2(TB_Function* f, TB_Label a_label, TB_Reg a, TB_Label b_label, TB_Reg b);
-    TB_API TB_Reg tb_inst_label(TB_Function* f, TB_Label id);
     TB_API void tb_inst_goto(TB_Function* f, TB_Label id);
     TB_API TB_Reg tb_inst_if(TB_Function* f, TB_Reg cond, TB_Label if_true, TB_Label if_false);
     TB_API void tb_inst_switch(TB_Function* f, TB_DataType dt, TB_Reg key, TB_Label default_label, size_t entry_count, const TB_SwitchEntry* entries);
@@ -1154,7 +1198,7 @@ extern "C" {
         size_t count;
 
         // max size is label_count
-        TB_Reg* traversal;
+        TB_Label* traversal;
 
         // NOTE: you can free visited once the postorder calculation is complete
         // max size is label_count
@@ -1217,8 +1261,6 @@ extern "C" {
 
     // is an IF, GOTO, RET, SWITCH, or LABEL node?
     TB_API bool tb_node_is_terminator(TB_Function* f, TB_Reg r);
-
-    TB_API bool tb_node_is_label(TB_Function* f, TB_Reg r);
 
     TB_API TB_Reg tb_node_store_get_address(TB_Function* f, TB_Reg r);
     TB_API TB_Reg tb_node_store_get_value(TB_Function* f, TB_Reg r);

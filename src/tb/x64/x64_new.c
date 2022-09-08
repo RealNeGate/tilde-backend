@@ -203,37 +203,39 @@ static void x64v2_resolve_params(Ctx* restrict ctx, TB_Function* f) {
     const TB_FunctionPrototype* restrict proto = f->prototype;
 
     size_t param_count = proto->param_count;
-    TB_FOR_EACH_NODE(n, f) {
-        TB_Reg r = n - f->nodes;
+    TB_FOR_BASIC_BLOCK(bb, f) {
+        TB_FOR_NODE(r, f, bb) {
+            TB_Node* n = &f->nodes[r];
 
-        if (n->type == TB_PARAM) {
-            size_t i = n->param.id;
-            TB_DataType dt = proto->params[i];
+            if (n->type == TB_PARAM) {
+                size_t i = n->param.id;
+                TB_DataType dt = proto->params[i];
 
-            // Allocate space in stack
-            assert(get_data_type_size(dt) <= 8 && "Parameter too big");
+                // Allocate space in stack
+                assert(get_data_type_size(dt) <= 8 && "Parameter too big");
 
-            if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
-                // xmm parameters
-                if (i < 4) {
-                    GAD_FN(reserve_register)(ctx, f, r, X64_REG_CLASS_XMM, i);
+                if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
+                    // xmm parameters
+                    if (i < 4) {
+                        GAD_FN(reserve_register)(ctx, f, r, X64_REG_CLASS_XMM, i);
+                    } else {
+                        GAD_FN(force_stack)(ctx, f, r, 16 + (i * 8));
+                    }
                 } else {
-                    GAD_FN(force_stack)(ctx, f, r, 16 + (i * 8));
+                    // gpr parameters
+                    if (is_sysv && i < 6) {
+                        GAD_FN(reserve_register)(ctx, f, r, X64_REG_CLASS_GPR, SYSV_GPR_PARAMETERS[i]);
+                    } else if (i < 4) {
+                        GAD_FN(reserve_register)(ctx, f, r, X64_REG_CLASS_GPR, WIN64_GPR_PARAMETERS[i]);
+                    } else {
+                        GAD_FN(force_stack)(ctx, f, r, 16 + (i * 8));
+                    }
                 }
-            } else {
-                // gpr parameters
-                if (is_sysv && i < 6) {
-                    GAD_FN(reserve_register)(ctx, f, r, X64_REG_CLASS_GPR, SYSV_GPR_PARAMETERS[i]);
-                } else if (i < 4) {
-                    GAD_FN(reserve_register)(ctx, f, r, X64_REG_CLASS_GPR, WIN64_GPR_PARAMETERS[i]);
-                } else {
-                    GAD_FN(force_stack)(ctx, f, r, 16 + (i * 8));
-                }
+
+                // short circuit
+                param_count -= 1;
+                if (param_count == 0) break;
             }
-
-            // short circuit
-            param_count -= 1;
-            if (param_count == 0) break;
         }
     }
 
@@ -400,7 +402,7 @@ static void x64v2_return(Ctx* restrict ctx, TB_Function* f, TB_Node* restrict n)
     } else tb_todo();
 }
 
-static void x64v2_branch_if(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_Label if_true, TB_Label if_false, TB_Reg fallthrough, TB_Reg if_true_reg, TB_Reg if_false_reg) {
+static void x64v2_branch_if(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_Label if_true, TB_Label if_false, TB_Reg fallthrough) {
     Cond cc = 0;
     if (ctx->flags_bound == cond) {
         cc = ctx->flags_code;
@@ -436,14 +438,14 @@ static void x64v2_branch_if(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_L
         }
     }
 
-    if (fallthrough == if_true_reg) {
+    if (fallthrough == if_true) {
         // invert condition and target to make fallthrough work
         JCC(cc ^ 1, if_false);
     } else {
         // JCC .true
         // JMP .false
         JCC(cc, if_true);
-        if (fallthrough != if_false_reg) {
+        if (fallthrough != if_false) {
             JMP(if_false);
         }
     }

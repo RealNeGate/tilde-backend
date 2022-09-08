@@ -7,7 +7,7 @@
 #include "tb_internal.h"
 
 TB_API int tb_function_get_label_count(TB_Function* f) {
-    return f->label_count;
+    return f->bb_count;
 }
 
 TB_API TB_Node* tb_function_get_node(TB_Function* f, TB_Reg r) {
@@ -53,16 +53,11 @@ TB_API TB_PhiInput* tb_node_get_phi_inputs(TB_Function* f, TB_Reg r) {
 }
 
 TB_API bool tb_node_is_conditional(TB_Function* f, TB_Reg r) {
-    return f->nodes[r].type == TB_IF;
+    return f->nodes[r].type == TB_IF || f->nodes[r].type == TB_SWITCH;
 }
 
 TB_API bool tb_node_is_terminator(TB_Function* f, TB_Reg r) {
-    return f->nodes[r].type == TB_IF || f->nodes[r].type == TB_GOTO ||
-        f->nodes[r].type == TB_RET || f->nodes[r].type == TB_LABEL;
-}
-
-TB_API bool tb_node_is_label(TB_Function* f, TB_Reg r) {
-    return f->nodes[r].type == TB_LABEL;
+    return f->nodes[r].type == TB_IF || f->nodes[r].type == TB_GOTO || f->nodes[r].type == TB_RET;
 }
 
 TB_API TB_Reg tb_node_get_last_register(TB_Function* f) {
@@ -132,14 +127,6 @@ static TB_Reg tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
     // Cannot add registers to terminated basic blocks, except labels
     // which start new basic blocks
     tb_assume(f);
-
-    if (type != TB_LABEL && f->current_label == 0) {
-        fprintf(stderr, "Cannot create node without parent basic block\n");
-        tb_function_print(f, tb_default_print_callback, stderr);
-        fprintf(stderr, "\n\n\n");
-        abort();
-    }
-
     tb_function_reserve_nodes(f, 1);
 
     TB_Reg r = f->node_count++;
@@ -148,8 +135,23 @@ static TB_Reg tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
         .dt = dt
     };
 
-    f->nodes[f->node_end].next = r;
-    f->node_end = r;
+    TB_BasicBlock* bb = &f->bbs[f->current_label];
+
+    if (bb->start == 0) {
+        bb->start = r;
+    } else {
+        // append to the end of the basic block
+        TB_Reg end = bb->end;
+        f->nodes[end].next = r;
+
+        // check if there's already a terminator
+        #ifndef NDEBUG
+        if (TB_IS_NODE_TERMINATOR(f->nodes[bb->end].type)) {
+            tb_panic("Basic block already has terminator\n");
+        }
+        #endif
+    }
+    bb->end = r;
 
     // map the scope attribute
     if (f->active_attrib != 0) {
@@ -167,25 +169,16 @@ TB_API TB_Reg tb_function_set(TB_Function* f, TB_Reg r, const TB_Node n) {
 }
 
 TB_API TB_Reg tb_function_append(TB_Function* f, const TB_Node n) {
-    // Cannot add registers to terminated basic blocks, except labels
-    // which start new basic blocks
-    tb_assume(f);
-
-    if (n.type != TB_LABEL && f->current_label == 0) {
-        fprintf(stderr, "Cannot create node without parent basic block\n");
-        tb_function_print(f, tb_default_print_callback, stderr);
-        fprintf(stderr, "\n\n\n");
-        abort();
-    }
-
     tb_function_reserve_nodes(f, 1);
 
     TB_Reg r = f->node_count++;
     f->nodes[r] = n;
     f->nodes[r].next = TB_NULL_REG;
 
-    f->nodes[f->node_end].next = r;
-    f->node_end = r;
+    // append to the end of the basic block
+    TB_Reg end = f->bbs[f->current_label].end;
+    f->nodes[end].next = r;
+    f->bbs[f->current_label].end = end;
 
     // map the scope attribute
     if (f->active_attrib != 0) {
@@ -197,7 +190,7 @@ TB_API TB_Reg tb_function_append(TB_Function* f, const TB_Node n) {
 static TB_Reg tb_bin_arith(TB_Function* f, int type, TB_ArithmaticBehavior arith_behavior, TB_Reg a, TB_Reg b) {
     // tb_assume(TB_DATA_TYPE_EQUALS(f->nodes[a].dt, f->nodes[b].dt));
     if (!TB_DATA_TYPE_EQUALS(f->nodes[a].dt, f->nodes[b].dt)) {
-        tb_function_print(f, tb_default_print_callback, stderr);
+        tb_function_print(f, tb_default_print_callback, stderr, false);
         abort();
     }
 
@@ -377,11 +370,7 @@ TB_API TB_Reg tb_inst_param_addr(TB_Function* f, int param_id) {
 }
 
 TB_API void tb_inst_unreachable(TB_Function* f) {
-    TB_Reg r = tb_make_reg(f, TB_UNREACHABLE, TB_TYPE_VOID);
-
-    tb_assume(f->current_label);
-    f->nodes[f->current_label].label.terminator = r;
-    f->current_label = TB_NULL_REG;
+    tb_make_reg(f, TB_UNREACHABLE, TB_TYPE_VOID);
 }
 
 TB_API void tb_inst_debugbreak(TB_Function* f) {
@@ -389,11 +378,7 @@ TB_API void tb_inst_debugbreak(TB_Function* f) {
 }
 
 TB_API void tb_inst_trap(TB_Function* f) {
-    TB_Reg r = tb_make_reg(f, TB_TRAP, TB_TYPE_VOID);
-
-    tb_assume(f->current_label);
-    f->nodes[f->current_label].label.terminator = r;
-    f->current_label = TB_NULL_REG;
+    tb_make_reg(f, TB_TRAP, TB_TYPE_VOID);
 }
 
 TB_API void tb_inst_keep_alive(TB_Function* f, TB_Reg src) {
@@ -428,8 +413,6 @@ TB_API TB_Reg tb_inst_local(TB_Function* f, uint32_t size, TB_CharUnits alignmen
 }
 
 TB_API TB_Reg tb_inst_load(TB_Function* f, TB_DataType dt, TB_Reg addr, TB_CharUnits alignment) {
-    tb_assume(f->current_label);
-
     TB_Reg r = tb_make_reg(f, TB_LOAD, dt);
     f->nodes[r].load = (struct TB_NodeLoad) {
         .address = addr, .alignment = alignment
@@ -450,8 +433,6 @@ TB_API void tb_inst_store(TB_Function* f, TB_DataType dt, TB_Reg addr, TB_Reg va
 }
 
 TB_API TB_Reg tb_inst_volatile_load(TB_Function* f, TB_DataType dt, TB_Reg addr, TB_CharUnits alignment) {
-    tb_assume(f->current_label);
-
     TB_Reg r = tb_make_reg(f, TB_LOAD, dt);
     f->nodes[r].store = (struct TB_NodeStore) { .address = addr, .alignment = alignment, .is_volatile = true };
     return r;
@@ -1048,51 +1029,44 @@ TB_API TB_Reg tb_inst_phi2(TB_Function* f, TB_Label a_label, TB_Reg a, TB_Label 
     TB_DataType dt = f->nodes[a].dt;
 
     TB_Reg r = tb_make_reg(f, TB_PHI2, dt);
-    f->nodes[r].phi2.inputs[0] = (TB_PhiInput){
-        tb_find_reg_from_label(f, a_label), a
-    };
-    f->nodes[r].phi2.inputs[1] = (TB_PhiInput){
-        tb_find_reg_from_label(f, b_label), b
-    };
+    f->nodes[r].phi2.inputs[0] = (TB_PhiInput){ a_label, a };
+    f->nodes[r].phi2.inputs[1] = (TB_PhiInput){ b_label, b };
     return r;
 }
 
-TB_API TB_Label tb_inst_new_label_id(TB_Function* f) {
-    return f->label_count++;
-}
+TB_API TB_Label tb_basic_block_create(TB_Function* f) {
+    if (f->bb_count + 1 >= f->bb_capacity) {
+        f->bb_capacity = (f->bb_count + 1) * 2;
 
-TB_API TB_Reg tb_inst_label(TB_Function* f, TB_Label id) {
-    tb_assume(id >= 1 && id < f->label_count);
-
-    TB_Reg r = tb_make_reg(f, TB_LABEL, TB_TYPE_PTR);
-    f->nodes[r].label = (struct TB_NodeLabel) { .id = id };
-
-    if (f->current_label) {
-        f->nodes[f->current_label].label.terminator = r;
+        f->bbs = tb_platform_heap_realloc(f->bbs, sizeof(TB_BasicBlock) * f->bb_capacity);
+        if (f->bbs == NULL) tb_panic("tb_basic_block_create: Out of memory");
     }
 
-    f->current_label = r;
-    return r;
+    TB_Label bb = f->bb_count++;
+    f->bbs[bb] = (TB_BasicBlock){ 0 };
+    return bb;
+}
+
+TB_API bool tb_basic_block_is_complete(TB_Function* f, TB_Label bb) {
+    return TB_IS_NODE_TERMINATOR(f->nodes[f->bbs[bb].end].type);
+}
+
+TB_API void tb_inst_set_label(TB_Function* f, TB_Label l) {
+    if (!tb_basic_block_is_complete(f, f->current_label)) {
+        tb_todo();
+    }
+    f->current_label = l;
+}
+
+TB_API TB_Label tb_inst_get_label(TB_Function* f) {
+    return f->current_label;
 }
 
 TB_API void tb_inst_goto(TB_Function* f, TB_Label id) {
-    tb_assume(id >= 0 && id < f->label_count);
-    if (f->current_label == TB_NULL_REG) {
-        // Was placed after a terminator instruction,
-        // just omit this to avoid any issues since it's
-        // not a big deal for example:
-        // RET x
-        // ~~GOTO .L5~~
-        // .L4:
-        return;
-    }
+    tb_assume(id >= 0 && id < f->bb_count);
 
     TB_Reg r = tb_make_reg(f, TB_GOTO, TB_TYPE_VOID);
     f->nodes[r].goto_.label = id;
-
-    tb_assume(f->current_label);
-    f->nodes[f->current_label].label.terminator = r;
-    f->current_label = TB_NULL_REG;
 }
 
 TB_API TB_Reg tb_inst_if(TB_Function* f, TB_Reg cond, TB_Label if_true, TB_Label if_false) {
@@ -1101,10 +1075,6 @@ TB_API TB_Reg tb_inst_if(TB_Function* f, TB_Reg cond, TB_Label if_true, TB_Label
     f->nodes[r].if_.cond = cond;
     f->nodes[r].if_.if_true = if_true;
     f->nodes[r].if_.if_false = if_false;
-
-    tb_assume(f->current_label);
-    f->nodes[f->current_label].label.terminator = r;
-    f->current_label = TB_NULL_REG;
     return r;
 }
 
@@ -1120,21 +1090,15 @@ TB_API void tb_inst_switch(TB_Function* f, TB_DataType dt, TB_Reg key, TB_Label 
     int param_end = f->vla.count;
 
     TB_Reg r = tb_make_reg(f, TB_SWITCH, dt);
-    f->nodes[r].switch_.key = key;
-    f->nodes[r].switch_.default_label = default_label;
-    f->nodes[r].switch_.entries_start = param_start;
-    f->nodes[r].switch_.entries_end = param_end;
-
-    tb_assume(f->current_label);
-    f->nodes[f->current_label].label.terminator = r;
-    f->current_label = TB_NULL_REG;
+    f->nodes[r].switch_ = (struct TB_NodeSwitch){
+        .key = key,
+        .default_label = default_label,
+        .entries_start = param_start,
+        .entries_end = param_end
+    };
 }
 
 TB_API void tb_inst_ret(TB_Function* f, TB_Reg value) {
     TB_Reg r = tb_make_reg(f, TB_RET, f->prototype->return_dt);
     f->nodes[r].ret.value = value;
-
-    tb_assume(f->current_label);
-    f->nodes[f->current_label].label.terminator = r;
-    f->current_label = TB_NULL_REG;
 }

@@ -98,29 +98,26 @@ static bool is_node_the_same(TB_Node* a, TB_Node* b) {
 }
 
 typedef struct {
-    TB_Reg reg;
     size_t count;
     TB_Reg* regs;
 } BasicBlockDefs;
 
 static BasicBlockDefs* generate_def_table(TB_Function* f, TB_TemporaryStorage* tls) {
-    BasicBlockDefs* table = tb_tls_push(tls, f->label_count * sizeof(BasicBlockDefs));
+    BasicBlockDefs* table = tb_tls_push(tls, f->bb_count * sizeof(BasicBlockDefs));
 
-    TB_Label bb = 0;
-    TB_FOR_EACH_NODE(n, f) {
-        TB_Reg r = (n - f->nodes);
+    TB_FOR_BASIC_BLOCK(bb, f) {
+        table[bb].count = 0;
+        table[bb].regs = tb_tls_push(tls, 0);
 
-        if (n->type == TB_LABEL) {
-            bb = n->label.id;
+        TB_FOR_NODE(r, f, bb) {
+            TB_Node* n = &f->nodes[r];
 
-            table[bb].reg = r;
-            table[bb].count = 0;
-            table[bb].regs = tb_tls_push(tls, 0);
-        } else if (!TB_IS_NODE_SIDE_EFFECT(n->type) && n->type != TB_LOAD) {
-            tb_tls_push(tls, sizeof(TB_Reg));
+            if (!TB_IS_NODE_SIDE_EFFECT(n->type) && n->type != TB_LOAD) {
+                tb_tls_push(tls, sizeof(TB_Reg));
 
-            size_t i = table[bb].count++;
-            table[bb].regs[i] = r;
+                size_t i = table[bb].count++;
+                table[bb].regs[i] = r;
+            }
         }
     }
 
@@ -167,7 +164,7 @@ static void cse_create(CSE_Context* ctx, TB_TemporaryStorage* tls, TB_Function* 
     memset(ctx, 0, sizeof(CSE_Context));
 
     TB_Predeccesors preds = tb_get_temp_predeccesors(f, tls);
-    ctx->doms = tb_tls_push(tls, f->label_count * sizeof(TB_Label));
+    ctx->doms = tb_tls_push(tls, f->bb_count * sizeof(TB_Label));
     tb_get_dominators(f, preds, ctx->doms);
 
     // list of defined nodes in for every basic block relevant to global CSE
@@ -236,11 +233,13 @@ static bool cse(TB_Function* f) {
     cse_create(&cse, tls, f);
 
     int changes = 0;
-    TB_FOR_EACH_NODE(n, f) {
-        if (n->type == TB_LABEL) {
-            cse_set_bb(&cse, tls, n->label.id);
-        } else if (cse_attempt(f, &cse, tls, n)) {
-            changes++;
+    TB_FOR_BASIC_BLOCK(bb, f) {
+        cse_set_bb(&cse, tls, bb);
+
+        TB_FOR_NODE(r, f, bb) {
+            if (cse_attempt(f, &cse, tls, &f->nodes[r])) {
+                changes++;
+            }
         }
     }
 

@@ -141,8 +141,7 @@ static BinOpReg create_binop(TB_Function* f, TB_Reg r, TB_Reg x, TB_Reg y) {
         TB_Reg yy = f->nodes[x].i_arith.b;
         TB_Reg zz = y;
 
-        TB_Reg prev = tb_node_get_previous(f, r);
-        TB_Reg xy_reg = tb_function_insert_after(f, prev);
+        TB_Reg xy_reg = tb_function_insert_before(f, r);
 
         TB_Node* xy = &f->nodes[xy_reg];
         xy->type = type;
@@ -209,7 +208,8 @@ static bool phi_motion(TB_Function* f, TB_Node* n) {
                 }
             }
 
-            TB_Reg shared_op = tb_function_insert_after(f, r);
+            TB_Label bb = tb_find_label_from_reg(f, r);
+            TB_Reg shared_op = tb_function_insert_after(f, bb, r);
             f->nodes[shared_op].type = shared_type;
             f->nodes[shared_op].dt = f->nodes[r].dt;
             f->nodes[shared_op].i_arith.a = shared_a;
@@ -321,6 +321,7 @@ static bool const_fold(TB_Function* f, TB_Node* n) {
             }
 
             TB_Reg r = n - f->nodes;
+            TB_Label bb = tb_find_label_from_reg(f, ar);
             if (n->type == TB_MUL) {
                 // (a * b) => (a << log2(b)) where b is a power of two
                 uint64_t log2 = tb_ffs(b->integer.single_word) - 1;
@@ -329,7 +330,7 @@ static bool const_fold(TB_Function* f, TB_Node* n) {
 
                     // It's a power of two, swap in a left-shift
                     // just slap it right after the label
-                    TB_Reg new_op = tb_function_insert_after(f, ar);
+                    TB_Reg new_op = tb_function_insert_after(f, bb, ar);
 
                     f->nodes[new_op].type = TB_INTEGER_CONST;
                     f->nodes[new_op].dt = dt;
@@ -348,7 +349,7 @@ static bool const_fold(TB_Function* f, TB_Node* n) {
                     OPTIMIZER_LOG(r, "converted modulo into AND with constant mask");
 
                     // generate mask
-                    TB_Reg extra_reg = tb_function_insert_after(f, ar);
+                    TB_Reg extra_reg = tb_function_insert_after(f, bb, ar);
                     TB_Node* extra = &f->nodes[extra_reg];
                     extra->type = TB_INTEGER_CONST;
                     extra->dt = n->dt;

@@ -160,12 +160,12 @@ static void html_print(void* user_data, const char* fmt, ...) {
 static void log_function(FILE* out, const char* title, TB_Function* f) {
     #if 0
     printf("\x1b[H");
-    tb_function_print2(f, tb_default_print_callback, out, false);
+    tb_function_print(f, tb_default_print_callback, out, false);
     #else
     fprintf(out, "<td valign=\"top\">\n");
     fprintf(out, "%s:<br>\n", title);
     fprintf(out, "<pre>\n");
-    tb_function_print2(f, html_print, out, false);
+    tb_function_print(f, html_print, out, false);
     fprintf(out, "</pre>\n");
     fprintf(out, "</td>\n");
     #endif
@@ -204,18 +204,14 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
     FOREACH_N(i, 0, m->functions.count) {
         TB_Function* f = &functions[i];
 
-        //printf("ORIGINAL\n");
-        //tb_function_print2(f, tb_default_print_callback, stdout, false);
-        //printf("\n\n");
+        // printf("ORIGINAL\n");
+        // tb_function_print(f, tb_default_print_callback, stdout, false);
+        // printf("\n\n");
 
         FOREACH_N(j, 0, pass_count) {
             switch (passes[j].mode) {
                 case TB_BASIC_BLOCK_PASS:
-                TB_Reg bb = 1;
-                while (bb != 0) {
-                    TB_Node* start = &f->nodes[bb];
-                    assert(start->type == TB_LABEL);
-
+                TB_FOR_BASIC_BLOCK(bb, f) {
                     if (passes[j].l_state != NULL) {
                         lua_State* L = begin_lua_pass(passes[j].l_state);
                         lua_pushlightuserdata(L, f);
@@ -224,9 +220,6 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
                     } else {
                         changes |= passes[j].bb_run(f, bb);
                     }
-
-                    TB_Reg terminator = start->label.terminator;
-                    bb = start->type == TB_LABEL ? terminator : f->nodes[terminator].next;
                 }
                 break;
 
@@ -235,7 +228,7 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
                 TB_TemporaryStorage* tls = tb_tls_allocate();
                 TB_Predeccesors preds = tb_get_temp_predeccesors(f, tls);
 
-                TB_Label* doms = tb_tls_push(tls, f->label_count * sizeof(TB_Label));
+                TB_Label* doms = tb_tls_push(tls, f->bb_count * sizeof(TB_Label));
                 tb_get_dominators(f, preds, doms);
 
                 // probably don't wanna do this using heap allocations
@@ -265,9 +258,9 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
                 } else {
                     changes |= passes[j].func_run(f);
 
-                    //printf("%s\n", passes[j].name);
-                    //tb_function_print2(f, tb_default_print_callback, stdout, false);
-                    //printf("\n\n");
+                    // printf("%s\n", passes[j].name);
+                    // tb_function_print(f, tb_default_print_callback, stdout, false);
+                    // printf("\n\n");
                 }
                 break;
 

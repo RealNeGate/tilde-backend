@@ -100,17 +100,20 @@ static FunctionTallyComplex tally_memory_usage_complex(TB_Function* restrict f) 
     size_t label_patch_count = 0;
     size_t line_info_count = 0;
 
-    TB_FOR_EACH_NODE(n, f) {
-        TB_NodeTypeEnum t = n->type;
+    TB_FOR_BASIC_BLOCK(bb, f) {
+        TB_FOR_NODE(r, f, bb) {
+            TB_Node* n = &f->nodes[r];
+            TB_NodeTypeEnum t = n->type;
 
-        if (t == TB_PHI2) phi_count++;
-        else if (t == TB_RET) return_count++;
-        else if (t == TB_LOCAL) locals_count++;
-        else if (t == TB_IF) label_patch_count += 2;
-        else if (t == TB_GOTO) label_patch_count++;
-        else if (t == TB_LINE_INFO) line_info_count++;
-        else if (t == TB_SWITCH) {
-            label_patch_count += 1 + ((n->switch_.entries_end - n->switch_.entries_start) / 2);
+            if (t == TB_PHI2) phi_count++;
+            else if (t == TB_RET) return_count++;
+            else if (t == TB_LOCAL) locals_count++;
+            else if (t == TB_IF) label_patch_count += 2;
+            else if (t == TB_GOTO) label_patch_count++;
+            else if (t == TB_LINE_INFO) line_info_count++;
+            else if (t == TB_SWITCH) {
+                label_patch_count += 1 + ((n->switch_.entries_end - n->switch_.entries_start) / 2);
+            }
         }
     }
 
@@ -137,7 +140,7 @@ static FunctionTallyComplex tally_memory_usage_complex(TB_Function* restrict f) 
     tally = (tally + align_mask) & ~align_mask;
 
     // labels
-    tally += f->label_count * sizeof(uint32_t);
+    tally += f->bb_count * sizeof(uint32_t);
     tally = (tally + align_mask) & ~align_mask;
 
     // label_patches
@@ -539,9 +542,6 @@ static void isel_top_level(X64_ComplexCtx* restrict ctx, TB_Function* f, TreeNod
             }
             break;
         }
-        case TB_LABEL: {
-            break;
-        }
         case TB_GOTO: {
             break;
         }
@@ -617,7 +617,7 @@ TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB
             // (%zu bytes)\n", tally.memory_usage);
             ctx = calloc(1, ctx_size);
 
-            ctx->header.labels        = tb_platform_heap_alloc(f->label_count * sizeof(uint32_t));
+            ctx->header.labels        = tb_platform_heap_alloc(f->bb_count * sizeof(uint32_t));
             ctx->header.label_patches = tb_platform_heap_alloc(tally.label_patch_count * sizeof(LabelPatch));
             ctx->header.ret_patches   = tb_platform_heap_alloc(tally.return_count * sizeof(ReturnPatch));
 
@@ -629,7 +629,7 @@ TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB
             ctx = tb_tls_push(tls, ctx_size);
             memset(ctx, 0, ctx_size);
 
-            ctx->header.labels = tb_tls_push(tls, f->label_count * sizeof(uint32_t));
+            ctx->header.labels = tb_tls_push(tls, f->bb_count * sizeof(uint32_t));
             ctx->header.label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch));
             ctx->header.ret_patches = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch));
 
@@ -663,12 +663,15 @@ TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB
     // Create phi lookup table for later evaluation stages
     // and calculate the maximum parameter usage for a call
     size_t caller_usage = 0;
-    TB_FOR_EACH_NODE(n, f) {
-        if (n->type == TB_PHI2) {
-            ctx->phis[ctx->phi_count++] = (PhiValue) { n - f->nodes };
-        } else if (n->type == TB_CALL || n->type == TB_ECALL || n->type == TB_VCALL) {
-            int param_usage = CALL_NODE_PARAM_COUNT(n);
-            if (caller_usage < param_usage) { caller_usage = param_usage; }
+    TB_FOR_BASIC_BLOCK(bb, f) {
+        TB_FOR_NODE(r, f, bb) {
+            TB_Node* n = &f->nodes[r];
+            if (n->type == TB_PHI2) {
+                ctx->phis[ctx->phi_count++] = (PhiValue) { n - f->nodes };
+            } else if (n->type == TB_CALL || n->type == TB_ECALL || n->type == TB_VCALL) {
+                int param_usage = CALL_NODE_PARAM_COUNT(n);
+                if (caller_usage < param_usage) { caller_usage = param_usage; }
+            }
         }
     }
 
@@ -677,7 +680,7 @@ TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB
     if (!ctx->is_sysv && caller_usage > 0 && caller_usage < 4) caller_usage = 4;
 
     // Allocate local and parameter stack slots
-    tb_function_print(f, tb_default_print_callback, stdout);
+    tb_function_print(f, tb_default_print_callback, stdout, false);
     printf("\n\n\n");
 
     const TB_FunctionPrototype* restrict proto = f->prototype;
@@ -685,7 +688,7 @@ TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB
     // NULL vgpr, RSP and RBP and the parameters
     ctx->vgpr_count = 3 + proto->param_count;
 
-    loop(i, proto->param_count) {
+    FOREACH_N(i, 0, proto->param_count) {
         TB_DataType dt = proto->params[i];
 
         // Allocate space in stack
@@ -697,23 +700,11 @@ TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB
     ////////////////////////////////
     // Evaluate each basic block
     ////////////////////////////////
-    TB_Reg bb = 1;
     TreeNodeArena tree = { 0 };
-    do {
-        assert(f->nodes[bb].type == TB_LABEL);
-        TB_Node* start = &f->nodes[bb];
-
-        TB_Reg bb_end = start->label.terminator;
-        TB_Node* end = &f->nodes[bb_end];
-
+    TB_FOR_BASIC_BLOCK(bb, f) {
         // Generate expression tree
-        TreeNode* node = tb_tree_generate(&tree, f, ctx->use_count, bb, bb_end);
-
-        // Identify next BB
-        TB_Node* next_bb = end;
-        if (end->type != TB_LABEL) next_bb = &f->nodes[next_bb->next];
-
-        TB_Reg next_bb_reg = next_bb - f->nodes;
+        TreeNode* node = NULL;//tb_tree_generate(&tree, f, ctx->use_count, bb);
+        assert(0 && "TODO");
 
         // Instruction selection
         while (node) {
@@ -725,8 +716,7 @@ TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB
 
         // Next Basic block
         tb_tree_clear(&tree);
-        bb = next_bb_reg;
-    } while (bb != TB_NULL_REG);
+    }
 
     tb_tree_free(&tree);
     print_machine_insts(ctx);

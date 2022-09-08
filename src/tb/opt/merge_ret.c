@@ -1,59 +1,57 @@
 #include "../tb_internal.h"
 
 static bool merge_rets(TB_Function* f) {
-    TB_Label label_reg = 0;
-
     int count = 0;
     TB_PhiInput* inputs = NULL;
 
-    TB_Label endpoint = f->label_count;
+    TB_Label endpoint = f->bb_count;
     TB_DataType dt = TB_TYPE_VOID;
     TB_Node* the_goto_we_might_convert_back_if_we_fail = f->nodes;
-    TB_FOR_EACH_NODE(n, f) {
-        TB_Reg i = (n - f->nodes);
 
-        if (n->type == TB_LABEL) {
-            label_reg = i;
-        } else if (n->type == TB_RET) {
-            int index = count++;
-            inputs = tb_platform_heap_realloc(inputs, count * sizeof(TB_PhiInput));
-            inputs[index] = (TB_PhiInput){ label_reg, n->ret.value };
+    TB_FOR_BASIC_BLOCK(bb, f) {
+        TB_FOR_NODE(r, f, bb) {
+            TB_Node* n = &f->nodes[r];
 
-            dt = n->dt;
+            if (n->type == TB_RET) {
+                int index = count++;
+                inputs = tb_platform_heap_realloc(inputs, count * sizeof(TB_PhiInput));
+                inputs[index] = (TB_PhiInput){ bb, n->ret.value };
 
-            n->type = TB_GOTO;
-            n->dt = TB_TYPE_VOID;
-            n->goto_.label = endpoint;
-            the_goto_we_might_convert_back_if_we_fail = n;
+                dt = n->dt;
+
+                n->type = TB_GOTO;
+                n->dt = TB_TYPE_VOID;
+                n->goto_.label = endpoint;
+                the_goto_we_might_convert_back_if_we_fail = n;
+            }
         }
     }
 
     if (count > 1) {
-        f->label_count += 1;
+        TB_Label bb = tb_basic_block_create(f);
 
-        TB_Reg new_label_reg = tb_function_insert_after(f, f->node_end);
-        TB_Reg new_phi_reg = tb_function_insert_after(f, new_label_reg);
-        TB_Reg new_ret_reg = tb_function_insert_after(f, new_phi_reg);
-        OPTIMIZER_LOG(new_label_reg, "Insert new PHI node");
+        // reg_base + 0  a = phi(...)
+        // reg_base + 1  ret a
+        TB_Reg reg_base = f->node_count;
+        tb_function_reserve_nodes(f, 2);
+        f->node_count += 2;
 
-        f->nodes[new_label_reg].type = TB_LABEL;
-        f->nodes[new_label_reg].dt = TB_TYPE_PTR;
-        f->nodes[new_label_reg].label = (struct TB_NodeLabel){
-            .id = endpoint,
-            .terminator = new_ret_reg
+        OPTIMIZER_LOG(reg_base, "Insert new PHI node");
+
+        f->bbs[bb].start = reg_base;
+        f->bbs[bb].end = reg_base + 1;
+
+        f->nodes[reg_base] = (TB_Node){
+            .type = TB_PHIN,
+            .next = reg_base + 1,
+            .dt = dt,
+            .phi = (struct TB_NodePhi){ .count = count, .inputs = inputs },
         };
 
-        f->nodes[new_phi_reg].type = TB_PHIN;
-        f->nodes[new_phi_reg].dt = dt;
-        f->nodes[new_phi_reg].phi = (struct TB_NodePhi){
-            .count = count,
-            .inputs = inputs
-        };
-
-        f->nodes[new_ret_reg].type = TB_RET;
-        f->nodes[new_ret_reg].dt = dt;
-        f->nodes[new_ret_reg].ret = (struct TB_NodeReturn){
-            .value = new_phi_reg
+        f->nodes[reg_base + 1] = (TB_Node){
+            .type = TB_RET,
+            .dt = dt,
+            .ret = (struct TB_NodeReturn){ reg_base },
         };
 
         return true;

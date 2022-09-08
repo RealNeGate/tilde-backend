@@ -118,17 +118,23 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
     size_t label_patch_count = 0;
     size_t line_info_count = 0;
 
-    TB_FOR_EACH_NODE(n, f) {
-        TB_NodeTypeEnum t = n->type;
+    TB_FOR_BASIC_BLOCK(bb, f) {
+        label_patch_count += 1;
 
-        if (t == TB_RET) return_count++;
-        else if (t == TB_LOCAL) locals_count++;
-        else if (t == TB_LABEL) label_patch_count += 1;
-        else if (t == TB_IF) label_patch_count += 2;
-        else if (t == TB_GOTO) label_patch_count++;
-        else if (t == TB_LINE_INFO) line_info_count++;
-        else if (t == TB_SWITCH) {
-            label_patch_count += 1 + ((n->switch_.entries_end - n->switch_.entries_start) / 2);
+        TB_FOR_BASIC_BLOCK(bb, f) {
+            TB_FOR_NODE(r, f, bb) {
+                TB_Node* n = &f->nodes[r];
+                TB_NodeTypeEnum t = n->type;
+
+                if (t == TB_RET) return_count++;
+                else if (t == TB_LOCAL) locals_count++;
+                else if (t == TB_IF) label_patch_count += 2;
+                else if (t == TB_GOTO) label_patch_count++;
+                else if (t == TB_LINE_INFO) line_info_count++;
+                else if (t == TB_SWITCH) {
+                    label_patch_count += 1 + ((n->switch_.entries_end - n->switch_.entries_start) / 2);
+                }
+            }
         }
     }
 
@@ -151,7 +157,7 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
     tally = (tally + align_mask) & ~align_mask;
 
     // labels
-    tally += f->label_count * sizeof(uint32_t);
+    tally += f->bb_count * sizeof(uint32_t);
     tally = (tally + align_mask) & ~align_mask;
 
     // label_patches
@@ -163,11 +169,11 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
     tally = (tally + align_mask) & ~align_mask;
 
     // postorder.visited
-    tally += f->label_count * sizeof(ReturnPatch);
+    tally += f->bb_count * sizeof(ReturnPatch);
     tally = (tally + align_mask) & ~align_mask;
 
     // postorder.traversal
-    tally += f->label_count * sizeof(ReturnPatch);
+    tally += f->bb_count * sizeof(ReturnPatch);
     tally = (tally + align_mask) & ~align_mask;
 
     return (FunctionTallySimple) {
@@ -187,7 +193,7 @@ static void GAD_FN(store)(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
 static void GAD_FN(return)(Ctx* restrict ctx, TB_Function* f, TB_Node* restrict n);
 static void GAD_FN(phi_move)(Ctx* restrict ctx, TB_Function* f, GAD_VAL* dst_val, TB_Reg dst, TB_Reg src);
 static void GAD_FN(spill_move)(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, GAD_VAL* dst_val, GAD_VAL* src_val, GAD_VAL* reg_val);
-static void GAD_FN(branch_if)(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_Label if_true, TB_Label if_false, TB_Reg fallthrough, TB_Reg if_true_reg, TB_Reg if_false_reg);
+static void GAD_FN(branch_if)(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_Label if_true, TB_Label if_false, TB_Reg fallthrough);
 static GAD_VAL GAD_FN(cond_to_reg)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int cc);
 
 // internal
@@ -581,11 +587,9 @@ static GAD_VAL GAD_FN(get_val)(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
     return ctx->queue[i];
 }
 
-static void GAD_FN(eval_bb_edge)(Ctx* restrict ctx, TB_Function* f, TB_Reg from, TB_Reg to) {
-    TB_Reg to_terminator = f->nodes[to].label.terminator;
-
-    TB_FOR_EACH_NODE_RANGE(n, f, to, to_terminator) {
-        TB_Reg r = n - f->nodes;
+static void GAD_FN(eval_bb_edge)(Ctx* restrict ctx, TB_Function* f, TB_Label to, TB_Label from) {
+    TB_FOR_NODE(r, f, to) {
+        TB_Node* n = &f->nodes[r];
 
         if (tb_node_is_phi_node(f, r)) {
             TB_DataType dt = n->dt;
@@ -662,27 +666,13 @@ static void GAD_FN(resolve_leftover)(Ctx* restrict ctx, TB_Function* f, int queu
 }
 
 // returns the register for the next basic block
-static TB_Reg GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Reg fallthrough) {
-    TB_Node* start = &f->nodes[bb];
-    assert(start->type == TB_LABEL);
-
-    TB_Reg bb_end = start->label.terminator;
-
-    // mark label
-    TB_Label label_id = start->label.id;
-    ctx->labels[label_id] = GET_CODE_POS();
-
-    // first node in the basic block
-    TB_Reg body = start->next;
-    if (body == bb_end) {
-        return f->nodes[bb_end].type != TB_LABEL ? f->nodes[bb_end].next : bb_end;
-    }
+static void GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Label bb, TB_Label fallthrough) {
+    ctx->labels[bb] = GET_CODE_POS();
 
     size_t queue_length_before = ctx->queue_length;
-
-    TB_FOR_EACH_NODE_RANGE(n, f, body, bb_end) {
-        TB_Reg r = n - f->nodes;
-
+    TB_Reg bb_end = f->bbs[bb].end;
+    TB_FOR_NODE(r, f, bb) {
+        if (r == bb_end) break;
         TB_Node* restrict n = &f->nodes[r];
         TB_NodeTypeEnum reg_type = n->type;
         // TB_DataType dt = n->dt;
@@ -746,31 +736,17 @@ static TB_Reg GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_R
         }
     }
 
-
     // Evaluate the terminator
     TB_Node* end = &f->nodes[bb_end];
     TB_NodeTypeEnum end_type = end->type;
 
     switch (end_type) {
-        case TB_LABEL: {
-            GAD_FN(kill_flags)(ctx, f);
-            GAD_FN(eval_bb_edge)(ctx, f, bb, bb_end);
-            GAD_FN(resolve_leftover)(ctx, f, queue_length_before, true);
-
-            if (bb_end != fallthrough) {
-                GAD_GOTO(ctx, f->nodes[fallthrough].label.id);
-            }
-            break;
-        }
-
         case TB_GOTO: {
-            TB_Reg target_reg = tb_find_reg_from_label(f, end->goto_.label);
-
             GAD_FN(kill_flags)(ctx, f);
-            GAD_FN(eval_bb_edge)(ctx, f, bb, target_reg);
+            GAD_FN(eval_bb_edge)(ctx, f, bb, end->goto_.label);
             GAD_FN(resolve_leftover)(ctx, f, queue_length_before, true);
 
-            if (target_reg != fallthrough) {
+            if (end->goto_.label != fallthrough) {
                 GAD_GOTO(ctx, end->goto_.label);
             }
             break;
@@ -800,13 +776,11 @@ static TB_Reg GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_R
             }
 
             // Resolve edges
-            TB_Reg if_true_reg = tb_find_reg_from_label(f, if_true);
-            GAD_FN(eval_bb_edge)(ctx, f, bb, if_true_reg);
-            TB_Reg if_false_reg = tb_find_reg_from_label(f, if_false);
-            GAD_FN(eval_bb_edge)(ctx, f, bb, if_false_reg);
+            GAD_FN(eval_bb_edge)(ctx, f, bb, if_true);
+            GAD_FN(eval_bb_edge)(ctx, f, bb, if_false);
 
             GAD_FN(resolve_leftover)(ctx, f, queue_length_before, true);
-            GAD_FN(branch_if)(ctx, f, end->if_.cond, if_true, if_false, fallthrough, if_true_reg, if_false_reg);
+            GAD_FN(branch_if)(ctx, f, end->if_.cond, if_true, if_false, fallthrough);
             break;
         }
 
@@ -841,8 +815,6 @@ static TB_Reg GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Reg bb, TB_R
 
     // unbind flags now
     ctx->flags_bound = 0;
-
-    return end->type != TB_LABEL ? end->next : bb_end;
 }
 
 static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
@@ -863,7 +835,7 @@ static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const
             .out           = out,
             .start_out     = out,
             .preds         = preds,
-            .labels        = tb_tls_push(tls, f->label_count * sizeof(uint32_t)),
+            .labels        = tb_tls_push(tls, f->bb_count * sizeof(uint32_t)),
             .label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch)),
             .ret_patches   = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch)),
             .ordinal       = tb_tls_push(tls, f->node_count * sizeof(int)),
@@ -877,7 +849,7 @@ static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const
         GAD_INITIAL_REG_ALLOC(ctx);
     }
 
-    tb_function_print(f, tb_default_print_callback, stdout);
+    tb_function_print(f, tb_default_print_callback, stdout, false);
 
     // Analyze function for stack, use counts and phi nodes
     tb_function_calculate_use_count(f, ctx->use_count);
@@ -892,33 +864,38 @@ static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const
     // also calculate the maximum parameter usage for a call
     int counter = 0;
     size_t caller_usage = 0;
-    TB_FOR_EACH_NODE(n, f) {
-        if (n->type == TB_PHI1 || n->type == TB_PHI2 || n->type == TB_PHIN) {
-            // reserve a queue slot in global scope (aka not inside of a basic block)
-            ctx->queue[ctx->queue_length++] = (GAD_VAL){
-                .type = GAD_VAL_UNRESOLVED,
-                .r = (n - f->nodes),
-                .dt = n->dt
-            };
-        } else if (n->type == TB_PARAM_ADDR || n->type == TB_LOCAL) {
-            GAD_RESOLVE_STACK_SLOT(ctx, f, n);
-        } else if (EITHER3(n->type, TB_CALL, TB_ECALL, TB_VCALL)) {
-            int param_usage = CALL_NODE_PARAM_COUNT(n);
-            if (caller_usage < param_usage) caller_usage = param_usage;
-        }
+    TB_FOR_BASIC_BLOCK(bb, f) {
+        TB_FOR_NODE(r, f, bb) {
+            TB_Node* n = &f->nodes[r];
 
-        ctx->ordinal[n - f->nodes] = counter++;
+            if (n->type == TB_PHI1 || n->type == TB_PHI2 || n->type == TB_PHIN) {
+                // reserve a queue slot in global scope (aka not inside of a basic block)
+                ctx->queue[ctx->queue_length++] = (GAD_VAL){
+                    .type = GAD_VAL_UNRESOLVED,
+                    .r = (n - f->nodes),
+                    .dt = n->dt
+                };
+            } else if (n->type == TB_PARAM_ADDR || n->type == TB_LOCAL) {
+                GAD_RESOLVE_STACK_SLOT(ctx, f, n);
+            } else if (EITHER3(n->type, TB_CALL, TB_ECALL, TB_VCALL)) {
+                int param_usage = CALL_NODE_PARAM_COUNT(n);
+                if (caller_usage < param_usage) caller_usage = param_usage;
+            }
+
+            ctx->ordinal[n - f->nodes] = counter++;
+        }
     }
 
     // We generate nodes via a postorder walk
     TB_PostorderWalk walk = {
-        .visited = tb_tls_push(tls, f->label_count * sizeof(bool)),
-        .traversal = tb_tls_push(tls, f->label_count * sizeof(TB_Reg)),
+        .visited = tb_tls_push(tls, f->bb_count * sizeof(bool)),
+        .traversal = tb_tls_push(tls, f->bb_count * sizeof(TB_Reg)),
     };
     tb_function_get_postorder_explicit(f, &walk);
 
+    assert(walk.traversal[0] == 0 && "Codegen traversal must always start with L0");
     FOREACH_REVERSE_N(i, 0, walk.count) {
-        TB_Reg bb = walk.traversal[i];
+        TB_Label bb = walk.traversal[i];
 
         LISTING("Eval BB: L%d\n", f->nodes[bb].label.id);
         GAD_FN(eval_bb)(ctx, f, bb, i > 0 ? walk.traversal[i - 1] : 0);

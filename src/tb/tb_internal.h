@@ -96,15 +96,16 @@ struct { size_t cap, count; T* elems; }
 // get's the binding id from a TB_Node*
 #define TB_GET_REG(node, f) ((node) - (f)->nodes)
 
-#define TB_FOR_EACH_NODE(elem, f) \
-for (TB_Node* elem = &f->nodes[1]; elem != f->nodes; elem = &f->nodes[elem->next])
+#ifdef TB_FOR_BASIC_BLOCK
+#undef TB_FOR_BASIC_BLOCK
 
-#define TB_FOR_EACH_NODE_AFTER(elem, start, f) \
-for (TB_Node* elem = &f->nodes[(start)->next]; elem != f->nodes; elem = &f->nodes[elem->next])
+// simple optimization of it within the TB code
+// since we have access to the structures
+#define TB_FOR_BASIC_BLOCK(it, f) for (TB_Label it = 0; it < f->bb_count; it++)
+#endif
 
-#define TB_FOR_EACH_NODE_BB(elem, f, start) \
-for (TB_Node* elem = &f->nodes[f->nodes[start].next]; elem != f->nodes && elem->type != TB_LABEL; \
-    elem = &f->nodes[elem->next])
+#define TB_FOR_NODE(it, f, bb) for (TB_Reg it = f->bbs[bb].start; it != 0; it = f->nodes[it].next)
+#define TB_FOR_NODE_AFTER(it, f, first) for (TB_Reg it = f->nodes[reg].start; it != 0; it = f->nodes[it].next)
 
 #define TB_FOR_EACH_NODE_RANGE(elem, f, start, end) \
 for (TB_Node* elem = &f->nodes[start], *end__ = &f->nodes[end]; elem != end__; \
@@ -275,17 +276,18 @@ struct TB_Function {
     // Parameter acceleration structure
     TB_Reg* params;
 
+    // Basic block array (also makes up the CFG as an implicit graph)
+    size_t bb_capacity, bb_count;
+    TB_BasicBlock* bbs;
+
     // Nodes array
-    TB_Reg node_capacity;
-    TB_Reg node_count;
-    TB_Reg node_end;
+    TB_Reg node_capacity, node_count, node_end;
     TB_Node* nodes;
 
     // Used by the IR building
     TB_AttributeID active_attrib;
     TB_Reg last_reg;
     TB_Reg current_label;
-    TB_Label label_count;
 
     // Used by nodes which have variable
     // length arguments like PHI and CALL.
@@ -513,8 +515,6 @@ inline static size_t tb_post_inc(size_t* a, size_t b) {
     return old;
 }
 
-bool tb_validate(TB_Function* f);
-
 // NOTE(NeGate): if you steal it you should restore the used amount back to what it was before
 TB_TemporaryStorage* tb_tls_steal();
 
@@ -572,14 +572,14 @@ uint32_t tb_get4b(TB_Emitter* o, uint32_t pos);
 ////////////////////////////////
 // IR ANALYSIS
 ////////////////////////////////
-TB_Reg tb_find_reg_from_label(TB_Function* f, TB_Label id);
-TB_Reg tb_find_label_from_reg(TB_Function* f, TB_Reg target);
+TB_Label tb_find_label_from_reg(TB_Function* f, TB_Reg target);
 TB_Reg tb_find_first_use(const TB_Function* f, TB_Reg find, size_t start, size_t end);
 void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace);
 size_t tb_count_uses(const TB_Function* f, TB_Reg find, size_t start, size_t end);
 void tb_function_reserve_nodes(TB_Function* f, size_t extra);
 TB_Reg tb_insert_copy_ops(TB_Function* f, const TB_Reg* params, TB_Reg at, const TB_Function* src_func, TB_Reg src_base, int count);
-TB_Reg tb_function_insert_after(TB_Function* f, TB_Reg at);
+TB_Reg tb_function_insert_before(TB_Function* f, TB_Reg at);
+TB_Reg tb_function_insert_after(TB_Function* f, TB_Label bb, TB_Reg at);
 
 inline static void tb_murder_node(TB_Function* f, TB_Node* n) {
     n->type = TB_NULL;

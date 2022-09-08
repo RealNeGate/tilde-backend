@@ -42,7 +42,7 @@ static void print_string(TB_PrintCallback callback, void* user_data, const uint8
 
     size_t last = 0;
     callback(user_data, "\"");
-    loop(i, length) {
+    FOREACH_N(i, 0, length) {
         if (data[i] < 32 || data[i] >= 128) {
             // print all the non-fancy chars
             callback(user_data, "%.*s", (int)(i - last), data + last);
@@ -394,10 +394,6 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
         tb_print_type(dt, callback, user_data);
         callback(user_data, " r%u, r%u (%d align)", n->store.address, n->store.value, n->store.alignment);
         break;
-        case TB_LABEL:
-        if (n->label.id > 0) callback(user_data, "");
-        callback(user_data, "L%d: # r%u terminates at r%u", n->label.id, i, n->label.terminator);
-        break;
         case TB_GOTO: callback(user_data, "  goto L%d", n->goto_.label); break;
         case TB_IF:
         callback(user_data, "  if (r%u) L%d else L%d", n->if_.cond, n->if_.if_true, n->if_.if_false);
@@ -417,9 +413,10 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
             tb_print_type(dt, callback, user_data);
             callback(user_data, " ");
 
-            loop(j, count) {
+            FOREACH_N(j, 0, count) {
                 if (j) callback(user_data, ", ");
-                callback(user_data, "L%d:r%u", f->nodes[inputs[j].label].label.id, inputs[j].val);
+
+                callback(user_data, "L%d:r%u", inputs[j].label, inputs[j].val);
             }
             break;
         }
@@ -456,27 +453,17 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
     }
 }
 
-TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* user_data) {
+TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* user_data, bool display_nops) {
     callback(user_data, "%s():\n", f->name);
 
-    TB_FOR_EACH_NODE(n, f) {
-        tb_print_node(f, callback, user_data, n);
-        callback(user_data, "\n");
-    }
-}
+    TB_FOR_BASIC_BLOCK(bb, f) {
+        callback(user_data, "L%d: # r%u terminates at r%u\n", bb, f->bbs[bb].start, f->bbs[bb].end);
 
-TB_API void tb_function_print2(TB_Function* f, TB_PrintCallback callback, void* user_data, bool display_nops) {
-    if (display_nops) {
-        tb_function_print(f, callback, user_data);
-        return;
-    }
+        TB_FOR_NODE(r, f, bb) {
+            if (!display_nops && f->nodes[r].type == TB_NULL) continue;
 
-    callback(user_data, "%s():\n", f->name);
-
-    TB_FOR_EACH_NODE(n, f) {
-        if (n->type == TB_NULL) continue;
-
-        tb_print_node(f, callback, user_data, n);
-        callback(user_data, "\n");
+            tb_print_node(f, callback, user_data, &f->nodes[r]);
+            callback(user_data, "\n");
+        }
     }
 }

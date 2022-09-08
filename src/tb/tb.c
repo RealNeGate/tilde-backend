@@ -268,6 +268,10 @@ TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_Linkag
         .module = m, .linkage = linkage, .name = tb_platform_string_alloc(name)
     };
 
+    f->bb_capacity = 4;
+    f->bb_count = 1;
+    f->bbs = tb_platform_heap_alloc(f->bb_capacity * sizeof(TB_BasicBlock));
+
     f->node_capacity = 64;
     f->node_count = 2;
     f->nodes = tb_platform_heap_alloc(f->node_capacity * sizeof(TB_Node));
@@ -276,12 +280,12 @@ TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_Linkag
     f->attrib_pool_count = 1; // 0 is reserved
     f->attrib_pool = tb_platform_heap_alloc(64 * sizeof(TB_Attrib));
 
-    // Null slot, Entry label
-    f->nodes[0] = (TB_Node) { .next = 1 };
-    f->nodes[1] = (TB_Node) { .type = TB_LABEL, .dt = TB_TYPE_PTR, .label = { 0, 0 } };
+    // Null slot
+    f->nodes[0] = (TB_Node) { .next = 0 };
 
-    f->node_end = 1;
-    f->label_count = f->current_label = 1;
+    // this is just a dummy slot so that things like parameters can anchor to
+    f->nodes[1] = (TB_Node) { .next = 0 };
+    f->bbs[0] = (TB_BasicBlock){ 1, 1 };
     return f;
 }
 
@@ -305,7 +309,7 @@ TB_API void tb_function_set_prototype(TB_Function* f, const TB_FunctionPrototype
     }
 
     // walk to the end of the param list (it starts directly after the entry label)
-    TB_Reg prev = 1, r = f->nodes[1].next;
+    TB_Reg prev = 1, r = 1;
     size_t count = 0;
     FOREACH_N(i, 0, old_param_count) {
         // reassign these old slots
@@ -327,7 +331,7 @@ TB_API void tb_function_set_prototype(TB_Function* f, const TB_FunctionPrototype
     }
 
     FOREACH_N(i, old_param_count, new_param_count) {
-        TB_Reg new_reg = tb_function_insert_after(f, prev);
+        TB_Reg new_reg = tb_function_insert_after(f, 0, prev);
         TB_Node* new_node = &f->nodes[new_reg];
 
         TB_DataType dt = p->params[i];
@@ -546,12 +550,6 @@ TB_API bool tb_next_external(TB_ExternalIter* it) {
 
 TB_API const char* tb_extern_get_name(TB_External* e) {
     return e->name;
-}
-
-TB_API TB_Label tb_inst_get_current_label(TB_Function* f) {
-    if (!f->current_label) return 0;
-
-    return f->nodes[f->current_label].label.id;
 }
 
 //

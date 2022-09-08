@@ -24,7 +24,7 @@ LJ_EXPORT TB_Node* tb__nodes(TB_Function* f) {
 }
 
 LJ_EXPORT void tb__print_func(TB_Function* f) {
-    tb_function_print2(f, tb_default_print_callback, stdout, false);
+    tb_function_print(f, tb_default_print_callback, stdout, false);
 }
 
 LJ_EXPORT bool tb__is_iconst(TB_Function* f, TB_Reg r, uint64_t imm) {

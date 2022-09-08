@@ -402,7 +402,7 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
         }
     }
 
-    tb_function_print(f, tb_default_print_callback, stderr);
+    tb_function_print(f, tb_default_print_callback, stderr, true);
     fprintf(stderr, "error: could not eval r%u\n", r);
 
     tb_unreachable();
@@ -647,13 +647,10 @@ static void fast_spill_tile(X64_FastCtx* restrict ctx, TB_Function* f) {
     ctx->tile.mapping = 0;
 }
 
-static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg bb, TB_Reg bb_end) {
-    // first node in the basic block
-    bb = f->nodes[bb].next;
-    if (bb == bb_end) return;
-
-    TB_FOR_EACH_NODE_RANGE(n, f, bb, bb_end) {
-        TB_Reg r = n - f->nodes;
+static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg bb) {
+    TB_Reg terminator = f->bbs[bb].end;
+    TB_FOR_NODE(r, f, bb) {
+        if (r == terminator) break;
 
         TB_Node* restrict n = &f->nodes[r];
         TB_NodeTypeEnum reg_type = n->type;
@@ -2241,7 +2238,10 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 break;
             }
 
-            default: tb_todo();
+            default: {
+                tb_function_print(f, tb_default_print_callback, stdout, true);
+                tb_todo();
+            }
         }
 
         if (ctx->temp_load_reg != GPR_NONE) {
@@ -2257,9 +2257,9 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
     }
 }
 
-static void fast_eval_terminator_phis(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg from, TB_Reg from_terminator, TB_Reg to, TB_Reg to_terminator) {
-    TB_FOR_EACH_NODE_RANGE(n, f, to, to_terminator) {
-        TB_Reg r = n - f->nodes;
+static void fast_eval_terminator_phis(X64_FastCtx* restrict ctx, TB_Function* f, TB_Label from, TB_Label to) {
+    TB_FOR_NODE(r, f, to) {
+        TB_Node* n = &f->nodes[r];
 
         if (tb_node_is_phi_node(f, r)) {
             TB_DataType dt = n->dt;
@@ -2304,16 +2304,19 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
     size_t label_patch_count = 0;
     size_t line_info_count = 0;
 
-    TB_FOR_EACH_NODE(n, f) {
-        TB_NodeTypeEnum t = n->type;
+    TB_FOR_BASIC_BLOCK(bb, f) {
+        TB_FOR_NODE(r, f, bb) {
+            TB_Node* n = &f->nodes[r];
+            TB_NodeTypeEnum t = n->type;
 
-        if (t == TB_RET) return_count++;
-        else if (t == TB_LOCAL) locals_count++;
-        else if (t == TB_IF) label_patch_count += 2;
-        else if (t == TB_GOTO) label_patch_count++;
-        else if (t == TB_LINE_INFO) line_info_count++;
-        else if (t == TB_SWITCH) {
-            label_patch_count += 1 + ((n->switch_.entries_end - n->switch_.entries_start) / 2);
+            if (t == TB_RET) return_count++;
+            else if (t == TB_LOCAL) locals_count++;
+            else if (t == TB_IF) label_patch_count += 2;
+            else if (t == TB_GOTO) label_patch_count++;
+            else if (t == TB_LINE_INFO) line_info_count++;
+            else if (t == TB_SWITCH) {
+                label_patch_count += 1 + ((n->switch_.entries_end - n->switch_.entries_start) / 2);
+            }
         }
     }
 
@@ -2340,7 +2343,7 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
     tally = (tally + align_mask) & ~align_mask;
 
     // labels
-    tally += f->label_count * sizeof(uint32_t);
+    tally += f->bb_count * sizeof(uint32_t);
     tally = (tally + align_mask) & ~align_mask;
 
     // label_patches
@@ -2383,7 +2386,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                 .header = {
                     .out           = out,
                     .start_out     = out,
-                    .labels        = tb_platform_heap_alloc(f->label_count * sizeof(uint32_t)),
+                    .labels        = tb_platform_heap_alloc(f->bb_count * sizeof(uint32_t)),
                     .label_patches = tb_platform_heap_alloc(tally.label_patch_count * sizeof(LabelPatch)),
                     .ret_patches   = tb_platform_heap_alloc(tally.return_count * sizeof(ReturnPatch))
                 },
@@ -2396,7 +2399,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                 .header = {
                     .out           = out,
                     .start_out     = out,
-                    .labels        = tb_tls_push(tls, f->label_count * sizeof(uint32_t)),
+                    .labels        = tb_tls_push(tls, f->bb_count * sizeof(uint32_t)),
                     .label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch)),
                     .ret_patches   = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch))
                 },
@@ -2424,42 +2427,45 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
     // and calculate the maximum parameter usage for a call
     size_t caller_usage = 0;
     int counter = 0;
-    TB_FOR_EACH_NODE(n, f) {
-        TB_Reg r = n - f->nodes;
+    TB_FOR_BASIC_BLOCK(bb, f) {
+        TB_FOR_NODE(r, f, bb) {
+            TB_Node* n = &f->nodes[r];
 
-        if (n->type == TB_PARAM) {
-            size_t i = n->param.id;
-            TB_DataType dt = n->dt;
-            assert(get_data_type_size(dt) <= 8 && "ABI BUG: Parameter too big");
+            if (n->type == TB_PARAM) {
+                size_t i = n->param.id;
+                TB_DataType dt = n->dt;
+                assert(get_data_type_size(dt) <= 8 && "ABI BUG: Parameter too big");
 
-            if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
-                // xmm parameters
-                if (i < 4) {
-                    fast_def_xmm(ctx, f, r, (XMM)i, dt);
-                    ctx->xmm_allocator[(XMM)i] = r;
-                    ctx->xmm_available -= 1;
-                } else
-                    fast_def_stack(ctx, f, r, 16 + (i * 8), dt);
-            } else {
-                // gpr parameters
-                if (ctx->is_sysv && i < 6) {
-                    fast_def_gpr(ctx, f, r, (GPR)SYSV_GPR_PARAMETERS[i], dt);
-                    ctx->gpr_allocator[(GPR)SYSV_GPR_PARAMETERS[i]] = r;
-                    ctx->gpr_available -= 1;
-                } else if (i < 4) {
-                    fast_def_gpr(ctx, f, r, (GPR)WIN64_GPR_PARAMETERS[i], dt);
-                    ctx->gpr_allocator[(GPR)WIN64_GPR_PARAMETERS[i]] = r;
-                    ctx->gpr_available -= 1;
+                if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
+                    // xmm parameters
+                    if (i < 4) {
+                        fast_def_xmm(ctx, f, r, (XMM)i, dt);
+                        ctx->xmm_allocator[(XMM)i] = r;
+                        ctx->xmm_available -= 1;
+                    } else {
+                        fast_def_stack(ctx, f, r, 16 + (i * 8), dt);
+                    }
                 } else {
-                    fast_def_stack(ctx, f, r, 16 + (i * 8), dt);
+                    // gpr parameters
+                    if (ctx->is_sysv && i < 6) {
+                        fast_def_gpr(ctx, f, r, (GPR)SYSV_GPR_PARAMETERS[i], dt);
+                        ctx->gpr_allocator[(GPR)SYSV_GPR_PARAMETERS[i]] = r;
+                        ctx->gpr_available -= 1;
+                    } else if (i < 4) {
+                        fast_def_gpr(ctx, f, r, (GPR)WIN64_GPR_PARAMETERS[i], dt);
+                        ctx->gpr_allocator[(GPR)WIN64_GPR_PARAMETERS[i]] = r;
+                        ctx->gpr_available -= 1;
+                    } else {
+                        fast_def_stack(ctx, f, r, 16 + (i * 8), dt);
+                    }
                 }
+            } else if (EITHER3(n->type, TB_CALL, TB_ECALL, TB_VCALL)) {
+                int param_usage = CALL_NODE_PARAM_COUNT(n);
+                if (caller_usage < param_usage) { caller_usage = param_usage; }
             }
-        } else if (EITHER3(n->type, TB_CALL, TB_ECALL, TB_VCALL)) {
-            int param_usage = CALL_NODE_PARAM_COUNT(n);
-            if (caller_usage < param_usage) { caller_usage = param_usage; }
-        }
 
-        ctx->ordinal[n - f->nodes] = counter++;
+            ctx->ordinal[r] = counter++;
+        }
     }
 
     // On Win64 if we have at least one parameter in any of it's calls, the
@@ -2491,43 +2497,45 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
 
     // Just the splitting point between parameters
     // and locals in the stack.
-    TB_FOR_EACH_NODE(n, f) {
-        TB_Reg r = n - f->nodes;
+    TB_FOR_BASIC_BLOCK(bb, f) {
+        TB_FOR_NODE(r, f, bb) {
+            TB_Node* n = &f->nodes[r];
 
-        if (n->type == TB_PARAM_ADDR) {
-            int id = f->nodes[n->param_addr.param].param.id;
-            TB_DataType dt = n->dt;
+            if (n->type == TB_PARAM_ADDR) {
+                int id = f->nodes[n->param_addr.param].param.id;
+                TB_DataType dt = n->dt;
 
-            if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
-                tb_todo();
-            } else {
-                // don't keep a reference of it in GPR if it's in memory
-                if (ctx->is_sysv && id < 6) {
-                    Val dst = val_stack(TB_TYPE_I64, 16 + (id * 8));
-                    Val src = val_gpr(TB_TYPE_I64, SYSV_GPR_PARAMETERS[id]);
-                    INST2(MOV, &dst, &src, TB_TYPE_I64);
+                if (dt.width || TB_IS_FLOAT_TYPE(dt)) {
+                    tb_todo();
+                } else {
+                    // don't keep a reference of it in GPR if it's in memory
+                    if (ctx->is_sysv && id < 6) {
+                        Val dst = val_stack(TB_TYPE_I64, 16 + (id * 8));
+                        Val src = val_gpr(TB_TYPE_I64, SYSV_GPR_PARAMETERS[id]);
+                        INST2(MOV, &dst, &src, TB_TYPE_I64);
 
-                    ctx->gpr_allocator[SYSV_GPR_PARAMETERS[id]] = TB_NULL_REG;
-                    ctx->gpr_available += 1;
-                } else if (id < 4) {
-                    Val dst = val_stack(TB_TYPE_I64, 16 + (id * 8));
-                    Val src = val_gpr(TB_TYPE_I64, WIN64_GPR_PARAMETERS[id]);
-                    INST2(MOV, &dst, &src, TB_TYPE_I64);
+                        ctx->gpr_allocator[SYSV_GPR_PARAMETERS[id]] = TB_NULL_REG;
+                        ctx->gpr_available += 1;
+                    } else if (id < 4) {
+                        Val dst = val_stack(TB_TYPE_I64, 16 + (id * 8));
+                        Val src = val_gpr(TB_TYPE_I64, WIN64_GPR_PARAMETERS[id]);
+                        INST2(MOV, &dst, &src, TB_TYPE_I64);
 
-                    ctx->gpr_allocator[WIN64_GPR_PARAMETERS[id]] = TB_NULL_REG;
-                    ctx->gpr_available += 1;
+                        ctx->gpr_allocator[WIN64_GPR_PARAMETERS[id]] = TB_NULL_REG;
+                        ctx->gpr_available += 1;
+                    }
                 }
+
+                fast_def_stack(ctx, f, r, 16 + (id * 8), n->dt);
+            } else if (n->type == TB_LOCAL) {
+                uint32_t size  = n->local.size;
+                uint32_t align = n->local.alignment;
+                int pos = STACK_ALLOC(size, align);
+
+                fast_def_stack(ctx, f, r, pos, n->dt);
+
+                // if (n->local.name) printf("  [rbp - %#x]\t%s\n", -pos, n->local.name);
             }
-
-            fast_def_stack(ctx, f, r, 16 + (id * 8), n->dt);
-        } else if (n->type == TB_LOCAL) {
-            uint32_t size  = n->local.size;
-            uint32_t align = n->local.alignment;
-            int pos = STACK_ALLOC(size, align);
-
-            fast_def_stack(ctx, f, r, pos, n->dt);
-
-            // if (n->local.name) printf("  [rbp - %#x]\t%s\n", -pos, n->local.name);
         }
     }
 
@@ -2539,27 +2547,15 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
     #endif
 
     // Evaluate basic blocks
-    TB_Reg bb = 1;
-    do {
-        assert(f->nodes[bb].type == TB_LABEL);
-        TB_Node* start = &f->nodes[bb];
-
-        TB_Reg bb_end = start->label.terminator;
-        TB_Node* end = &f->nodes[bb_end];
-
-        // Define label position
-        TB_Label label_id = start->label.id;
-        ctx->header.labels[label_id] = GET_CODE_POS();
+    TB_FOR_BASIC_BLOCK(bb, f) {
+        ctx->header.labels[bb] = GET_CODE_POS();
 
         // Generate instructions
-        fast_eval_basic_block(ctx, f, bb, bb_end);
+        fast_eval_basic_block(ctx, f, bb);
 
-        // Evaluate the terminator
-        TB_Node* next_bb = end;
-
-        if (end->type != TB_LABEL) next_bb = &f->nodes[next_bb->next];
-        TB_Reg next_bb_reg = next_bb - f->nodes;
-
+        // Evaluate terminator
+        TB_Reg bb_end = f->bbs[bb].end;
+        TB_Node* end = &f->nodes[bb_end];
         if (end->type == TB_TRAP) {
             *ctx->header.out++ = 0x0F;
             *ctx->header.out++ = 0x0B;
@@ -2580,7 +2576,8 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
             }
 
             // Only jump if we aren't literally about to end the function
-            if (next_bb != f->nodes) {
+            TB_Label fallthrough_label = bb + 1;
+            if (fallthrough_label != f->bb_count) {
                 RET_JMP();
             }
         } else if (end->type == TB_IF) {
@@ -2588,23 +2585,14 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
             TB_Label if_false = end->if_.if_false;
 
             // Save out PHI nodes
-            {
-                TB_Reg if_true_reg = tb_find_reg_from_label(f, if_true);
-                TB_Reg if_false_reg = tb_find_reg_from_label(f, if_false);
-
-                TB_Reg if_true_reg_end = f->nodes[if_true_reg].label.terminator;
-                TB_Reg if_false_reg_end = f->nodes[if_false_reg].label.terminator;
-
-                fast_eval_terminator_phis(ctx, f, bb, bb_end, if_true_reg, if_true_reg_end);
-                fast_eval_terminator_phis(ctx, f, bb, bb_end, if_false_reg, if_false_reg_end);
-            }
+            fast_eval_terminator_phis(ctx, f, bb, if_true);
+            fast_eval_terminator_phis(ctx, f, bb, if_false);
 
             Cond cc = fast_eval_cond(ctx, f, end->if_.cond);
             fast_evict_everything(ctx, f);
 
             // Reorder the targets to avoid an extra JMP
-            TB_Label fallthrough_label = 0;
-            if (next_bb != f->nodes) { fallthrough_label = next_bb->label.id; }
+            TB_Label fallthrough_label = bb + 1;
             bool has_fallthrough = fallthrough_label == if_false;
 
             // flip the condition and the labels if
@@ -2620,29 +2608,19 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
             // JMP .false # elidable if it points to the next instruction
             JCC(cc, if_true);
             if (!has_fallthrough) JMP(if_false);
-        } else if (end->type == TB_LABEL) {
-            // save out PHI nodes
-            TB_Reg next_terminator = end->label.terminator;
-            fast_eval_terminator_phis(ctx, f, bb, bb_end, bb_end, next_terminator);
-
-            fast_evict_everything(ctx, f);
         } else if (end->type == TB_UNREACHABLE) {
             *ctx->header.out++ = 0x0F;
             *ctx->header.out++ = 0x0B;
         } else if (end->type == TB_GOTO) {
             // save out PHI nodes
             TB_Label target_label = end->goto_.label;
-            TB_Reg target = tb_find_reg_from_label(f, target_label);
-            TB_Reg target_end = f->nodes[target].label.terminator;
 
-            fast_eval_terminator_phis(ctx, f, bb, bb_end, target, target_end);
+            fast_eval_terminator_phis(ctx, f, bb, target_label);
             fast_evict_everything(ctx, f);
 
-            TB_Label fallthrough_label = 0;
-            if (next_bb != f->nodes) { fallthrough_label = next_bb->label.id; }
-            bool has_fallthrough = fallthrough_label == target_label;
-
-            if (!has_fallthrough) JMP(end->goto_.label);
+            if (bb + 1 != target_label) {
+                JMP(target_label);
+            }
         } else if (end->type == TB_SWITCH) {
             static_assert(_Alignof(TB_SwitchEntry) == _Alignof(TB_Reg), "We don't want any unaligned accesses");
             TB_Node* switch_key = &f->nodes[end->switch_.key];
@@ -2662,15 +2640,9 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                     }
                 }
 
-                TB_Reg target = tb_find_reg_from_label(f, target_label);
-                TB_Reg target_end = f->nodes[target].label.terminator;
-                fast_eval_terminator_phis(ctx, f, bb, bb_end, target, target_end);
+                fast_eval_terminator_phis(ctx, f, bb, target_label);
                 fast_evict_everything(ctx, f);
-
-                TB_Label fallthrough_label = next_bb->label.id;
-                if (fallthrough_label != target) {
-                    JMP(target_label);
-                }
+                JMP(target_label);
             } else {
                 LegalInt l = legalize_int(end->dt);
 
@@ -2699,12 +2671,10 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                 JMP(end->switch_.default_label);
             }
         } else {
-            tb_todo();
+            tb_function_print(f, tb_default_print_callback, stderr, true);
+            tb_panic("Unknown terminator in IR");
         }
-
-        // Next Basic block
-        bb = next_bb_reg;
-    } while (bb != TB_NULL_REG);
+    }
 
     // Fix up stack usage
     // Tally up any saved XMM registers
@@ -2721,12 +2691,12 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
     }
 
     // Resolve internal relocations
-    loop(i, ctx->header.ret_patch_count) {
+    FOREACH_N(i, 0, ctx->header.ret_patch_count) {
         uint32_t pos = ctx->header.ret_patches[i];
         PATCH4(pos, GET_CODE_POS() - (pos + 4));
     }
 
-    loop(i, ctx->header.label_patch_count) {
+    FOREACH_N(i, 0, ctx->header.label_patch_count) {
         uint32_t pos = ctx->header.label_patches[i].pos;
         uint32_t target_lbl = ctx->header.label_patches[i].target_lbl;
 

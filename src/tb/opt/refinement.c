@@ -23,14 +23,14 @@ bool tb_opt_refinement(TB_Function* f) {
     TB_Predeccesors preds = tb_get_temp_predeccesors(f, tls);
 
     // find dominators
-    TB_Label* doms = tb_tls_push(tls, f->label_count * sizeof(TB_Label));
+    TB_Label* doms = tb_tls_push(tls, f->bb_count * sizeof(TB_Label));
     tb_get_dominators(f, preds, doms);
 
     // we'll be using the loops to find out the ranges of different things
     TB_LoopInfo loops = tb_get_loop_info(f, preds, doms);
-    tb_function_print2(f, tb_default_print_callback, stdout, false);
+    tb_function_print(f, tb_default_print_callback, stdout, false);
 
-    loop(i, loops.count) {
+    FOREACH_N(i, 0, loops.count) {
         const TB_Loop* l = &loops.loops[i];
 
         TB_Reg loop_header = tb_find_reg_from_label(f, l->header);

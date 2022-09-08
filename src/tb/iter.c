@@ -1,4 +1,16 @@
 #include "tb_internal.h"
+#include "coroutine.h"
+
+TB_API bool tb_next_bb(TB_Function* f, TB_BBIter* it) {
+    CO_SCOPE(it) {
+        CO_START();
+        for (; it->l < f->bb_count; it->l++) {
+            CO_YIELD(it, true);
+        }
+    }
+
+    CO_DONE();
+}
 
 TB_API TB_NodeInputIter tb_node_input_iter(TB_Reg r) {
     return (TB_NodeInputIter){ .parent_ = r };
@@ -26,14 +38,6 @@ TB_API bool tb_next_node_input(const TB_Function* f, TB_NodeInputIter* iter) {
         case TB_POISON:
         case TB_TRAP:
         return false;
-
-        case TB_LABEL:
-        switch (iter->index_++) {
-            case 0: return (iter->r = n->label.terminator, true);
-            case 1: return false;
-            default: tb_unreachable();
-        }
-        break;
 
         case TB_INITIALIZE:
         switch (iter->index_++) {
@@ -138,30 +142,26 @@ TB_API bool tb_next_node_input(const TB_Function* f, TB_NodeInputIter* iter) {
 
         case TB_PHI1:
         switch (iter->index_++) {
-            case 0: return (iter->r = n->phi1.inputs[0].label, true);
-            case 1: return (iter->r = n->phi1.inputs[0].val, true);
-            case 2: return false;
+            case 0: return (iter->r = n->phi1.inputs[0].val, true);
+            case 1: return false;
             default: tb_unreachable();
         }
         break;
 
         case TB_PHI2:
         switch (iter->index_++) {
-            case 0: return (iter->r = n->phi1.inputs[0].label, true);
-            case 1: return (iter->r = n->phi1.inputs[0].val, true);
-            case 2: return (iter->r = n->phi1.inputs[1].label, true);
-            case 3: return (iter->r = n->phi1.inputs[1].val, true);
-            case 4: return false;
+            case 0: return (iter->r = n->phi1.inputs[0].val, true);
+            case 1: return (iter->r = n->phi1.inputs[1].val, true);
+            case 2: return false;
             default: tb_unreachable();
         }
         break;
 
         case TB_PHIN: {
             size_t i = iter->index_++;
-            if (i >= n->phi.count*2) return false;
+            if (i >= n->phi.count) return false;
 
-            size_t j = i >> 1ull;
-            iter->r = (i & 1) ? n->phi.inputs[j].label : n->phi.inputs[j].val;
+            iter->r = n->phi.inputs[i].val;
             return true;
         }
 

@@ -633,6 +633,7 @@ static void GAD_FN(resolve_leftover)(Ctx* restrict ctx, TB_Function* f, int queu
             LISTING("Resolved leftover: r%d\n", r);
 
             ptrdiff_t i = GAD_FN(await)(ctx, f, r, 0);
+            ((void)i);
             assert(i >= 0);
 
             // spill any registers

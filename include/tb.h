@@ -344,11 +344,11 @@ extern "C" {
 
     typedef struct TB_Module            TB_Module;
     typedef struct TB_External          TB_External;
+    typedef struct TB_Attrib            TB_Attrib;
     typedef struct TB_Global            TB_Global;
     typedef struct TB_DebugType         TB_DebugType;
     typedef struct TB_Initializer       TB_Initializer;
     typedef struct TB_Function          TB_Function;
-    typedef struct TB_AttribList        TB_AttribList;
     typedef struct TB_FunctionPrototype TB_FunctionPrototype;
 
     // references to a node within a TB_Function
@@ -369,10 +369,10 @@ extern "C" {
     } TB_BasicBlock;
 
     typedef struct TB_Node {
-        TB_NodeType    type;
-        TB_DataType    dt;
-        TB_Reg         next;
-        TB_AttribList* first_attrib;
+        TB_NodeType type;
+        TB_DataType dt;
+        TB_Reg      next;
+        TB_Attrib*  first_attrib;
 
         union {
             uint8_t raw_operands[16];
@@ -426,21 +426,18 @@ extern "C" {
             } param;
             struct TB_NodeParamAddr {
                 TB_Reg param;
-
                 TB_CharUnits size;
                 TB_CharUnits alignment;
             } param_addr;
             struct TB_NodeLocal {
                 TB_CharUnits size;
                 TB_CharUnits alignment;
-                const char* name;
             } local;
             struct TB_NodeUnary {
                 TB_Reg src;
             } unary;
             struct TB_NodeIArith {
-                TB_Reg a;
-                TB_Reg b;
+                TB_Reg a, b;
                 TB_ArithmaticBehavior arith_behavior;
             } i_arith;
             struct TB_NodeFArith {
@@ -696,7 +693,7 @@ extern "C" {
             struct {
                 // input
                 size_t length;
-                const uint8_t* data;
+                const void* data;
             } write;
         };
     } TB_ModuleExportPacket;
@@ -880,23 +877,13 @@ extern "C" {
     // Function Attributes
     ////////////////////////////////
     // These are parts of a function that describe metadata for instructions
-
-    // restrict is applied onto loads and store operations meaning that the pointer
-    // being accessed doesn't alias with any of the other pointers within the scope
-    TB_API TB_AttributeID tb_function_attrib_restrict(TB_Function* f, TB_AttributeID scope);
-
-    // This defines a some scope which can have a set of restrict pointers defined
-    // in it
-    TB_API TB_AttributeID tb_function_attrib_scope(TB_Function* f, TB_AttributeID parent_scope);
-
-    // places an attribute on a function, note that there's no limit to how many
-    // registers can share an attribute
-    TB_API void tb_function_append_attrib(TB_Function* f, TB_Reg r, TB_AttributeID a);
+    TB_API void tb_function_attrib_variable(TB_Function* f, TB_Reg r, const char* name, const TB_DebugType* type);
 
     ////////////////////////////////
     // Debug info Generation
     ////////////////////////////////
     TB_API const TB_DebugType* tb_debug_get_void(TB_Module* m);
+    TB_API const TB_DebugType* tb_debug_get_bool(TB_Module* m);
     TB_API const TB_DebugType* tb_debug_get_integer(TB_Module* m, bool is_signed, int bits);
     TB_API const TB_DebugType* tb_debug_get_float(TB_Module* m, TB_FloatFormat fmt);
     TB_API const TB_DebugType* tb_debug_create_ptr(TB_Module* m, const TB_DebugType* base);
@@ -995,9 +982,6 @@ extern "C" {
 
     TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line);
 
-    TB_API void tb_inst_set_scope(TB_Function* f, TB_AttributeID scope);
-    TB_API TB_AttributeID tb_inst_get_scope(TB_Function* f);
-
     TB_API void tb_inst_unreachable(TB_Function* f);
     TB_API void tb_inst_debugbreak(TB_Function* f);
     TB_API void tb_inst_trap(TB_Function* f);
@@ -1017,7 +1001,7 @@ extern "C" {
     TB_API TB_Reg tb_inst_float2int(TB_Function* f, TB_Reg src, TB_DataType dt, bool is_signed);
     TB_API TB_Reg tb_inst_bitcast(TB_Function* f, TB_Reg src, TB_DataType dt);
 
-    TB_API TB_Reg tb_inst_local(TB_Function* f, uint32_t size, TB_CharUnits align, const char* name);
+    TB_API TB_Reg tb_inst_local(TB_Function* f, uint32_t size, TB_CharUnits align);
     TB_API TB_Reg tb_inst_load(TB_Function* f, TB_DataType dt, TB_Reg addr, TB_CharUnits align);
     TB_API void tb_inst_store(TB_Function* f, TB_DataType dt, TB_Reg addr, TB_Reg val, TB_CharUnits align);
 

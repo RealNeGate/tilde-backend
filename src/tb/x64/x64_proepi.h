@@ -1,34 +1,37 @@
+#include "../objects/win64eh.h"
 
-size_t x64_get_prologue_length(uint64_t saved, uint64_t stack_usage) {
-    if ((tb_popcount(saved & 0xFFFF) & 1) == 0) stack_usage += 8;
-    // If the stack usage is zero we don't need a prologue
-    if (stack_usage == 8) return 0;
+static void x64_emit_win64eh_unwind_info(TB_Emitter* e, TB_FunctionOutput* out_f, uint64_t saved, uint64_t stack_usage) {
+    size_t patch_pos = e->count;
+    UnwindInfo unwind = {
+        .version = 1,
+        .flags = UNWIND_FLAG_EHANDLER,
+        .prolog_length = out_f->prologue_length,
+        .code_count = 0,
+        .frame_register = RBP,
+        .frame_offset = 0,
+    };
+    tb_outs(e, sizeof(UnwindInfo), &unwind);
 
-    bool is_stack_usage_imm8 = (stack_usage == (int8_t)stack_usage);
+    size_t code_count = 0;
+    if (stack_usage == 8) {
+        // no real prologue
+    } else {
+        UnwindCode codes[] = {
+            // sub rsp, stack_usage
+            { .code_offset = 8, .unwind_op = UNWIND_OP_ALLOC_SMALL, .op_info = (stack_usage / 8) - 1 },
+            // mov rbp, rsp
+            { .code_offset = 4, .unwind_op = UNWIND_OP_SET_FPREG, .op_info = 0 },
+            // push rbp
+            { .code_offset = 1, .unwind_op = UNWIND_OP_PUSH_NONVOL, .op_info = RBP },
+        };
+        tb_outs(e, sizeof(codes), codes);
+        code_count += 3;
+    }
 
-    return (is_stack_usage_imm8 ? 4 : 7)
-		+ (tb_popcount(saved & 0x000000FF) * 1)
-		+ (tb_popcount(saved & 0x0000FF00) * 2)
-		+ (tb_popcount(saved & 0x00FF0000) * 7)
-		+ (tb_popcount(saved & 0xFF000000) * 8)
-		+ 4;
+    tb_patch1b(e, patch_pos + offsetof(UnwindInfo, code_count), code_count);
 }
 
-size_t x64_get_epilogue_length(uint64_t saved, uint64_t stack_usage) {
-    if ((tb_popcount(saved & 0xFFFF) & 1) == 0) stack_usage += 8;
-    if (stack_usage == 8) return 1;
-
-    bool is_stack_usage_imm8 = (stack_usage == (int8_t)stack_usage);
-
-    return (is_stack_usage_imm8 ? 4 : 7)
-		+ (tb_popcount(saved & 0x000000FF) * 1)
-		+ (tb_popcount(saved & 0x0000FF00) * 2)
-		+ (tb_popcount(saved & 0x00FF0000) * 7)
-		+ (tb_popcount(saved & 0xFF000000) * 8)
-		+ 2;
-}
-
-size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
+static size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
     if ((tb_popcount(saved & 0xFFFF) & 1) == 0) stack_usage += 8;
     // If the stack usage is zero we don't need a prologue
     if (stack_usage == 8) return 0;
@@ -55,11 +58,13 @@ size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
 	}
 
     if (stack_usage == (int8_t)stack_usage) {
+        // sub rsp, stack_usage
         out[used++] = rex(true, 0x00, RSP, 0);
         out[used++] = 0x83;
         out[used++] = mod_rx_rm(MOD_DIRECT, 0x05, RSP);
         out[used++] = stack_usage;
     } else {
+        // sub rsp, stack_usage
         out[used++] = rex(true, 0x00, RSP, 0);
         out[used++] = 0x81;
         out[used++] = mod_rx_rm(MOD_DIRECT, 0x05, RSP);
@@ -90,7 +95,7 @@ size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
     return used;
 }
 
-size_t x64_emit_epilogue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
+static size_t x64_emit_epilogue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
     if ((tb_popcount(saved & 0xFFFF) & 1) == 0) stack_usage += 8;
 
 	// if the stack isn't used then just return

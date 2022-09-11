@@ -420,20 +420,11 @@ bool tb_elf64__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet)
             e->code_section.sh_size = 0;
             FOREACH_N(i, 0, m->functions.count) {
                 TB_FunctionOutput* out_f = m->functions.data[i].output;
+
                 e->func_layout[i] = e->code_section.sh_size;
-                if (!out_f) continue;
-
-                uint64_t meta = out_f->prologue_epilogue_metadata;
-                uint64_t stack_usage = out_f->stack_usage;
-
-                size_t code_size = out_f->code_size;
-                size_t prologue = code_gen->get_prologue_length(meta, stack_usage);
-                size_t epilogue = code_gen->get_epilogue_length(meta, stack_usage);
-                assert(prologue + epilogue < PROEPI_BUFFER);
-
-                e->code_section.sh_size += prologue;
-                e->code_section.sh_size += epilogue;
-                e->code_section.sh_size += code_size;
+                if (out_f) {
+                    e->code_section.sh_size += out_f->code_size;
+                }
             }
             e->func_layout[m->functions.count] = e->code_section.sh_size;
 
@@ -560,7 +551,6 @@ bool tb_elf64__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet)
             if (send_alloc_message(e, packet, e->code_reloc_section.sh_size)) return true;
             assert(e->write_pos == e->code_reloc_section.sh_offset);
 
-            const ICodeGen* restrict code_gen = tb__find_code_generator(m);
             uint64_t external_symbol_baseline = e->external_sym_start;
 
             TB_FIXED_ARRAY(Elf64_Rela) relocs = {
@@ -573,11 +563,8 @@ bool tb_elf64__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet)
                     TB_ExternFunctionPatch* p = &m->thread_info[i].ecall_patches[j];
                     TB_FunctionOutput* out_f = p->source->output;
 
-                    uint64_t meta = out_f->prologue_epilogue_metadata;
-                    uint64_t stack_usage = out_f->stack_usage;
-
                     size_t actual_pos = e->func_layout[p->source - m->functions.data] +
-                        code_gen->get_prologue_length(meta, stack_usage) + p->pos;
+                        out_f->prologue_length + p->pos;
 
                     int symbol_id = external_symbol_baseline + (uintptr_t) p->target->address;
                     Elf64_Rela rela = {
@@ -592,11 +579,8 @@ bool tb_elf64__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet)
                     TB_ConstPoolPatch* p = &m->thread_info[i].const_patches[j];
                     TB_FunctionOutput* out_f = p->source->output;
 
-                    uint64_t meta = out_f->prologue_epilogue_metadata;
-                    uint64_t stack_usage = out_f->stack_usage;
-
                     size_t actual_pos = e->func_layout[p->source - m->functions.data] +
-                        code_gen->get_prologue_length(meta, stack_usage) + p->pos;
+                        out_f->prologue_length + p->pos;
 
                     Elf64_Rela rela = {
                         .r_offset = actual_pos,

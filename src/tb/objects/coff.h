@@ -176,6 +176,11 @@ typedef struct COFF_AuxSectionSymbol {
 } COFF_AuxSectionSymbol;
 static_assert(sizeof(COFF_AuxSectionSymbol) == 18, "COFF Aux Section Symbol size != 18 bytes");
 
+typedef union COFF_SymbolUnion {
+    COFF_Symbol s;
+    COFF_AuxSectionSymbol a;
+} COFF_SymbolUnion;
+
 typedef struct {
     union {
         unsigned long l_symndx; /* function name symbol index */
@@ -291,6 +296,59 @@ typedef struct {
     uint8_t  name[];
 } CV_LFFuncID;
 
+typedef enum {
+    CV_LOCAL_IS_PARAM         = 1,   // variable is a parameter
+    CV_LOCAL_IS_ADDR_TAKEN    = 2,   // address is taken
+    CV_LOCAL_IS_COMPILER_GEND = 4,   // variable is compiler generated
+    CV_LOCAL_IS_AGGREGATE     = 8,   // the symbol is splitted in temporaries, which are treated by compiler as independent entities
+    CV_LOCAL_IS_AGGREGATED    = 16,  // Counterpart of fIsAggregate - tells that it is a part of a fIsAggregate symbol
+    CV_LOCAL_IS_ALIASED       = 32,  // variable has multiple simultaneous lifetimes
+    CV_LOCAL_IS_ALIAS         = 64,  // represents one of the multiple simultaneous lifetimes
+    CV_LOCAL_IS_RETURN_VALUE  = 128, // represents a function return value
+    CV_LOCAL_IS_OPTIMIZED_OUT = 256, // variable has no lifetimes
+    CV_LOCAL_IS_ENREG_GLOBAL  = 512, // variable is an enregistered global
+    CV_LOCAL_IS_ENREG_STATIC  = 1024,// variable is an enregistered static
+} CV_LocalVarFlags;
+
+// CV_Local is followed by CV_DefRange memory
+typedef struct {
+    uint16_t reclen; // Record length
+    uint16_t rectyp; // S_LOCAL
+    uint32_t typind; // type index
+    uint16_t flags;  // local var flags (CV_LocalVarFlags)
+    uint8_t  name[]; // Name of this symbol, a null terminated array of UTF8 characters.
+} CV_Local;
+
+typedef struct {
+    uint32_t offset_start;
+    uint16_t isect_start;
+    uint16_t cb_range;
+} CV_AddressRange;
+
+// Represents the holes in overall address range, all address is pre-bbt.
+// it is for compress and reduce the amount of relocations need.
+typedef struct {
+    uint16_t gap_start_offset; // relative offset from the beginning of the live range.
+    uint16_t cb_range;         // length of this gap.
+} CV_AddressGap;
+
+// A live range of sub field of variable
+typedef struct {
+    uint16_t reclen;       // Record length
+    uint16_t rectyp;       // S_DEFRANGE
+    uint32_t program;      // DIA program to evaluate the value of the symbol
+    CV_AddressRange range; // Range of addresses where this program is valid
+    CV_AddressGap gaps[];  // The value is not available in following gaps
+} CV_DefRange;
+
+typedef struct {
+    uint16_t reclen;       // Record length
+    uint16_t rectyp;       // S_DEFRANGE_FRAMEPOINTER_REL
+    int32_t local;
+    CV_AddressRange range; // Range of addresses where this program is valid
+    CV_AddressGap gaps[];  // The value is not available in following gaps
+} CV_DefRangeFrameRel;
+
 typedef struct {
     uint16_t reclen; // Record length
     uint16_t rectyp; // S_REGREL32
@@ -322,17 +380,23 @@ enum {
 
     S_FRAMEPROC = 0x1012, // extra frame and proc information
     S_REGREL32  = 0x1111, // register relative address
+    S_LOCAL = 0x113e,     // defines a local symbol in optimized code
+    S_DEFRANGE = 0x113f,  // defines a single range of addresses in which symbol can be evaluated
+    S_DEFRANGE_FRAMEPOINTER_REL = 0x1142, // range for stack symbol.
 };
 
-typedef enum
-{
-    UWOP_PUSH_NONVOL = 0, /* info == register number */
-    UWOP_ALLOC_LARGE,     /* no info, alloc size in next 2 slots */
-    UWOP_ALLOC_SMALL,     /* info == size of allocation / 8 - 1 */
-    UWOP_SET_FPREG,       /* no info, FP = RSP + UNWIND_INFO.FPRegOffset*16 */
-    UWOP_SAVE_NONVOL,     /* info == register number, offset in next slot */
-    UWOP_SAVE_NONVOL_FAR, /* info == register number, offset in next 2 slots */
-    UWOP_SAVE_XMM128 = 8, /* info == XMM reg number, offset in next slot */
-    UWOP_SAVE_XMM128_FAR, /* info == XMM reg number, offset in next 2 slots */
-    UWOP_PUSH_MACHFRAME   /* info == 0: no error-code, 1: error-code */
-} UNWIND_CODE_OPS;
+// types
+enum {
+    T_VOID          = 0x0003,   // void
+    T_BOOL08        = 0x0030,   // 8 bit boolean
+    T_INT1          = 0x0068,   // 8 bit signed int
+    T_UINT1         = 0x0069,   // 8 bit unsigned int
+    T_INT2          = 0x0072,   // 16 bit signed int
+    T_UINT2         = 0x0073,   // 16 bit unsigned int
+    T_INT4          = 0x0074,   // 32 bit signed int
+    T_UINT4         = 0x0075,   // 32 bit unsigned int
+    T_INT8          = 0x0076,   // 64 bit signed int
+    T_UINT8         = 0x0077,   // 64 bit unsigned int
+    T_REAL32        = 0x0040,   // 32 bit real
+    T_REAL64        = 0x0041,   // 64 bit real
+};

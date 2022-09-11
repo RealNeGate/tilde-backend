@@ -330,7 +330,6 @@ static bool attempt_sroa(TB_Function* f, TB_TemporaryStorage* tls, TB_Reg addres
         f->nodes[split].dt = TB_TYPE_PTR;
         f->nodes[split].local.alignment = alignment;
         f->nodes[split].local.size = configs[i].size;
-        f->nodes[split].local.name = NULL;
 
         configs[i].new_reg = split;
     }

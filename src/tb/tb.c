@@ -125,7 +125,7 @@ TB_API TB_Module* tb_module_create(TB_Arch arch, TB_System sys, const TB_Feature
 }
 
 TB_API bool tb_module_compile_function(TB_Module* m, TB_Function* f, TB_ISelMode isel_mode) {
-    ICodeGen* restrict codegen = tb__find_code_generator(m);
+    ICodeGen* restrict code_gen = tb__find_code_generator(m);
 
     // Machine code gen
     int id = tb__get_local_tid();
@@ -134,17 +134,41 @@ TB_API bool tb_module_compile_function(TB_Module* m, TB_Function* f, TB_ISelMode
     TB_CodeRegion* region = get_or_allocate_code_region(m, id);
     TB_FunctionOutput* func_out = tb_platform_arena_alloc(sizeof(TB_FunctionOutput));
 
-    if (isel_mode == TB_ISEL_COMPLEX && codegen->complex_path == NULL) {
+    if (isel_mode == TB_ISEL_COMPLEX && code_gen->complex_path == NULL) {
         // TODO(NeGate): we need better logging...
         fprintf(stderr, "TB warning: complex path is missing, defaulting to fast path.\n");
         isel_mode = TB_ISEL_FAST;
     }
 
     if (isel_mode == TB_ISEL_COMPLEX) {
-        *func_out = codegen->complex_path(f, &m->features, &region->data[region->size], id);
+        *func_out = code_gen->complex_path(f, &m->features, &region->data[region->size], id);
     } else {
-        *func_out = codegen->fast_path(f, &m->features, &region->data[region->size], id);
+        *func_out = code_gen->fast_path(f, &m->features, &region->data[region->size], id);
     }
+
+    // prologue & epilogue insertion
+    {
+        uint8_t buffer[PROEPI_BUFFER];
+        uint8_t* base = &region->data[region->size];
+        size_t body_size = func_out->code_size;
+        assert(func_out->code == base);
+
+        uint64_t meta = func_out->prologue_epilogue_metadata;
+        size_t prologue_len = code_gen->emit_prologue(buffer, meta, func_out->stack_usage);
+
+        // shift body up & place prologue
+        memmove(base + prologue_len, base, body_size);
+        memcpy(base, buffer, prologue_len);
+
+        // place epilogue
+        size_t epilogue_len = code_gen->emit_epilogue(buffer, meta, func_out->stack_usage);
+        memcpy(base + prologue_len + body_size, buffer, epilogue_len);
+
+        func_out->prologue_length = prologue_len;
+        func_out->epilogue_length = epilogue_len;
+        func_out->code_size += (prologue_len + epilogue_len);
+    }
+
     tb_atomic_size_add(&m->functions.compiled_count, 1);
     region->size += func_out->code_size;
 
@@ -741,6 +765,10 @@ void tb_out4b(TB_Emitter* o, uint32_t i) {
     o->count += 4;
 }
 
+void tb_patch1b(TB_Emitter* o, uint32_t pos, uint8_t i) {
+    *((uint8_t*)&o->data[pos]) = i;
+}
+
 void tb_patch2b(TB_Emitter* o, uint32_t pos, uint16_t i) {
     *((uint16_t*)&o->data[pos]) = i;
 }
@@ -778,7 +806,13 @@ void tb_outstr_UNSAFE(TB_Emitter* o, const char* str) {
     while (*str) o->data[o->count++] = *str++;
 }
 
-void tb_outs_UNSAFE(TB_Emitter* o, size_t len, const uint8_t* str) {
+void tb_outs(TB_Emitter* o, size_t len, const void* str) {
+    tb_out_reserve(o, len);
+    memcpy(&o->data[o->count], str, len);
+    o->count += len;
+}
+
+void tb_outs_UNSAFE(TB_Emitter* o, size_t len, const void* str) {
     memcpy(&o->data[o->count], str, len);
     o->count += len;
 }

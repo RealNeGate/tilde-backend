@@ -36,6 +36,10 @@
 #include "builtins.h"
 #include "pool.h"
 
+#define NL_STRING_MAP_INLINE
+#define NL_STRING_MAP_IMPL
+#include "string_map.h"
+
 // ***********************************
 // Constraints
 // ***********************************
@@ -89,13 +93,6 @@ struct { size_t cap, count; T* elems; }
 #define TB_DATA_TYPE_EQUALS(a, b) ((a).raw == (b).raw)
 #define TB_DT_EQUALS(a, b) ((a).raw == (b).raw)
 
-// first is the null register, then the entry
-// label, then parameters, then everything else
-#define TB_NEXT_INST(node, f) (&(f)->nodes[(node)->next])
-
-// get's the binding id from a TB_Node*
-#define TB_GET_REG(node, f) ((node) - (f)->nodes)
-
 #ifdef TB_FOR_BASIC_BLOCK
 #undef TB_FOR_BASIC_BLOCK
 
@@ -107,13 +104,9 @@ struct { size_t cap, count; T* elems; }
 #define TB_FOR_NODE(it, f, bb) for (TB_Reg it = f->bbs[bb].start; it != 0; it = f->nodes[it].next)
 #define TB_FOR_NODE_AFTER(it, f, first) for (TB_Reg it = f->nodes[reg].start; it != 0; it = f->nodes[it].next)
 
-#define TB_FOR_EACH_NODE_RANGE(elem, f, start, end) \
-for (TB_Node* elem = &f->nodes[start], *end__ = &f->nodes[end]; elem != end__; \
-    elem = &f->nodes[elem->next])
-
 typedef struct TB_ConstPoolPatch {
     TB_Function* source;
-    uint32_t pos; // relative to the start of the function
+    uint32_t pos; // relative to the start of the function body
 
     size_t rdata_pos;
 
@@ -123,19 +116,19 @@ typedef struct TB_ConstPoolPatch {
 
 typedef struct TB_GlobalPatch {
     TB_Function* source;
-    uint32_t pos; // relative to the start of the function
+    uint32_t pos; // relative to the start of the function body
     const TB_Global* target;
 } TB_GlobalPatch;
 
 typedef struct TB_FunctionPatch {
     TB_Function* source;
-    uint32_t pos; // relative to the start of the function
+    uint32_t pos; // relative to the start of the function body
     const TB_Function* target;
 } TB_FunctionPatch;
 
 typedef struct TB_ExternFunctionPatch {
     TB_Function* source;
-    uint32_t pos; // relative to the start of the function
+    uint32_t pos; // relative to the start of the function body
     const TB_External* target;
 } TB_ExternFunctionPatch;
 
@@ -210,6 +203,7 @@ struct TB_Initializer {
 struct TB_DebugType {
     enum {
         TB_DEBUG_TYPE_VOID,
+        TB_DEBUG_TYPE_BOOL,
 
         TB_DEBUG_TYPE_UINT,
         TB_DEBUG_TYPE_INT,
@@ -237,23 +231,35 @@ typedef struct TB_Line {
 
 typedef enum {
     TB_ATTRIB_NONE,
-    TB_ATTRIB_RESTRICT,
-    TB_ATTRIB_SCOPE
+    TB_ATTRIB_VARIABLE,
 } TB_AttribType;
 
-typedef struct {
+struct TB_Attrib {
+    TB_Attrib* next;
     TB_AttribType type;
-    TB_AttributeID ref;
-} TB_Attrib;
 
-// linked lists amirite
-struct TB_AttribList {
-    TB_AttribList* next;
-    TB_AttributeID attrib;
+    union {
+        struct {
+            char* name;
+            const TB_DebugType* storage;
+        } var;
+    };
 };
+
+typedef struct TB_StackSlot {
+    TB_Reg source;
+    // TODO(NeGate): support complex variable descriptions
+    // currently we only support stack relative
+    int position;
+
+    const char* name;
+    const TB_DebugType* storage_type;
+} TB_StackSlot;
 
 typedef struct TB_FunctionOutput {
     TB_Linkage linkage;
+    uint8_t prologue_length;
+    uint8_t epilogue_length;
 
     // NOTE(NeGate): This data is actually specific to the
     // architecture run but generically can be thought of as
@@ -263,6 +269,8 @@ typedef struct TB_FunctionOutput {
 
     uint8_t* code;
     size_t code_size;
+
+    DynArray(TB_StackSlot) stack_slots;
 } TB_FunctionOutput;
 
 struct TB_Function {
@@ -285,7 +293,6 @@ struct TB_Function {
     TB_Node* nodes;
 
     // Used by the IR building
-    TB_AttributeID active_attrib;
     TB_Reg last_reg;
     TB_Reg current_label;
 
@@ -400,10 +407,11 @@ typedef struct {
     void (*get_data_type_size)(TB_DataType dt, TB_CharUnits* out_size, TB_CharUnits* out_align);
     void (*emit_call_patches)(TB_Module* restrict m, uint32_t* restrict func_layout);
 
-    size_t (*get_prologue_length)(uint64_t saved, uint64_t stack_usage);
-    size_t (*get_epilogue_length)(uint64_t saved, uint64_t stack_usage);
     size_t (*emit_prologue)(uint8_t* out, uint64_t saved, uint64_t stack_usage);
     size_t (*emit_epilogue)(uint8_t* out, uint64_t saved, uint64_t stack_usage);
+
+    // NULLable if doesn't apply
+    void (*emit_win64eh_unwind_info)(TB_Emitter* e, TB_FunctionOutput* out_f, uint64_t saved, uint64_t stack_usage);
 
     TB_FunctionOutput (*fast_path)(TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
     TB_FunctionOutput (*complex_path)(TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
@@ -516,9 +524,8 @@ inline static size_t tb_post_inc(size_t* a, size_t b) {
 }
 
 // NOTE(NeGate): if you steal it you should restore the used amount back to what it was before
-TB_TemporaryStorage* tb_tls_steal();
-
-TB_TemporaryStorage* tb_tls_allocate();
+TB_TemporaryStorage* tb_tls_steal(void);
+TB_TemporaryStorage* tb_tls_allocate(void);
 void* tb_tls_push(TB_TemporaryStorage* store, size_t size);
 void* tb_tls_try_push(TB_TemporaryStorage* store, size_t size);
 void tb_tls_restore(TB_TemporaryStorage* store, void* ptr);
@@ -535,9 +542,6 @@ bool tb_elf64__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet)
 void* tb_coff__make(TB_Module* m, const IDebugFormat* dbg);
 bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet);
 
-// code generators
-ICodeGen* tb__find_code_generator(TB_Module* m);
-
 void* tb_out_reserve(TB_Emitter* o, size_t count);
 // The return value is the start of the empty region after
 // the data, this is where you can start appending new data
@@ -553,7 +557,8 @@ void tb_out_commit(TB_Emitter* o, size_t count);
 void tb_out1b_UNSAFE(TB_Emitter* o, uint8_t i);
 void tb_out4b_UNSAFE(TB_Emitter* o, uint32_t i);
 void tb_outstr_UNSAFE(TB_Emitter* o, const char* str);
-void tb_outs_UNSAFE(TB_Emitter* o, size_t len, const uint8_t* str);
+void tb_outs_UNSAFE(TB_Emitter* o, size_t len, const void* str);
+void tb_outs(TB_Emitter* o, size_t len, const void* str);
 
 void tb_out_zero(TB_Emitter* o, size_t len);
 // fills region with zeros
@@ -562,6 +567,7 @@ void tb_out1b(TB_Emitter* o, uint8_t i);
 void tb_out2b(TB_Emitter* o, uint16_t i);
 void tb_out4b(TB_Emitter* o, uint32_t i);
 void tb_out8b(TB_Emitter* o, uint64_t i);
+void tb_patch1b(TB_Emitter* o, uint32_t pos, uint8_t i);
 void tb_patch2b(TB_Emitter* o, uint32_t pos, uint16_t i);
 void tb_patch4b(TB_Emitter* o, uint32_t pos, uint32_t i);
 

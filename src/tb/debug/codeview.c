@@ -103,6 +103,41 @@ static uint16_t find_or_make_cv_type(TB_Emitter* sect, uint32_t* type_entry_coun
     return type_index;
 }
 
+static uint16_t convert_to_codeview_type(TB_Emitter* sect, uint32_t* type_entry_count, CV_TypeEntry* lookup_table, const TB_DebugType* type) {
+    // find_or_make_cv_type(sect, type_entry_count, lookup_table, );
+    switch (type->tag) {
+        case TB_DEBUG_TYPE_VOID: return T_VOID;
+        case TB_DEBUG_TYPE_BOOL: return T_BOOL08; // T_BOOL08
+
+        case TB_DEBUG_TYPE_INT:
+        case TB_DEBUG_TYPE_UINT: {
+            bool is_signed = (type->tag == TB_DEBUG_TYPE_INT);
+
+            if (type->int_bits <= 8)  return is_signed ? T_INT1 : T_UINT1;
+            if (type->int_bits <= 16) return is_signed ? T_INT2 : T_UINT2;
+            if (type->int_bits <= 32) return is_signed ? T_INT4 : T_UINT4;
+            if (type->int_bits <= 64) return is_signed ? T_INT8 : T_UINT8;
+            assert(0 && "Unsupported int type");
+        }
+
+        case TB_DEBUG_TYPE_FLOAT: {
+            switch (type->float_fmt) {
+                case TB_FLT_32: return T_REAL32;
+                case TB_FLT_64: return T_REAL64;
+                default: assert(0 && "Unknown float type");
+            }
+        }
+
+        case TB_DEBUG_TYPE_POINTER: {
+            return 0x0023;
+        }
+
+        default:
+        assert(0 && "TODO: missing type in CodeView output");
+        return 0x0003;
+    }
+}
+
 static TB_Slice gimme_cstr_as_slice(const char* str) {
     return (TB_Slice){ strlen(str), (uint8_t*) strdup(str) };
 }
@@ -141,14 +176,14 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
 
     TB_Emitter debugs_out = { 0 };
     TB_Emitter debugt_out = { 0 };
+
+    CV_TypeEntry* lookup_table = tb_tls_push(tls, MAX_TYPE_ENTRY_LOOKUP_SIZE * sizeof(CV_TypeEntry));
+    memset(lookup_table, 0, MAX_TYPE_ENTRY_LOOKUP_SIZE * sizeof(CV_TypeEntry));
+    uint32_t type_entry_count = 0x1000;
     {
         tb_out4b(&debugt_out, 0x00000004);
 
-        CV_TypeEntry* lookup_table = tb_tls_push(tls, MAX_TYPE_ENTRY_LOOKUP_SIZE * sizeof(CV_TypeEntry));
-        memset(lookup_table, 0, MAX_TYPE_ENTRY_LOOKUP_SIZE * sizeof(CV_TypeEntry));
-
-        uint32_t type_entry_count = 0x1000;
-        loop(i, m->functions.count) {
+        FOREACH_N(i, 0, m->functions.count) {
             if (m->functions.data[i].output == NULL) continue;
             const TB_FunctionPrototype* proto = m->functions.data[i].prototype;
 
@@ -165,7 +200,7 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
                 *((uint32_t*)&data[4]) = param_count;
 
                 uint32_t* param_data = (uint32_t*)&data[8];
-                loop(j, proto->param_count) {
+                FOREACH_N(j, 0, proto->param_count) {
                     param_data[j] = get_codeview_type(proto->params[j]);
                 }
 
@@ -219,9 +254,6 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
                 tb_tls_restore(tls, data);
             }
         }
-
-        tb_tls_restore(tls, lookup_table);
-        align_up_emitter(&debugt_out, 4);
     }
 
     // Write symbol info table
@@ -293,18 +325,15 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
 
         // Line info table
         if (true) {
-            loop(func_id, m->functions.count) {
+            FOREACH_N(func_id, 0, m->functions.count) {
                 TB_FunctionOutput* out_f = m->functions.data[func_id].output;
                 if (!out_f) continue;
-
-                uint64_t meta = out_f->prologue_epilogue_metadata;
-                uint64_t stack_usage = out_f->stack_usage;
 
                 // Layout crap
                 uint32_t function_start = func_layout[func_id];
                 uint32_t function_end = func_layout[func_id + 1];
 
-                uint32_t body_start = code_gen->get_prologue_length(meta, stack_usage);
+                uint32_t body_start = out_f->prologue_length;
 
                 size_t line_count = m->functions.data[func_id].line_count;
                 TB_Line* restrict lines = m->functions.data[func_id].lines;
@@ -341,7 +370,7 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
                 TB_FileID last_file = 0;
                 uint32_t current_line_count = 0;
 
-                loop(line_id, line_count) {
+                FOREACH_N(line_id, 0, line_count) {
                     TB_Line line = lines[line_id];
 
                     if (last_file != line.file) {
@@ -424,10 +453,15 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
         }
 
         // Symbols
-        loop(i, m->functions.count) {
+        FOREACH_N(i, 0, m->functions.count) {
             TB_Function* f = &m->functions.data[i];
             TB_FunctionOutput* out_f = f->output;
             if (!out_f) continue;
+
+            // Layout crap
+            uint32_t function_start = func_layout[i];
+            uint32_t function_end = func_layout[i + 1];
+            uint32_t function_length = function_end - function_start;
 
             const char* name = f->name;
             size_t name_len = strlen(f->name) + 1;
@@ -441,9 +475,9 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
             tb_out4b(&debugs_out, 0); // pointer to the next symbol (left as zero?)
 
             // TODO(NeGate): correctly fill this
-            tb_out4b(&debugs_out, 1);                      // procedure length
+            tb_out4b(&debugs_out, function_length);        // procedure length
             tb_out4b(&debugs_out, 0);                      // debug start offset (?)
-            tb_out4b(&debugs_out, 0);                      // debug end offset (?)
+            tb_out4b(&debugs_out, function_length);        // debug end offset (?)
             tb_out4b(&debugs_out, function_type_table[i]); // type index
 
             // we save this location because there's two relocations
@@ -478,7 +512,7 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
             // patch field length
             tb_patch2b(&debugs_out, baseline, (debugs_out.count - baseline) - 2);
 
-            if (0) {
+            if (1) {
                 // frameproc
                 size_t frameproc_baseline = debugs_out.count;
 
@@ -492,10 +526,33 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
                 tb_out4b(&debugs_out, 0); // offset (relative to frame poniter) to where padding starts
                 tb_out4b(&debugs_out, 0); // count of bytes of callee save registers
                 tb_out4b(&debugs_out, 0); // offset of exception handler
-                tb_out4b(&debugs_out, 0); // section id of exception handler
-                tb_out4b(&debugs_out, 0); // flags
+                tb_out2b(&debugs_out, 0); // section id of exception handler
+                tb_out4b(&debugs_out, 0x00114200); // flags
 
                 tb_patch2b(&debugs_out, frameproc_baseline, (debugs_out.count - frameproc_baseline) - 2);
+
+                dyn_array_for(j, out_f->stack_slots) {
+                    int stack_pos = out_f->stack_slots[j].position;
+                    const TB_DebugType* type = out_f->stack_slots[j].storage_type;
+
+                    const char* var_name = out_f->stack_slots[j].name;
+                    size_t var_name_len = strlen(var_name);
+                    assert(var_name != NULL);
+
+                    uint32_t type_index = convert_to_codeview_type(&debugt_out, &type_entry_count, lookup_table, type);
+
+                    // define S_REGREL32
+                    CV_RegRel32 l = {
+                        .reclen = sizeof(CV_RegRel32) + (var_name_len + 1) - 2,
+                        .rectyp = S_REGREL32,
+                        .off = stack_pos,
+                        .typind = type_index,
+                        // AMD64_RBP is 334, AMD64_RSP is 335
+                        .reg = 334,
+                    };
+                    tb_outs(&debugs_out, sizeof(CV_RegRel32), &l);
+                    tb_outs(&debugs_out, var_name_len + 1, (const uint8_t*) var_name);
+                }
             }
 
             // end the block
@@ -505,14 +562,13 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
         tb_patch4b(&debugs_out, field_length_patch, (debugs_out.count - field_length_patch) - 4);
         align_up_emitter(&debugs_out, 4);
     }
-    tb_tls_restore(tls, function_type_table);
 
+    // finalize debugt_out
+    align_up_emitter(&debugt_out, 4);
     sections[0].raw_data = (TB_Slice){ debugs_out.count, debugs_out.data };
     sections[1].raw_data = (TB_Slice){ debugt_out.count, debugt_out.data };
 
-    return (TB_SectionGroup) {
-        2, sections
-    };
+    return (TB_SectionGroup) { 2, sections };
 }
 
 IDebugFormat tb__codeview_debug_format = {

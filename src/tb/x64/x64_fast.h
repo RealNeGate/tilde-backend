@@ -2497,6 +2497,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
 
     // Just the splitting point between parameters
     // and locals in the stack.
+    DynArray(TB_StackSlot) stack_slots = dyn_array_create(TB_StackSlot);
     TB_FOR_BASIC_BLOCK(bb, f) {
         TB_FOR_NODE(r, f, bb) {
             TB_Node* n = &f->nodes[r];
@@ -2534,7 +2535,12 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
 
                 fast_def_stack(ctx, f, r, pos, n->dt);
 
-                // if (n->local.name) printf("  [rbp - %#x]\t%s\n", -pos, n->local.name);
+                for (TB_Attrib* attrib = n->first_attrib; attrib != NULL; attrib = attrib->next) {
+                    if (attrib->type == TB_ATTRIB_VARIABLE) {
+                        dyn_array_put(stack_slots, (TB_StackSlot){ r, pos, attrib->var.name, attrib->var.storage });
+                        break;
+                    }
+                }
             }
         }
     }
@@ -2712,7 +2718,8 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
         .code = ctx->header.start_out,
         .code_size = ctx->header.out - ctx->header.start_out,
         .stack_usage = ctx->header.stack_usage,
-        .prologue_epilogue_metadata = ctx->header.regs_to_save
+        .prologue_epilogue_metadata = ctx->header.regs_to_save,
+        .stack_slots = stack_slots
     };
 
     if (is_ctx_heap_allocated) {

@@ -25,22 +25,12 @@ void tb_export_macho(TB_Module* m, const ICodeGen* restrict code_gen, const char
 
 	// function layout
     size_t text_section_size = 0;
-	for (size_t i = 0; i < m->functions.count; i++) {
+	FOREACH_N(i, 0, m->functions.count) {
         TB_FunctionOutput* out_f = m->functions.data[i].output;
         func_layout[i] = text_section_size;
-        if (out_f == NULL) continue;
-
-        uint64_t meta = out_f->prologue_epilogue_metadata;
-        uint64_t stack_usage = out_f->stack_usage;
-
-        size_t code_size = out_f->code_size;
-        size_t prologue = code_gen->get_prologue_length(meta, stack_usage);
-        size_t epilogue = code_gen->get_epilogue_length(meta, stack_usage);
-        assert(prologue + epilogue < PROEPI_BUFFER);
-
-        text_section_size += prologue;
-        text_section_size += epilogue;
-        text_section_size += code_size;
+        if (out_f != NULL) {
+            text_section_size += out_f->code_size;
+        }
     }
 	func_layout[m->functions.count] = text_section_size;
 
@@ -97,7 +87,7 @@ void tb_export_macho(TB_Module* m, const ICodeGen* restrict code_gen, const char
 	fwrite(&sections, sizeof(MO_Section64), NUMBER_OF_SECTIONS, f);
 
 	// emit section contents
-	loop(i, NUMBER_OF_SECTIONS) {
+	FOREACH_N(i, 0, NUMBER_OF_SECTIONS) {
 
 	}
 

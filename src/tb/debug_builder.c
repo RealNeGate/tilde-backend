@@ -7,6 +7,16 @@ static TB_DebugType* make_type(TB_Module* m) {
     return pool_put(m->thread_info[tid].debug_types);
 }
 
+TB_API const TB_DebugType* tb_debug_get_void(TB_Module* m) {
+    static const TB_DebugType type = { TB_DEBUG_TYPE_VOID };
+    return &type;
+}
+
+TB_API const TB_DebugType* tb_debug_get_bool(TB_Module* m) {
+    static const TB_DebugType type = { TB_DEBUG_TYPE_BOOL };
+    return &type;
+}
+
 TB_API const TB_DebugType* tb_debug_get_integer(TB_Module* m, bool is_signed, int bits) {
     static const TB_DebugType types[] = {
         { .tag = TB_DEBUG_TYPE_UINT, .int_bits = 1 },

@@ -1,9 +1,5 @@
 #include "coff.h"
 
-#define NL_STRING_MAP_INLINE
-#define NL_STRING_MAP_IMPL
-#include "../string_map.h"
-
 typedef struct {
     NL_Slice name;
     // this is the location the thunk will call
@@ -127,9 +123,6 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
     TB_TemporaryStorage* tls = tb_tls_allocate();
     LinkerCtx ctx = { .inputs = *input };
 
-    // The prologue and epilogue generators need some storage
-    uint8_t* proepi_buffer = tb_tls_push(tls, PROEPI_BUFFER);
-
     // Buffer stores all the positions of each
     // function relative to the .text section start.
     uint32_t* func_layout = tb_platform_heap_alloc((1+m->functions.count) * sizeof(uint32_t));
@@ -215,7 +208,9 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
     }
 
     // null directory
-    loop(i, 5) tb_out4b(&import_table, 0);
+    FOREACH_N(i, 0, 5) {
+        tb_out4b(&import_table, 0);
+    }
 
     dyn_array_for(i, ctx.imports) {
         ImportTable* imp = &ctx.imports[i];
@@ -274,7 +269,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
     size_t trampolines_size = 6 * thunk_id_counter;
     uint8_t* trampolines = malloc(trampolines_size);
 
-    loop(i, thunk_id_counter) {
+    FOREACH_N(i, 0, thunk_id_counter) {
         // add trampoline JMP
         // NOTE(NeGate): this is x64 specific, we can technically generate
         // PE files for other platforms so that's something to think about
@@ -288,30 +283,24 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         memcpy(&trampolines[i*6 + 2], &p, sizeof(uint32_t));
     }
 
-    // Layout functions
+    const char* entrypoint_name = "mainCRTStartup";
+    char entrypoint_name_first_char = entrypoint_name[0];
+
+    // Layout functions (and find entrypoint)
     size_t text_section_size = align_up(trampolines_size, 16);
     size_t entrypoint = SIZE_MAX;
-    loop(i, m->functions.count) {
+    FOREACH_N(i, 0, m->functions.count) {
         TB_FunctionOutput* out_f = m->functions.data[i].output;
         func_layout[i] = text_section_size;
         if (out_f == NULL) continue;
 
-        if (m->functions.data[i].name[0] == 'm' &&
-            strcmp(m->functions.data[i].name, "mainCRTStartup") == 0) {
-            entrypoint = text_section_size;
+        if (m->functions.data[i].name[0] == entrypoint_name_first_char) {
+            if (strcmp(m->functions.data[i].name, entrypoint_name) == 0) {
+                entrypoint = text_section_size;
+            }
         }
 
-        uint64_t meta = out_f->prologue_epilogue_metadata;
-        uint64_t stack_usage = out_f->stack_usage;
-
-        size_t code_size = out_f->code_size;
-        size_t prologue = code_gen->get_prologue_length(meta, stack_usage);
-        size_t epilogue = code_gen->get_epilogue_length(meta, stack_usage);
-        assert(prologue + epilogue < PROEPI_BUFFER);
-
-        text_section_size += prologue;
-        text_section_size += epilogue;
-        text_section_size += code_size;
+        text_section_size += out_f->code_size;
     }
     func_layout[m->functions.count] = text_section_size;
     text_section_size = align_up(text_section_size, 512);
@@ -328,57 +317,45 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
     // Apply external relocations
     ptrdiff_t const_data_rva = 0x1000 + import_table.count;
     ptrdiff_t global_data_rva = 0x1000 + import_table.count;
-    loop(i, m->max_threads) {
-        loop(j, dyn_array_length(m->thread_info[i].ecall_patches)) {
+    FOREACH_N(i, 0, m->max_threads) {
+        FOREACH_N(j, 0, dyn_array_length(m->thread_info[i].ecall_patches)) {
             TB_ExternFunctionPatch* patch = &m->thread_info[i].ecall_patches[j];
             TB_FunctionOutput* out_f = patch->source->output;
 
-            uint64_t meta = out_f->prologue_epilogue_metadata;
-            uint64_t stack_usage = out_f->stack_usage;
-            uint8_t* code = out_f->code;
-
             size_t actual_pos = func_layout[patch->source - m->functions.data] +
-                code_gen->get_prologue_length(meta, stack_usage) + patch->pos + 4;
+                out_f->prologue_length + patch->pos + 4;
 
             ImportThunk* thunk = patch->target->address;
             assert(thunk != NULL);
 
             uint32_t p = (thunk->thunk_id * 6) - actual_pos;
-            memcpy(&code[patch->pos], &p, sizeof(uint32_t));
+            memcpy(&out_f->code[patch->pos], &p, sizeof(uint32_t));
         }
 
-        loop(j, dyn_array_length(m->thread_info[i].global_patches)) {
+        FOREACH_N(j, 0, dyn_array_length(m->thread_info[i].global_patches)) {
             TB_GlobalPatch* patch = &m->thread_info[i].global_patches[j];
             TB_FunctionOutput* out_f = patch->source->output;
 
-            uint64_t meta = out_f->prologue_epilogue_metadata;
-            uint64_t stack_usage = out_f->stack_usage;
-            uint8_t* code = out_f->code;
-
             size_t actual_pos = func_layout[patch->source - m->functions.data] +
-                code_gen->get_prologue_length(meta, stack_usage) + patch->pos + 4;
+                out_f->prologue_length + patch->pos + 4;
 
             const TB_Global* global = patch->target;
             (void)global;
             assert(global->storage == TB_STORAGE_DATA);
 
             int32_t p = global_data_rva - actual_pos;
-            *((int32_t*)&code[patch->pos]) += p;
+            *((int32_t*)&out_f->code[patch->pos]) += p;
         }
 
-        loop(j, dyn_array_length(m->thread_info[i].const_patches)) {
+        FOREACH_N(j, 0, dyn_array_length(m->thread_info[i].const_patches)) {
             TB_ConstPoolPatch* patch = &m->thread_info[i].const_patches[j];
             TB_FunctionOutput* out_f = patch->source->output;
 
-            uint64_t meta = out_f->prologue_epilogue_metadata;
-            uint64_t stack_usage = out_f->stack_usage;
-            uint8_t* code = out_f->code;
-
             size_t actual_pos = text_base + func_layout[patch->source - m->functions.data] +
-                code_gen->get_prologue_length(meta, stack_usage) + patch->pos + 4;
+                out_f->prologue_length + patch->pos + 4;
 
             int32_t p = const_data_rva - actual_pos;
-            *((int32_t*)&code[patch->pos]) += p;
+            *((int32_t*)&out_f->code[patch->pos]) += p;
         }
     }
 
@@ -432,12 +409,12 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         .subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI,
 
         .size_of_stack_reserve = 2 << 20,
-        .size_of_stack_commit  = 4096,
+        .size_of_stack_commit = 4096,
 
         .rva_size_count = IMAGE_NUMBEROF_DIRECTORY_ENTRIES,
         .data_directories = {
             [IMAGE_DIRECTORY_ENTRY_IMPORT] = { 0x1000 + ilt_start, import_table.count - ilt_start },
-            [IMAGE_DIRECTORY_ENTRY_IAT]  = { 0x1000, import_entry_count * 8 },
+            [IMAGE_DIRECTORY_ENTRY_IAT]    = { 0x1000, import_entry_count * 8 },
         }
     };
     fwrite(&opt_header, sizeof(opt_header), 1, f);
@@ -497,24 +474,9 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         fwrite(trampolines, trampolines_size, 1, f);
         pad_file(tls, f, 0xCC, 16);
 
-        loop(i, m->functions.count) {
+        FOREACH_N(i, 0, m->functions.count) {
             TB_FunctionOutput* out_f = m->functions.data[i].output;
-            if (!out_f) continue;
-
-            uint64_t meta = out_f->prologue_epilogue_metadata;
-            uint64_t stack_usage = out_f->stack_usage;
-            const uint8_t* code = out_f->code;
-            size_t code_size = out_f->code_size;
-
-            uint8_t* prologue = proepi_buffer;
-            size_t prologue_len = code_gen->emit_prologue(prologue, meta, stack_usage);
-
-            uint8_t* epilogue = proepi_buffer + prologue_len;
-            size_t epilogue_len = code_gen->emit_epilogue(epilogue, meta, stack_usage);
-
-            fwrite(prologue, prologue_len, 1, f);
-            fwrite(code, code_size, 1, f);
-            fwrite(epilogue, epilogue_len, 1, f);
+            if (out_f) fwrite(out_f->code, out_f->code_size, 1, f);
         }
         pad_file(tls, f, 0xCC, 0x200);
 
@@ -522,7 +484,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         {
             char* data = tb_platform_heap_alloc(m->data_region_size);
 
-            loop(i, m->max_threads) {
+            FOREACH_N(i, 0, m->max_threads) {
                 pool_for(TB_Global, g, m->thread_info[i].globals) {
                     if (g->storage != TB_STORAGE_DATA) continue;
                     TB_Initializer* init = g->init;
@@ -530,7 +492,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
                     // clear out space
                     memset(&data[g->pos], 0, init->size);
 
-                    loop(k, init->obj_count) {
+                    FOREACH_N(k, 0, init->obj_count) {
                         if (init->objects[k].type == TB_INIT_OBJ_REGION) {
                             memcpy(
                                 &data[g->pos + init->objects[k].offset],

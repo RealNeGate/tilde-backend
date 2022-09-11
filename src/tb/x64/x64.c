@@ -30,18 +30,14 @@ static void x64_emit_call_patches(TB_Module* restrict m, uint32_t* restrict func
             TB_FunctionOutput* out_f = patch->source->output;
             assert(out_f && "Patch cannot be applied to function with no compiled output");
 
-            uint64_t meta = out_f->prologue_epilogue_metadata;
-            uint64_t stack_usage = out_f->stack_usage;
-            uint8_t* code = out_f->code;
-
             // x64 thinks of relative addresses as being relative
             // to the end of the instruction or in this case just
             // 4 bytes ahead hence the +4.
             size_t actual_pos = func_layout[patch->source - m->functions.data] +
-                x64_get_prologue_length(meta, stack_usage) + patch->pos + 4;
+                out_f->prologue_length + patch->pos + 4;
 
             uint32_t p = func_layout[patch->target - m->functions.data] - actual_pos;
-            memcpy(&code[patch->pos], &p, sizeof(uint32_t));
+            memcpy(&out_f->code[out_f->prologue_length + patch->pos], &p, sizeof(uint32_t));
         }
     }
 }
@@ -114,12 +110,11 @@ ICodeGen tb__x64_codegen = {
 
     .get_data_type_size  = x64_get_data_type_size,
     .emit_call_patches   = x64_emit_call_patches,
-    .get_prologue_length = x64_get_prologue_length,
-    .get_epilogue_length = x64_get_epilogue_length,
     .emit_prologue       = x64_emit_prologue,
     .emit_epilogue       = x64_emit_epilogue,
+    .emit_win64eh_unwind_info = x64_emit_win64eh_unwind_info,
 
-    .fast_path    = x64_fast_compile_function,
+    .fast_path = x64_fast_compile_function,
     //.complex_path = x64_complex_compile_function
 };
 #if _MSC_VER

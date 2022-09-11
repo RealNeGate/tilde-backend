@@ -60,7 +60,7 @@ static void print_string(TB_PrintCallback callback, void* user_data, const uint8
 }
 
 static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_data, TB_Node* restrict n) {
-    TB_Reg i = TB_GET_REG(n, f);
+    TB_Reg i = n - f->nodes;
     TB_NodeTypeEnum type = n->type;
     TB_DataType dt = n->dt;
 
@@ -434,22 +434,12 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
         default: tb_todo();
     }
 
-    if (n->first_attrib != NULL) {
-        TB_AttribList* list = n->first_attrib;
-
-        do {
-            TB_Attrib* attrib = &f->attrib_pool[list->attrib];
-
-            if (attrib->type == TB_ATTRIB_RESTRICT) {
-                printf(", restrict $%d", attrib->ref);
-            } else if (attrib->type == TB_ATTRIB_SCOPE) {
-                printf(", scope $%d", list->attrib);
-            } else {
-                tb_todo();
-            }
-
-            list = list->next;
-        } while (list != NULL);
+    for (TB_Attrib* attrib = n->first_attrib; attrib != NULL; attrib = attrib->next) {
+        if (attrib->type == TB_ATTRIB_VARIABLE) {
+            callback(user_data, ", var '%s'", attrib->var.name);
+        } else {
+            tb_todo();
+        }
     }
 }
 

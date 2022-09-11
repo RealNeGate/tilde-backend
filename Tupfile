@@ -1,5 +1,5 @@
 import CC=clang
-import OPT=no
+import OPT=n
 
 ifeq ($(CC),cl)
 	error CL is not supported with TB's Tup builds... yet
@@ -8,7 +8,7 @@ else
 	CFLAGS += -I deps/mimalloc/include
 	CFLAGS += -I deps/luajit/src
 	CFLAGS += -Wall -Werror -Wno-unused-function
-	ifeq ($(OPT),yes)
+	ifeq ($(OPT),y)
 		CFLAGS += -O2 -DNDEBUG
 	endif
 

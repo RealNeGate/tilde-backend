@@ -123,6 +123,35 @@ TB_API bool tb_node_is_constant_zero(TB_Function* f, TB_Reg r) {
     return false;
 }
 
+static TB_Attrib* tb_make_attrib(TB_Function* f) {
+    if (f->attrib_pool_count + 1 >= f->attrib_pool_capacity) {
+        f->attrib_pool_capacity = (f->attrib_pool_count + 1) * 2;
+
+        f->attrib_pool = tb_platform_heap_realloc(f->attrib_pool, sizeof(TB_Attrib) * f->attrib_pool_capacity);
+        if (!f->attrib_pool) tb_panic("Out of memory");
+    }
+
+    return &f->attrib_pool[f->attrib_pool_count++];
+}
+
+static void append_attrib(TB_Function* f, TB_Reg r, TB_Attrib* a) {
+    TB_Attrib* chain = f->nodes[r].first_attrib;
+    if (chain == NULL) {
+        f->nodes[r].first_attrib = a;
+    } else {
+        // skip till the end
+        while (chain->next != NULL) chain = chain->next;
+
+        chain->next = a;
+    }
+}
+
+TB_API void tb_function_attrib_variable(TB_Function* f, TB_Reg r, const char* name, const TB_DebugType* type) {
+    TB_Attrib* a = tb_make_attrib(f);
+    *a = (TB_Attrib) { .type = TB_ATTRIB_VARIABLE, .var = { tb_platform_string_alloc(name), type } };
+    append_attrib(f, r, a);
+}
+
 static TB_Reg tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
     // Cannot add registers to terminated basic blocks, except labels
     // which start new basic blocks
@@ -136,7 +165,6 @@ static TB_Reg tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
     };
 
     TB_BasicBlock* bb = &f->bbs[f->current_label];
-
     if (bb->start == 0) {
         bb->start = r;
     } else {
@@ -152,11 +180,6 @@ static TB_Reg tb_make_reg(TB_Function* f, int type, TB_DataType dt) {
         #endif
     }
     bb->end = r;
-
-    // map the scope attribute
-    if (f->active_attrib != 0) {
-        tb_function_append_attrib(f, r, f->active_attrib);
-    }
     return r;
 }
 
@@ -179,11 +202,6 @@ TB_API TB_Reg tb_function_append(TB_Function* f, const TB_Node n) {
     TB_Reg end = f->bbs[f->current_label].end;
     f->nodes[end].next = r;
     f->bbs[f->current_label].end = end;
-
-    // map the scope attribute
-    if (f->active_attrib != 0) {
-        tb_function_append_attrib(f, r, f->active_attrib);
-    }
     return r;
 }
 
@@ -208,57 +226,6 @@ static TB_Reg tb_bin_farith(TB_Function* f, int type, TB_Reg a, TB_Reg b) {
     f->nodes[r].f_arith.a = a;
     f->nodes[r].f_arith.b = b;
     return r;
-}
-
-static TB_AttributeID tb_make_attrib(TB_Function* f, int extra) {
-    if (f->attrib_pool_count + extra >= f->attrib_pool_capacity) {
-        f->attrib_pool_capacity = (f->attrib_pool_count + extra) * 2;
-
-        f->attrib_pool = tb_platform_heap_realloc(f->attrib_pool, sizeof(TB_Attrib) * f->attrib_pool_capacity);
-        if (!f->attrib_pool) tb_panic("Out of memory");
-    }
-
-    return f->attrib_pool_count++;
-}
-
-TB_API void tb_inst_set_scope(TB_Function* f, TB_AttributeID scope) {
-    f->active_attrib = scope;
-}
-
-TB_API TB_AttributeID tb_inst_get_scope(TB_Function* f) {
-    return f->active_attrib;
-}
-
-TB_API TB_AttributeID tb_function_attrib_restrict(TB_Function* f, TB_AttributeID scope) {
-    TB_AttributeID id = tb_make_attrib(f, 1);
-
-    f->attrib_pool[id] = (TB_Attrib) { .type = TB_ATTRIB_RESTRICT, .ref = scope };
-    return id;
-}
-
-TB_API TB_AttributeID tb_function_attrib_scope(TB_Function* f, TB_AttributeID parent_scope) {
-    TB_AttributeID id = tb_make_attrib(f, 1);
-
-    f->attrib_pool[id] = (TB_Attrib) { .type = TB_ATTRIB_SCOPE, .ref = parent_scope };
-    return id;
-}
-
-TB_API void tb_function_append_attrib(TB_Function* f, TB_Reg r, TB_AttributeID a) {
-    // NOTE(NeGate): this code path will a slow thing if abused...
-    TB_AttribList* new_link = tb_platform_heap_alloc(sizeof(TB_AttribList));
-    new_link->attrib = a;
-    new_link->next = NULL;
-
-    if (f->nodes[r].first_attrib == NULL) {
-        f->nodes[r].first_attrib = new_link;
-    } else {
-        TB_AttribList* chain = f->nodes[r].first_attrib->next;
-        do {
-            chain = chain->next;
-        } while (chain != NULL);
-
-        chain->next = new_link;
-    }
 }
 
 TB_API TB_Reg tb_inst_trunc(TB_Function* f, TB_Reg src, TB_DataType dt) {
@@ -401,14 +368,13 @@ TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line) {
     f->nodes[r].line_info.line = line;
 }
 
-TB_API TB_Reg tb_inst_local(TB_Function* f, uint32_t size, TB_CharUnits alignment, const char* name) {
+TB_API TB_Reg tb_inst_local(TB_Function* f, uint32_t size, TB_CharUnits alignment) {
     tb_assume(size > 0);
     tb_assume(alignment > 0 && tb_is_power_of_two(alignment));
 
     TB_Reg r = tb_make_reg(f, TB_LOCAL, TB_TYPE_PTR);
     f->nodes[r].local.alignment = alignment;
     f->nodes[r].local.size = size;
-    f->nodes[r].local.name = name;
     return r;
 }
 

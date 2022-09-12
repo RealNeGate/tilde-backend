@@ -846,9 +846,7 @@ extern "C" {
     // parameters so the frontend must lower them to pointers or any other type
     // depending on their preferred ABI.
     TB_API void tb_prototype_add_param(TB_FunctionPrototype* p, TB_DataType dt);
-
-    // same as tb_prototype_add_param(...) but takes an array
-    TB_API void tb_prototype_add_params(TB_FunctionPrototype* p, size_t count, const TB_DataType* dt);
+    TB_API void tb_prototype_add_param_named(TB_FunctionPrototype* p, TB_DataType dt, const char* name, const TB_DebugType* debug_type);
 
     ////////////////////////////////
     // Constant Initializers
@@ -888,6 +886,9 @@ extern "C" {
     TB_API const TB_DebugType* tb_debug_get_float(TB_Module* m, TB_FloatFormat fmt);
     TB_API const TB_DebugType* tb_debug_create_ptr(TB_Module* m, const TB_DebugType* base);
     TB_API const TB_DebugType* tb_debug_create_array(TB_Module* m, const TB_DebugType* base, size_t count);
+    TB_API const TB_DebugType* tb_debug_create_struct(TB_Module* m, const TB_DebugType** members, size_t count, TB_CharUnits size, TB_CharUnits align);
+    TB_API const TB_DebugType* tb_debug_create_union(TB_Module* m, const TB_DebugType** members, size_t count, TB_CharUnits size, TB_CharUnits align);
+    TB_API const TB_DebugType* tb_debug_create_field(TB_Module* m, const TB_DebugType* type, const char* name, TB_CharUnits offset);
 
     ////////////////////////////////
     // IR access

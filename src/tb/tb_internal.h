@@ -150,6 +150,12 @@ struct TB_Global {
     TB_StorageClass storage;
 };
 
+typedef struct TB_PrototypeParam {
+    TB_DataType dt;
+    char* name;
+    const TB_DebugType* debug_type;
+} TB_PrototypeParam;
+
 // function prototypes are stored
 // in streams as inplace arrays:
 //
@@ -165,7 +171,7 @@ struct TB_FunctionPrototype {
     bool has_varargs;
 
     // payload
-    TB_DataType params[];
+    TB_PrototypeParam params[];
 };
 
 typedef struct TB_InitObj {
@@ -211,6 +217,14 @@ struct TB_DebugType {
 
         TB_DEBUG_TYPE_ARRAY,
         TB_DEBUG_TYPE_POINTER,
+
+        // special types
+        TB_DEBUG_TYPE_FIELD,
+
+        // aggregates
+        // TODO(NeGate): apparently codeview has cool vector and matrix types... yea
+        TB_DEBUG_TYPE_STRUCT,
+        TB_DEBUG_TYPE_UNION,
     } tag;
     union {
         int int_bits;
@@ -220,6 +234,21 @@ struct TB_DebugType {
             const TB_DebugType* base;
             size_t count;
         } array;
+        struct {
+            char* name;
+            TB_CharUnits offset;
+            const TB_DebugType* type;
+        } field;
+        struct {
+            TB_CharUnits size, align;
+
+            size_t count;
+            const TB_DebugType** members;
+        } struct_;
+        struct {
+            size_t count;
+            const TB_DebugType** members;
+        } union_;
     };
 };
 

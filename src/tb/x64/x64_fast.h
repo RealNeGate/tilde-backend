@@ -2527,7 +2527,13 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                     }
                 }
 
-                fast_def_stack(ctx, f, r, 16 + (id * 8), n->dt);
+                int pos = 16 + (id * 8);
+                const TB_PrototypeParam* proto_param = &f->prototype->params[id];
+                if (proto_param->debug_type != NULL) {
+                    dyn_array_put(stack_slots, (TB_StackSlot){ r, pos, proto_param->name, proto_param->debug_type });
+                }
+
+                fast_def_stack(ctx, f, r, pos, n->dt);
             } else if (n->type == TB_LOCAL) {
                 uint32_t size  = n->local.size;
                 uint32_t align = n->local.alignment;

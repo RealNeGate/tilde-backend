@@ -57,3 +57,16 @@ TB_API const TB_DebugType* tb_debug_create_ptr(TB_Module* m, const TB_DebugType*
 TB_API const TB_DebugType* tb_debug_create_array(TB_Module* m, const TB_DebugType* base, size_t count) {
     return NEW(TB_DEBUG_TYPE_ARRAY, .array = { base, count });
 }
+
+TB_API const TB_DebugType* tb_debug_create_struct(TB_Module* m, const TB_DebugType** members, size_t count, TB_CharUnits size, TB_CharUnits align) {
+    return NEW(TB_DEBUG_TYPE_STRUCT, .struct_ = { size, align, count, members });
+}
+
+TB_API const TB_DebugType* tb_debug_create_union(TB_Module* m, const TB_DebugType** members, size_t count, TB_CharUnits size, TB_CharUnits align) {
+    return NEW(TB_DEBUG_TYPE_UNION, .struct_ = { size, align, count, members });
+}
+
+TB_API const TB_DebugType* tb_debug_create_field(TB_Module* m, const TB_DebugType* type, const char* name, TB_CharUnits offset) {
+    assert(name);
+    return NEW(TB_DEBUG_TYPE_FIELD, .field = { tb_platform_string_alloc(name), offset, type });
+}

@@ -254,7 +254,7 @@ TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv co
     assert(num_params == (uint32_t)num_params);
 
     size_t space_needed = (sizeof(TB_FunctionPrototype) + (sizeof(uint64_t) - 1)) / sizeof(uint64_t);
-    space_needed += ((num_params * sizeof(TB_DataType)) + (sizeof(uint64_t) - 1)) / sizeof(uint64_t);
+    space_needed += ((num_params * sizeof(TB_PrototypeParam)) + (sizeof(uint64_t) - 1)) / sizeof(uint64_t);
 
     size_t len = tb_atomic_size_add(&m->prototypes_arena_size, space_needed);
     if (len + space_needed >= PROTOTYPES_ARENA_SIZE) {
@@ -272,13 +272,12 @@ TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv co
 
 TB_API void tb_prototype_add_param(TB_FunctionPrototype* p, TB_DataType dt) {
     assert(p->param_count + 1 <= p->param_capacity);
-    p->params[p->param_count++] = dt;
+    p->params[p->param_count++] = (TB_PrototypeParam){ dt };
 }
 
-TB_API void tb_prototype_add_params(TB_FunctionPrototype* p, size_t count, const TB_DataType* dt) {
-    assert(p->param_count + count <= p->param_capacity);
-    memcpy(&p->params[p->param_count], dt, count * sizeof(TB_DataType));
-    p->param_count += count;
+TB_API void tb_prototype_add_param_named(TB_FunctionPrototype* p, TB_DataType dt, const char* name, const TB_DebugType* debug_type) {
+    assert(p->param_count + 1 <= p->param_capacity);
+    p->params[p->param_count++] = (TB_PrototypeParam){ dt, tb_platform_string_alloc(name), debug_type };
 }
 
 TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_Linkage linkage) {
@@ -337,7 +336,7 @@ TB_API void tb_function_set_prototype(TB_Function* f, const TB_FunctionPrototype
     size_t count = 0;
     FOREACH_N(i, 0, old_param_count) {
         // reassign these old slots
-        TB_DataType dt = p->params[i];
+        TB_DataType dt = p->params[i].dt;
         TB_CharUnits size, align;
         code_gen->get_data_type_size(dt, &size, &align);
 
@@ -358,7 +357,7 @@ TB_API void tb_function_set_prototype(TB_Function* f, const TB_FunctionPrototype
         TB_Reg new_reg = tb_function_insert_after(f, 0, prev);
         TB_Node* new_node = &f->nodes[new_reg];
 
-        TB_DataType dt = p->params[i];
+        TB_DataType dt = p->params[i].dt;
         TB_CharUnits size, align;
         code_gen->get_data_type_size(dt, &size, &align);
 

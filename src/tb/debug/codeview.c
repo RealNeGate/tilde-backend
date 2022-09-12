@@ -69,10 +69,18 @@ static uint16_t get_codeview_type(TB_DataType dt) {
     return 0x0003; // T_VOID
 }
 
-static uint16_t find_or_make_cv_type(TB_Emitter* sect, uint32_t* type_entry_count, CV_TypeEntry* lookup_table, size_t length, uint8_t* key) {
-    assert(length % 4 == 0);
+static void align_up_type_record(TB_Emitter* e) {
+    // type records need to be 4 byte aligned
+    size_t pad = align_up(e->count, 4) - e->count;
 
+    while (pad--) {
+        tb_out1b(e, LF_PAD0 + pad);
+    }
+}
+
+static uint16_t find_or_make_cv_type(TB_Emitter* sect, uint32_t* type_entry_count, CV_TypeEntry* lookup_table, size_t length, const void* k) {
     // Hash it
+    const uint8_t* key = k;
     uint32_t hash = hash_buffer(0, length, key);
 
     // Search (if there's a collision replace the old one)
@@ -98,9 +106,14 @@ static uint16_t find_or_make_cv_type(TB_Emitter* sect, uint32_t* type_entry_coun
     lookup_table[index].key   = sect->count;
     lookup_table[index].value = type_index;
 
-    tb_out_reserve(sect, length);
-    tb_outs_UNSAFE(sect, length, (const uint8_t*)key);
+    tb_outs(sect, length, key);
+    // align_up_type_record(sect);
     return type_index;
+}
+
+static void align_up_emitter(TB_Emitter* e, size_t u) {
+    size_t pad = align_up(e->count, u) - e->count;
+    while (pad--) tb_out1b(e, 0x00);
 }
 
 static uint16_t convert_to_codeview_type(TB_Emitter* sect, uint32_t* type_entry_count, CV_TypeEntry* lookup_table, const TB_DebugType* type) {
@@ -129,7 +142,85 @@ static uint16_t convert_to_codeview_type(TB_Emitter* sect, uint32_t* type_entry_
         }
 
         case TB_DEBUG_TYPE_POINTER: {
-            return 0x0023;
+            CV_LFPointer ptr = {
+                .len = sizeof(CV_LFPointer) - 2,
+                .leaf = LF_POINTER,
+                .utype = convert_to_codeview_type(sect, type_entry_count, lookup_table, type->ptr_to),
+                .attr = {
+                    .ptrtype = 0x0c, // CV_PTR_64
+                    .ptrmode = 0,    // CV_PTR_MODE_PTR
+                    .size    = 8,
+                }
+            };
+
+            return find_or_make_cv_type(sect, type_entry_count, lookup_table, sizeof(CV_LFPointer), &ptr);
+        }
+
+        case TB_DEBUG_TYPE_STRUCT: {
+            TB_TemporaryStorage* tls = tb_tls_steal();
+            uint16_t* list = tb_tls_push(tls, type->struct_.count * sizeof(uint16_t));
+            FOREACH_N(i, 0, type->struct_.count) {
+                const TB_DebugType* f = type->struct_.members[i];
+                assert(f->tag == TB_DEBUG_TYPE_FIELD);
+
+                list[i] = convert_to_codeview_type(sect, type_entry_count, lookup_table, f->field.type);
+            }
+
+            // write field list
+            uint16_t fields_type_index = *type_entry_count;
+            *type_entry_count += 1;
+
+            size_t patch_pos = sect->count;
+            tb_out2b(sect, 0); // length (we'll patch it later)
+            tb_out2b(sect, LF_FIELDLIST); // type
+
+            FOREACH_N(i, 0, type->struct_.count) {
+                const TB_DebugType* f = type->struct_.members[i];
+                size_t name_len = strlen(f->field.name);
+                assert(f->tag == TB_DEBUG_TYPE_FIELD);
+
+                // First the member, then offset (using any of the variable length records)
+                // then it's an LF_STRING for the name
+                CV_LFMember m = {
+                    .leaf = LF_MEMBER,
+                    .index = list[i],
+                };
+                tb_outs(sect, sizeof(CV_LFMember), &m);
+
+                // write offset
+                tb_out2b(sect, LF_LONG);
+                tb_out4b(sect, f->field.offset);
+
+                // write out C string
+                tb_outs(sect, name_len + 1, f->field.name);
+            }
+            tb_patch2b(sect, patch_pos, (sect->count - patch_pos) - 2);
+
+            // write struct type
+            uint16_t struct_type_index = *type_entry_count;
+            *type_entry_count += 1;
+
+            // hash pointer for a simple name
+            char tmp[10];
+            int tmp_len = snprintf(tmp, 10, "S%x", hash_buffer(0, sizeof(type), &type));
+
+            CV_LFStruct s = {
+                .len = sizeof(CV_LFStruct) + sizeof(CV_LFLong) + (tmp_len + 1) - 2,
+                .leaf = LF_STRUCTURE,
+                .count = type->struct_.count,
+                .field = fields_type_index,
+            };
+            tb_outs(sect, sizeof(s), &s);
+
+            // write size (simple LF_LONG)
+            tb_out2b(sect, LF_LONG);
+            tb_out4b(sect, type->struct_.size);
+
+            // TODO(NeGate): write a real name
+            tb_outs(sect, tmp_len + 1, tmp);
+
+            tb_tls_restore(tls, list);
+            return struct_type_index;
         }
 
         default:
@@ -152,11 +243,6 @@ static bool codeview_supported_target(TB_Module* m) {
 
 static int codeview_number_of_debug_sections(TB_Module* m) {
     return 2;
-}
-
-static void align_up_emitter(TB_Emitter* e, size_t u) {
-    size_t pad = align_up(e->count, u) - e->count;
-    while (pad--) tb_out1b(e, 0x00);
 }
 
 // Based on this, it's the only nice CodeView source out there:
@@ -196,12 +282,19 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
                 uint8_t* data = tb_tls_push(tls, length);
 
                 *((uint16_t*)&data[0]) = length - 2;
-                *((uint16_t*)&data[2]) = 0x1201; // ARGLIST type
+                *((uint16_t*)&data[2]) = LF_ARGLIST;
                 *((uint32_t*)&data[4]) = param_count;
 
                 uint32_t* param_data = (uint32_t*)&data[8];
                 FOREACH_N(j, 0, proto->param_count) {
-                    param_data[j] = get_codeview_type(proto->params[j]);
+                    uint32_t type_index;
+                    if (proto->params[j].debug_type != NULL) {
+                        type_index = convert_to_codeview_type(&debugt_out, &type_entry_count, lookup_table, proto->params[j].debug_type);
+                    } else {
+                        type_index = get_codeview_type(proto->params[j].dt);
+                    }
+
+                    param_data[j] = type_index;
                 }
 
                 // varargs add a dummy type at the end
@@ -217,12 +310,11 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
             uint16_t proc_type;
             {
                 CV_LFProc* data = tb_tls_push(tls, sizeof(CV_LFProc));
-
                 uint16_t return_type = get_codeview_type(proto->return_dt);
 
                 *data = (CV_LFProc) {
                     .len = sizeof(CV_LFProc) - 2,
-                    .leaf = 0x1008, // LF_PROCEDURE
+                    .leaf = LF_PROCEDURE,
                     .rvtype = return_type,
                     .parmcount = proto->param_count,
                     .arglist = arg_list

@@ -275,9 +275,7 @@ typedef struct { // size 40 bytes
     uint16_t linenos_count;
     uint32_t characteristics;
 } PE_SectionHeader;
-#pragma pack(pop)
 
-#pragma pack(push, 1)
 typedef struct {
     uint16_t len;       // doesn't include itself, so sizeof(T)-2
     uint16_t leaf;      // LF_PROCEDURE
@@ -295,6 +293,108 @@ typedef struct {
     uint32_t type;    // function type
     uint8_t  name[];
 } CV_LFFuncID;
+
+typedef struct {
+    unsigned long ptrtype     :5; // ordinal specifying pointer type (CV_ptrtype_e)
+    unsigned long ptrmode     :3; // ordinal specifying pointer mode (CV_ptrmode_e)
+    unsigned long isflat32    :1; // true if 0:32 pointer
+    unsigned long isvolatile  :1; // TRUE if volatile pointer
+    unsigned long isconst     :1; // TRUE if const pointer
+    unsigned long isunaligned :1; // TRUE if unaligned pointer
+    unsigned long isrestrict  :1; // TRUE if restricted pointer (allow agressive opts)
+    unsigned long size        :6; // size of pointer (in bytes)
+    unsigned long ismocom     :1; // TRUE if it is a MoCOM pointer (^ or %)
+    unsigned long islref      :1; // TRUE if it is this pointer of member function with & ref-qualifier
+    unsigned long isrref      :1; // TRUE if it is this pointer of member function with && ref-qualifier
+    unsigned long unused      :10;// pad out to 32-bits for following cv_typ_t's
+} CV_LFPointerAttribs;
+
+typedef struct {
+    uint16_t len;
+    uint16_t leaf;  // LF_POINTER
+    uint32_t utype; // type index of the underlying type
+    CV_LFPointerAttribs attr;
+    union {
+        uint16_t bseg;   // base segment if PTR_BASE_SEG
+        uint8_t sym[]; // copy of base symbol record (including length)
+        struct {
+            uint32_t index;  // type index if CV_PTR_BASE_TYPE
+            uint8_t name[]; // name of base type
+        } btype;
+        struct {
+            uint32_t pmclass;    // index of containing class for pointer to member
+            uint16_t pmenum;     // enumeration specifying pm format (CV_pmtype_e)
+        } pm;
+    } pbase;
+} CV_LFPointer;
+
+typedef struct {
+    uint16_t packed        :1; // true if structure is packed
+    uint16_t ctor          :1; // true if constructors or destructors present
+    uint16_t ovlops        :1; // true if overloaded operators present
+    uint16_t isnested      :1; // true if this is a nested class
+    uint16_t cnested       :1; // true if this class contains nested types
+    uint16_t opassign      :1; // true if overloaded assignment (=)
+    uint16_t opcast        :1; // true if casting methods
+    uint16_t fwdref        :1; // true if forward reference (incomplete defn)
+    uint16_t scoped        :1; // scoped definition
+    uint16_t hasuniquename :1; // true if there is a decorated name following the regular name
+    uint16_t sealed        :1; // true if class cannot be used as a base class
+    uint16_t hfa           :2; // CV_HFA_e
+    uint16_t intrinsic     :1; // true if class is an intrinsic type (e.g. __m128d)
+    uint16_t mocom         :2; // CV_MOCOM_UDT_e
+} CV_Prop;
+
+typedef struct {
+    uint16_t access      :2; // access protection CV_access_t
+    uint16_t mprop       :3; // method properties CV_methodprop_t
+    uint16_t pseudo      :1; // compiler generated fcn and does not exist
+    uint16_t noinherit   :1; // true if class cannot be inherited
+    uint16_t noconstruct :1; // true if class cannot be constructed
+    uint16_t compgenx    :1; // compiler generated fcn and does exist
+    uint16_t sealed      :1; // true if method cannot be overridden
+    uint16_t unused      :6; // unused
+} CV_FieldAttrib;
+
+typedef struct {
+    uint16_t len;
+    uint16_t leaf; // LF_FIELDLIST
+} CV_LFFieldList;
+
+typedef struct {
+    uint16_t leaf; // LF_LONG
+    int32_t val;   // signed 32-bit value
+} CV_LFLong;
+
+typedef struct {
+    uint16_t leaf; // LF_QUAD
+    int64_t val;   // signed 64-bit value
+} CV_LFQuad;
+
+typedef struct {
+    uint16_t leaf; // LF_VARSTRING
+    uint8_t val[];
+} CV_LFVarString;
+
+typedef struct {
+    uint16_t       leaf;  // LF_MEMBER
+    CV_FieldAttrib attr;  // attribute mask
+    uint32_t       index; // index of type record for field
+    // variable length offset of field followed
+    // by length prefixed name of field
+    uint8_t offset[];
+} CV_LFMember;
+
+typedef struct CV_LFStruct {
+    uint16_t len;
+    uint16_t leaf;    // LF_CLASS, LF_STRUCT, LF_INTERFACE
+    uint16_t count;   // count of number of elements in class
+    CV_Prop  property;// property attribute field (prop_t)
+    uint32_t field;   // type index of LF_FIELD descriptor list
+    uint32_t derived; // type index of derived from list if not zero
+    uint32_t vshape;  // type index of vshape table for this class
+    uint8_t  data[];  // data describing length of structure in bytes and name
+} CV_LFStruct;
 
 typedef enum {
     CV_LOCAL_IS_PARAM         = 1,   // variable is a parameter
@@ -399,4 +499,46 @@ enum {
     T_UINT8         = 0x0077,   // 64 bit unsigned int
     T_REAL32        = 0x0040,   // 32 bit real
     T_REAL64        = 0x0041,   // 64 bit real
+};
+
+enum {
+    LF_NUMERIC          = 0x8000,
+    LF_CHAR             = 0x8000,
+    LF_SHORT            = 0x8001,
+    LF_USHORT           = 0x8002,
+    LF_LONG             = 0x8003,
+    LF_ULONG            = 0x8004,
+    LF_REAL32           = 0x8005,
+    LF_REAL64           = 0x8006,
+    LF_REAL80           = 0x8007,
+    LF_REAL128          = 0x8008,
+    LF_QUADWORD         = 0x8009,
+    LF_UQUADWORD        = 0x800a,
+    LF_REAL48           = 0x800b,
+    LF_COMPLEX32        = 0x800c,
+    LF_COMPLEX64        = 0x800d,
+    LF_COMPLEX80        = 0x800e,
+    LF_COMPLEX128       = 0x800f,
+    LF_VARSTRING        = 0x8010,
+
+    LF_POINTER          = 0x1002,
+    LF_PROCEDURE        = 0x1008,
+    LF_ARGLIST          = 0x1201,
+    LF_FIELDLIST        = 0x1203,
+    LF_ARRAY            = 0x1503,
+    LF_CLASS            = 0x1504,
+    LF_STRUCTURE        = 0x1505,
+    LF_UNION            = 0x1506,
+    LF_ENUM             = 0x1507,
+    LF_MEMBER           = 0x150d,
+
+    LF_STRING           = 0x0082,
+
+    // the idea is that if you need to pad a
+    // type you fill in the remaining space with a
+    // sequence of LF_PADs like this
+    //
+    // Your record's bytes:
+    //   DATA LF_PAD2 LF_PAD1 LF_PAD0
+    LF_PAD0             = 0x00f0,
 };

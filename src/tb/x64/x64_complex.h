@@ -689,7 +689,7 @@ TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB
     ctx->vgpr_count = 3 + proto->param_count;
 
     FOREACH_N(i, 0, proto->param_count) {
-        TB_DataType dt = proto->params[i];
+        TB_DataType dt = proto->params[i].dt;
 
         // Allocate space in stack
         int size = get_data_type_size(dt);

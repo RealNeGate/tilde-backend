@@ -207,7 +207,7 @@ static void x64v2_resolve_params(Ctx* restrict ctx, TB_Function* f) {
 
             if (n->type == TB_PARAM) {
                 size_t i = n->param.id;
-                TB_DataType dt = proto->params[i];
+                TB_DataType dt = n->dt;
 
                 // Allocate space in stack
                 assert(get_data_type_size(dt) <= 8 && "Parameter too big");

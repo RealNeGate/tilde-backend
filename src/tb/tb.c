@@ -275,7 +275,7 @@ TB_API void tb_prototype_add_param(TB_FunctionPrototype* p, TB_DataType dt) {
     p->params[p->param_count++] = (TB_PrototypeParam){ dt };
 }
 
-TB_API void tb_prototype_add_param_named(TB_FunctionPrototype* p, TB_DataType dt, const char* name, const TB_DebugType* debug_type) {
+TB_API void tb_prototype_add_param_named(TB_FunctionPrototype* p, TB_DataType dt, const char* name, TB_DebugType* debug_type) {
     assert(p->param_count + 1 <= p->param_capacity);
     p->params[p->param_count++] = (TB_PrototypeParam){ dt, tb_platform_string_alloc(name), debug_type };
 }

@@ -153,7 +153,7 @@ struct TB_Global {
 typedef struct TB_PrototypeParam {
     TB_DataType dt;
     char* name;
-    const TB_DebugType* debug_type;
+    TB_DebugType* debug_type;
 } TB_PrototypeParam;
 
 // function prototypes are stored
@@ -226,29 +226,35 @@ struct TB_DebugType {
         TB_DEBUG_TYPE_STRUCT,
         TB_DEBUG_TYPE_UNION,
     } tag;
+
+    // debug-info target specific data
+    union {
+        struct {
+            uint16_t cv_type_id;
+            uint16_t cv_type_id_fwd; // used by records to manage forward decls
+        };
+    };
+
+    // tag specific
     union {
         int int_bits;
         TB_FloatFormat float_fmt;
-        const TB_DebugType* ptr_to;
+        TB_DebugType* ptr_to;
         struct {
-            const TB_DebugType* base;
+            TB_DebugType* base;
             size_t count;
         } array;
         struct {
             char* name;
             TB_CharUnits offset;
-            const TB_DebugType* type;
+            TB_DebugType* type;
         } field;
-        struct {
+        struct TB_DebugTypeRecord {
             TB_CharUnits size, align;
 
             size_t count;
-            const TB_DebugType** members;
-        } struct_;
-        struct {
-            size_t count;
-            const TB_DebugType** members;
-        } union_;
+            TB_DebugType** members;
+        } record;
     };
 };
 
@@ -270,7 +276,7 @@ struct TB_Attrib {
     union {
         struct {
             char* name;
-            const TB_DebugType* storage;
+            TB_DebugType* storage;
         } var;
     };
 };
@@ -282,7 +288,7 @@ typedef struct TB_StackSlot {
     int position;
 
     const char* name;
-    const TB_DebugType* storage_type;
+    TB_DebugType* storage_type;
 } TB_StackSlot;
 
 typedef struct TB_FunctionOutput {
@@ -699,7 +705,7 @@ void tb_emit_ecall_patch(TB_Module* m, TB_Function* source, const TB_External* t
 TB_Reg* tb_vla_reserve(TB_Function* f, size_t count);
 
 // trusty lil hash functions
-uint32_t tb__crc32(uint32_t crc, size_t length, uint8_t* data);
+uint32_t tb__crc32(uint32_t crc, size_t length, const void* data);
 
 // out_bytes needs at least 16 bytes
 void tb__md5sum(uint8_t* out_bytes, uint8_t* initial_msg, size_t initial_len);

@@ -309,12 +309,10 @@ bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet) 
             {
                 size_t counter = sizeof(COFF_FileHeader) + (number_of_sections * sizeof(COFF_SectionHeader));
 
-                e->sections[S_TEXT].raw_data_pos = tb_post_inc(&counter, e->sections[S_TEXT].raw_data_size);
-                e->sections[S_RDATA].raw_data_pos = tb_post_inc(&counter, e->sections[S_RDATA].raw_data_size);
-                e->sections[S_DATA].raw_data_pos = tb_post_inc(&counter, e->sections[S_DATA].raw_data_size);
-                e->sections[S_PDATA].raw_data_pos = tb_post_inc(&counter, e->sections[S_PDATA].raw_data_size);
-                e->sections[S_XDATA].raw_data_pos = tb_post_inc(&counter, e->sections[S_XDATA].raw_data_size);
-                e->sections[S_TLS].raw_data_pos = tb_post_inc(&counter, e->sections[S_TLS].raw_data_size);
+                FOREACH_N(i, 0, S_MAX) {
+                    e->sections[i].raw_data_pos = counter;
+                    counter += e->sections[i].raw_data_size;
+                }
 
                 FOREACH_N(i, 0, e->debug_sections.length) {
                     e->debug_section_headers[i].raw_data_size = e->debug_sections.data[i].raw_data.length;
@@ -322,13 +320,14 @@ bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet) 
                 }
 
                 // Do the relocation lists next
-                e->sections[S_TEXT].pointer_to_reloc = tb_post_inc(&counter, e->sections[S_TEXT].num_reloc * sizeof(COFF_ImageReloc));
-                e->sections[S_DATA].pointer_to_reloc = tb_post_inc(&counter, e->sections[S_DATA].num_reloc * sizeof(COFF_ImageReloc));
-                e->sections[S_PDATA].pointer_to_reloc = tb_post_inc(&counter, e->sections[S_PDATA].num_reloc * sizeof(COFF_ImageReloc));
-                e->sections[S_XDATA].pointer_to_reloc = tb_post_inc(&counter, e->sections[S_XDATA].num_reloc * sizeof(COFF_ImageReloc));
+                FOREACH_N(i, 0, S_MAX) {
+                    e->sections[i].pointer_to_reloc = counter;
+                    counter += e->sections[i].num_reloc * sizeof(COFF_ImageReloc);
+                }
 
                 FOREACH_N(i, 0, e->debug_sections.length) {
-                    e->debug_section_headers[i].pointer_to_reloc = tb_post_inc(&counter, e->debug_section_headers[i].num_reloc * sizeof(COFF_ImageReloc));
+                    e->debug_section_headers[i].pointer_to_reloc = counter;
+                    counter += e->debug_section_headers[i].num_reloc * sizeof(COFF_ImageReloc);
                 }
 
                 e->header.symbol_table = tb_post_inc(&counter, e->header.symbol_count * sizeof(COFF_Symbol));

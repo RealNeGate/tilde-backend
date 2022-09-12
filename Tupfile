@@ -16,7 +16,7 @@ else
 endif
 
 # core
-srcs = src/tb/*.c src/tb/codegen/*.c src/tb/bigint/*.c src/tb/objects/*.c src/tb/debug/*.c
+srcs = src/tb/*.c src/tb/codegen/*.c src/tb/bigint/*.c src/tb/objects/*.c src/tb/debug/*.c src/tb/debug/cv/*.c
 srcs += src/tb/x64/*.c
 srcs += src/tb/aarch64/*.c
 srcs += src/tb/opt/*.c

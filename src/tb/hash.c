@@ -40,7 +40,9 @@ static const uint32_t crc_table[256] = {
 
 // shamelessly ripped from LLVM:
 // https://llvm.org/doxygen/CRC_8cpp_source.html#l00103
-uint32_t tb__crc32(uint32_t crc, size_t length, uint8_t* data) {
+uint32_t tb__crc32(uint32_t crc, size_t length, const void* d) {
+    const uint8_t* data = d;
+
     crc ^= 0xFFFFFFFFU;
     loop(i, length) {
         int table_index = (crc ^ data[i]) & 0xff;

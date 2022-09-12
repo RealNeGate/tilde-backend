@@ -1,3 +1,4 @@
+#pragma once
 #include "../tb_internal.h"
 #include <sys/stat.h>
 
@@ -276,23 +277,6 @@ typedef struct { // size 40 bytes
     uint32_t characteristics;
 } PE_SectionHeader;
 
-typedef struct {
-    uint16_t len;       // doesn't include itself, so sizeof(T)-2
-    uint16_t leaf;      // LF_PROCEDURE
-    uint32_t rvtype;    // type index of return value
-    uint8_t  calltype;  // calling convention (CV_call_t)
-    uint8_t  funcattr;  // attributes
-    uint16_t parmcount; // number of parameters
-    uint32_t arglist;   // type index of argument list
-} CV_LFProc;
-
-typedef struct {
-    uint16_t len;     // doesn't include itself, so sizeof(T)-2
-    uint16_t leaf;    // LF_FUNC_ID
-    uint32_t scopeId; // parent scope of the ID, 0 if global
-    uint32_t type;    // function type
-    uint8_t  name[];
-} CV_LFFuncID;
 
 typedef struct {
     unsigned long ptrtype     :5; // ordinal specifying pointer type (CV_ptrtype_e)
@@ -531,6 +515,7 @@ enum {
     LF_UNION            = 0x1506,
     LF_ENUM             = 0x1507,
     LF_MEMBER           = 0x150d,
+    LF_FUNC_ID          = 0x1601,
 
     LF_STRING           = 0x0082,
 

@@ -846,7 +846,7 @@ extern "C" {
     // parameters so the frontend must lower them to pointers or any other type
     // depending on their preferred ABI.
     TB_API void tb_prototype_add_param(TB_FunctionPrototype* p, TB_DataType dt);
-    TB_API void tb_prototype_add_param_named(TB_FunctionPrototype* p, TB_DataType dt, const char* name, const TB_DebugType* debug_type);
+    TB_API void tb_prototype_add_param_named(TB_FunctionPrototype* p, TB_DataType dt, const char* name, TB_DebugType* debug_type);
 
     ////////////////////////////////
     // Constant Initializers
@@ -875,20 +875,21 @@ extern "C" {
     // Function Attributes
     ////////////////////////////////
     // These are parts of a function that describe metadata for instructions
-    TB_API void tb_function_attrib_variable(TB_Function* f, TB_Reg r, const char* name, const TB_DebugType* type);
+    TB_API void tb_function_attrib_variable(TB_Function* f, TB_Reg r, const char* name, TB_DebugType* type);
 
     ////////////////////////////////
     // Debug info Generation
     ////////////////////////////////
-    TB_API const TB_DebugType* tb_debug_get_void(TB_Module* m);
-    TB_API const TB_DebugType* tb_debug_get_bool(TB_Module* m);
-    TB_API const TB_DebugType* tb_debug_get_integer(TB_Module* m, bool is_signed, int bits);
-    TB_API const TB_DebugType* tb_debug_get_float(TB_Module* m, TB_FloatFormat fmt);
-    TB_API const TB_DebugType* tb_debug_create_ptr(TB_Module* m, const TB_DebugType* base);
-    TB_API const TB_DebugType* tb_debug_create_array(TB_Module* m, const TB_DebugType* base, size_t count);
-    TB_API const TB_DebugType* tb_debug_create_struct(TB_Module* m, const TB_DebugType** members, size_t count, TB_CharUnits size, TB_CharUnits align);
-    TB_API const TB_DebugType* tb_debug_create_union(TB_Module* m, const TB_DebugType** members, size_t count, TB_CharUnits size, TB_CharUnits align);
-    TB_API const TB_DebugType* tb_debug_create_field(TB_Module* m, const TB_DebugType* type, const char* name, TB_CharUnits offset);
+    TB_API TB_DebugType* tb_debug_get_void(TB_Module* m);
+    TB_API TB_DebugType* tb_debug_get_bool(TB_Module* m);
+    TB_API TB_DebugType* tb_debug_get_integer(TB_Module* m, bool is_signed, int bits);
+    TB_API TB_DebugType* tb_debug_get_float(TB_Module* m, TB_FloatFormat fmt);
+    TB_API TB_DebugType* tb_debug_create_ptr(TB_Module* m, TB_DebugType* base);
+    TB_API TB_DebugType* tb_debug_create_array(TB_Module* m, TB_DebugType* base, size_t count);
+    TB_API TB_DebugType* tb_debug_create_struct(TB_Module* m);
+    TB_API TB_DebugType* tb_debug_create_union(TB_Module* m);
+    TB_API TB_DebugType* tb_debug_create_field(TB_Module* m, TB_DebugType* type, const char* name, TB_CharUnits offset);
+    TB_API void tb_debug_complete_record(TB_DebugType* type, TB_DebugType** members, size_t count, TB_CharUnits size, TB_CharUnits align);
 
     ////////////////////////////////
     // IR access

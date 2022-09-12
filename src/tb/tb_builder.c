@@ -146,7 +146,7 @@ static void append_attrib(TB_Function* f, TB_Reg r, TB_Attrib* a) {
     }
 }
 
-TB_API void tb_function_attrib_variable(TB_Function* f, TB_Reg r, const char* name, const TB_DebugType* type) {
+TB_API void tb_function_attrib_variable(TB_Function* f, TB_Reg r, const char* name, TB_DebugType* type) {
     TB_Attrib* a = tb_make_attrib(f);
     *a = (TB_Attrib) { .type = TB_ATTRIB_VARIABLE, .var = { tb_platform_string_alloc(name), type } };
     append_attrib(f, r, a);

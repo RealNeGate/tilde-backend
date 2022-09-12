@@ -1,4 +1,5 @@
 #include "../objects/coff.h"
+#include "cv/cv.h"
 
 // constant sized "hash map" which is used to
 // deduplicate types in the codeview
@@ -34,14 +35,6 @@ static void md5sum_file(uint8_t out_bytes[16], const char* filepath) {
     tb_platform_heap_free(data);
 }
 
-static uint32_t hash_buffer(uint32_t hash, size_t n, const void* s) {
-    const uint8_t* p = s;
-    while (n--) {
-        hash = (hash ^ *p++) * 16777619;
-    }
-    return hash;
-}
-
 static uint16_t get_codeview_type(TB_DataType dt) {
     assert(dt.width == 0 && "TODO: implement vector types in CodeView output");
     switch (dt.type) {
@@ -69,58 +62,20 @@ static uint16_t get_codeview_type(TB_DataType dt) {
     return 0x0003; // T_VOID
 }
 
-static void align_up_type_record(TB_Emitter* e) {
-    // type records need to be 4 byte aligned
-    size_t pad = align_up(e->count, 4) - e->count;
-
-    while (pad--) {
-        tb_out1b(e, LF_PAD0 + pad);
-    }
-}
-
-static uint16_t find_or_make_cv_type(TB_Emitter* sect, uint32_t* type_entry_count, CV_TypeEntry* lookup_table, size_t length, const void* k) {
-    // Hash it
-    const uint8_t* key = k;
-    uint32_t hash = hash_buffer(0, length, key);
-
-    // Search (if there's a collision replace the old one)
-    size_t index = hash % MAX_TYPE_ENTRY_LOOKUP_SIZE;
-    CV_TypeEntry lookup = lookup_table[index];
-
-    // printf("Lookup %zu (%x hash, has match? %s)\n", index, hash, lookup.key ?
-    // "yea" : "naw");
-    if (lookup.key) {
-        // verify it even matches
-        size_t lookup_size = tb_get2b(sect, lookup.key) + 2;
-
-        if (length == lookup_size && memcmp(key, &sect->data[lookup.key], length) == 0) {
-            //printf("Saved %zu bytes (%d)\n", length, lookup.value);
-            return lookup.value;
-        }
-    }
-
-    uint16_t type_index = *type_entry_count;
-    *type_entry_count += 1;
-
-    // printf("Used %zu bytes (%d)\n", length, type_index);
-    lookup_table[index].key   = sect->count;
-    lookup_table[index].value = type_index;
-
-    tb_outs(sect, length, key);
-    // align_up_type_record(sect);
-    return type_index;
-}
-
 static void align_up_emitter(TB_Emitter* e, size_t u) {
     size_t pad = align_up(e->count, u) - e->count;
     while (pad--) tb_out1b(e, 0x00);
 }
 
-static uint16_t convert_to_codeview_type(TB_Emitter* sect, uint32_t* type_entry_count, CV_TypeEntry* lookup_table, const TB_DebugType* type) {
+static uint16_t convert_to_codeview_type(CV_Builder* builder, TB_DebugType* type) {
+    if (type->cv_type_id != 0) {
+        return type->cv_type_id;
+    }
+
     // find_or_make_cv_type(sect, type_entry_count, lookup_table, );
     switch (type->tag) {
-        case TB_DEBUG_TYPE_VOID: return T_VOID;
-        case TB_DEBUG_TYPE_BOOL: return T_BOOL08; // T_BOOL08
+        case TB_DEBUG_TYPE_VOID: return (type->cv_type_id = T_VOID);
+        case TB_DEBUG_TYPE_BOOL: return (type->cv_type_id = T_BOOL08); // T_BOOL08
 
         case TB_DEBUG_TYPE_INT:
         case TB_DEBUG_TYPE_UINT: {
@@ -135,92 +90,48 @@ static uint16_t convert_to_codeview_type(TB_Emitter* sect, uint32_t* type_entry_
 
         case TB_DEBUG_TYPE_FLOAT: {
             switch (type->float_fmt) {
-                case TB_FLT_32: return T_REAL32;
-                case TB_FLT_64: return T_REAL64;
+                case TB_FLT_32: return (type->cv_type_id = T_REAL32);
+                case TB_FLT_64: return (type->cv_type_id = T_REAL64);
                 default: assert(0 && "Unknown float type");
             }
         }
 
-        case TB_DEBUG_TYPE_POINTER: {
-            CV_LFPointer ptr = {
-                .len = sizeof(CV_LFPointer) - 2,
-                .leaf = LF_POINTER,
-                .utype = convert_to_codeview_type(sect, type_entry_count, lookup_table, type->ptr_to),
-                .attr = {
-                    .ptrtype = 0x0c, // CV_PTR_64
-                    .ptrmode = 0,    // CV_PTR_MODE_PTR
-                    .size    = 8,
-                }
-            };
+        case TB_DEBUG_TYPE_ARRAY:
+        return (type->cv_type_id = tb_codeview_builder_add_array(builder, convert_to_codeview_type(builder, type->array.base), type->array.count));
 
-            return find_or_make_cv_type(sect, type_entry_count, lookup_table, sizeof(CV_LFPointer), &ptr);
-        }
+        case TB_DEBUG_TYPE_POINTER:
+        return (type->cv_type_id = tb_codeview_builder_add_pointer(builder, convert_to_codeview_type(builder, type->ptr_to)));
 
-        case TB_DEBUG_TYPE_STRUCT: {
-            TB_TemporaryStorage* tls = tb_tls_steal();
-            uint16_t* list = tb_tls_push(tls, type->struct_.count * sizeof(uint16_t));
-            FOREACH_N(i, 0, type->struct_.count) {
-                const TB_DebugType* f = type->struct_.members[i];
-                assert(f->tag == TB_DEBUG_TYPE_FIELD);
-
-                list[i] = convert_to_codeview_type(sect, type_entry_count, lookup_table, f->field.type);
+        case TB_DEBUG_TYPE_STRUCT:
+        case TB_DEBUG_TYPE_UNION: {
+            if (type->cv_type_id_fwd) {
+                return type->cv_type_id_fwd;
             }
-
-            // write field list
-            uint16_t fields_type_index = *type_entry_count;
-            *type_entry_count += 1;
-
-            size_t patch_pos = sect->count;
-            tb_out2b(sect, 0); // length (we'll patch it later)
-            tb_out2b(sect, LF_FIELDLIST); // type
-
-            FOREACH_N(i, 0, type->struct_.count) {
-                const TB_DebugType* f = type->struct_.members[i];
-                size_t name_len = strlen(f->field.name);
-                assert(f->tag == TB_DEBUG_TYPE_FIELD);
-
-                // First the member, then offset (using any of the variable length records)
-                // then it's an LF_STRING for the name
-                CV_LFMember m = {
-                    .leaf = LF_MEMBER,
-                    .index = list[i],
-                };
-                tb_outs(sect, sizeof(CV_LFMember), &m);
-
-                // write offset
-                tb_out2b(sect, LF_LONG);
-                tb_out4b(sect, f->field.offset);
-
-                // write out C string
-                tb_outs(sect, name_len + 1, f->field.name);
-            }
-            tb_patch2b(sect, patch_pos, (sect->count - patch_pos) - 2);
-
-            // write struct type
-            uint16_t struct_type_index = *type_entry_count;
-            *type_entry_count += 1;
 
             // hash pointer for a simple name
-            char tmp[10];
-            int tmp_len = snprintf(tmp, 10, "S%x", hash_buffer(0, sizeof(type), &type));
+            char tag[10];
+            snprintf(tag, 10, "S%x", tb__crc32(0, sizeof(type), &type));
 
-            CV_LFStruct s = {
-                .len = sizeof(CV_LFStruct) + sizeof(CV_LFLong) + (tmp_len + 1) - 2,
-                .leaf = LF_STRUCTURE,
-                .count = type->struct_.count,
-                .field = fields_type_index,
-            };
-            tb_outs(sect, sizeof(s), &s);
+            // generate forward declaration
+            // TODO(NeGate): we might wanna avoid generating a forward declaration here if we never use it
+            CV_RecordType rec_type = type->tag == TB_DEBUG_TYPE_STRUCT ? LF_STRUCTURE : LF_UNION;
+            type->cv_type_id_fwd = tb_codeview_builder_add_incomplete_record(builder, rec_type, tag);
 
-            // write size (simple LF_LONG)
-            tb_out2b(sect, LF_LONG);
-            tb_out4b(sect, type->struct_.size);
+            TB_TemporaryStorage* tls = tb_tls_steal();
+            CV_Field* list = tb_tls_push(tls, type->record.count * sizeof(CV_Field));
+            FOREACH_N(i, 0, type->record.count) {
+                const TB_DebugType* f = type->record.members[i];
+                assert(f->tag == TB_DEBUG_TYPE_FIELD);
 
-            // TODO(NeGate): write a real name
-            tb_outs(sect, tmp_len + 1, tmp);
+                list[i].type = convert_to_codeview_type(builder, f->field.type);
+                list[i].name = f->field.name;
+                list[i].offset = f->field.offset;
+            }
 
+            CV_TypeIndex field_list = tb_codeview_builder_add_field_list(builder, type->record.count, list);
             tb_tls_restore(tls, list);
-            return struct_type_index;
+
+            return (type->cv_type_id = tb_codeview_builder_add_record(builder, rec_type, type->record.count, field_list, type->record.size, tag));
         }
 
         default:
@@ -261,90 +172,33 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
     uint32_t* file_table_offset = tb_tls_push(tls, m->functions.count * sizeof(uint32_t));
 
     TB_Emitter debugs_out = { 0 };
-    TB_Emitter debugt_out = { 0 };
 
-    CV_TypeEntry* lookup_table = tb_tls_push(tls, MAX_TYPE_ENTRY_LOOKUP_SIZE * sizeof(CV_TypeEntry));
-    memset(lookup_table, 0, MAX_TYPE_ENTRY_LOOKUP_SIZE * sizeof(CV_TypeEntry));
-    uint32_t type_entry_count = 0x1000;
+    CV_TypeEntry* lookup_table = tb_tls_push(tls, 1024 * sizeof(CV_TypeEntry));
+    memset(lookup_table, 0, 1024 * sizeof(CV_TypeEntry));
+    CV_Builder builder = tb_codeview_builder_create(1024, lookup_table);
+
     {
-        tb_out4b(&debugt_out, 0x00000004);
-
+        // Generate types for all the function prototypes
         FOREACH_N(i, 0, m->functions.count) {
             if (m->functions.data[i].output == NULL) continue;
             const TB_FunctionPrototype* proto = m->functions.data[i].prototype;
 
             // Create argument list
-            uint16_t arg_list;
-            {
-                size_t param_count = proto->param_count + proto->has_varargs;
-
-                size_t length = 2 + 2 + 4 + (4 * param_count);
-                uint8_t* data = tb_tls_push(tls, length);
-
-                *((uint16_t*)&data[0]) = length - 2;
-                *((uint16_t*)&data[2]) = LF_ARGLIST;
-                *((uint32_t*)&data[4]) = param_count;
-
-                uint32_t* param_data = (uint32_t*)&data[8];
-                FOREACH_N(j, 0, proto->param_count) {
-                    uint32_t type_index;
-                    if (proto->params[j].debug_type != NULL) {
-                        type_index = convert_to_codeview_type(&debugt_out, &type_entry_count, lookup_table, proto->params[j].debug_type);
-                    } else {
-                        type_index = get_codeview_type(proto->params[j].dt);
-                    }
-
-                    param_data[j] = type_index;
-                }
-
-                // varargs add a dummy type at the end
-                if (proto->has_varargs) {
-                    param_data[proto->param_count] = 0;
-                }
-
-                arg_list = find_or_make_cv_type(&debugt_out, &type_entry_count, lookup_table, length, data);
-                tb_tls_restore(tls, data);
+            CV_TypeIndex* params = tb_tls_push(tls, proto->param_count * sizeof(CV_TypeIndex));
+            FOREACH_N(i, 0, proto->param_count) {
+                params[i] = convert_to_codeview_type(&builder, proto->params[i].debug_type);
             }
+
+            CV_TypeIndex arg_list = tb_codeview_builder_add_arg_list(&builder, proto->param_count, params, proto->has_varargs);
+            tb_tls_restore(tls, params);
 
             // Create the procedure type
-            uint16_t proc_type;
-            {
-                CV_LFProc* data = tb_tls_push(tls, sizeof(CV_LFProc));
-                uint16_t return_type = get_codeview_type(proto->return_dt);
+            CV_TypeIndex return_type = get_codeview_type(proto->return_dt);
+            CV_TypeIndex proc = tb_codeview_builder_add_procedure(&builder, return_type, arg_list, proto->param_count);
 
-                *data = (CV_LFProc) {
-                    .len = sizeof(CV_LFProc) - 2,
-                    .leaf = LF_PROCEDURE,
-                    .rvtype = return_type,
-                    .parmcount = proto->param_count,
-                    .arglist = arg_list
-                };
-
-                proc_type = find_or_make_cv_type(&debugt_out, &type_entry_count, lookup_table, sizeof(CV_LFProc), (uint8_t*)data);
-                tb_tls_restore(tls, data);
-            }
-
-            // Create the function type... which is somehow different from the procedure...
+            // Create the function ID type... which is somehow different from the procedure...
             // it's basically referring to the procedure but it has a name
-            {
-                size_t name_len   = strlen(m->functions.data[i].name);
-                size_t entry_size = sizeof(CV_LFFuncID) + name_len;
-                entry_size        = align_up(entry_size + 1, 4);
-
-                CV_LFFuncID* data = tb_tls_push(tls, entry_size);
-
-                *data = (CV_LFFuncID) {
-                    .len = entry_size - 2,
-                    .leaf = 0x1601, // LF_FUNC_ID
-                    .type = proc_type
-                };
-
-                memcpy(data->name, m->functions.data[i].name, name_len);
-                data->name[name_len] = 0;
-
-                function_type_table[i] = find_or_make_cv_type(&debugt_out, &type_entry_count, lookup_table, entry_size, (uint8_t*) data);
-                tb_tls_restore(tls, data);
-            }
+            function_type_table[i] = tb_codeview_builder_add_function_id(&builder, proc, m->functions.data[i].name);
         }
     }
 
@@ -604,7 +458,7 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
             // patch field length
             tb_patch2b(&debugs_out, baseline, (debugs_out.count - baseline) - 2);
 
-            if (1) {
+            {
                 // frameproc
                 size_t frameproc_baseline = debugs_out.count;
 
@@ -625,13 +479,13 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
 
                 dyn_array_for(j, out_f->stack_slots) {
                     int stack_pos = out_f->stack_slots[j].position;
-                    const TB_DebugType* type = out_f->stack_slots[j].storage_type;
+                    TB_DebugType* type = out_f->stack_slots[j].storage_type;
 
                     const char* var_name = out_f->stack_slots[j].name;
                     size_t var_name_len = strlen(var_name);
                     assert(var_name != NULL);
 
-                    uint32_t type_index = convert_to_codeview_type(&debugt_out, &type_entry_count, lookup_table, type);
+                    uint32_t type_index = convert_to_codeview_type(&builder, type);
 
                     // define S_REGREL32
                     CV_RegRel32 l = {
@@ -655,10 +509,11 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
         align_up_emitter(&debugs_out, 4);
     }
 
-    // finalize debugt_out
-    align_up_emitter(&debugt_out, 4);
+    tb_codeview_builder_done(&builder);
+    tb_tls_restore(tls, function_type_table);
+
     sections[0].raw_data = (TB_Slice){ debugs_out.count, debugs_out.data };
-    sections[1].raw_data = (TB_Slice){ debugt_out.count, debugt_out.data };
+    sections[1].raw_data = (TB_Slice){ builder.type_section.count, builder.type_section.data };
 
     return (TB_SectionGroup) { 2, sections };
 }

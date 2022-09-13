@@ -5,6 +5,7 @@ negate/
 
 tildebackend.lib
 
+*.cache
 *.swp
 *.out
 *.o

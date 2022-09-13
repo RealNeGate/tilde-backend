@@ -1,5 +1,4 @@
 #include "coff.h"
-#include "../coroutine.h"
 
 // my section numbers in TB_ModuleExporterCOFF.sections
 enum {
@@ -12,13 +11,7 @@ enum {
     S_MAX
 };
 
-typedef struct TB_ModuleExporterCOFF {
-    int state;
-
-    // used by iterators that need to yield
-    ptrdiff_t i, i_limit;
-    ptrdiff_t j, j_limit;
-
+struct TB_ModuleExporter {
     const ICodeGen* code_gen;
     size_t write_pos;
 
@@ -26,7 +19,6 @@ typedef struct TB_ModuleExporterCOFF {
     void* temporary_memory;
 
     // [m->functions.count + 1] last slot is the size of the text section
-    const IDebugFormat* dbg;
     uint32_t* func_layout;
 
     // String table array, stores the strings which will be put
@@ -55,17 +47,15 @@ typedef struct TB_ModuleExporterCOFF {
     COFF_SectionHeader* debug_section_headers;
 
     uint8_t proepi_buffer[PROEPI_BUFFER];
-} TB_ModuleExporterCOFF;
+};
 
-static void send_write_message(TB_ModuleExporterCOFF* e, TB_ModuleExportPacket* packet, const void* data, size_t length) {
-    packet->type = TB_EXPORT_PACKET_WRITE;
-    packet->write.length = length;
-    packet->write.data = data;
-
+#define WRITE(data, length_) write_data(e, output, length_, data)
+static void write_data(TB_ModuleExporter* e, uint8_t* output, size_t length, const void* data) {
+    memcpy(output + e->write_pos, data, length);
     e->write_pos += length;
 }
 
-static void* get_temporary_storage(TB_ModuleExporterCOFF* e, size_t request_size) {
+static void* get_temporary_storage(TB_ModuleExporter* e, size_t request_size) {
     if (e->temporary_memory_capacity < request_size) {
         e->temporary_memory_capacity = tb_next_pow2(request_size);
         if (e->temporary_memory_capacity < (4*1024*1024)) {
@@ -77,15 +67,6 @@ static void* get_temporary_storage(TB_ModuleExporterCOFF* e, size_t request_size
 
     return e->temporary_memory;
 }
-
-// yields a buffer that it needs to write to the output
-#define YIELD_WRITE(data, length_) do {                           \
-    *packet = (TB_ModuleExportPacket){                            \
-        .type = TB_EXPORT_PACKET_WRITE, .write = { length_, data }\
-    };                                                            \
-    e->write_pos += packet->write.length;                         \
-    CO_YIELD(e, true);                                            \
-} while (0)
 
 static COFF_Symbol section_sym(const char* name, int num, int sc) {
     COFF_Symbol s = { .section_number = num, .storage_class = sc, .aux_symbols_count = 1 };
@@ -107,246 +88,257 @@ static size_t append_section_sym(COFF_SymbolUnion* symbols, size_t count, COFF_S
     return count + 2;
 }
 
-static TB_Emitter write_xdata_section(TB_Module* m, uint32_t* unwind_info, const ICodeGen* restrict code_gen) {
-    if (code_gen->emit_win64eh_unwind_info == NULL) {
-        tb_panic("write_xdata_section: emit_win64eh_unwind_info is required.");
+TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
+    TB_ModuleExporter* e = tb_platform_heap_alloc(sizeof(TB_ModuleExporter));
+    memset(e, 0, sizeof(*e));
+
+    e->code_gen = tb__find_code_generator(m);
+    e->string_table_mark = 4;
+
+    const char* path = "fallback.obj";
+
+    // tally up .data relocations
+    uint32_t data_relocation_count = 0;
+
+    ////////////////////////////////
+    // Generate .xdata section (unwind info)
+    ////////////////////////////////
+    {
+        if (e->code_gen->emit_win64eh_unwind_info == NULL) {
+            tb_panic("write_xdata_section: emit_win64eh_unwind_info is required.");
+        }
+
+        uint32_t* unwind_info = e->unwind_info = tb_platform_heap_alloc(m->functions.count * sizeof(uint32_t));
+
+        TB_Emitter xdata = { 0 };
+        FOREACH_N(i, 0, m->functions.count) {
+            TB_FunctionOutput* out_f = m->functions.data[i].output;
+
+            unwind_info[i] = xdata.count;
+            if (out_f) {
+                e->code_gen->emit_win64eh_unwind_info(&xdata, out_f, out_f->prologue_epilogue_metadata, out_f->stack_usage);
+            }
+        }
     }
 
-    TB_Emitter xdata = { 0 };
+    FOREACH_N(t, 0, m->max_threads) {
+        pool_for(TB_Global, g, m->thread_info[t].globals) {
+            TB_Initializer* init = g->init;
+            FOREACH_N(k, 0, init->obj_count) {
+                data_relocation_count += (init->objects[k].type != TB_INIT_OBJ_REGION);
+            }
+        }
+    }
+
+    int number_of_sections = 5
+        + (m->tls_region_size ? 1 : 0)
+        + (dbg != NULL ? dbg->number_of_debug_sections(m) : 0);
+
+    // mark each with a unique id
+    e->function_sym_start = (number_of_sections * 2);
+    e->external_sym_start = e->function_sym_start + m->functions.compiled_count;
+
+    size_t unique_id_counter = 0;
+    FOREACH_N(i, 0, m->max_threads) {
+        pool_for(TB_External, ext, m->thread_info[i].externals) {
+            int id = e->external_sym_start + unique_id_counter;
+            ext->address = (void*) (uintptr_t) id;
+            unique_id_counter += 1;
+        }
+
+        pool_for(TB_Global, g, m->thread_info[i].globals) {
+            g->id = e->external_sym_start + unique_id_counter;
+            unique_id_counter += 1;
+        }
+    }
+
+    e->string_table_cap += unique_id_counter;
+    e->string_table_cap += m->functions.compiled_count;
+    e->string_table = tb_platform_heap_alloc(e->string_table_cap * sizeof(const char*));
+
+    // layout functions in file
+    e->func_layout = tb_platform_heap_alloc((m->functions.count + 1) * sizeof(uint32_t));
+
+    // TODO(NeGate): We might do alphabetical sorting for consistent binary output
+    const ICodeGen* restrict code_gen = e->code_gen;
+    size_t text_section_size = 0;
     FOREACH_N(i, 0, m->functions.count) {
         TB_FunctionOutput* out_f = m->functions.data[i].output;
 
-        unwind_info[i] = xdata.count;
-        if (out_f) {
-            code_gen->emit_win64eh_unwind_info(&xdata, out_f, out_f->prologue_epilogue_metadata, out_f->stack_usage);
+        e->func_layout[i] = text_section_size;
+        if (out_f != NULL) {
+            text_section_size += out_f->code_size;
+        }
+    }
+    e->func_layout[m->functions.count] = text_section_size;
+
+    ////////////////////////////////
+    // create headers
+    ////////////////////////////////
+    e->header = (COFF_FileHeader){
+        .num_sections = number_of_sections,
+        .timestamp = time(NULL),
+        .symbol_count = 0,
+        .symbol_table = 0,
+        .characteristics = IMAGE_FILE_LINE_NUMS_STRIPPED
+    };
+
+    e->sections[S_TEXT] = (COFF_SectionHeader){
+        .name = { ".text" }, // .text
+        .characteristics = COFF_CHARACTERISTICS_TEXT,
+        .raw_data_size = text_section_size,
+    };
+
+    e->sections[S_RDATA] = (COFF_SectionHeader){
+        .name = { ".rdata" }, // .rdata
+        .characteristics = COFF_CHARACTERISTICS_RODATA,
+        .raw_data_size = m->rdata_region_size
+    };
+
+    e->sections[S_DATA] = (COFF_SectionHeader){
+        .name = { ".data" }, // .data
+        .characteristics = COFF_CHARACTERISTICS_DATA,
+        .raw_data_size = m->data_region_size
+    };
+
+    e->sections[S_PDATA] = (COFF_SectionHeader){
+        .name = { ".pdata" }, // .pdata
+        .characteristics = COFF_CHARACTERISTICS_RODATA,
+        .raw_data_size = m->functions.compiled_count * 12,
+        .num_reloc = m->functions.compiled_count * 3,
+    };
+
+    e->sections[S_XDATA] = (COFF_SectionHeader){
+        .name = { ".xdata" }, // .xdata
+        .characteristics = COFF_CHARACTERISTICS_RODATA,
+        .raw_data_size = e->xdata.count,
+        .num_reloc = 0,
+    };
+
+    e->sections[S_TLS] = (COFF_SectionHeader){
+        .name = { ".tls$" },
+        .characteristics = COFF_CHARACTERISTICS_DATA,
+        .raw_data_size = m->tls_region_size,
+    };
+
+    switch (m->target_arch) {
+        case TB_ARCH_X86_64:  e->header.machine = COFF_MACHINE_AMD64; break;
+        case TB_ARCH_AARCH64: e->header.machine = COFF_MACHINE_ARM64; break;
+        default: tb_todo();
+    }
+
+    if (dbg != NULL) {
+        TB_TemporaryStorage* tls = tb_tls_allocate();
+
+        e->debug_sections = dbg->generate_debug_info(m, tls, code_gen, path, e->function_sym_start, e->func_layout);
+        e->debug_section_headers = tb_platform_heap_alloc(e->debug_sections.length * sizeof(COFF_SectionHeader));
+
+        FOREACH_N(i, 0, e->debug_sections.length) {
+            e->debug_section_headers[i] = (COFF_SectionHeader) { 0 };
+            e->debug_section_headers[i].characteristics = COFF_CHARACTERISTICS_CV;
+            e->debug_section_headers[i].num_reloc = e->debug_sections.data[i].relocation_count;
+
+            TB_Slice name = e->debug_sections.data[i].name;
+            if (name.length > 8) {
+                // we'd need to put it into the string table... im lazy
+                // so i wont do the logic for it yet
+                tb_todo();
+            } else {
+                memcpy(e->debug_section_headers[i].name, name.data, name.length);
+                if (name.length < 8) e->debug_section_headers[i].name[name.length] = 0;
+            }
         }
     }
 
-    return xdata;
-}
+    // Target specific: resolve internal call patches
+    code_gen->emit_call_patches(m, e->func_layout);
 
-void* tb_coff__make(TB_Module* m, const IDebugFormat* dbg) {
-    TB_ModuleExporterCOFF* e = memset(tb_platform_heap_alloc(sizeof(TB_ModuleExporterCOFF)), 0, sizeof(TB_ModuleExporterCOFF));
-    e->code_gen = tb__find_code_generator(m);
-    e->dbg = dbg;
-    return e;
-}
+    // symbols
+    {
+        e->header.symbol_count = (number_of_sections * 2) + m->functions.compiled_count;
 
-bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet) {
-    TB_ModuleExporterCOFF* restrict e = exporter;
+        // total externals + total globals
+        e->header.symbol_count += unique_id_counter;
+    }
 
-    CO_SCOPE(e) {
-        CO_START();
-
-        ////////////////////////////////
-        // Layout work
-        ////////////////////////////////
-        {
-            const char* path = "fallback.obj";
-            e->string_table_mark = 4;
-
-            // tally up .data relocations
-            uint32_t data_relocation_count = 0;
-
-            // Generate .xdata section (unwind info)
-            e->unwind_info = tb_platform_heap_alloc(m->functions.count * sizeof(uint32_t));
-            e->xdata = write_xdata_section(m, e->unwind_info, e->code_gen);
-
-            FOREACH_N(t, 0, m->max_threads) {
-                pool_for(TB_Global, g, m->thread_info[t].globals) {
-                    TB_Initializer* init = g->init;
-                    FOREACH_N(k, 0, init->obj_count) {
-                        data_relocation_count += (init->objects[k].type != TB_INIT_OBJ_REGION);
-                    }
-                }
-            }
-
-            const IDebugFormat* debug_fmt = e->dbg;
-            int number_of_sections = 5
-                + (m->tls_region_size ? 1 : 0)
-                + (debug_fmt != NULL ? debug_fmt->number_of_debug_sections(m) : 0);
-
-            // mark each with a unique id
-            e->function_sym_start = (number_of_sections * 2);
-            e->external_sym_start = e->function_sym_start + m->functions.compiled_count;
-
-            size_t unique_id_counter = 0;
-            FOREACH_N(i, 0, m->max_threads) {
-                pool_for(TB_External, ext, m->thread_info[i].externals) {
-                    int id = e->external_sym_start + unique_id_counter;
-                    ext->address = (void*) (uintptr_t) id;
-                    unique_id_counter += 1;
-                }
-
-                pool_for(TB_Global, g, m->thread_info[i].globals) {
-                    g->id = e->external_sym_start + unique_id_counter;
-                    unique_id_counter += 1;
-                }
-            }
-
-            e->string_table_cap += unique_id_counter;
-            e->string_table_cap += m->functions.compiled_count;
-            e->string_table = tb_platform_heap_alloc(e->string_table_cap * sizeof(const char*));
-
-            // layout functions in file
-            e->func_layout = tb_platform_heap_alloc((m->functions.count + 1) * sizeof(uint32_t));
-
-            // TODO(NeGate): We might do alphabetical sorting for consistent binary output
-            const ICodeGen* restrict code_gen = e->code_gen;
-            size_t text_section_size = 0;
-            FOREACH_N(i, 0, m->functions.count) {
-                TB_FunctionOutput* out_f = m->functions.data[i].output;
-
-                e->func_layout[i] = text_section_size;
-                if (out_f != NULL) {
-                    text_section_size += out_f->code_size;
-                }
-            }
-            e->func_layout[m->functions.count] = text_section_size;
-
-            ////////////////////////////////
-            // create headers
-            ////////////////////////////////
-            e->header = (COFF_FileHeader){
-                .num_sections = number_of_sections,
-                .timestamp = time(NULL),
-                .symbol_count = 0,
-                .symbol_table = 0,
-                .characteristics = IMAGE_FILE_LINE_NUMS_STRIPPED
-            };
-
-            e->sections[S_TEXT] = (COFF_SectionHeader){
-                .name = { ".text" }, // .text
-                .characteristics = COFF_CHARACTERISTICS_TEXT,
-                .raw_data_size = text_section_size,
-            };
-
-            e->sections[S_RDATA] = (COFF_SectionHeader){
-                .name = { ".rdata" }, // .rdata
-                .characteristics = COFF_CHARACTERISTICS_RODATA,
-                .raw_data_size = m->rdata_region_size
-            };
-
-            e->sections[S_DATA] = (COFF_SectionHeader){
-                .name = { ".data" }, // .data
-                .characteristics = COFF_CHARACTERISTICS_DATA,
-                .raw_data_size = m->data_region_size
-            };
-
-            e->sections[S_PDATA] = (COFF_SectionHeader){
-                .name = { ".pdata" }, // .pdata
-                .characteristics = COFF_CHARACTERISTICS_RODATA,
-                .raw_data_size = m->functions.compiled_count * 12,
-                .num_reloc = m->functions.compiled_count * 3,
-            };
-
-            e->sections[S_XDATA] = (COFF_SectionHeader){
-                .name = { ".xdata" }, // .xdata
-                .characteristics = COFF_CHARACTERISTICS_RODATA,
-                .raw_data_size = e->xdata.count,
-                .num_reloc = 0,
-            };
-
-            e->sections[S_TLS] = (COFF_SectionHeader){
-                .name = { ".tls$" },
-                .characteristics = COFF_CHARACTERISTICS_DATA,
-                .raw_data_size = m->tls_region_size,
-            };
-
-            switch (m->target_arch) {
-                case TB_ARCH_X86_64:  e->header.machine = COFF_MACHINE_AMD64; break;
-                case TB_ARCH_AARCH64: e->header.machine = COFF_MACHINE_ARM64; break;
-                default: tb_todo();
-            }
-
-            if (debug_fmt != NULL) {
-                TB_TemporaryStorage* tls = tb_tls_allocate();
-
-                e->debug_sections = debug_fmt->generate_debug_info(m, tls, code_gen, path, e->function_sym_start, e->func_layout);
-                e->debug_section_headers = tb_platform_heap_alloc(e->debug_sections.length * sizeof(COFF_SectionHeader));
-
-                FOREACH_N(i, 0, e->debug_sections.length) {
-                    e->debug_section_headers[i] = (COFF_SectionHeader) { 0 };
-                    e->debug_section_headers[i].characteristics = COFF_CHARACTERISTICS_CV;
-                    e->debug_section_headers[i].num_reloc = e->debug_sections.data[i].relocation_count;
-
-                    TB_Slice name = e->debug_sections.data[i].name;
-                    if (name.length > 8) {
-                        // we'd need to put it into the string table... im lazy
-                        // so i wont do the logic for it yet
-                        tb_todo();
-                    } else {
-                        memcpy(e->debug_section_headers[i].name, name.data, name.length);
-                        if (name.length < 8) e->debug_section_headers[i].name[name.length] = 0;
-                    }
-                }
-            }
-
-            // Target specific: resolve internal call patches
-            code_gen->emit_call_patches(m, e->func_layout);
-
-            // symbols
-            {
-                e->header.symbol_count = (number_of_sections * 2) + m->functions.compiled_count;
-
-                // total externals + total globals
-                e->header.symbol_count += unique_id_counter;
-            }
-
-            // relocation
-            {
-                e->sections[S_TEXT].num_reloc = 0;
-                FOREACH_N(i, 0, m->max_threads) {
-                    e->sections[S_TEXT].num_reloc += dyn_array_length(m->thread_info[i].const_patches);
-                    e->sections[S_TEXT].num_reloc += dyn_array_length(m->thread_info[i].ecall_patches);
-                    e->sections[S_TEXT].num_reloc += dyn_array_length(m->thread_info[i].global_patches);
-                }
-
-                e->sections[S_DATA].num_reloc = data_relocation_count;
-            }
-
-            // layout sections & relocations
-            {
-                size_t counter = sizeof(COFF_FileHeader) + (number_of_sections * sizeof(COFF_SectionHeader));
-
-                FOREACH_N(i, 0, S_MAX) {
-                    e->sections[i].raw_data_pos = counter;
-                    counter += e->sections[i].raw_data_size;
-                }
-
-                FOREACH_N(i, 0, e->debug_sections.length) {
-                    e->debug_section_headers[i].raw_data_size = e->debug_sections.data[i].raw_data.length;
-                    e->debug_section_headers[i].raw_data_pos = tb_post_inc(&counter, e->debug_section_headers[i].raw_data_size);
-                }
-
-                // Do the relocation lists next
-                FOREACH_N(i, 0, S_MAX) {
-                    e->sections[i].pointer_to_reloc = counter;
-                    counter += e->sections[i].num_reloc * sizeof(COFF_ImageReloc);
-                }
-
-                FOREACH_N(i, 0, e->debug_sections.length) {
-                    e->debug_section_headers[i].pointer_to_reloc = counter;
-                    counter += e->debug_section_headers[i].num_reloc * sizeof(COFF_ImageReloc);
-                }
-
-                e->header.symbol_table = tb_post_inc(&counter, e->header.symbol_count * sizeof(COFF_Symbol));
-                e->string_table_pos = counter;
-            }
-            YIELD_WRITE(&e->header, sizeof(COFF_FileHeader));
-
-            // figure out how many section headers to write out
-            int count = (e->header.num_sections - e->debug_sections.length);
-            YIELD_WRITE(e->sections, count * sizeof(COFF_SectionHeader));
-            YIELD_WRITE(e->debug_section_headers, e->debug_sections.length * sizeof(COFF_SectionHeader));
+    // relocation
+    {
+        e->sections[S_TEXT].num_reloc = 0;
+        FOREACH_N(i, 0, m->max_threads) {
+            e->sections[S_TEXT].num_reloc += dyn_array_length(m->thread_info[i].const_patches);
+            e->sections[S_TEXT].num_reloc += dyn_array_length(m->thread_info[i].ecall_patches);
+            e->sections[S_TEXT].num_reloc += dyn_array_length(m->thread_info[i].global_patches);
         }
+
+        e->sections[S_DATA].num_reloc = data_relocation_count;
+    }
+
+    // layout sections & relocations
+    {
+        size_t counter = sizeof(COFF_FileHeader) + (number_of_sections * sizeof(COFF_SectionHeader));
+
+        FOREACH_N(i, 0, S_MAX) {
+            e->sections[i].raw_data_pos = counter;
+            counter += e->sections[i].raw_data_size;
+        }
+
+        FOREACH_N(i, 0, e->debug_sections.length) {
+            e->debug_section_headers[i].raw_data_size = e->debug_sections.data[i].raw_data.length;
+            e->debug_section_headers[i].raw_data_pos = tb_post_inc(&counter, e->debug_section_headers[i].raw_data_size);
+        }
+
+        // Do the relocation lists next
+        FOREACH_N(i, 0, S_MAX) {
+            e->sections[i].pointer_to_reloc = counter;
+            counter += e->sections[i].num_reloc * sizeof(COFF_ImageReloc);
+        }
+
+        FOREACH_N(i, 0, e->debug_sections.length) {
+            e->debug_section_headers[i].pointer_to_reloc = counter;
+            counter += e->debug_section_headers[i].num_reloc * sizeof(COFF_ImageReloc);
+        }
+
+        e->header.symbol_table = tb_post_inc(&counter, e->header.symbol_count * sizeof(COFF_Symbol));
+        e->string_table_pos = counter;
+    }
+
+    size_t string_table_size = 4;
+    FOREACH_N(i, 0, m->functions.count) {
+        size_t name_len = strlen(m->functions.data[i].name);
+        if (name_len >= 8) string_table_size += name_len + 1;
+    }
+
+    FOREACH_N(i, 0, m->max_threads) {
+        pool_for(TB_External, ext, m->thread_info[i].externals) {
+            size_t name_len = strlen(ext->name);
+            if (name_len >= 8) string_table_size += name_len + 1;
+        }
+
+        pool_for(TB_Global, g, m->thread_info[i].globals) {
+            size_t name_len = strlen(g->name);
+            if (name_len >= 8) string_table_size += name_len + 1;
+        }
+    }
+
+    // Allocate memory now
+    size_t output_size = e->string_table_pos + string_table_size;
+    uint8_t* restrict output = tb_platform_heap_alloc(output_size);
+
+    // Write contents
+    {
+        WRITE(&e->header, sizeof(COFF_FileHeader));
+
+        // figure out how many section headers to write out
+        int count = (e->header.num_sections - e->debug_sections.length);
+        WRITE(e->sections, count * sizeof(COFF_SectionHeader));
+        WRITE(e->debug_section_headers, e->debug_sections.length * sizeof(COFF_SectionHeader));
 
         // write TEXT section
         {
-            CO_FOREACH_N(e, i, 0, m->functions.count) {
+            FOREACH_N(i, 0, m->functions.count) {
                 TB_FunctionOutput* out_f = m->functions.data[i].output;
                 if (out_f != NULL) {
-                    YIELD_WRITE(out_f->code, out_f->code_size);
+                    WRITE(out_f->code, out_f->code_size);
                 }
             }
         }
@@ -356,14 +348,14 @@ bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet) 
             assert(e->write_pos == e->sections[S_RDATA].raw_data_pos);
             char* rdata = get_temporary_storage(e, m->rdata_region_size);
 
-            CO_FOREACH_N(e, i, 0, m->max_threads) {
-                CO_FOREACH_N(e, j, 0, dyn_array_length(m->thread_info[i].const_patches)) {
+            FOREACH_N(i, 0, m->max_threads) {
+                FOREACH_N(j, 0, dyn_array_length(m->thread_info[i].const_patches)) {
                     TB_ConstPoolPatch* p = &m->thread_info[i].const_patches[j];
                     memcpy(&rdata[p->rdata_pos], p->data, p->length);
                 }
             }
 
-            YIELD_WRITE(rdata, m->rdata_region_size);
+            WRITE(rdata, m->rdata_region_size);
         }
 
         // DATA section
@@ -392,7 +384,7 @@ bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet) 
                 }
             }
 
-            YIELD_WRITE(data, m->data_region_size);
+            WRITE(data, m->data_region_size);
         }
 
         // PDATA section
@@ -411,13 +403,13 @@ bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet) 
                 j += 3;
             }
 
-            YIELD_WRITE(pdata, m->functions.compiled_count * 12);
+            WRITE(pdata, m->functions.compiled_count * 12);
         }
 
         // XDATA section
         {
             assert(e->write_pos == e->sections[S_XDATA].raw_data_pos);
-            YIELD_WRITE(e->xdata.data, e->xdata.count);
+            WRITE(e->xdata.data, e->xdata.count);
         }
 
         // TLS section
@@ -443,13 +435,13 @@ bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet) 
                 }
             }
 
-            YIELD_WRITE(tls, m->tls_region_size);
+            WRITE(tls, m->tls_region_size);
         }
 
         // write DEBUG sections
-        CO_FOREACH_N(e, i, 0, e->debug_sections.length) {
+        FOREACH_N(i, 0, e->debug_sections.length) {
             assert(e->write_pos == e->debug_section_headers[i].raw_data_pos);
-            YIELD_WRITE(e->debug_sections.data[i].raw_data.data, e->debug_sections.data[i].raw_data.length);
+            WRITE(e->debug_sections.data[i].raw_data.data, e->debug_sections.data[i].raw_data.length);
         }
 
         // write TEXT patches
@@ -515,7 +507,7 @@ bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet) 
             }
 
             assert(count == capacity);
-            YIELD_WRITE(relocs, count * sizeof(COFF_ImageReloc));
+            WRITE(relocs, count * sizeof(COFF_ImageReloc));
         }
 
         // write DATA patches
@@ -576,7 +568,7 @@ bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet) 
             }
 
             assert(count == capacity);
-            YIELD_WRITE(relocs, count * sizeof(COFF_ImageReloc));
+            WRITE(relocs, count * sizeof(COFF_ImageReloc));
         }
 
         // write PDATA patches
@@ -611,7 +603,7 @@ bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet) 
             }
 
             assert(count == capacity);
-            YIELD_WRITE(relocs, count * sizeof(COFF_ImageReloc));
+            WRITE(relocs, count * sizeof(COFF_ImageReloc));
         }
 
         if (e->debug_sections.length > 0) {
@@ -641,7 +633,7 @@ bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet) 
             }
 
             assert(count == capacity);
-            YIELD_WRITE(relocs, count * sizeof(COFF_ImageReloc));
+            WRITE(relocs, count * sizeof(COFF_ImageReloc));
         }
 
         // Emit section symbols
@@ -764,7 +756,7 @@ bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet) 
                 }
             }
 
-            YIELD_WRITE(symbols, count * sizeof(COFF_Symbol));
+            WRITE(symbols, count * sizeof(COFF_Symbol));
         }
 
         // Emit string table
@@ -784,19 +776,18 @@ bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet) 
             }
 
             assert((buffer - start) == e->string_table_mark);
-            YIELD_WRITE(start, e->string_table_mark);
+            WRITE(start, e->string_table_mark);
         }
-
-        // TODO(NeGate): we have a lot of shit being freed... maybe we wanna think of smarter
-        // allocation schemes
-        tb_platform_heap_free(e->temporary_memory);
-        tb_platform_heap_free(e->debug_section_headers);
-        tb_platform_heap_free(e->string_table);
-        tb_platform_heap_free(e->func_layout);
-        tb_platform_heap_free(e->unwind_info);
-        tb_platform_heap_free(e->xdata.data);
-        tb_platform_heap_free(e);
     }
 
-    CO_DONE();
+    // TODO(NeGate): we have a lot of shit being freed... maybe we wanna think of smarter
+    // allocation schemes
+    tb_platform_heap_free(e->temporary_memory);
+    tb_platform_heap_free(e->debug_section_headers);
+    tb_platform_heap_free(e->string_table);
+    tb_platform_heap_free(e->func_layout);
+    tb_platform_heap_free(e->unwind_info);
+    tb_platform_heap_free(e->xdata.data);
+    tb_platform_heap_free(e);
+    return (TB_Exports){ .count = 1, .files = { { output_size, output } } };
 }

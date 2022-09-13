@@ -676,11 +676,8 @@ extern "C" {
         enum {
             TB_EXPORT_PACKET_NONE,
 
-            // allocates a region of memory
-            //
+            // allocates region of memory used for output
             TB_EXPORT_PACKET_ALLOC,
-
-            TB_EXPORT_PACKET_WRITE,
         } type;
         union {
             struct {
@@ -690,20 +687,10 @@ extern "C" {
                 // output
                 void* memory;
             } alloc;
-            struct {
-                // input
-                size_t length;
-                const void* data;
-            } write;
         };
     } TB_ModuleExportPacket;
 
-    typedef struct TB_ModuleExporter {
-        // top secret stuff
-        void* state;
-
-        bool (*next)(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet);
-    } TB_ModuleExporter;
+    typedef struct TB_ModuleExporter TB_ModuleExporter;
 
     // *******************************
     // Public macros
@@ -766,12 +753,35 @@ extern "C" {
     // dont and the tls_index is used, it'll crash
     TB_API void tb_module_set_tls_index(TB_Module* m, TB_External* e);
 
-    TB_API TB_ModuleExporter tb_make_exporter(TB_Module* m, TB_DebugFormat debug_fmt, TB_OutputFlavor flavor);
-    #define tb_exporter_next(m, exporter, packet) ((exporter).next(m, (exporter).state, packet))
+    ////////////////////////////////
+    // Exporter
+    ////////////////////////////////
+    // some terminology, in this context virtual file means it's not necessarily tie to the
+    // normal file system but refers to a buffer of memory that's potentially going to either
+    // go into the normal file system or some other persistent space.
 
-    TB_API bool tb_exporter_to_file(TB_Module* m, TB_ModuleExporter exporter, const char* filepath);
-    TB_API uint8_t* tb_exporter_to_buffer(TB_Module* m, TB_ModuleExporter exporter, size_t* length);
+    // the maximum number of "virtual files" any single export call can produce
+    // it's two because EXE export with debug info produces a PDB as well
+    enum { TB_MAX_EXPORTS = 2 };
 
+    typedef struct {
+        size_t count;
+        struct {
+            size_t length;
+            uint8_t* data;
+        } files[TB_MAX_EXPORTS];
+    } TB_Exports;
+
+    TB_API TB_Exports tb_exporter_write_output(TB_Module* m, TB_OutputFlavor flavor, TB_DebugFormat debug_fmt);
+    TB_API void tb_exporter_free(TB_Exports exports);
+
+    // Same as tb_exporter_write_output except it doesn't return the buffers and instead writes to the filepaths provided (using the C FILE IO)
+    // Returns true on success
+    TB_API bool tb_exporter_write_files(TB_Module* m, TB_OutputFlavor flavor, TB_DebugFormat debug_fmt, size_t path_count, const char* paths[]);
+
+    ////////////////////////////////
+    // JIT compilation
+    ////////////////////////////////
     TB_API void tb_module_export_jit(TB_Module* m);
 
     typedef struct TB_FunctionIter {

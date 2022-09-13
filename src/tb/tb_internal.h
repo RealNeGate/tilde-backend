@@ -535,6 +535,11 @@ do {                                      \
 #define COUNTOF(...) (sizeof(__VA_ARGS__) / sizeof((__VA_ARGS__)[0]))
 #endif
 
+#ifndef CONCAT
+#define CONCAT_(x, y) x ## y
+#define CONCAT(x, y) CONCAT_(x, y)
+#endif
+
 #define FOREACH_N(it, start, end) \
 for (ptrdiff_t it = (start), end__ = (end); it < end__; ++it)
 
@@ -569,13 +574,6 @@ void* tb_tls_peek(TB_TemporaryStorage* store, size_t distance);
 bool tb_tls_can_fit(TB_TemporaryStorage* store, size_t size);
 
 ICodeGen* tb__find_code_generator(TB_Module* m);
-
-// object file output
-void* tb_elf64__make(TB_Module* m, const IDebugFormat* dbg);
-bool tb_elf64__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet);
-
-void* tb_coff__make(TB_Module* m, const IDebugFormat* dbg);
-bool tb_coff__next(TB_Module* m, void* exporter, TB_ModuleExportPacket* packet);
 
 void* tb_out_reserve(TB_Emitter* o, size_t count);
 // The return value is the start of the empty region after

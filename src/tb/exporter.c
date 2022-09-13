@@ -1,5 +1,10 @@
 #include "tb_internal.h"
 
+// Generate forward declarations
+#define X(name) \
+TB_Exports tb_ ## name ## _write_output(TB_Module* restrict m, const IDebugFormat* dbg);
+#include "objects/export_formats.h"
+
 static const IDebugFormat* find_debug_format(TB_DebugFormat debug_fmt) {
     switch (debug_fmt) {
         //case TB_DEBUGFMT_DWARF: return &tb__dwarf_debug_format;
@@ -8,104 +13,48 @@ static const IDebugFormat* find_debug_format(TB_DebugFormat debug_fmt) {
     }
 }
 
-TB_API TB_ModuleExporter tb_make_exporter(TB_Module* m, TB_DebugFormat debug_fmt, TB_OutputFlavor flavor) {
-    assert(flavor == TB_FLAVOR_OBJECT && "TODO");
+TB_API TB_Exports tb_exporter_write_output(TB_Module* m, TB_OutputFlavor flavor, TB_DebugFormat debug_fmt) {
+    typedef TB_Exports ExporterFn(TB_Module* restrict m, const IDebugFormat* dbg);
 
-    const IDebugFormat* dbg = find_debug_format(debug_fmt);
-    switch (m->target_system) {
-        case TB_SYSTEM_WINDOWS: return (TB_ModuleExporter){ tb_coff__make(m, dbg), tb_coff__next };
-        case TB_SYSTEM_LINUX: return (TB_ModuleExporter){ tb_elf64__make(m, dbg), tb_elf64__next };
-        default: tb_todo();
-    }
+    // map target systems to exporters (maybe we wanna decouple this later)
+    static ExporterFn* const fn[] = {
+        [TB_SYSTEM_WINDOWS] = tb_coff_write_output,
+        [TB_SYSTEM_LINUX] = tb_elf64_write_output,
+    };
+
+    assert(flavor == TB_FLAVOR_OBJECT && "TODO");
+    return fn[m->target_system](m, find_debug_format(debug_fmt));
 }
 
-TB_API bool tb_exporter_to_file(TB_Module* m, TB_ModuleExporter exporter, const char* filepath) {
-    FILE* file = fopen(filepath, "wb");
-    if (file == NULL) {
+TB_API bool tb_exporter_write_files(TB_Module* m, TB_OutputFlavor flavor, TB_DebugFormat debug_fmt, size_t path_count, const char* paths[]) {
+    TB_Exports exports = tb_exporter_write_output(m, flavor, debug_fmt);
+    if (exports.count > path_count) {
+        fprintf(stderr, "tb_exporter_write_files: Not enough filepaths for the exports (provided %zu, needed %zu)\n", path_count, exports.count);
+        tb_exporter_free(exports);
         return false;
     }
 
-    size_t tmp_capacity = 4 * 1024 * 1024;
-    char* tmp_memory = malloc(tmp_capacity);
-
-    TB_ModuleExportPacket packet;
-    while (tb_exporter_next(m, exporter, &packet)) {
-        switch (packet.type) {
-            case TB_EXPORT_PACKET_ALLOC:
-            if (packet.alloc.request_size > tmp_capacity) {
-                tmp_capacity = (packet.alloc.request_size * 2);
-
-                char* new_mem = realloc(tmp_memory, tmp_capacity);
-                if (new_mem == NULL) goto error;
-
-                tmp_memory = new_mem;
-            }
-
-            packet.alloc.memory = tmp_memory;
-            break;
-
-            case TB_EXPORT_PACKET_WRITE:
-            fwrite(packet.write.data, packet.write.length, 1, file);
-            break;
-
-            default: goto error;
+    bool success = true;
+    FOREACH_N(i, 0, exports.count) {
+        FILE* file = fopen(paths[i], "wb");
+        if (file == NULL) {
+            fprintf(stderr, "tb_exporter_write_files: Could not open file for writing! %s", paths[i]);
+            tb_platform_heap_free(exports.files[i].data);
+            success = false;
+            continue;
         }
+
+        fwrite(exports.files[i].data, 1, exports.files[i].length, file);
+        fclose(file);
+
+        tb_platform_heap_free(exports.files[i].data);
     }
 
-    free(tmp_memory);
-    fclose(file);
-    return true;
-
-    error:
-    if (file) fclose(file);
-
-    free(tmp_memory);
-    return false;
+    return success;
 }
 
-TB_API uint8_t* tb_exporter_to_buffer(TB_Module* m, TB_ModuleExporter exporter, size_t* out_length) {
-    TB_Emitter e = { 0 };
-
-    size_t tmp_capacity = 4 * 1024 * 1024;
-    char* tmp_memory = tb_platform_heap_alloc(tmp_capacity);
-
-    TB_ModuleExportPacket packet;
-    while (tb_exporter_next(m, exporter, &packet)) {
-        switch (packet.type) {
-            case TB_EXPORT_PACKET_ALLOC:
-            if (packet.alloc.request_size > tmp_capacity) {
-                tmp_capacity = (packet.alloc.request_size * 2);
-                char* new_mem = tb_platform_heap_realloc(tmp_memory, tmp_capacity);
-
-                if (new_mem == NULL) goto error;
-                tmp_memory = new_mem;
-            }
-
-            packet.alloc.memory = tmp_memory;
-            break;
-
-            case TB_EXPORT_PACKET_WRITE:
-            tb_out_reserve(&e, packet.write.length);
-            tb_outs_UNSAFE(&e, packet.write.length, packet.write.data);
-            break;
-
-            default: goto error;
-        }
+TB_API void tb_exporter_free(TB_Exports exports) {
+    FOREACH_N(i, 0, exports.count) {
+        tb_platform_heap_free(exports.files[i].data);
     }
-
-    tb_platform_heap_free(tmp_memory);
-
-    *out_length = e.count;
-    return e.data;
-
-    error:
-    if (e.data) tb_platform_heap_free(e.data);
-    if (tmp_memory) tb_platform_heap_free(tmp_memory);
-
-    *out_length = -1;
-    return NULL;
-}
-
-TB_API void tb_exporter_free_buffer(uint8_t* buffer) {
-    tb_platform_heap_free(buffer);
 }

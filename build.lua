@@ -22,8 +22,12 @@ local options = "-g -Wall -Werror -Wno-unused-function "
 options = options.."-I include "
 options = options.."-I deps/mimalloc/include "
 options = options.."-I deps/luajit/src "
+if build.opt then
+    options = options.."-O2 -DNDEBUG "
+end
 
-if build.compile(files, options) then
+local outputs = build.compile("TB.cache", files, options)
+if outputs ~= nil then
     print("Step 5: Link")
-    build.lib("tildebackend.lib", "deps/mimalloc-static.lib deps/luajit/src/lua51.lib")
+    build.lib("tildebackend.lib", "deps/mimalloc-static.lib deps/luajit/src/lua51.lib", outputs)
 end

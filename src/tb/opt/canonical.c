@@ -17,11 +17,11 @@ static void replace_label(TB_Function* f, TB_Label old, TB_Label new) {
                 FOREACH_N(i, 0, count) {
                     X(inputs[i].label);
                 }
-            } else if (n->type == TB_GOTO) {
-                X(n->goto_.label);
             } else if (n->type == TB_IF) {
                 X(n->if_.if_true);
                 X(n->if_.if_false);
+            } else if (n->type == TB_GOTO) {
+                X(n->goto_.label);
             } else if (n->type == TB_SWITCH) {
                 size_t entry_start = n->switch_.entries_start;
                 size_t entry_count = (n->switch_.entries_end - n->switch_.entries_start) / 2;

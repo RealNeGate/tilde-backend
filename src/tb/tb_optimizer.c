@@ -210,45 +210,47 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
 
         FOREACH_N(j, 0, pass_count) {
             switch (passes[j].mode) {
-                case TB_BASIC_BLOCK_PASS:
-                TB_FOR_BASIC_BLOCK(bb, f) {
-                    if (passes[j].l_state != NULL) {
-                        lua_State* L = begin_lua_pass(passes[j].l_state);
-                        lua_pushlightuserdata(L, f);
-                        lua_pushinteger(L, bb);
-                        changes |= end_lua_pass(L, 2);
-                    } else {
-                        changes |= passes[j].bb_run(f, bb);
+                case TB_BASIC_BLOCK_PASS: {
+                    TB_FOR_BASIC_BLOCK(bb, f) {
+                        if (passes[j].l_state != NULL) {
+                            lua_State* L = begin_lua_pass(passes[j].l_state);
+                            lua_pushlightuserdata(L, f);
+                            lua_pushinteger(L, bb);
+                            changes |= end_lua_pass(L, 2);
+                        } else {
+                            changes |= passes[j].bb_run(f, bb);
+                        }
                     }
-                }
-                break;
-
-                case TB_LOOP_PASS:
-                // We probably want a function to get all this info together
-                TB_TemporaryStorage* tls = tb_tls_allocate();
-                TB_Predeccesors preds = tb_get_temp_predeccesors(f, tls);
-
-                TB_Label* doms = tb_tls_push(tls, f->bb_count * sizeof(TB_Label));
-                tb_get_dominators(f, preds, doms);
-
-                // probably don't wanna do this using heap allocations
-                TB_LoopInfo loops = tb_get_loop_info(f, preds, doms);
-
-                FOREACH_N(k, 0, loops.count) {
-                    const TB_Loop* l = &loops.loops[i];
-
-                    if (passes[j].l_state != NULL) {
-                        lua_State* L = begin_lua_pass(passes[j].l_state);
-                        lua_pushlightuserdata(L, f);
-                        lua_pushlightuserdata(L, (void*) l);
-                        changes |= end_lua_pass(L, 2);
-                    } else {
-                        changes |= passes[j].loop_run(f, l);
-                    }
+                    break;
                 }
 
-                tb_free_loop_info(loops);
-                break;
+                case TB_LOOP_PASS: {
+                    // We probably want a function to get all this info together
+                    TB_TemporaryStorage* tls = tb_tls_allocate();
+                    TB_Predeccesors preds = tb_get_temp_predeccesors(f, tls);
+
+                    TB_Label* doms = tb_tls_push(tls, f->bb_count * sizeof(TB_Label));
+                    tb_get_dominators(f, preds, doms);
+
+                    // probably don't wanna do this using heap allocations
+                    TB_LoopInfo loops = tb_get_loop_info(f, preds, doms);
+
+                    FOREACH_N(k, 0, loops.count) {
+                        const TB_Loop* l = &loops.loops[i];
+
+                        if (passes[j].l_state != NULL) {
+                            lua_State* L = begin_lua_pass(passes[j].l_state);
+                            lua_pushlightuserdata(L, f);
+                            lua_pushlightuserdata(L, (void*) l);
+                            changes |= end_lua_pass(L, 2);
+                        } else {
+                            changes |= passes[j].loop_run(f, l);
+                        }
+                    }
+
+                    tb_free_loop_info(loops);
+                    break;
+                }
 
                 case TB_FUNCTION_PASS:
                 if (passes[j].l_state != NULL) {

@@ -155,7 +155,7 @@ void tb__arena_free(Arena* a) {
     a->base = a->top = NULL;
 }
 
-void tb_platform_arena_init() {
+void tb_platform_arena_init(void) {
     tb__arena_init(&tb__global_arena);
     InitializeCriticalSection(&tb__global_arena_lock);
 }
@@ -167,6 +167,6 @@ void* tb_platform_arena_alloc(size_t size) {
     return r;
 }
 
-void tb_platform_arena_free() {
+void tb_platform_arena_free(void) {
     tb__arena_free(&tb__global_arena);
 }

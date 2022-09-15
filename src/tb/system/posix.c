@@ -63,7 +63,7 @@ static Segment* arena_top;
 // weird bootleg mutex because i dont get threads.h on windows :(
 static tb_atomic_int arena_lock = 0;
 
-void tb_platform_arena_init() {
+void tb_platform_arena_init(void) {
     Segment* s = (Segment*)mmap(NULL, ARENA_SEGMENT_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (!s) abort();
 
@@ -107,7 +107,7 @@ void* tb_platform_arena_alloc(size_t size) {
     return ptr;
 }
 
-void tb_platform_arena_free() {
+void tb_platform_arena_free(void) {
     Segment* c = arena_base;
     while (c) {
         Segment* next = c->next;

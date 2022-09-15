@@ -299,12 +299,6 @@ typedef struct {
     uint32_t utype; // type index of the underlying type
     CV_LFPointerAttribs attr;
     union {
-        uint16_t bseg;   // base segment if PTR_BASE_SEG
-        uint8_t sym[]; // copy of base symbol record (including length)
-        struct {
-            uint32_t index;  // type index if CV_PTR_BASE_TYPE
-            uint8_t name[]; // name of base type
-        } btype;
         struct {
             uint32_t pmclass;    // index of containing class for pointer to member
             uint16_t pmenum;     // enumeration specifying pm format (CV_pmtype_e)

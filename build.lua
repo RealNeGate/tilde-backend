@@ -8,10 +8,7 @@ local files = {
     "src/tb/debug/cv/",
     "src/tb/x64/",
     "src/tb/aarch64/",
-    "src/tb/opt/",
-    
-    -- we compile mimalloc using the unity build thingy it's got
-    "deps/mimalloc/src/static.c"
+    "src/tb/opt/"
 }
 
 local deps = ""
@@ -20,7 +17,7 @@ if config.os == "Windows" then
     build.command("build_deps.bat")
     table.insert(files, "src/tb/system/win32.c")
     
-    deps = "deps/mimalloc-static.lib deps/luajit/src/lua51.lib"
+    deps = "deps/luajit/src/lua51.lib"
     output_lib = "tildebackend.lib"
 else
     build.command("./build_deps.sh")

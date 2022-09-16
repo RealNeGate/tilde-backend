@@ -576,16 +576,10 @@ bool tb_tls_can_fit(TB_TemporaryStorage* store, size_t size);
 ICodeGen* tb__find_code_generator(TB_Module* m);
 
 void* tb_out_reserve(TB_Emitter* o, size_t count);
-// The return value is the start of the empty region after
-// the data, this is where you can start appending new data
-// and you're guarenteed `count` bytes. if this function is
-// called again assume this pointer is invalid because it
-// might be reallocated.
-
 void tb_out_commit(TB_Emitter* o, size_t count);
-// Commits `count` bytes to the emitter, increments the size
-// of the data, you should have used `tb_out_reserve` to get
-// that data pointer and thus guarentee the space was available
+
+// Adds null terminator onto the end and returns the starting position of the string
+size_t tb_outstr_nul_UNSAFE(TB_Emitter* o, const char* str);
 
 void tb_out1b_UNSAFE(TB_Emitter* o, uint8_t i);
 void tb_out4b_UNSAFE(TB_Emitter* o, uint32_t i);
@@ -593,8 +587,8 @@ void tb_outstr_UNSAFE(TB_Emitter* o, const char* str);
 void tb_outs_UNSAFE(TB_Emitter* o, size_t len, const void* str);
 void tb_outs(TB_Emitter* o, size_t len, const void* str);
 
-void tb_out_zero(TB_Emitter* o, size_t len);
 // fills region with zeros
+void tb_out_zero(TB_Emitter* o, size_t len);
 
 void tb_out1b(TB_Emitter* o, uint8_t i);
 void tb_out2b(TB_Emitter* o, uint16_t i);

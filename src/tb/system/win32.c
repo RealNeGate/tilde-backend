@@ -1,5 +1,4 @@
 #include "../tb_internal.h"
-#include <mimalloc.h>
 #include <ctype.h>
 
 // NOTE(NeGate): i'm sorry but i had to do it to em
@@ -35,32 +34,20 @@ bool tb_platform_vprotect(void* ptr, size_t size, bool execute) {
 }
 
 void* tb_platform_heap_alloc(size_t size) {
-    #if USING_DA_ASAN
     void* ptr = malloc(size);
-    #else
-    void* ptr = mi_malloc(size);
-    #endif
-
     if (ptr == NULL) {
         tb_panic("tb_platform_heap_alloc: out of memory!");
     }
+
     return ptr;
 }
 
 void* tb_platform_heap_realloc(void* ptr, size_t size) {
-    #if USING_DA_ASAN
     return realloc(ptr, size);
-    #else
-    return mi_realloc(ptr, size);
-    #endif
 }
 
 void tb_platform_heap_free(void* ptr) {
-    #if USING_DA_ASAN
     free(ptr);
-    #else
-    mi_free(ptr);
-    #endif
 }
 
 static char*  string_buffer;

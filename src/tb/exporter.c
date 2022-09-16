@@ -17,13 +17,22 @@ TB_API TB_Exports tb_exporter_write_output(TB_Module* m, TB_OutputFlavor flavor,
     typedef TB_Exports ExporterFn(TB_Module* restrict m, const IDebugFormat* dbg);
 
     // map target systems to exporters (maybe we wanna decouple this later)
-    static ExporterFn* const fn[] = {
-        [TB_SYSTEM_WINDOWS] = tb_coff_write_output,
-        [TB_SYSTEM_LINUX] = tb_elf64_write_output,
+    static ExporterFn* const fn[TB_FLAVOR_EXECUTABLE + 1][TB_SYSTEM_MAX] = {
+        [TB_FLAVOR_OBJECT] = {
+            [TB_SYSTEM_WINDOWS] = tb_coff_write_output,
+            [TB_SYSTEM_LINUX] = tb_elf64obj_write_output,
+        },
+
+        // TODO: executables and shared libraries probably require some edge casing since
+        // they're going to be doing linking and have to access the file system for some of
+        // that.
+        [TB_FLAVOR_EXECUTABLE] = {
+            [TB_SYSTEM_LINUX] = tb_elf64exe_write_output,
+        }
     };
 
-    assert(flavor == TB_FLAVOR_OBJECT && "TODO");
-    return fn[m->target_system](m, find_debug_format(debug_fmt));
+    assert(fn[flavor][m->target_system] != NULL && "TODO");
+    return fn[flavor][m->target_system](m, find_debug_format(debug_fmt));
 }
 
 TB_API bool tb_exporter_write_files(TB_Module* m, TB_OutputFlavor flavor, TB_DebugFormat debug_fmt, size_t path_count, const char* paths[]) {

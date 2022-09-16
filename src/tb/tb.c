@@ -801,6 +801,17 @@ void tb_out_zero(TB_Emitter* o, size_t len) {
     o->count += len;
 }
 
+size_t tb_outstr_nul_UNSAFE(TB_Emitter* o, const char* str) {
+    size_t start = o->count;
+
+    for (; *str; str++) {
+        o->data[o->count++] = *str;
+    }
+
+    o->data[o->count++] = 0;
+    return start;
+}
+
 void tb_outstr_UNSAFE(TB_Emitter* o, const char* str) {
     while (*str) o->data[o->count++] = *str++;
 }

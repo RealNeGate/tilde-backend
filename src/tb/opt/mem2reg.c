@@ -52,7 +52,27 @@ static int get_variable_id(Mem2Reg_Ctx* restrict c, TB_Reg r) {
 // This doesn't really generate a PHI node, it just produces a NULL node which will
 // be mutated into a PHI node by the rest of the code.
 static TB_Reg new_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, int var, TB_Label block, TB_DataType dt) {
-    TB_Reg new_phi_reg = tb_function_insert_after(f, block, 0);
+    TB_Reg r = f->bbs[block].start;
+
+    // skip past other phi nodes
+    TB_FOR_NODE(j, f, block) {
+        if (!tb_node_is_phi_node(f, j) && f->nodes[j].type != TB_PASS) {
+            break;
+        }
+        r = j;
+    }
+
+    TB_Reg new_phi_reg = 0;
+    if (r == f->bbs[block].start) {
+        // add as first BB node
+        tb_function_reserve_nodes(f, 1);
+        new_phi_reg = f->node_count++;
+
+        f->nodes[new_phi_reg] = (TB_Node) { .type = TB_NULL, .dt = TB_TYPE_VOID, .next = r };
+        f->bbs[block].start = new_phi_reg;
+    } else {
+        new_phi_reg = tb_function_insert_after(f, block, r);
+    }
     OPTIMIZER_LOG(new_phi_reg, "Insert new PHI node (in L%d)", block);
     f->nodes[new_phi_reg].dt = dt;
 
@@ -365,6 +385,10 @@ static bool attempt_sroa(TB_Function* f, TB_TemporaryStorage* tls, TB_Reg addres
 // opt_hoist_locals earlier
 bool mem2reg(TB_Function* f) {
     TB_TemporaryStorage* tls = tb_tls_allocate();
+
+    if (strcmp(f->name, "bar") == 0) {
+        tb_function_print(f, tb_default_print_callback, stderr, true);
+    }
 
     ////////////////////////////////
     // Decide which stack slots to promote

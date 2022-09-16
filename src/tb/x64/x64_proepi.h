@@ -31,7 +31,7 @@ static void x64_emit_win64eh_unwind_info(TB_Emitter* e, TB_FunctionOutput* out_f
     tb_patch1b(e, patch_pos + offsetof(UnwindInfo, code_count), code_count);
 }
 
-static size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
+size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
     if ((tb_popcount(saved & 0xFFFF) & 1) == 0) stack_usage += 8;
     // If the stack usage is zero we don't need a prologue
     if (stack_usage == 8) return 0;
@@ -95,7 +95,7 @@ static size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usa
     return used;
 }
 
-static size_t x64_emit_epilogue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
+size_t x64_emit_epilogue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
     if ((tb_popcount(saved & 0xFFFF) & 1) == 0) stack_usage += 8;
 
 	// if the stack isn't used then just return

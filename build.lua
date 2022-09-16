@@ -16,13 +16,13 @@ local output_lib = ""
 if config.os == "Windows" then
     build.command("build_deps.bat")
     table.insert(files, "src/tb/system/win32.c")
-    
+
     deps = "deps/luajit/src/lua51.lib"
     output_lib = "tildebackend.lib"
 else
     build.command("./build_deps.sh")
     table.insert(files, "src/tb/system/posix.c")
-    
+
     deps = "bin/luajit/*.o"
     output_lib = "tildebackend.a"
 end
@@ -30,6 +30,7 @@ end
 local options = "-g -Wall -Werror -Wno-unused-function "
 options = options.."-I include "
 options = options.."-I deps/luajit/src "
+options = options.."-DTB_COMPILE_TESTS "
 if config.opt then
     options = options.."-O2 -DNDEBUG "
 end

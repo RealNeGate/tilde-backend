@@ -22,7 +22,7 @@ static bool hoist_locals(TB_Function* f) {
     TB_FOR_NODE(r, f, 0) {
         TB_Node* n = &f->nodes[r];
 
-        if (n->type != TB_PARAM && n->type != TB_PARAM_ADDR) {
+        if (n->type != TB_PARAM && n->type != TB_PARAM_ADDR && !TB_IS_NODE_TERMINATOR(n->type)) {
             local_basepoint = (n - f->nodes);
         }
         prev = r;

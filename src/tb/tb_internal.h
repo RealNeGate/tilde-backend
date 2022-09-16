@@ -77,7 +77,7 @@ size_t tb_atomic_size_add(size_t* dst, size_t src);
 size_t tb_atomic_size_store(size_t* dst, size_t src);
 
 #define PROTOTYPES_ARENA_SIZE   (32u << 20u)
-#define CODE_REGION_BUFFER_SIZE (128 * 1024 * 1024)
+#define CODE_REGION_BUFFER_SIZE (1024 * 1024 * 1024)
 
 typedef struct TB_Emitter {
     size_t capacity, count;
@@ -362,7 +362,7 @@ typedef struct {
 } TB_LabelSymbol;
 
 typedef struct {
-    size_t size;
+    size_t capacity, size;
     uint8_t data[CODE_REGION_BUFFER_SIZE - sizeof(size_t)];
 } TB_CodeRegion;
 
@@ -448,8 +448,8 @@ typedef struct {
     // NULLable if doesn't apply
     void (*emit_win64eh_unwind_info)(TB_Emitter* e, TB_FunctionOutput* out_f, uint64_t saved, uint64_t stack_usage);
 
-    TB_FunctionOutput (*fast_path)(TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
-    TB_FunctionOutput (*complex_path)(TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id);
+    TB_FunctionOutput (*fast_path)(TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t out_capacity, size_t local_thread_id);
+    TB_FunctionOutput (*complex_path)(TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t out_capacity, size_t local_thread_id);
 } ICodeGen;
 
 // All debug formats i know of boil down to adding some extra sections to the object file
@@ -688,6 +688,7 @@ int tb_function_find_uses_of_node(const TB_Function* f, TB_Reg def, TB_Reg uses[
 // if tls is NULL then the return value is heap allocated
 TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStorage* tls, TB_Label l, int* dst_count);
 TB_Predeccesors tb_get_temp_predeccesors(TB_Function* f, TB_TemporaryStorage* tls);
+void tb_free_temp_predeccesors(TB_TemporaryStorage* tls, TB_Predeccesors preds);
 
 uint32_t tb_emit_const_patch(TB_Module* m, TB_Function* source, size_t pos, const void* ptr,size_t len, size_t local_thread_id);
 void tb_emit_global_patch(TB_Module* m, TB_Function* source, size_t pos, const TB_Global* target, size_t local_thread_id);

@@ -3,8 +3,8 @@
 
 typedef struct Ctx Ctx;
 
-static void jmp(Ctx* restrict ctx, int label);
-static void ret_jmp(Ctx* restrict ctx);
+static void jmp(TB_CGEmitter* restrict e, int label);
+static void ret_jmp(TB_CGEmitter* restrict e);
 
 static void x64v2_initial_reg_alloc(Ctx* restrict ctx);
 static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
@@ -38,12 +38,16 @@ static void x64v2_resolve_stack_slot(Ctx* restrict ctx, TB_Function* f, TB_Node*
 #define GAD_RESOLVE_VALUE(ctx, f, r) x64v2_resolve_value(ctx, f, r)
 #define GAD_RESOLVE_STACK_SLOT(ctx, f, n) x64v2_resolve_stack_slot(ctx, f, n)
 #define GAD_MAKE_STACK_SLOT(ctx, f, r_, pos) (Val){ VAL_MEM, .r = (r_), .mem = { .base = RBP, .index = GPR_NONE, .disp = (pos) } }
-#define GAD_GOTO(ctx, label) jmp(ctx, label)
-#define GAD_RET_JMP(ctx) ret_jmp(ctx)
+#define GAD_GOTO(ctx, label) jmp(&ctx->emit, label)
+#define GAD_RET_JMP(ctx) ret_jmp(&ctx->emit)
 #define GAD_VAL Val
 #include "../codegen/generic_addrdesc.h"
 #include "x64_emitter.h"
 // #include "x64_proepi.h"
+
+#ifdef TB_COMPILE_TESTS
+#include "x64_tests.h"
+#endif
 
 size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usage);
 size_t x64_emit_epilogue(uint8_t* out, uint64_t saved, uint64_t stack_usage);
@@ -66,9 +70,9 @@ typedef enum {
 static void emit_shift_gpr_imm(Ctx* restrict ctx, TB_Function* f, ShiftType type, GPR dst, uint8_t imm, TB_DataType dt) {
     int bits_in_type = dt.type == TB_PTR ? 64 : dt.data;
 
-    if (bits_in_type <= 16) EMIT(0x66);
-    EMIT(rex(bits_in_type > 32, 0x00, dst, 0x00));
-    EMIT((bits_in_type <= 8 ? 0xC0 : 0xC1));
+    if (bits_in_type <= 16) EMIT1(&ctx->emit, 0x66);
+    EMIT1(&ctx->emit, rex(bits_in_type > 32, 0x00, dst, 0x00));
+    EMIT1(&ctx->emit, (bits_in_type <= 8 ? 0xC0 : 0xC1));
 
     uint8_t op = 0x00;
     switch (type) {
@@ -77,8 +81,8 @@ static void emit_shift_gpr_imm(Ctx* restrict ctx, TB_Function* f, ShiftType type
         case SAR: op = 0x07; break;
         default: tb_unreachable();
     }
-    EMIT(mod_rx_rm(MOD_DIRECT, op, dst));
-    EMIT(imm);
+    EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, op, dst));
+    EMIT1(&ctx->emit, imm);
 }
 
 // returns a mask to remove the "out of bounds" bits
@@ -162,7 +166,7 @@ static void x64v2_mask_out(Ctx* restrict ctx, TB_Function* f, const LegalInt l, 
         GAD_VAL tmp = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);
 
         // MOVABS     REX.W B8+r imm64
-        EMIT(tmp.gpr >= 8 ? 0x49 : 0x48), EMIT(0xB8 + (tmp.gpr & 7)), EMIT8(l.mask);
+        EMIT1(&ctx->emit, tmp.gpr >= 8 ? 0x49 : 0x48), EMIT1(&ctx->emit, 0xB8 + (tmp.gpr & 7)), EMIT8(&ctx->emit, l.mask);
         INST2(AND, dst, &tmp, l.dt);
 
         GAD_FN(unlock_register)(ctx, f, X64_REG_CLASS_GPR, tmp.gpr);
@@ -185,14 +189,14 @@ static size_t x64v2_resolve_stack_usage(Ctx* restrict ctx, TB_Function* f, size_
 static void x64v2_resolve_local_patches(Ctx* restrict ctx, TB_Function* f) {
     FOREACH_N(i, 0, ctx->ret_patch_count) {
         uint32_t pos = ctx->ret_patches[i];
-        PATCH4(pos, GET_CODE_POS() - (pos + 4));
+        PATCH4(&ctx->emit, pos, GET_CODE_POS(&ctx->emit) - (pos + 4));
     }
 
     FOREACH_N(i, 0, ctx->label_patch_count) {
         uint32_t pos = ctx->label_patches[i].pos;
         uint32_t target_lbl = ctx->label_patches[i].target_lbl;
 
-        PATCH4(pos, ctx->labels[target_lbl] - (pos + 4));
+        PATCH4(&ctx->emit, pos, ctx->labels[target_lbl] - (pos + 4));
     }
 }
 
@@ -296,10 +300,10 @@ static void x64v2_initial_reg_alloc(Ctx* restrict ctx) {
 static GAD_VAL x64v2_cond_to_reg(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int cc) {
     GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
 
-    EMIT((dst.gpr >= 8) ? 0x41 : 0x40);
-    EMIT(0x0F);
-    EMIT(0x90 + cc);
-    EMIT(mod_rx_rm(MOD_DIRECT, 0, dst.gpr));
+    EMIT1(&ctx->emit, (dst.gpr >= 8) ? 0x41 : 0x40);
+    EMIT1(&ctx->emit, 0x0F);
+    EMIT1(&ctx->emit, 0x90 + cc);
+    EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 0, dst.gpr));
     return dst;
 }
 
@@ -370,10 +374,10 @@ static void x64v2_mov_to_explicit_gpr(Ctx* restrict ctx, TB_Function* f, GPR dst
     if (src->type == VAL_MEM || src->type == VAL_GLOBAL) {
         INST2(src->mem.is_rvalue ? MOV : LEA, &dst, src, l.dt);
     } else if (src->type == VAL_FLAGS) {
-        EMIT((dst_gpr >= 8) ? 0x41 : 0x40);
-        EMIT(0x0F);
-        EMIT(0x90 + src->cond);
-        EMIT(mod_rx_rm(MOD_DIRECT, 0, dst_gpr));
+        EMIT1(&ctx->emit, (dst_gpr >= 8) ? 0x41 : 0x40);
+        EMIT1(&ctx->emit, 0x0F);
+        EMIT1(&ctx->emit, 0x90 + src->cond);
+        EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 0, dst_gpr));
     } else {
         assert(src->type == VAL_GPR || src->type == VAL_IMM);
 
@@ -608,18 +612,18 @@ static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r, size_t queue
     switch (type) {
         case TB_CALL: {
             const TB_Function* target = n->call.target;
-            tb_emit_call_patch(f->module, f, target, GET_CODE_POS() + 1, s_local_thread_id);
+            tb_emit_call_patch(f->module, f, target, GET_CODE_POS(&ctx->emit) + 1, s_local_thread_id);
 
             // CALL rel32
-            EMIT(0xE8), EMIT4(0x0);
+            EMIT1(&ctx->emit, 0xE8), EMIT4(&ctx->emit, 0x0);
             break;
         }
         case TB_ECALL: {
             const TB_External* target = n->ecall.target;
-            tb_emit_ecall_patch(f->module, f, target, GET_CODE_POS() + 1, s_local_thread_id);
+            tb_emit_ecall_patch(f->module, f, target, GET_CODE_POS(&ctx->emit) + 1, s_local_thread_id);
 
             // CALL rel32
-            EMIT(0xE8), EMIT4(0x0);
+            EMIT1(&ctx->emit, 0xE8), EMIT4(&ctx->emit, 0x0);
             break;
         }
         case TB_SCALL: {
@@ -631,7 +635,7 @@ static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r, size_t queue
             INST2(MOV, &dst, &src, TB_TYPE_I64);
 
             // SYSCALL
-            EMIT(0x0F), EMIT(0x05);
+            EMIT1(&ctx->emit, 0x0F), EMIT1(&ctx->emit, 0x05);
             break;
         }
         case TB_VCALL: {
@@ -713,9 +717,9 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
                 GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
 
                 // MOVABS REX.W B8+r imm64
-                EMIT(dst.gpr >= 8 ? 0x49 : 0x48);
-                EMIT(0xB8 + (dst.gpr & 7));
-                EMIT8(n->integer.single_word);
+                EMIT1(&ctx->emit, dst.gpr >= 8 ? 0x49 : 0x48);
+                EMIT1(&ctx->emit, 0xB8 + (dst.gpr & 7));
+                EMIT8(&ctx->emit, n->integer.single_word);
                 return dst;
             }
         }
@@ -724,12 +728,12 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
             size_t len = n->string.length;
 
             GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
-            EMIT(rex(true, dst.gpr, RBP, 0));
-            EMIT(0x8D);
-            EMIT(mod_rx_rm(MOD_INDIRECT, dst.gpr, RBP));
+            EMIT1(&ctx->emit, rex(true, dst.gpr, RBP, 0));
+            EMIT1(&ctx->emit, 0x8D);
+            EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT, dst.gpr, RBP));
 
-            uint32_t disp = tb_emit_const_patch(f->module, f, GET_CODE_POS(), str, len, s_local_thread_id);
-            EMIT4(disp);
+            uint32_t disp = tb_emit_const_patch(f->module, f, GET_CODE_POS(&ctx->emit), str, len, s_local_thread_id);
+            EMIT4(&ctx->emit, disp);
             return dst;
         }
 
@@ -774,33 +778,33 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
                 // mov t0, dword    [_tls_index]
                 GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
 
-                if (dst.gpr >= 8) EMIT(0x41);
-                EMIT(0x8B), EMIT(((dst.gpr & 7) << 3) | RBP), EMIT4(0x00);
-                tb_emit_ecall_patch(f->module, f, m->tls_index_extern, GET_CODE_POS() - 4, s_local_thread_id);
+                if (dst.gpr >= 8) EMIT1(&ctx->emit, 0x41);
+                EMIT1(&ctx->emit, 0x8B), EMIT1(&ctx->emit, ((dst.gpr & 7) << 3) | RBP), EMIT4(&ctx->emit, 0x00);
+                tb_emit_ecall_patch(f->module, f, m->tls_index_extern, GET_CODE_POS(&ctx->emit) - 4, s_local_thread_id);
 
                 // mov t1, qword gs:[58h]
                 GAD_VAL t1 = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);
-                EMIT(0x65);
-                EMIT(t1.gpr >= 8 ? 0x4C : 0x48);
-                EMIT(0x8B);
-                EMIT(mod_rx_rm(MOD_INDIRECT, t1.gpr, RSP));
-                EMIT(mod_rx_rm(SCALE_X1, RSP, RBP));
-                EMIT4(0x58);
+                EMIT1(&ctx->emit, 0x65);
+                EMIT1(&ctx->emit, t1.gpr >= 8 ? 0x4C : 0x48);
+                EMIT1(&ctx->emit, 0x8B);
+                EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT, t1.gpr, RSP));
+                EMIT1(&ctx->emit, mod_rx_rm(SCALE_X1, RSP, RBP));
+                EMIT4(&ctx->emit, 0x58);
 
                 // mov t1, qword [t1+t0*8]
                 Val mem = val_base_index(TB_TYPE_PTR, t1.gpr, dst.gpr, SCALE_X8);
                 INST2(MOV, &t1, &mem, TB_TYPE_I64);
 
                 // lea addr, [t1+relocation]
-                EMIT(rex(true, dst.gpr, t1.gpr, 0)), EMIT(0x8D);
+                EMIT1(&ctx->emit, rex(true, dst.gpr, t1.gpr, 0)), EMIT1(&ctx->emit, 0x8D);
                 if ((t1.gpr & 7) == RSP) {
-                    EMIT(mod_rx_rm(MOD_INDIRECT_DISP32, dst.gpr, RSP));
-                    EMIT(mod_rx_rm(SCALE_X1, RSP, t1.gpr));
+                    EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT_DISP32, dst.gpr, RSP));
+                    EMIT1(&ctx->emit, mod_rx_rm(SCALE_X1, RSP, t1.gpr));
                 } else {
-                    EMIT(mod_rx_rm(MOD_INDIRECT_DISP32, dst.gpr, t1.gpr));
+                    EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT_DISP32, dst.gpr, t1.gpr));
                 }
-                EMIT4(0);
-                tb_emit_global_patch(f->module, f, GET_CODE_POS() - 4, n->global.value, s_local_thread_id);
+                EMIT4(&ctx->emit, 0);
+                tb_emit_global_patch(f->module, f, GET_CODE_POS(&ctx->emit) - 4, n->global.value, s_local_thread_id);
 
                 GAD_FN(unlock_register)(ctx, f, X64_REG_CLASS_GPR, t1.gpr);
                 return dst;
@@ -904,10 +908,10 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
                     INST2(MOV, &dst, &index, TB_TYPE_PTR);
 
                     // shl index, stride_as_shift
-                    EMIT(rex(true, 0, dst.gpr, 0));
-                    EMIT(0xC1);
-                    EMIT(mod_rx_rm(MOD_DIRECT, 0x04, dst.gpr));
-                    EMIT(stride_as_shift);
+                    EMIT1(&ctx->emit, rex(true, 0, dst.gpr, 0));
+                    EMIT1(&ctx->emit, 0xC1);
+                    EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 0x04, dst.gpr));
+                    EMIT1(&ctx->emit, stride_as_shift);
 
                     stride_as_shift = 0; // pre-multiplied, don't propagate
                 }
@@ -916,10 +920,10 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
                 written_to_dst = true;
 
                 // imul dst, index, stride
-                EMIT(rex(true, dst.gpr, index.gpr, 0));
-                EMIT(0x69);
-                EMIT(mod_rx_rm(MOD_DIRECT, dst.gpr, index.gpr));
-                EMIT4(stride);
+                EMIT1(&ctx->emit, rex(true, dst.gpr, index.gpr, 0));
+                EMIT1(&ctx->emit, 0x69);
+                EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, dst.gpr, index.gpr));
+                EMIT4(&ctx->emit, stride);
 
                 stride_as_shift = 0; // pre-multiplied, don't propagate
             }
@@ -1020,13 +1024,13 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
                 // D2 /4       shl r/m, cl
                 // D2 /5       shr r/m, cl
                 // D2 /7       sar r/m, cl
-                if (bits_in_type == 16) EMIT(0x66);
-                EMIT(rex(bits_in_type == 64, 0x00, dst.gpr, 0x00));
-                EMIT((bits_in_type == 8 ? 0xD2 : 0xD3));
+                if (bits_in_type == 16) EMIT1(&ctx->emit, 0x66);
+                EMIT1(&ctx->emit, rex(bits_in_type == 64, 0x00, dst.gpr, 0x00));
+                EMIT1(&ctx->emit, (bits_in_type == 8 ? 0xD2 : 0xD3));
                 switch (type) {
-                    case TB_SHL: EMIT(mod_rx_rm(MOD_DIRECT, 0x04, dst.gpr)); break;
-                    case TB_SHR: EMIT(mod_rx_rm(MOD_DIRECT, 0x05, dst.gpr)); break;
-                    case TB_SAR: EMIT(mod_rx_rm(MOD_DIRECT, 0x07, dst.gpr)); break;
+                    case TB_SHL: EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 0x04, dst.gpr)); break;
+                    case TB_SHR: EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 0x05, dst.gpr)); break;
+                    case TB_SAR: EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 0x07, dst.gpr)); break;
                     default: tb_unreachable();
                 }
 

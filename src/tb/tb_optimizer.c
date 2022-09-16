@@ -207,6 +207,10 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
         // printf("ORIGINAL\n");
         // tb_function_print(f, tb_default_print_callback, stdout, false);
         // printf("\n\n");
+        if (tb_function_validate(f) > 0) {
+            fprintf(stderr, "Validator failed on %s on original IR\n", f->name);
+            abort();
+        }
 
         FOREACH_N(j, 0, pass_count) {
             switch (passes[j].mode) {
@@ -263,6 +267,11 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
                     // printf("%s\n", passes[j].name);
                     // tb_function_print(f, tb_default_print_callback, stdout, false);
                     // printf("\n\n");
+
+                    if (tb_function_validate(f) > 0) {
+                        fprintf(stderr, "Validator failed on %s after %s\n", f->name, passes[j].name);
+                        abort();
+                    }
                 }
                 break;
 

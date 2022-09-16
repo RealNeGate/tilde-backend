@@ -155,7 +155,7 @@ static bool dead_block_elim(TB_Function* f) {
         TB_Reg* mark_to_kill = tb_tls_push(tls, 0);
 
         TB_FOR_BASIC_BLOCK(bb, f) {
-            if (bb > 0 && preds.count[bb] == 0) {
+            if (bb > 0 && f->bbs[bb].end != 0 && preds.count[bb] == 0) {
                 tb_tls_push(tls, sizeof(int));
                 mark_to_kill[kill_count++] = bb;
             }
@@ -163,11 +163,12 @@ static bool dead_block_elim(TB_Function* f) {
 
         // actually delete them
         FOREACH_N(i, 0, kill_count) {
-            f->bbs[i] = (TB_BasicBlock){ 0 };
+            f->bbs[mark_to_kill[i]] = (TB_BasicBlock){ 0 };
         }
 
         local_changes = (kill_count > 0);
         changes |= local_changes;
+        tb_free_temp_predeccesors(tls, preds);
     } while (local_changes);
 
     return changes;

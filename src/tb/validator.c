@@ -7,9 +7,19 @@ TB_API bool tb_validator_next(TB_Function* f, TB_Validator* v) {
 
         for (; v->l < f->bb_count; v->l++) {
             v->end = f->bbs[v->l].end;
+            if (v->end == 0) continue; // Empty basic block
 
             v->r = f->bbs[v->l].start;
             while (v->r != 0 && v->r != v->end) {
+                TB_Node* n = &f->nodes[v->r];
+                TB_FOR_INPUT_IN_NODE(it, f, n) {
+                    if (v->r == it.r) {
+                        v->type = TB_VALIDATION_SELF_REFERENCE;
+                        v->self_reference = v->r;
+                        CO_YIELD(v, true);
+                    }
+                }
+
                 if (TB_IS_NODE_TERMINATOR(f->nodes[v->r].type)) {
                     v->type = TB_VALIDATION_OUT_OF_PLACE_TERMINATOR;
                     v->out_of_place_terminator = v->r;
@@ -38,6 +48,12 @@ TB_API bool tb_validator_next(TB_Function* f, TB_Validator* v) {
 
                 v->type = TB_VALIDATION_NO_TERMINATOR;
                 v->no_terminator_label = v->l;
+                CO_YIELD(v, true);
+            }
+
+            if (v->r != v->end) {
+                v->type = TB_VALIDATION_TERMINATOR_MISMATCH;
+                v->terminator_mismatch = v->l;
                 CO_YIELD(v, true);
             }
         }
@@ -75,6 +91,14 @@ TB_API int tb_function_validate(TB_Function* f) {
             }
             case TB_VALIDATION_OUT_OF_PLACE_TERMINATOR: {
                 fprintf(stderr, "%s:r%d: cannot place a terminator in the middle of a basic block.\n", f->name, v.out_of_place_terminator);
+                break;
+            }
+            case TB_VALIDATION_TERMINATOR_MISMATCH: {
+                fprintf(stderr, "%s:L%d: terminator is not described correctly in the linked list.\n", f->name, v.terminator_mismatch);
+                break;
+            }
+            case TB_VALIDATION_SELF_REFERENCE: {
+                fprintf(stderr, "%s:r%d: self referencial node.\n", f->name, v.self_reference);
                 break;
             }
         }

@@ -140,7 +140,7 @@ static TB_Reg find_similar_def_in_bb(TB_Function* f, BasicBlockDefs* bb_defs, TB
 static TB_Reg walk_dominators_for_similar_def(TB_Function* f, BasicBlockDefs* defs, TB_Label* doms, TB_Label curr, TB_Reg r) {
     TB_Label parent = doms[curr];
 
-    if (parent != 0) {
+    if (parent != 0 && curr != parent) {
         TB_Reg result = walk_dominators_for_similar_def(f, defs, doms, parent, r);
         if (result != TB_NULL_REG) {
             return result;

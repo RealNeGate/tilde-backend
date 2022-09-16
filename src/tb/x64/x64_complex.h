@@ -61,8 +61,15 @@ typedef struct {
 } PhiValue;
 
 typedef struct {
-    X64_CtxHeader header;
+    TB_CGEmitter emit;
     int* use_count;
+
+    // Used to allocate spills
+    uint32_t stack_usage;
+
+    // GPRs are the bottom 32bit
+    // XMM is the top 32bit
+    uint64_t regs_to_save;
 
     bool is_sysv;
     uint32_t caller_usage;
@@ -596,7 +603,7 @@ static Val complex_resolve_operand(X64_ComplexCtx* restrict ctx, TB_Function* f,
     tb_todo();
 }
 
-TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
+TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t out_capacity, size_t local_thread_id) {
     s_local_thread_id = local_thread_id;
 
     TB_TemporaryStorage* tls = tb_tls_allocate();
@@ -611,37 +618,43 @@ TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB
         FunctionTallyComplex tally = tally_memory_usage_complex(f);
         is_ctx_heap_allocated = !tb_tls_can_fit(tls, tally.memory_usage);
 
-        size_t ctx_size = sizeof(X64_ComplexCtx);
         if (is_ctx_heap_allocated) {
             // printf("Could not allocate x64 code gen context: using heap fallback.
             // (%zu bytes)\n", tally.memory_usage);
-            ctx = calloc(1, ctx_size);
-
-            ctx->header.labels        = tb_platform_heap_alloc(f->bb_count * sizeof(uint32_t));
-            ctx->header.label_patches = tb_platform_heap_alloc(tally.label_patch_count * sizeof(LabelPatch));
-            ctx->header.ret_patches   = tb_platform_heap_alloc(tally.return_count * sizeof(ReturnPatch));
+            ctx = tb_platform_heap_alloc(sizeof(X64_ComplexCtx));
+            *ctx = (X64_ComplexCtx) {
+                .emit = {
+                    .f             = f,
+                    .capacity      = out_capacity,
+                    .data          = out,
+                    .labels        = tb_platform_heap_alloc(f->bb_count * sizeof(uint32_t)),
+                    .label_patches = tb_platform_heap_alloc(tally.label_patch_count * sizeof(LabelPatch)),
+                    .ret_patches   = tb_platform_heap_alloc(tally.return_count * sizeof(ReturnPatch))
+                },
+            };
 
             ctx->use_count  = tb_platform_heap_alloc(f->node_count * sizeof(TB_Reg));
             ctx->phis       = tb_platform_heap_alloc(tally.phi_count * sizeof(PhiValue));
             ctx->insts      = tb_platform_heap_alloc(f->node_count * 2 * sizeof(MIR_Inst));
             ctx->parameters = tb_platform_heap_alloc(f->prototype->param_count * sizeof(TreeVReg));
         } else {
-            ctx = tb_tls_push(tls, ctx_size);
-            memset(ctx, 0, ctx_size);
-
-            ctx->header.labels = tb_tls_push(tls, f->bb_count * sizeof(uint32_t));
-            ctx->header.label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch));
-            ctx->header.ret_patches = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch));
+            ctx = tb_tls_push(tls, sizeof(X64_ComplexCtx));
+            *ctx = (X64_ComplexCtx) {
+                .emit = {
+                    .f             = f,
+                    .capacity      = out_capacity,
+                    .data          = out,
+                    .labels        = tb_tls_push(tls, f->bb_count * sizeof(uint32_t)),
+                    .label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch)),
+                    .ret_patches   = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch))
+                },
+            };
 
             ctx->use_count  = tb_tls_push(tls, f->node_count * sizeof(TB_Reg));
             ctx->phis       = tb_tls_push(tls, tally.phi_count * sizeof(PhiValue));
             ctx->insts      = tb_tls_push(tls, f->node_count * 2 * sizeof(MIR_Inst));
             ctx->parameters = tb_tls_push(tls, f->prototype->param_count * sizeof(TreeVReg));
         }
-
-        ctx->header.start_out = ctx->header.out = out;
-        ctx->header.f = f;
-        ctx->header.function_id = f - f->module->functions.data;
 
         ctx->inst_cap = f->node_count * 2;
 
@@ -763,36 +776,36 @@ TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB
     }
 
     // Tally up any saved XMM registers
-    ctx->header.stack_usage += tb_popcount((ctx->header.regs_to_save >> 16) & 0xFFFF) * 16;
-    ctx->header.stack_usage = align_up(ctx->header.stack_usage + 8, 16) + 8;
+    ctx->stack_usage += tb_popcount((ctx->regs_to_save >> 16) & 0xFFFF) * 16;
+    ctx->stack_usage = align_up(ctx->stack_usage + 8, 16) + 8;
 
     ////////////////////////////////
     // Evaluate internal relocations (return and labels)
     ////////////////////////////////
-    loop(i, ctx->header.ret_patch_count) {
-        uint32_t pos = ctx->header.ret_patches[i];
-        PATCH4(pos, GET_CODE_POS() - (pos + 4));
+    FOREACH_N(i, 0, ctx->emit.ret_patch_count) {
+        uint32_t pos = ctx->emit.ret_patches[i];
+        PATCH4(&ctx->emit, pos, GET_CODE_POS(&ctx->emit) - (pos + 4));
     }
 
-    loop(i, ctx->header.label_patch_count) {
-        uint32_t pos = ctx->header.label_patches[i].pos;
-        uint32_t target_lbl = ctx->header.label_patches[i].target_lbl;
+    FOREACH_N(i, 0, ctx->emit.label_patch_count) {
+        uint32_t pos = ctx->emit.label_patches[i].pos;
+        uint32_t target_lbl = ctx->emit.label_patches[i].target_lbl;
 
-        PATCH4(pos, ctx->header.labels[target_lbl] - (pos + 4));
+        PATCH4(&ctx->emit, pos, ctx->emit.labels[target_lbl] - (pos + 4));
     }
 
     TB_FunctionOutput func_out = {
         .linkage = f->linkage,
-        .code = ctx->header.start_out,
-        .code_size = ctx->header.out - ctx->header.start_out,
-        .stack_usage = ctx->header.stack_usage,
-        .prologue_epilogue_metadata = ctx->header.regs_to_save
+        .code = ctx->emit.data,
+        .code_size = ctx->emit.count,
+        .stack_usage = ctx->stack_usage,
+        .prologue_epilogue_metadata = ctx->regs_to_save
     };
 
     if (is_ctx_heap_allocated) {
-        tb_platform_heap_free(ctx->header.labels);
-        tb_platform_heap_free(ctx->header.label_patches);
-        tb_platform_heap_free(ctx->header.ret_patches);
+        tb_platform_heap_free(ctx->emit.labels);
+        tb_platform_heap_free(ctx->emit.label_patches);
+        tb_platform_heap_free(ctx->emit.ret_patches);
 
         tb_platform_heap_free(ctx->use_count);
         tb_platform_heap_free(ctx->phis);

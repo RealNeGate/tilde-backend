@@ -939,13 +939,17 @@ extern "C" {
             TB_VALIDATION_TERMINATOR_HAS_NEXT,
             TB_VALIDATION_NON_TERMINATOR_HAS_NO_NEXT,
             TB_VALIDATION_OUT_OF_PLACE_TERMINATOR,
+            TB_VALIDATION_TERMINATOR_MISMATCH,
             TB_VALIDATION_NO_TERMINATOR,
+            TB_VALIDATION_SELF_REFERENCE,
         } type;
         union {
             TB_Label no_terminator_label;
             TB_Reg terminator_has_next;
             TB_Reg non_terminator_no_next;
             TB_Reg out_of_place_terminator;
+            TB_Label terminator_mismatch;
+            TB_Reg self_reference;
         };
 
         // private
@@ -1268,13 +1272,20 @@ extern "C" {
     TB_API TB_Reg tb_node_arith_get_right(TB_Function* f, TB_Reg r);
 
     ////////////////////////////////
-    // Objects
+    // Format parsing
     ////////////////////////////////
     TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file);
     void tb_archive_free(TB_ArchiveFile* archive);
 
     TB_ObjectFile* tb_object_parse_coff(const TB_Slice file);
     void tb_object_free(TB_ObjectFile* obj);
+
+    ////////////////////////////////
+    // Test suite
+    ////////////////////////////////
+    #ifdef TB_COMPILE_TESTS
+    bool tb_x64_test_suite(void);
+    #endif /* TB_COMPILE_TESTS */
 
     #ifdef __cplusplus
 }

@@ -332,9 +332,11 @@ TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStora
     if (tls) preds = tb_tls_push(tls, f->bb_count * sizeof(TB_Label));
     else preds = tb_platform_heap_alloc(f->bb_count * sizeof(TB_Label));
 
-    TB_FOR_BASIC_BLOCK(l, f) {
-        TB_Node* end = &f->nodes[f->bbs[l].end];
+    TB_FOR_BASIC_BLOCK(bb, f) {
+        // Empty BB
+        if (f->bbs[bb].end == 0) continue;
 
+        TB_Node* end = &f->nodes[f->bbs[bb].end];
         switch (end->type) {
             case TB_IF:
             if (l == end->if_.if_true) preds[count++] = l;

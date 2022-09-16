@@ -11,6 +11,8 @@
 // #include "generic_addrdesc.h"
 //
 // Explanations:
+#include "emitter.h"
+
 static_assert(sizeof(float) == sizeof(uint32_t), "lil bitch... float gotta be 32bit");
 static_assert(sizeof(double) == sizeof(uint64_t), "big bitch... double gotta be 64bit");
 
@@ -26,36 +28,14 @@ static thread_local size_t s_local_thread_id;
 #define EITHER3(a, b, c, d) ((a) == (b) || (a) == (c) || (a) == (d))
 #define FITS_INTO(a, type)  ((a) == ((type)(a)))
 
-#ifndef GET_CODE_POS
-#define GET_CODE_POS() (ctx->out - ctx->start_out)
-#endif
-
 enum {
     GAD_VAL_UNRESOLVED = 0,
     GAD_VAL_FLAGS      = 1,
     GAD_VAL_REGISTER   = 2,
 };
 
-// We really only need the position where to patch
-// it since it's all internal and the target is implicit.
-typedef uint32_t ReturnPatch;
-
-// this would represent a set of instructions which pipe results into each other.
-// it is the user's responsibility to know when the chain should be cut and this
-// process is known as tiling *technically*.
-typedef struct InstThread {
-    TB_Reg r;
-} InstThread;
-
-typedef struct LabelPatch {
-    int pos;
-    TB_Label target_lbl;
-} LabelPatch;
-
 struct Ctx {
-    // Header that
-    uint8_t* out;
-    uint8_t* start_out;
+    TB_CGEmitter emit;
 
     TB_Function* f;
     TB_Predeccesors preds;
@@ -668,7 +648,7 @@ static void GAD_FN(resolve_leftover)(Ctx* restrict ctx, TB_Function* f, int queu
 
 // returns the register for the next basic block
 static void GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Label bb, TB_Label fallthrough) {
-    ctx->labels[bb] = GET_CODE_POS();
+    ctx->labels[bb] = GET_CODE_POS(&ctx->emit);
 
     size_t queue_length_before = ctx->queue_length;
     TB_Reg bb_end = f->bbs[bb].end;
@@ -694,7 +674,7 @@ static void GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Label bb, TB_L
                 f->lines[f->line_count++] = (TB_Line) {
                     .file = n->line_info.file,
                     .line = n->line_info.line,
-                    .pos = GET_CODE_POS()
+                    .pos = GET_CODE_POS(&ctx->emit)
                 };
                 break;
             }
@@ -742,6 +722,8 @@ static void GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Label bb, TB_L
     TB_NodeTypeEnum end_type = end->type;
 
     switch (end_type) {
+        case TB_NULL: break;
+
         case TB_GOTO: {
             GAD_FN(kill_flags)(ctx, f);
             GAD_FN(eval_bb_edge)(ctx, f, bb, end->goto_.label);
@@ -818,7 +800,7 @@ static void GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Label bb, TB_L
     ctx->flags_bound = 0;
 }
 
-static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
+static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t out_capacity, size_t local_thread_id) {
     s_local_thread_id = local_thread_id;
     TB_TemporaryStorage* tls = tb_tls_allocate();
     TB_Predeccesors preds = tb_get_temp_predeccesors(f, tls);
@@ -833,12 +815,15 @@ static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const
         *ctx = (Ctx){
             .f             = f,
             .tls           = tls,
-            .out           = out,
-            .start_out     = out,
+            .emit = {
+                .f             = f,
+                .capacity      = out_capacity,
+                .data          = out,
+                .labels        = tb_tls_push(tls, f->bb_count * sizeof(uint32_t)),
+                .label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch)),
+                .ret_patches   = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch)),
+            },
             .preds         = preds,
-            .labels        = tb_tls_push(tls, f->bb_count * sizeof(uint32_t)),
-            .label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch)),
-            .ret_patches   = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch)),
             .ordinal       = tb_tls_push(tls, f->node_count * sizeof(int)),
             .use_count     = tb_tls_push(tls, f->node_count * sizeof(TB_Reg)),
         };
@@ -921,8 +906,8 @@ static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const
     // we're done, clean up
     TB_FunctionOutput func_out = {
         .linkage = f->linkage,
-        .code = ctx->start_out,
-        .code_size = ctx->out - ctx->start_out,
+        .code = ctx->emit.data,
+        .code_size = ctx->emit.count,
         .stack_usage = ctx->stack_usage,
         .prologue_epilogue_metadata = ctx->regs_to_save
     };

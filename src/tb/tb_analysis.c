@@ -16,7 +16,7 @@ static void postorder(TB_Function* f, TB_PostorderWalk* ctx, TB_Label bb) {
     ctx->visited[bb] = true;
 
     TB_Node* end = &f->nodes[f->bbs[bb].end];
-    if (end->type == TB_RET || end->type == TB_TRAP || end->type == TB_UNREACHABLE) {
+    if (end->type == TB_NULL || end->type == TB_RET || end->type == TB_TRAP || end->type == TB_UNREACHABLE) {
         /* RET can't do shit in this context */
     } else if (end->type == TB_GOTO) {
         postorder(f, ctx, end->goto_.label);
@@ -107,6 +107,10 @@ TB_Predeccesors tb_get_temp_predeccesors(TB_Function* f, TB_TemporaryStorage* tl
     }
 
     return p;
+}
+
+void tb_free_temp_predeccesors(TB_TemporaryStorage* tls, TB_Predeccesors preds) {
+    tb_tls_restore(tls, preds.count);
 }
 
 TB_API TB_Predeccesors tb_get_predeccesors(TB_Function* f) {

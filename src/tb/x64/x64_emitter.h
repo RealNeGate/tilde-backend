@@ -1,23 +1,16 @@
 
-#define EMIT(b)  (*ctx->out = (b), ctx->out += 1)
-#define EMIT2(b) (*((uint16_t*)ctx->out) = (b), ctx->out += 2)
-#define EMIT4(b) (*((uint32_t*)ctx->out) = (b), ctx->out += 4)
-#define EMIT8(b) (*((uint64_t*)ctx->out) = (b), ctx->out += 8)
-
-#define RELOC4(p, b) (*((uint32_t*)&ctx->start_out[p]) += (b))
-
-inline static uint8_t mod_rx_rm(uint8_t mod, uint8_t rx, uint8_t rm) {
+static uint8_t mod_rx_rm(uint8_t mod, uint8_t rx, uint8_t rm) {
     return ((mod & 3) << 6) | ((rx & 7) << 3) | (rm & 7);
 }
 
-inline static uint8_t rex(bool is_64bit, uint8_t rx, uint8_t base, uint8_t index) {
+static uint8_t rex(bool is_64bit, uint8_t rx, uint8_t base, uint8_t index) {
     return 0x40 | (is_64bit ? 8 : 0) | (base >> 3) | ((index >> 3) << 1) | ((rx >> 3) << 2);
 }
 
-inline static void emit_memory_operand(Ctx* restrict ctx, uint8_t rx, const Val* restrict a) {
+static void emit_memory_operand(TB_CGEmitter* restrict e, uint8_t rx, const Val* restrict a) {
     // Operand encoding
     if (a->type == VAL_GPR || a->type == VAL_XMM) {
-        EMIT(mod_rx_rm(MOD_DIRECT, rx, a->gpr));
+        EMIT1(e, mod_rx_rm(MOD_DIRECT, rx, a->gpr));
     } else if (a->type == VAL_MEM) {
         GPR base = a->mem.base;
         GPR index = a->mem.index;
@@ -32,29 +25,32 @@ inline static void emit_memory_operand(Ctx* restrict ctx, uint8_t rx, const Val*
         if (disp == 0 && (base & 7) != RBP) mod = MOD_INDIRECT;
         else if (disp == (int8_t)disp) mod = MOD_INDIRECT_DISP8;
 
-        EMIT(mod_rx_rm(mod, rx, needs_index ? RSP : base));
-        if (needs_index) { EMIT(mod_rx_rm(scale, (base & 7) == RSP ? RSP : index, base)); }
+        EMIT1(e, mod_rx_rm(mod, rx, needs_index ? RSP : base));
+        if (needs_index) {
+            EMIT1(e, mod_rx_rm(scale, (base & 7) == RSP ? RSP : index, base));
+        }
 
         if (mod == MOD_INDIRECT_DISP8) {
-            EMIT((int8_t)disp);
+            EMIT1(e, (int8_t)disp);
         } else if (mod == MOD_INDIRECT_DISP32) {
-            EMIT4(disp);
+            EMIT4(e, disp);
         }
     } else if (a->type == VAL_GLOBAL) {
-        EMIT(((rx & 7) << 3) | RBP);
-        EMIT4(a->global.disp);
+        EMIT1(e, ((rx & 7) << 3) | RBP);
+        EMIT4(e, a->global.disp);
 
-        tb_emit_global_patch(ctx->f->module, ctx->f, (ctx->out - ctx->start_out) - 4, a->global.g, s_local_thread_id);
+        tb_emit_global_patch(e->f->module, e->f, e->count - 4, a->global.g, s_local_thread_id);
     } else {
         tb_unreachable();
     }
 }
 
-static void inst1(Ctx* restrict ctx, Inst1 op, const Val* r) {
+// cannot generate patches with f being NULL
+static void inst1(TB_CGEmitter* restrict e, Inst1 op, const Val* r) {
     if (r->type == VAL_GPR) {
-        EMIT(rex(true, 0x00, r->gpr, 0x00));
-        EMIT((op >> 8) & 0xFF);
-        EMIT(mod_rx_rm(MOD_DIRECT, op & 0xFF, r->gpr));
+        EMIT1(e, rex(true, 0x00, r->gpr, 0x00));
+        EMIT1(e, (op >> 8) & 0xFF);
+        EMIT1(e, mod_rx_rm(MOD_DIRECT, op & 0xFF, r->gpr));
     } else if (r->type == VAL_MEM) {
         GPR base = r->mem.base;
         GPR index = r->mem.index;
@@ -63,8 +59,8 @@ static void inst1(Ctx* restrict ctx, Inst1 op, const Val* r) {
 
         bool needs_index = (index != GPR_NONE) || (base & 7) == RSP;
 
-        EMIT(rex(true, 0x00, base, index != GPR_NONE ? index : 0));
-        EMIT((op >> 8) & 0xFF);
+        EMIT1(e, rex(true, 0x00, base, index != GPR_NONE ? index : 0));
+        EMIT1(e, (op >> 8) & 0xFF);
 
         // If it needs an index, it'll put RSP into the base slot
         // and write the real base into the SIB
@@ -73,25 +69,28 @@ static void inst1(Ctx* restrict ctx, Inst1 op, const Val* r) {
         else if (disp == (int8_t)disp)
             mod = MOD_INDIRECT_DISP8;
 
-        EMIT(mod_rx_rm(mod, op & 0xFF, needs_index ? RSP : base));
-        if (needs_index) { EMIT(mod_rx_rm(scale, (base & 7) == RSP ? RSP : index, base)); }
+        EMIT1(e, mod_rx_rm(mod, op & 0xFF, needs_index ? RSP : base));
+        if (needs_index) {
+            EMIT1(e, mod_rx_rm(scale, (base & 7) == RSP ? RSP : index, base));
+        }
 
-        if (mod == MOD_INDIRECT_DISP8) EMIT((int8_t)disp);
-        else if (mod == MOD_INDIRECT_DISP32) EMIT4((int32_t)disp);
+        if (mod == MOD_INDIRECT_DISP8) EMIT1(e, (int8_t)disp);
+        else if (mod == MOD_INDIRECT_DISP32) EMIT4(e, (int32_t)disp);
     } else if (r->type == VAL_GLOBAL) {
         uint8_t rx = (op & 0xFF);
 
-        EMIT(0x48); // rex.w
-        EMIT((op >> 8) & 0xFF);
-        EMIT(((rx & 7) << 3) | RBP);
-        EMIT4(r->global.disp);
+        EMIT1(e, 0x48); // rex.w
+        EMIT1(e, (op >> 8) & 0xFF);
+        EMIT1(e, ((rx & 7) << 3) | RBP);
+        EMIT4(e, r->global.disp);
 
-        tb_emit_global_patch(ctx->f->module, ctx->f, (ctx->out - ctx->start_out) - 4, r->global.g, s_local_thread_id);
-    } else
+        tb_emit_global_patch(e->f->module, e->f, e->count - 4, r->global.g, s_local_thread_id);
+    } else {
         tb_unreachable();
+    }
 }
 
-static void inst2(Ctx* restrict ctx, Inst2Type op, const Val* a, const Val* b, TB_DataType dt) {
+static void inst2(TB_CGEmitter* restrict e, Inst2Type op, const Val* a, const Val* b, TB_DataType dt) {
     assert(op < (sizeof(inst2_tbl) / sizeof(inst2_tbl[0])));
     assert(dt.type == TB_INT || dt.type == TB_PTR);
 
@@ -124,7 +123,7 @@ static void inst2(Ctx* restrict ctx, Inst2Type op, const Val* a, const Val* b, T
 
         // Address size prefix
         if (bits_in_type == 16 && inst->ext != EXT_DEF2) {
-            EMIT(0x66);
+            EMIT1(e, 0x66);
         }
 
         // RX
@@ -138,25 +137,25 @@ static void inst2(Ctx* restrict ctx, Inst2Type op, const Val* a, const Val* b, T
             base = a->gpr;
 
             if (base >= 8 || rx >= 8 || is_64bit) {
-                EMIT(rex(is_64bit, rx, base, 0));
+                EMIT1(e, rex(is_64bit, rx, base, 0));
             } else if (bits_in_type == 8 && (base >= 4 || rx >= 4)) {
-                EMIT(rex(false, rx, base, 0));
+                EMIT1(e, rex(false, rx, base, 0));
             }
         } else if (a->type == VAL_MEM) {
             base = a->mem.base;
 
             uint8_t rex_index = (a->mem.index != GPR_NONE ? a->mem.index : 0);
             if (base >= 8 || rx >= 8 || rex_index >= 8 || is_64bit) {
-                EMIT(rex(is_64bit, rx, base, rex_index));
+                EMIT1(e, rex(is_64bit, rx, base, rex_index));
             } else if (bits_in_type == 8 && (base >= 4 || rx >= 4 || rex_index >= 4)) {
-                EMIT(rex(false, rx, base, 0));
+                EMIT1(e, rex(false, rx, base, 0));
             }
         } else if (a->type == VAL_GLOBAL) {
             base = RBP;
             if (rx >= 8 || is_64bit) {
-                EMIT(rex(is_64bit, rx, base, 0));
+                EMIT1(e, rex(is_64bit, rx, base, 0));
             } else if (bits_in_type == 8) {
-                EMIT(rex(false, rx, base, 0));
+                EMIT1(e, rex(false, rx, base, 0));
             }
         } else tb_unreachable();
 
@@ -164,7 +163,7 @@ static void inst2(Ctx* restrict ctx, Inst2Type op, const Val* a, const Val* b, T
         if (inst->ext == EXT_DEF || inst->ext == EXT_DEF2) {
             // DEF instructions can only be 32bit and 64bit... maybe?
             if (op != XADD) sz = 0;
-            EMIT(0x0F);
+            EMIT1(e, 0x0F);
         }
 
         if (b->type == VAL_IMM && inst->op_i == 0 && inst->rx_i == 0) {
@@ -176,44 +175,44 @@ static void inst2(Ctx* restrict ctx, Inst2Type op, const Val* a, const Val* b, T
         uint8_t opcode = b->type == VAL_IMM ? inst->op_i : inst->op;
         if (short_imm) opcode |= 2;
 
-        EMIT(opcode | sz | (dir_flag ? 2 : 0));
+        EMIT1(e, opcode | sz | (dir_flag ? 2 : 0));
     } else tb_unreachable();
 
     // We forgot a case!
     assert(rx != 0xFF);
-    emit_memory_operand(ctx, rx, a);
+    emit_memory_operand(e, rx, a);
 
     if (b->type == VAL_IMM) {
         if (bits_in_type <= 8 || short_imm) {
             if (a->type == VAL_GLOBAL) {
-                RELOC4((ctx->out - ctx->start_out) - 4, -1);
+                RELOC4(e, e->count - 4, -1);
             }
 
             if (short_imm) {
                 assert(b->imm == (int8_t)b->imm);
             }
 
-            EMIT((int8_t)b->imm);
+            EMIT1(e, (int8_t)b->imm);
         } else if (bits_in_type <= 16) {
             if (a->type == VAL_GLOBAL) {
-                RELOC4((ctx->out - ctx->start_out) - 4, -2);
+                RELOC4(e, e->count - 4, -2);
             }
 
             uint32_t imm = b->imm;
             assert((imm & 0xFFFF0000) == 0xFFFF0000 || (imm & 0xFFFF0000) == 0);
 
-            EMIT2(imm);
+            EMIT2(e, imm);
         } else {
             if (a->type == VAL_GLOBAL) {
-                RELOC4((ctx->out - ctx->start_out) - 4, -4);
+                RELOC4(e, e->count - 4, -4);
             }
 
-            EMIT4((int32_t)b->imm);
+            EMIT4(e, (int32_t)b->imm);
         }
     }
 }
 
-static void inst2sse(Ctx* restrict ctx, Inst2FPType op, const Val* a, const Val* b, uint8_t flags) {
+static void inst2sse(TB_CGEmitter* restrict e, Inst2FPType op, const Val* a, const Val* b, uint8_t flags) {
     const static uint8_t OPCODES[] = {
         [FP_MOV]   = 0x10,
         [FP_ADD]   = 0x58,
@@ -249,49 +248,47 @@ static void inst2sse(Ctx* restrict ctx, Inst2FPType op, const Val* a, const Val*
     } else if (b->type == VAL_GLOBAL) {
         base  = 0;
         index = 0;
-    } else
+    } else {
         tb_todo();
+    }
 
     if ((flags & INST2FP_PACKED) == 0 && op != FP_UCOMI) {
-        EMIT(flags & INST2FP_DOUBLE ? 0xF2 : 0xF3);
+        EMIT1(e, flags & INST2FP_DOUBLE ? 0xF2 : 0xF3);
     } else if (flags & INST2FP_DOUBLE) {
         // packed double
-        EMIT(0x66);
+        EMIT1(e, 0x66);
     }
 
     if (rx >= 8 || base >= 8 || index >= 8) {
-        EMIT(rex(false, rx, base, index));
+        EMIT1(e, rex(false, rx, base, index));
     }
 
     // extension prefix
-    EMIT(0x0F);
+    EMIT1(e, 0x0F);
 
-    EMIT(OPCODES[op] + (supports_mem_dst ? dir : 0));
-    emit_memory_operand(ctx, rx, b);
+    EMIT1(e, OPCODES[op] + (supports_mem_dst ? dir : 0));
+    emit_memory_operand(e, rx, b);
 }
 
-inline static void jcc(Ctx* restrict ctx, Cond cc, int label) {
-    size_t pos = ctx->out - ctx->start_out;
-    ctx->label_patches[ctx->label_patch_count++] = (LabelPatch) { .pos = pos + 2, .target_lbl = label };
+static void jcc(TB_CGEmitter* restrict e, Cond cc, int label) {
+    e->label_patches[e->label_patch_count++] = (LabelPatch) { .pos = GET_CODE_POS(e) + 2, .target_lbl = label };
 
-    EMIT(0x0F);
-    EMIT(0x80 + (uint8_t)cc);
-    EMIT4(0x0);
+    EMIT1(e, 0x0F);
+    EMIT1(e, 0x80 + (uint8_t)cc);
+    EMIT4(e, 0x0);
 }
 
-inline static void jmp(Ctx* restrict ctx, int label) {
-    size_t pos = ctx->out - ctx->start_out;
-    ctx->label_patches[ctx->label_patch_count++] = (LabelPatch) { .pos = pos + 1, .target_lbl = label };
+static void jmp(TB_CGEmitter* restrict e, int label) {
+    e->label_patches[e->label_patch_count++] = (LabelPatch) { .pos = GET_CODE_POS(e) + 1, .target_lbl = label };
 
-    EMIT(0xE9);
-    EMIT4(0x0);
+    EMIT1(e, 0xE9);
+    EMIT4(e, 0x0);
 }
 
 // jmp .return
-inline static void ret_jmp(Ctx* restrict ctx) {
-    size_t pos = ctx->out - ctx->start_out;
-    ctx->ret_patches[ctx->ret_patch_count++] = pos + 1;
+static void ret_jmp(TB_CGEmitter* restrict e) {
+    e->ret_patches[e->ret_patch_count++] = GET_CODE_POS(e) + 1;
 
-    EMIT(0xE9);
-    EMIT4(0x0);
+    EMIT1(e, 0xE9);
+    EMIT4(e, 0x0);
 }

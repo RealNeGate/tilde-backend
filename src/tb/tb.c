@@ -32,8 +32,10 @@ int tb__get_local_tid(void) {
 
 static TB_CodeRegion* get_or_allocate_code_region(TB_Module* m, int tid) {
     if (m->code_regions[tid] == NULL) {
-        m->code_regions[tid] = tb_platform_valloc(CODE_REGION_BUFFER_SIZE);
+        m->code_regions[tid] = tb_platform_valloc(CODE_REGION_BUFFER_SIZE / total_tid);
         if (m->code_regions[tid] == NULL) tb_panic("could not allocate code region!");
+
+        m->code_regions[tid]->capacity = CODE_REGION_BUFFER_SIZE / total_tid;
     }
 
     return m->code_regions[tid];
@@ -140,10 +142,12 @@ TB_API bool tb_module_compile_function(TB_Module* m, TB_Function* f, TB_ISelMode
         isel_mode = TB_ISEL_FAST;
     }
 
+    uint8_t* local_buffer = &region->data[region->size];
+    size_t local_capacity = region->capacity - region->size;
     if (isel_mode == TB_ISEL_COMPLEX) {
-        *func_out = code_gen->complex_path(f, &m->features, &region->data[region->size], id);
+        *func_out = code_gen->complex_path(f, &m->features, local_buffer, local_capacity, id);
     } else {
-        *func_out = code_gen->fast_path(f, &m->features, &region->data[region->size], id);
+        *func_out = code_gen->fast_path(f, &m->features, local_buffer, local_capacity, id);
     }
 
     // prologue & epilogue insertion
@@ -172,10 +176,6 @@ TB_API bool tb_module_compile_function(TB_Module* m, TB_Function* f, TB_ISelMode
     tb_atomic_size_add(&m->functions.compiled_count, 1);
     region->size += func_out->code_size;
 
-    if (region->size > CODE_REGION_BUFFER_SIZE) {
-        tb_panic("Code region buffer: out of memory!\n");
-    }
-
     f->output = func_out;
     return true;
 }
@@ -197,7 +197,7 @@ TB_API void tb_module_destroy(TB_Module* m) {
     }
 
     loop(i, m->max_threads) if (m->code_regions[i]) {
-        tb_platform_vfree(m->code_regions[i], CODE_REGION_BUFFER_SIZE);
+        tb_platform_vfree(m->code_regions[i], m->code_regions[i]->capacity);
         m->code_regions[i] = NULL;
     }
 

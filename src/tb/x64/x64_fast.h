@@ -29,7 +29,7 @@ typedef struct {
 } FunctionTallySimple;
 
 typedef struct {
-    X64_CtxHeader header;
+    TB_CGEmitter emit;
 
     bool is_sysv;
 
@@ -37,6 +37,13 @@ typedef struct {
     int* ordinal;
     int register_barrier;
     GPR temp_load_reg; // sometimes we need a register to do a double-deref
+
+    // Used to allocate spills
+    uint32_t stack_usage;
+
+    // GPRs are the bottom 32bit
+    // XMM is the top 32bit
+    uint64_t regs_to_save;
 
     // Peephole to improve tiling
     // of memory operands:
@@ -221,7 +228,7 @@ static GPR fast_alloc_gpr(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r) {
             ctx->gpr_available -= 1;
 
             // mark register as to be saved
-            ctx->header.regs_to_save |= (1u << gpr) & (ctx->is_sysv ? SYSV_ABI_CALLEE_SAVED : WIN64_ABI_CALLEE_SAVED);
+            ctx->regs_to_save |= (1u << gpr) & (ctx->is_sysv ? SYSV_ABI_CALLEE_SAVED : WIN64_ABI_CALLEE_SAVED);
 
             return gpr;
         }
@@ -234,13 +241,15 @@ static GPR fast_alloc_gpr(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r) {
 static XMM fast_alloc_xmm(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r) {
     assert(ctx->xmm_available > 0);
 
-    loop(xmm, 16) {
+    FOREACH_N(xmm, 0, 16) {
         if (ctx->xmm_allocator[xmm] == TB_NULL_REG) {
             ctx->xmm_allocator[xmm] = r;
             ctx->xmm_available -= 1;
 
             // callee saves
-            if (!ctx->is_sysv && xmm > 5) { ctx->header.regs_to_save |= (1u << (16 + xmm)); }
+            if (!ctx->is_sysv && xmm > 5) {
+                ctx->regs_to_save |= (1u << (16 + xmm));
+            }
 
             return xmm;
         }
@@ -353,45 +362,34 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
                 // since t0 dies before dst is allocated we just recycle it
                 // mov t0, dword    [_tls_index]
                 Val dst = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, r));
-                if (dst.gpr >= 8) *ctx->header.out++ = 0x41;
-                *ctx->header.out++ = 0x8B;
-                *ctx->header.out++ = ((dst.gpr & 7) << 3) | RBP;
-                *ctx->header.out++ = 0x00;
-                *ctx->header.out++ = 0x00;
-                *ctx->header.out++ = 0x00;
-                *ctx->header.out++ = 0x00;
-                tb_emit_ecall_patch(f->module, f, m->tls_index_extern, GET_CODE_POS() - 4, s_local_thread_id);
+
+                if (dst.gpr >= 8) EMIT1(&ctx->emit, 0x41);
+                EMIT1(&ctx->emit, 0x8B), EMIT1(&ctx->emit, ((dst.gpr & 7) << 3) | RBP), EMIT4(&ctx->emit, 0x00);
+                tb_emit_ecall_patch(f->module, f, m->tls_index_extern, GET_CODE_POS(&ctx->emit) - 4, s_local_thread_id);
 
                 // mov t1, qword gs:[58h]
                 Val t1 = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
-                *ctx->header.out++ = 0x65;
-                *ctx->header.out++ = t1.gpr >= 8 ? 0x4C : 0x48;
-                *ctx->header.out++ = 0x8B;
-                *ctx->header.out++ = mod_rx_rm(MOD_INDIRECT, t1.gpr, RSP);
-                *ctx->header.out++ = mod_rx_rm(SCALE_X1, RSP, RBP);
-                *ctx->header.out++ = 0x58;
-                *ctx->header.out++ = 0x00;
-                *ctx->header.out++ = 0x00;
-                *ctx->header.out++ = 0x00;
+                EMIT1(&ctx->emit, 0x65);
+                EMIT1(&ctx->emit, t1.gpr >= 8 ? 0x4C : 0x48);
+                EMIT1(&ctx->emit, 0x8B);
+                EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT, t1.gpr, RSP));
+                EMIT1(&ctx->emit, mod_rx_rm(SCALE_X1, RSP, RBP));
+                EMIT4(&ctx->emit, 0x58);
 
-                // mov t1, qword    [t1+t0*8]
+                // mov t1, qword [t1+t0*8]
                 Val mem = val_base_index(TB_TYPE_PTR, t1.gpr, dst.gpr, SCALE_X8);
                 INST2(MOV, &t1, &mem, TB_TYPE_I64);
 
-                // lea addr,        [t1+relocation]
-                *ctx->header.out++ = rex(true, dst.gpr, t1.gpr, 0);
-                *ctx->header.out++ = 0x8D;
+                // lea addr, [t1+relocation]
+                EMIT1(&ctx->emit, rex(true, dst.gpr, t1.gpr, 0)), EMIT1(&ctx->emit, 0x8D);
                 if ((t1.gpr & 7) == RSP) {
-                    *ctx->header.out++ = mod_rx_rm(MOD_INDIRECT_DISP32, dst.gpr, RSP);
-                    *ctx->header.out++ = mod_rx_rm(SCALE_X1, RSP, t1.gpr);
+                    EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT_DISP32, dst.gpr, RSP));
+                    EMIT1(&ctx->emit, mod_rx_rm(SCALE_X1, RSP, t1.gpr));
                 } else {
-                    *ctx->header.out++ = mod_rx_rm(MOD_INDIRECT_DISP32, dst.gpr, t1.gpr);
+                    EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT_DISP32, dst.gpr, t1.gpr));
                 }
-                *ctx->header.out++ = 0x00;
-                *ctx->header.out++ = 0x00;
-                *ctx->header.out++ = 0x00;
-                *ctx->header.out++ = 0x00;
-                tb_emit_global_patch(f->module, f, GET_CODE_POS() - 4, n->global.value, s_local_thread_id);
+                EMIT4(&ctx->emit, 0);
+                tb_emit_global_patch(f->module, f, GET_CODE_POS(&ctx->emit) - 4, n->global.value, s_local_thread_id);
 
                 fast_def_gpr(ctx, f, r, dst.gpr, TB_TYPE_PTR);
                 fast_kill_temp_gpr(ctx, f, t1.gpr);
@@ -546,10 +544,9 @@ static void fast_mask_out(X64_FastCtx* restrict ctx, TB_Function* f, const Legal
         Val tmp = val_gpr(l.dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
 
         // MOVABS     REX.W B8+r imm64
-        *ctx->header.out++ = tmp.gpr >= 8 ? 0x49 : 0x48;
-        *ctx->header.out++ = 0xB8 + (tmp.gpr & 7);
-        *((uint64_t*)ctx->header.out) = l.mask;
-        ctx->header.out += 8;
+        EMIT1(&ctx->emit, tmp.gpr >= 8 ? 0x49 : 0x48);
+        EMIT1(&ctx->emit, 0xB8 + (tmp.gpr & 7));
+        EMIT8(&ctx->emit, l.mask);
 
         INST2(AND, dst, &tmp, l.dt);
 
@@ -599,7 +596,7 @@ static Val fast_get_tile_mapping(X64_FastCtx* restrict ctx, TB_Function* f, TB_R
 
 static void fast_evict_everything(X64_FastCtx* restrict ctx, TB_Function* f) {
     #if 1
-    loop(i, COUNTOF(GPR_PRIORITIES)) {
+    FOREACH_N(i, 0, COUNTOF(GPR_PRIORITIES)) {
         GPR gpr = GPR_PRIORITIES[i];
 
         if (ctx->gpr_allocator[gpr] != TB_NULL_REG) {
@@ -608,7 +605,7 @@ static void fast_evict_everything(X64_FastCtx* restrict ctx, TB_Function* f) {
         }
     }
 
-    loop(xmm, 16) {
+    FOREACH_N(xmm, 0, 16) {
         if (ctx->xmm_allocator[xmm] != TB_NULL_REG) {
             // eviction notice lmao
             fast_evict_xmm(ctx, f, xmm);
@@ -660,7 +657,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
         if (ctx->gpr_available < 4) {
             int barrier = ctx->register_barrier;
 
-            loop(i, COUNTOF(GPR_PRIORITIES)) {
+            FOREACH_N(i, 0, COUNTOF(GPR_PRIORITIES)) {
                 GPR gpr = GPR_PRIORITIES[i];
 
                 if (ctx->gpr_allocator[gpr] != TB_NULL_REG &&
@@ -676,7 +673,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
         } else if (ctx->xmm_available < 4) {
             int barrier = ctx->register_barrier;
 
-            loop(xmm, 16) {
+            FOREACH_N(xmm, 0, 16) {
                 if (ctx->xmm_allocator[xmm] != TB_NULL_REG &&
                     ctx->xmm_allocator[xmm] != TB_TEMP_REG &&
                     ctx->ordinal[ctx->xmm_allocator[xmm]] < barrier) {
@@ -753,16 +750,15 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
                 fast_def_gpr(ctx, f, r, dst_gpr, TB_TYPE_PTR);
 
-                *ctx->header.out++ = rex(true, dst_gpr, RBP, 0);
-                *ctx->header.out++ = 0x8D;
-                *ctx->header.out++ = mod_rx_rm(MOD_INDIRECT, dst_gpr, RBP);
-                *((uint32_t*)ctx->header.out) = 0;
-                ctx->header.out += 4;
+                EMIT1(&ctx->emit, rex(true, dst_gpr, RBP, 0));
+                EMIT1(&ctx->emit, 0x8D);
+                EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT, dst_gpr, RBP));
+                EMIT4(&ctx->emit, 0);
 
                 if (reg_type == TB_EXTERN_ADDRESS) {
-                    tb_emit_ecall_patch(f->module, f, n->external.value, GET_CODE_POS() - 4, s_local_thread_id);
+                    tb_emit_ecall_patch(f->module, f, n->external.value, GET_CODE_POS(&ctx->emit) - 4, s_local_thread_id);
                 } else {
-                    tb_emit_call_patch(f->module, f, n->func.value, GET_CODE_POS() - 4, s_local_thread_id);
+                    tb_emit_call_patch(f->module, f, n->func.value, GET_CODE_POS(&ctx->emit) - 4, s_local_thread_id);
                 }
                 break;
             }
@@ -773,10 +769,9 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
                 fast_def_gpr(ctx, f, r, dst_gpr, TB_TYPE_PTR);
 
-                *ctx->header.out++ = dst_gpr >= 8 ? 0x49 : 0x48;
-                *ctx->header.out++ = 0xB8 + (dst_gpr & 7);
-                *((uint64_t*)ctx->header.out) = n->integer.single_word;
-                ctx->header.out += 8;
+                EMIT1(&ctx->emit, dst_gpr >= 8 ? 0x49 : 0x48);
+                EMIT1(&ctx->emit, 0xB8 + (dst_gpr & 7));
+                EMIT8(&ctx->emit, n->integer.single_word);
             }
             break;
             case TB_FLOAT32_CONST: {
@@ -787,29 +782,34 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 fast_def_xmm(ctx, f, r, dst_xmm, TB_TYPE_PTR);
 
                 if (imm == 0) {
+                    // xorps dst, dst
                     if (dst_xmm >= 8) {
-                        *ctx->header.out++ = rex(true, dst_xmm, dst_xmm, 0);
+                        EMIT1(&ctx->emit, rex(true, dst_xmm, dst_xmm, 0));
                     }
-                    *ctx->header.out++ = 0x0F;
-                    *ctx->header.out++ = 0x57;
-                    *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, dst_xmm, dst_xmm);
+
+                    EMIT1(&ctx->emit, 0x0F);
+                    EMIT1(&ctx->emit, 0x57);
+                    EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, dst_xmm, dst_xmm));
                 } else {
                     // Convert it to raw bits
-                    *ctx->header.out++ = 0xF3;
-                    if (dst_xmm >= 8) *ctx->header.out++ = 0x44;
-                    *ctx->header.out++ = 0x0F;
-                    *ctx->header.out++ = 0x10;
-                    *ctx->header.out++ = mod_rx_rm(MOD_INDIRECT, dst_xmm, RBP);
+                    EMIT1(&ctx->emit, 0xF3);
+                    if (dst_xmm >= 8) {
+                        EMIT1(&ctx->emit, 0x44);
+                    }
+                    EMIT1(&ctx->emit, 0x0F);
+                    EMIT1(&ctx->emit, 0x10);
+                    EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT, dst_xmm, RBP));
+                    EMIT4(&ctx->emit, 0);
 
                     uint32_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint32_t));
                     *rdata_payload = imm;
 
-                    *((uint32_t*)ctx->header.out) = tb_emit_const_patch(
-                        f->module, f, GET_CODE_POS(),
+                    uint32_t pos = tb_emit_const_patch(
+                        f->module, f, GET_CODE_POS(&ctx->emit) - 4,
                         rdata_payload, sizeof(uint32_t),
                         s_local_thread_id
                     );
-                    ctx->header.out += 4;
+                    PATCH4(&ctx->emit, GET_CODE_POS(&ctx->emit) - 4, pos);
                 }
                 break;
             }
@@ -821,29 +821,32 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 fast_def_xmm(ctx, f, r, dst_xmm, TB_TYPE_PTR);
 
                 if (imm == 0) {
+                    // xorps dst, dst
                     if (dst_xmm >= 8) {
-                        *ctx->header.out++ = rex(true, dst_xmm, dst_xmm, 0);
+                        EMIT1(&ctx->emit, rex(true, dst_xmm, dst_xmm, 0));
                     }
-                    *ctx->header.out++ = 0x0F;
-                    *ctx->header.out++ = 0x57;
-                    *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, dst_xmm, dst_xmm);
+
+                    EMIT1(&ctx->emit, 0x0F);
+                    EMIT1(&ctx->emit, 0x57);
+                    EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, dst_xmm, dst_xmm));
                 } else {
                     // Convert it to raw bits
-                    *ctx->header.out++ = 0xF2;
-                    if (dst_xmm >= 8) *ctx->header.out++ = 0x44;
-                    *ctx->header.out++ = 0x0F;
-                    *ctx->header.out++ = 0x10;
-                    *ctx->header.out++ = mod_rx_rm(MOD_INDIRECT, dst_xmm, RBP);
+                    EMIT1(&ctx->emit, 0xF2);
+                    if (dst_xmm >= 8) EMIT1(&ctx->emit, 0x44);
+                    EMIT1(&ctx->emit, 0x0F);
+                    EMIT1(&ctx->emit, 0x10);
+                    EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT, dst_xmm, RBP));
+                    EMIT4(&ctx->emit, 0);
 
                     uint64_t* rdata_payload = tb_platform_arena_alloc(sizeof(uint64_t));
                     *rdata_payload = imm;
 
-                    *((uint32_t*)ctx->header.out) = tb_emit_const_patch(
-                        f->module, f, GET_CODE_POS(),
+                    uint32_t pos = tb_emit_const_patch(
+                        f->module, f, GET_CODE_POS(&ctx->emit) - 4,
                         rdata_payload, sizeof(uint64_t),
                         s_local_thread_id
                     );
-                    ctx->header.out += 4;
+                    PATCH4(&ctx->emit, GET_CODE_POS(&ctx->emit) - 4, pos);
                 }
                 break;
             }
@@ -854,26 +857,24 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
                 fast_def_gpr(ctx, f, r, dst_gpr, TB_TYPE_PTR);
 
-                *ctx->header.out++ = rex(true, dst_gpr, RBP, 0);
-                *ctx->header.out++ = 0x8D;
-                *ctx->header.out++ = mod_rx_rm(MOD_INDIRECT, dst_gpr, RBP);
+                EMIT1(&ctx->emit, rex(true, dst_gpr, RBP, 0));
+                EMIT1(&ctx->emit, 0x8D);
+                EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT, dst_gpr, RBP));
 
-                uint32_t disp = tb_emit_const_patch(f->module, f, GET_CODE_POS(), str, len, s_local_thread_id);
-
-                *((uint32_t*)ctx->header.out) = disp;
-                ctx->header.out += 4;
+                uint32_t disp = tb_emit_const_patch(f->module, f, GET_CODE_POS(&ctx->emit), str, len, s_local_thread_id);
+                EMIT4(&ctx->emit, disp);
                 break;
             }
 
             case TB_LINE_INFO: {
                 f->lines[f->line_count++] = (TB_Line) {
-                    .file = n->line_info.file, .line = n->line_info.line, .pos = GET_CODE_POS()
+                    .file = n->line_info.file, .line = n->line_info.line, .pos = GET_CODE_POS(&ctx->emit)
                 };
                 break;
             }
 
             case TB_DEBUGBREAK: {
-                *ctx->header.out++ = 0xCC;
+                EMIT1(&ctx->emit, 0xCC);
                 break;
             }
 
@@ -952,21 +953,19 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                         assert(stride_as_shift < 64 && "Stride to big!!!");
 
                         // shl index, stride_as_shift
-                        *ctx->header.out++ = rex(true, 0, val.gpr, 0);
-                        *ctx->header.out++ = 0xC1;
-                        *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0x04, val.gpr);
-                        *ctx->header.out++ = stride_as_shift;
+                        EMIT1(&ctx->emit, rex(true, 0, val.gpr, 0));
+                        EMIT1(&ctx->emit, 0xC1);
+                        EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 0x04, val.gpr));
+                        EMIT1(&ctx->emit, stride_as_shift);
 
                         stride_as_shift = 0; // pre-multiplied, don't propagate
                     }
                 } else {
                     // imul dst, index, stride
-                    *ctx->header.out++ = rex(true, val.gpr, val.gpr, 0);
-                    *ctx->header.out++ = 0x69;
-                    *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, val.gpr, val.gpr);
-
-                    *((uint32_t*)ctx->header.out) = stride;
-                    ctx->header.out += 4;
+                    EMIT1(&ctx->emit, rex(true, val.gpr, val.gpr, 0));
+                    EMIT1(&ctx->emit, 0x69);
+                    EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, val.gpr, val.gpr));
+                    EMIT4(&ctx->emit, stride);
 
                     stride_as_shift = 0; // pre-multiplied, don't propagate
                 }
@@ -1100,12 +1099,10 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                             if (l.mask) fast_mask_out(ctx, f, l, &src);
 
                             // imul dst, index, 0x10101010
-                            *ctx->header.out++ = rex(true, src.gpr, src.gpr, 0);
-                            *ctx->header.out++ = 0x69;
-                            *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, src.gpr, src.gpr);
-
-                            *((uint32_t*)ctx->header.out) = 0x10101010;
-                            ctx->header.out += 4;
+                            EMIT1(&ctx->emit, rex(true, src.gpr, src.gpr, 0));
+                            EMIT1(&ctx->emit, 0x69);
+                            EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, src.gpr, src.gpr));
+                            EMIT4(&ctx->emit, 0x10101010);
 
                             fast_memset_const_size(ctx, f, dst_reg, &src, sz, false);
                         } else {
@@ -1151,8 +1148,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 }
 
                 // rep stosb
-                *ctx->header.out++ = 0xF3;
-                *ctx->header.out++ = 0xAA;
+                EMIT1(&ctx->emit, 0xF3);
+                EMIT1(&ctx->emit, 0xAA);
 
                 // free up stuff
                 ctx->gpr_allocator[RAX] = TB_NULL_REG;
@@ -1193,8 +1190,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 }
 
                 // rep movsb
-                *ctx->header.out++ = 0xF3;
-                *ctx->header.out++ = 0xA4;
+                EMIT1(&ctx->emit, 0xF3);
+                EMIT1(&ctx->emit, 0xA4);
 
                 // free up stuff
                 ctx->gpr_allocator[RDI] = TB_NULL_REG;
@@ -1268,13 +1265,13 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 if (is_signed) {
                     // cqo/cdq
                     if (dt.type == TB_PTR || (dt.type == TB_INT && l.dt.data == 64)) {
-                        *ctx->header.out++ = 0x48;
+                        EMIT1(&ctx->emit, 0x48);
                     }
-                    *ctx->header.out++ = 0x99;
+                    EMIT1(&ctx->emit, 0x99);
                 } else {
                     // xor rdx, rdx
-                    *ctx->header.out++ = 0x31;
-                    *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, RDX, RDX);
+                    EMIT1(&ctx->emit, 0x31);
+                    EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, RDX, RDX));
                 }
 
                 {
@@ -1326,16 +1323,19 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     // C1 /4       shl r/m, imm
                     // C1 /5       shr r/m, imm
                     // C1 /7       sar r/m, imm
-                    if (bits_in_type == 16) *ctx->header.out++ = 0x66;
-                    *ctx->header.out++ = rex(bits_in_type == 64, 0x00, dst.gpr, 0x00);
-                    *ctx->header.out++ = (bits_in_type == 8 ? 0xC0 : 0xC1);
+                    if (bits_in_type == 16) {
+                        EMIT1(&ctx->emit, 0x66);
+                    }
+
+                    EMIT1(&ctx->emit, rex(bits_in_type == 64, 0x00, dst.gpr, 0x00));
+                    EMIT1(&ctx->emit, (bits_in_type == 8 ? 0xC0 : 0xC1));
                     switch (reg_type) {
-                        case TB_SHL: *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0x04, dst.gpr); break;
-                        case TB_SHR: *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0x05, dst.gpr); break;
-                        case TB_SAR: *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0x07, dst.gpr); break;
+                        case TB_SHL: EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 0x04, dst.gpr)); break;
+                        case TB_SHR: EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 0x05, dst.gpr)); break;
+                        case TB_SAR: EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 0x07, dst.gpr)); break;
                         default: tb_unreachable();
                     }
-                    *ctx->header.out++ = imm;
+                    EMIT1(&ctx->emit, imm);
 
                     if (l.mask) fast_mask_out(ctx, f, l, &dst);
 
@@ -1360,13 +1360,16 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 // D2 /4       shl r/m, cl
                 // D2 /5       shr r/m, cl
                 // D2 /7       sar r/m, cl
-                if (bits_in_type == 16) *ctx->header.out++ = 0x66;
-                *ctx->header.out++ = rex(bits_in_type == 64, 0x00, dst.gpr, 0x00);
-                *ctx->header.out++ = (bits_in_type == 8 ? 0xD2 : 0xD3);
+                if (bits_in_type == 16) {
+                    EMIT1(&ctx->emit, 0x66);
+                }
+
+                EMIT1(&ctx->emit, rex(bits_in_type == 64, 0x00, dst.gpr, 0x00));
+                EMIT1(&ctx->emit, (bits_in_type == 8 ? 0xD2 : 0xD3));
                 switch (reg_type) {
-                    case TB_SHL: *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0x04, dst.gpr); break;
-                    case TB_SHR: *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0x05, dst.gpr); break;
-                    case TB_SAR: *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0x07, dst.gpr); break;
+                    case TB_SHL: EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 0x04, dst.gpr)); break;
+                    case TB_SHR: EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 0x05, dst.gpr)); break;
+                    case TB_SAR: EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 0x07, dst.gpr)); break;
                     default: tb_unreachable();
                 }
 
@@ -1445,10 +1448,10 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
                     // xor temp, temp
                     if (val.gpr >= 8) {
-                        *ctx->header.out++ = rex(false, val.gpr, val.gpr, 0);
+                        EMIT1(&ctx->emit, rex(false, val.gpr, val.gpr, 0));
                     }
-                    *ctx->header.out++ = 0x31;
-                    *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, val.gpr, val.gpr);
+                    EMIT1(&ctx->emit, 0x31);
+                    EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, val.gpr, val.gpr));
                 }
 
                 Cond cc;
@@ -1506,10 +1509,10 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
                     // setcc v
                     assert(val.type == VAL_GPR);
-                    *ctx->header.out++ = (val.gpr >= 8) ? 0x41 : 0x40;
-                    *ctx->header.out++ = 0x0F;
-                    *ctx->header.out++ = 0x90 + cc;
-                    *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0, val.gpr);
+                    EMIT1(&ctx->emit, (val.gpr >= 8) ? 0x41 : 0x40);
+                    EMIT1(&ctx->emit, 0x0F);
+                    EMIT1(&ctx->emit, 0x90 + cc);
+                    EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 0, val.gpr));
                 } else {
                     fast_def_flags(ctx, f, r, cc, TB_TYPE_BOOL);
                 }
@@ -1543,7 +1546,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     else if (src.dt.type == TB_INT) bits_in_type = src.dt.data;
 
                     // movd/q
-                    *ctx->header.out++ = 0x66;
+                    EMIT1(&ctx->emit, 0x66);
 
                     Val val;
                     bool is_64bit = bits_in_type > 32;
@@ -1573,20 +1576,20 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
                     if (is_64bit || val.xmm >= 8 || src_needs_rex) {
                         if (int2float) {
-                            *ctx->header.out++ = rex(is_64bit, val.gpr, src.gpr, 0);
+                            EMIT1(&ctx->emit, rex(is_64bit, val.gpr, src.gpr, 0));
                         } else {
-                            *ctx->header.out++ = rex(is_64bit, src.gpr, val.gpr, 0);
+                            EMIT1(&ctx->emit, rex(is_64bit, src.gpr, val.gpr, 0));
                         }
                     }
 
-                    *ctx->header.out++ = 0x0F;
-                    *ctx->header.out++ = int2float ? 0x6E : 0x7E;
+                    EMIT1(&ctx->emit, 0x0F);
+                    EMIT1(&ctx->emit, int2float ? 0x6E : 0x7E);
 
                     // val.gpr and val.xmm alias so it's irrelevant which one we pick
                     if (int2float) {
-                        emit_memory_operand(&ctx->header, val.gpr, &src);
+                        emit_memory_operand(&ctx->emit, val.gpr, &src);
                     } else {
-                        emit_memory_operand(&ctx->header, src.gpr, &val);
+                        emit_memory_operand(&ctx->emit, src.gpr, &val);
                     }
 
                     fast_kill_reg(ctx, f, n->unary.src);
@@ -1613,10 +1616,10 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 // F2 0F 2C /r            CVTTSD2SI xmm1, r/m32
                 // F2 REX.W 0F 2C /r      CVTTSD2SI xmm1, r/m64
                 if (src.dt.width == 0) {
-                    *ctx->header.out++ = (src.dt.data == TB_FLT_64) ? 0xF2 : 0xF3;
+                    EMIT1(&ctx->emit, (src.dt.data == TB_FLT_64) ? 0xF2 : 0xF3);
                 } else if (src.dt.data == TB_FLT_64) {
                     // packed double
-                    *ctx->header.out++ = 0x66;
+                    EMIT1(&ctx->emit, 0x66);
                 }
 
                 uint8_t rx = val.gpr;
@@ -1631,12 +1634,12 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
                 bool is_64bit = (dt.data > 32 || reg_type == TB_FLOAT2UINT);
                 if (is_64bit || rx >= 8 || base >= 8 || index >= 8) {
-                    *ctx->header.out++ = rex(is_64bit, rx, base, index);
+                    EMIT1(&ctx->emit, rex(is_64bit, rx, base, index));
                 }
 
-                *ctx->header.out++ = 0x0F;
-                *ctx->header.out++ = 0x2C;
-                emit_memory_operand(&ctx->header, rx, &src);
+                EMIT1(&ctx->emit, 0x0F);
+                EMIT1(&ctx->emit, 0x2C);
+                emit_memory_operand(&ctx->emit, rx, &src);
 
                 fast_kill_temp_gpr(ctx, f, src.gpr);
                 fast_kill_reg(ctx, f, n->unary.src);
@@ -1665,10 +1668,10 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 // F2       0F 2A /r      CVTSI2SD xmm1, r/m32
                 // F2 REX.W 0F 2A /r      CVTSI2SD xmm1, r/m64
                 if (dt.width == 0) {
-                    *ctx->header.out++ = (dt.data == TB_FLT_64) ? 0xF2 : 0xF3;
+                    EMIT1(&ctx->emit, (dt.data == TB_FLT_64) ? 0xF2 : 0xF3);
                 } else if (dt.data == TB_FLT_64) {
                     // packed double
-                    *ctx->header.out++ = 0x66;
+                    EMIT1(&ctx->emit, 0x66);
                 }
 
                 uint8_t rx = val.xmm;
@@ -1683,12 +1686,12 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
                 bool is_64bit = (dt.data > 32 || reg_type == TB_UINT2FLOAT);
                 if (is_64bit || rx >= 8 || base >= 8 || index >= 8) {
-                    *ctx->header.out++ = rex(is_64bit, rx, base, index);
+                    EMIT1(&ctx->emit, rex(is_64bit, rx, base, index));
                 }
 
-                *ctx->header.out++ = 0x0F;
-                *ctx->header.out++ = 0x2A;
-                emit_memory_operand(&ctx->header, rx, &src);
+                EMIT1(&ctx->emit, 0x0F);
+                EMIT1(&ctx->emit, 0x2A);
+                emit_memory_operand(&ctx->emit, rx, &src);
 
                 fast_kill_temp_gpr(ctx, f, src.gpr);
                 fast_kill_reg(ctx, f, n->unary.src);
@@ -1736,12 +1739,12 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     fast_folded_op_sse(ctx, f, FP_MOV, &val, n->unary.src);
 
                     if (dst_xmm >= 8) {
-                        *ctx->header.out++ = rex(true, dst_xmm, dst_xmm, 0);
-                        *ctx->header.out++ = (dt.data == TB_FLT_64 ? 0xF2 : 0xF3);
+                        EMIT1(&ctx->emit, rex(true, dst_xmm, dst_xmm, 0));
+                        EMIT1(&ctx->emit, (dt.data == TB_FLT_64 ? 0xF2 : 0xF3));
                     }
-                    *ctx->header.out++ = 0x0F;
-                    *ctx->header.out++ = 0x57;
-                    *ctx->header.out++ = ((dst_xmm & 7) << 3) | RBP;
+                    EMIT1(&ctx->emit, 0x0F);
+                    EMIT1(&ctx->emit, 0x57);
+                    EMIT1(&ctx->emit, ((dst_xmm & 7) << 3) | RBP);
 
                     void* payload = NULL;
                     if (dt.data == TB_FLT_64) {
@@ -1758,11 +1761,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                         payload = rdata_payload;
                     }
 
-                    uint32_t disp = tb_emit_const_patch(f->module, f, GET_CODE_POS(),
-                        payload, 2 * sizeof(uint64_t), s_local_thread_id);
-
-                    *((uint32_t*) ctx->header.out) = disp;
-                    ctx->header.out += 4;
+                    uint32_t disp = tb_emit_const_patch(f->module, f, GET_CODE_POS(&ctx->emit), payload, 2 * sizeof(uint64_t), s_local_thread_id);
+                    EMIT4(&ctx->emit, disp);
                 } else {
                     // we probably want some recycling eventually...
                     GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
@@ -1895,7 +1895,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 }
 
                 // evaluate parameters
-                loop(j, param_count) {
+                FOREACH_N(j, 0, param_count) {
                     TB_Reg      param_reg = f->vla.data[param_start + j];
                     TB_DataType param_dt  = f->nodes[param_reg].dt;
 
@@ -1949,10 +1949,12 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 }
 
                 // Spill anything else
-                loop(j, 16) if (caller_saved & (1u << j)) { fast_evict_gpr(ctx, f, j); }
+                FOREACH_N(j, 0, 16) {
+                    if (caller_saved & (1u << j)) fast_evict_gpr(ctx, f, j);
+                }
 
                 // TODO(NeGate): Evict the XMMs that are caller saved
-                loop_range(j, ctx->is_sysv ? 0 : 5, 16) {
+                FOREACH_N(j, ctx->is_sysv ? 0 : 5, 16) {
                     fast_evict_xmm(ctx, f, j);
                 }
 
@@ -1965,21 +1967,19 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 // CALL instruction and patch
                 if (reg_type == TB_CALL) {
                     const TB_Function* target = n->call.target;
-                    tb_emit_call_patch(f->module, f, target, GET_CODE_POS() + 1, s_local_thread_id);
+                    tb_emit_call_patch(f->module, f, target, GET_CODE_POS(&ctx->emit) + 1, s_local_thread_id);
 
                     // CALL rel32
-                    ctx->header.out[0] = 0xE8;
-                    *((uint32_t*)&ctx->header.out[1]) = 0x0;
-                    ctx->header.out += 5;
+                    EMIT1(&ctx->emit, 0xE8);
+                    EMIT4(&ctx->emit, 0);
                 } else if (reg_type == TB_ECALL) {
                     const TB_External* target = n->ecall.target;
 
-                    tb_emit_ecall_patch(f->module, f, target, GET_CODE_POS() + 1, s_local_thread_id);
+                    tb_emit_ecall_patch(f->module, f, target, GET_CODE_POS(&ctx->emit) + 1, s_local_thread_id);
 
                     // CALL rel32
-                    ctx->header.out[0] = 0xE8;
-                    *((uint32_t*)&ctx->header.out[1]) = 0x0;
-                    ctx->header.out += 5;
+                    EMIT1(&ctx->emit, 0xE8);
+                    EMIT4(&ctx->emit, 0);
                 } else if (reg_type == TB_SCALL) {
                     Val src = fast_eval_address(ctx, f, n->scall.target);
                     Val dst = val_gpr(TB_TYPE_PTR, RAX);
@@ -1988,8 +1988,8 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     INST2(MOV, &dst, &src, TB_TYPE_I64);
 
                     // SYSCALL
-                    *ctx->header.out++ = 0x0F;
-                    *ctx->header.out++ = 0x05;
+                    EMIT1(&ctx->emit, 0x0F);
+                    EMIT1(&ctx->emit, 0x05);
 
                     fast_kill_reg(ctx, f, n->scall.target);
                 } else if (reg_type == TB_VCALL) {
@@ -2004,11 +2004,11 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 }
 
                 // get rid of all those reserved TEMP_REGs
-                loop(i, 16) if (ctx->gpr_allocator[i] == TB_TEMP_REG) {
+                FOREACH_N(i, 0, 16) if (ctx->gpr_allocator[i] == TB_TEMP_REG) {
                     ctx->gpr_allocator[i] = TB_NULL_REG;
                     ctx->gpr_available += 1;
                 }
-                loop(i, 16) if (ctx->xmm_allocator[i] == TB_TEMP_REG) {
+                FOREACH_N(i, 0, 16) if (ctx->xmm_allocator[i] == TB_TEMP_REG) {
                     ctx->xmm_allocator[i] = TB_NULL_REG;
                     ctx->xmm_available += 1;
                 }
@@ -2124,7 +2124,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 // it's actually a MOV which is naturally atomic
                 // when aligned.
                 if (reg_type != TB_ATOMIC_XCHG) {
-                    *ctx->header.out++ = 0xF0;
+                    EMIT1(&ctx->emit, 0xF0);
                 }
 
                 int op = (ctx->use_count[r] ? fetch_tbl : tbl)[reg_type - TB_ATOMIC_XCHG];
@@ -2182,16 +2182,16 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     uint8_t rex_index = addr.mem.index != GPR_NONE ? addr.mem.index : 0;
 
                     if (desired_val.gpr >= 8 && addr.mem.base >= 8 && rex_index >= 8) {
-                        *ctx->header.out++ = rex(is_64bit, desired_val.gpr, addr.mem.base, rex_index);
+                        EMIT1(&ctx->emit, rex(is_64bit, desired_val.gpr, addr.mem.base, rex_index));
                     }
                 } else {
                     if (desired_val.gpr >= 8) {
-                        *ctx->header.out++ = rex(is_64bit, desired_val.gpr, 0, 0);
+                        EMIT1(&ctx->emit, rex(is_64bit, desired_val.gpr, 0, 0));
                     }
                 }
-                *ctx->header.out++ = 0xF0;
-                *ctx->header.out++ = 0xB0 | (bits_in_type <= 8 ? 1 : 0);
-                emit_memory_operand(&ctx->header, desired_val.gpr, &addr);
+                EMIT1(&ctx->emit, 0xF0);
+                EMIT1(&ctx->emit, 0xB0 | (bits_in_type <= 8 ? 1 : 0));
+                emit_memory_operand(&ctx->emit, desired_val.gpr, &addr);
 
                 if (expected == desired) {
                     fast_kill_reg(ctx, f, expected);
@@ -2217,11 +2217,13 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 fast_folded_op(ctx, f, MOV, &tmp, n->unary.src);
 
                 // 0F AE /2 LDMXCSR m32
-                if (tmp.gpr >= 8) *ctx->header.out++ = rex(false, 0, 0, tmp.gpr);
-                *ctx->header.out++ = 0x0F;
-                *ctx->header.out++ = 0xAE;
-                *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0x02, tmp.gpr);
+                if (tmp.gpr >= 8) {
+                    EMIT1(&ctx->emit, rex(false, 0, 0, tmp.gpr));
+                }
 
+                EMIT1(&ctx->emit, 0x0F);
+                EMIT1(&ctx->emit, 0xAE);
+                EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 0x02, tmp.gpr));
                 fast_kill_temp_gpr(ctx, f, tmp.gpr);
                 break;
             }
@@ -2231,10 +2233,13 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 fast_def_gpr(ctx, f, r, dst.gpr, dt);
 
                 // 0F AE /3 STMXCSR m32
-                if (dst.gpr >= 8) *ctx->header.out++ = rex(false, 0, 0, dst.gpr);
-                *ctx->header.out++ = 0x0F;
-                *ctx->header.out++ = 0xAE;
-                *ctx->header.out++ = mod_rx_rm(MOD_DIRECT, 0x03, dst.gpr);
+                if (dst.gpr >= 8) {
+                    EMIT1(&ctx->emit, rex(false, 0, 0, dst.gpr));
+                }
+
+                EMIT1(&ctx->emit, 0x0F);
+                EMIT1(&ctx->emit, 0xAE);
+                EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 0x03, dst.gpr));
                 break;
             }
 
@@ -2267,7 +2272,7 @@ static void fast_eval_terminator_phis(X64_FastCtx* restrict ctx, TB_Function* f,
             int count = tb_node_get_phi_width(f, r);
             TB_PhiInput* inputs = tb_node_get_phi_inputs(f, r);
 
-            loop(j, count) {
+            FOREACH_N(j, 0, count) {
                 if (inputs[j].label == from) {
                     TB_Reg src = inputs[j].val;
 
@@ -2366,7 +2371,7 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
 // entry point to the x64 fast isel, it's got some nice features like when the
 // temporary storage can't fit the necessary memory, it'll fallback to the heap
 // to avoid just crashing.
-TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t local_thread_id) {
+TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t out_capacity, size_t local_thread_id) {
     s_local_thread_id = local_thread_id;
 
     TB_TemporaryStorage* tls = tb_tls_allocate();
@@ -2383,9 +2388,10 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
         if (is_ctx_heap_allocated) {
             ctx = tb_platform_heap_alloc(ctx_size);
             *ctx = (X64_FastCtx) {
-                .header = {
-                    .out           = out,
-                    .start_out     = out,
+                .emit = {
+                    .f             = f,
+                    .capacity      = out_capacity,
+                    .data          = out,
                     .labels        = tb_platform_heap_alloc(f->bb_count * sizeof(uint32_t)),
                     .label_patches = tb_platform_heap_alloc(tally.label_patch_count * sizeof(LabelPatch)),
                     .ret_patches   = tb_platform_heap_alloc(tally.return_count * sizeof(ReturnPatch))
@@ -2396,9 +2402,10 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
         } else {
             ctx = tb_tls_push(tls, ctx_size);
             *ctx = (X64_FastCtx) {
-                .header = {
-                    .out           = out,
-                    .start_out     = out,
+                .emit = {
+                    .f             = f,
+                    .capacity      = out_capacity,
+                    .data          = out,
                     .labels        = tb_tls_push(tls, f->bb_count * sizeof(uint32_t)),
                     .label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch)),
                     .ret_patches   = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch))
@@ -2407,8 +2414,6 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                 .use_count = tb_tls_push(tls, f->node_count * sizeof(TB_Reg))
             };
         }
-
-        ctx->header.f = f;
 
         f->line_count = 0;
         f->lines = tb_platform_arena_alloc(tally.line_info_count * sizeof(TB_Line));
@@ -2474,7 +2479,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
 
     const TB_FunctionPrototype* restrict proto = f->prototype;
     if (proto->param_count) {
-        ctx->header.stack_usage += 16 + (proto->param_count * 8);
+        ctx->stack_usage += 16 + (proto->param_count * 8);
     }
 
     if (proto->has_varargs) {
@@ -2484,7 +2489,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
         size_t gpr_count = ctx->is_sysv ? 6 : 4;
         size_t extra_param_count = proto->param_count > gpr_count ? 0 : gpr_count - proto->param_count;
 
-        loop(i, extra_param_count) {
+        FOREACH_N(i, 0, extra_param_count) {
             size_t param_num = proto->param_count + i;
 
             Val dst = val_stack(TB_TYPE_I64, 16 + (param_num * 8));
@@ -2560,7 +2565,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
 
     // Evaluate basic blocks
     TB_FOR_BASIC_BLOCK(bb, f) {
-        ctx->header.labels[bb] = GET_CODE_POS();
+        ctx->emit.labels[bb] = GET_CODE_POS(&ctx->emit);
 
         // Generate instructions
         fast_eval_basic_block(ctx, f, bb);
@@ -2569,8 +2574,11 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
         TB_Reg bb_end = f->bbs[bb].end;
         TB_Node* end = &f->nodes[bb_end];
         if (end->type == TB_TRAP) {
-            *ctx->header.out++ = 0x0F;
-            *ctx->header.out++ = 0x0B;
+            // UD2
+            EMIT1(&ctx->emit, 0x0F);
+            EMIT1(&ctx->emit, 0x0B);
+        } else if (end->type == TB_NULL) {
+            // empty basic block
         } else if (end->type == TB_UNREACHABLE) {
             /* lmao you thought we'd help you */
         } else if (end->type == TB_RET) {
@@ -2621,8 +2629,8 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
             JCC(cc, if_true);
             if (!has_fallthrough) JMP(if_false);
         } else if (end->type == TB_UNREACHABLE) {
-            *ctx->header.out++ = 0x0F;
-            *ctx->header.out++ = 0x0B;
+            EMIT1(&ctx->emit, 0x0F);
+            EMIT1(&ctx->emit, 0x0B);
         } else if (end->type == TB_GOTO) {
             // save out PHI nodes
             TB_Label target_label = end->goto_.label;
@@ -2643,7 +2651,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                 uint64_t key_imm = switch_key->integer.single_word;
 
                 TB_Label target_label = end->switch_.default_label;
-                loop(i, entry_count) {
+                FOREACH_N(i, 0, entry_count) {
                     TB_SwitchEntry* entry = (TB_SwitchEntry*)&f->vla.data[end->switch_.entries_start + (i * 2)];
 
                     if (entry->key == key_imm) {
@@ -2672,7 +2680,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                 // JE .case10
                 // JMP .default
                 size_t entry_count = (end->switch_.entries_end - end->switch_.entries_start) / 2;
-                loop(i, entry_count) {
+                FOREACH_N(i, 0, entry_count) {
                     TB_SwitchEntry* entry = (TB_SwitchEntry*)&f->vla.data[end->switch_.entries_start + (i * 2)];
                     Val operand = val_imm(l.dt, entry->key);
 
@@ -2690,29 +2698,29 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
 
     // Fix up stack usage
     // Tally up any saved XMM registers
-    ctx->header.stack_usage += tb_popcount((ctx->header.regs_to_save >> 16) & 0xFFFF) * 16;
+    ctx->stack_usage += tb_popcount((ctx->regs_to_save >> 16) & 0xFFFF) * 16;
 
     // allocate callee parameter space
-    ctx->header.stack_usage += caller_usage * 8;
+    ctx->stack_usage += caller_usage * 8;
 
     // Align stack usage to 16bytes and add 8 bytes for the return address
-    if (ctx->header.stack_usage > 0) {
-        ctx->header.stack_usage = align_up(ctx->header.stack_usage + 8, 16) + 8;
+    if (ctx->stack_usage > 0) {
+        ctx->stack_usage = align_up(ctx->stack_usage + 8, 16) + 8;
     } else {
-        ctx->header.stack_usage = 8;
+        ctx->stack_usage = 8;
     }
 
     // Resolve internal relocations
-    FOREACH_N(i, 0, ctx->header.ret_patch_count) {
-        uint32_t pos = ctx->header.ret_patches[i];
-        PATCH4(pos, GET_CODE_POS() - (pos + 4));
+    FOREACH_N(i, 0, ctx->emit.ret_patch_count) {
+        uint32_t pos = ctx->emit.ret_patches[i];
+        PATCH4(&ctx->emit, pos, GET_CODE_POS(&ctx->emit) - (pos + 4));
     }
 
-    FOREACH_N(i, 0, ctx->header.label_patch_count) {
-        uint32_t pos = ctx->header.label_patches[i].pos;
-        uint32_t target_lbl = ctx->header.label_patches[i].target_lbl;
+    FOREACH_N(i, 0, ctx->emit.label_patch_count) {
+        uint32_t pos = ctx->emit.label_patches[i].pos;
+        uint32_t target_lbl = ctx->emit.label_patches[i].target_lbl;
 
-        PATCH4(pos, ctx->header.labels[target_lbl] - (pos + 4));
+        PATCH4(&ctx->emit, pos, ctx->emit.labels[target_lbl] - (pos + 4));
     }
 
     if (f->line_count > 0) {
@@ -2721,19 +2729,19 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
 
     TB_FunctionOutput func_out = {
         .linkage = f->linkage,
-        .code = ctx->header.start_out,
-        .code_size = ctx->header.out - ctx->header.start_out,
-        .stack_usage = ctx->header.stack_usage,
-        .prologue_epilogue_metadata = ctx->header.regs_to_save,
+        .code = ctx->emit.data,
+        .code_size = ctx->emit.count,
+        .stack_usage = ctx->stack_usage,
+        .prologue_epilogue_metadata = ctx->regs_to_save,
         .stack_slots = stack_slots
     };
 
     if (is_ctx_heap_allocated) {
         tb_platform_heap_free(ctx->use_count);
 
-        tb_platform_heap_free(ctx->header.labels);
-        tb_platform_heap_free(ctx->header.label_patches);
-        tb_platform_heap_free(ctx->header.ret_patches);
+        tb_platform_heap_free(ctx->emit.labels);
+        tb_platform_heap_free(ctx->emit.label_patches);
+        tb_platform_heap_free(ctx->emit.ret_patches);
         tb_platform_heap_free(ctx);
     }
     return func_out;

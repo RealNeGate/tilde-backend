@@ -29,7 +29,6 @@ end
 
 local options = "-g -Wall -Werror -Wno-unused-function "
 options = options.."-I include "
-options = options.."-I deps/mimalloc/include "
 options = options.."-I deps/luajit/src "
 if config.opt then
     options = options.."-O2 -DNDEBUG "

@@ -1,43 +1,42 @@
 
 local files = {
-    "src/tb/",
-    "src/tb/codegen/",
-    "src/tb/bigint/",
-    "src/tb/objects/",
-    "src/tb/debug/",
-    "src/tb/debug/cv/",
-    "src/tb/x64/",
-    "src/tb/aarch64/",
-    "src/tb/opt/"
+    "src/tb/*.c",
+    "src/tb/codegen/*.c",
+    "src/tb/bigint/*.c",
+    "src/tb/objects/*.c",
+    "src/tb/debug/*.c",
+    "src/tb/debug/cv/*.c",
+    "src/tb/x64/*.c",
+    "src/tb/aarch64/*.c",
+    "src/tb/opt/*.c",
+
+    -- platform support code
+    "src/tb/system/"..(config.os == "Windows" and "win32.c" or "posix.c")
 }
 
-local deps = ""
+local luajit_binary = ""
 local output_lib = ""
 if config.os == "Windows" then
     build.command("build_deps.bat")
-    table.insert(files, "src/tb/system/win32.c")
-
-    deps = "deps/luajit/src/lua51.lib"
-    output_lib = "tildebackend.lib"
+    luajit_binary = "deps/luajit/src/lua51.lib"
 else
     build.command("./build_deps.sh")
-    table.insert(files, "src/tb/system/posix.c")
-
-    deps = "bin/luajit/*.o"
-    output_lib = "tildebackend.a"
+    luajit_binary = "bin/luajit/*.o"
 end
 
-local options = "-g -Wall -Werror -Wno-unused-function "
-options = options.."-I include "
-options = options.."-I deps/luajit/src "
-options = options.."-DTB_COMPILE_TESTS "
+flags = "-g -msse4.2 -maes "
+flags = flags.."-Wall -Werror -Wno-unused-function -Wno-unused-variable "
+flags = flags.."-I include -I deps -I tilde-backend/include -I deps/luajit/src "
+flags = flags.."-DTB_COMPILE_TESTS "
+
 if config.opt then
-    options = options.."-O2 -DNDEBUG "
+    flags = flags.."-O2 -DNDEBUG "
 end
 
-local outputs, changes = build.compile("TB.cache", files, options)
-if changes then
-    build.lib(output_lib, deps, outputs)
-end
+-- for k,v in pairs(files) do print("["..k.."] = "..v) end
 
-return changes
+local objs = build.foreach_chain(files, "clang %f "..flags.." -c -o bin/%F.o", "bin/%F.o")
+table.insert(objs, luajit_binary)
+
+build.ar_chain(objs, "tildebackend"..config.lib_ext)
+build.done()

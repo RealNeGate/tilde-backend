@@ -24,7 +24,12 @@ else
     luajit_binary = "bin/luajit/*.o"
 end
 
-flags = "-g -msse4.2 -maes "
+flags = "-g "
+
+if config.arch == "x64" then
+    flags = flags.."-msse4.2 -maes "
+end
+
 flags = flags.."-Wall -Werror -Wno-unused-function -Wno-unused-variable "
 flags = flags.."-I include -I deps -I tilde-backend/include -I deps/luajit/src "
 flags = flags.."-DTB_COMPILE_TESTS "

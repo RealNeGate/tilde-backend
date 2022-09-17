@@ -9,9 +9,9 @@
 #define strdup _strdup
 #endif
 
-#if TB_HOST_ARCH == TB_HOST_X86_64
+/*#if TB_HOST_ARCH == TB_HOST_X86_64
 #include <emmintrin.h>
-#endif
+#endif*/
 
 // IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_16BYTES
 #define COFF_CHARACTERISTICS_TEXT 0x60500020u

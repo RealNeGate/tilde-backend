@@ -69,11 +69,12 @@
 #define	PT_TLS       7	/* Thread local storage segment */
 
 /* Values for relocation */
-#define R_X86_64_NONE  0
-#define R_X86_64_64    1
-#define R_X86_64_PC32  2
-#define R_X86_64_GOT32 3
-#define R_X86_64_PLT32 4
+#define R_X86_64_NONE     0
+#define R_X86_64_64       1
+#define R_X86_64_PC32     2
+#define R_X86_64_GOT32    3
+#define R_X86_64_PLT32    4
+#define R_X86_64_GOTPCREL 9
 
 typedef uint64_t Elf64_Addr;
 typedef uint16_t Elf64_Half;
@@ -83,6 +84,12 @@ typedef int64_t  Elf64_Sxword;
 typedef uint32_t Elf64_Word;
 typedef uint64_t Elf64_Lword;
 typedef uint64_t Elf64_Xword;
+
+// ST_TYPE
+#define ELF64_STT_NOTYPE  0
+#define ELF64_STT_OBJECT  1
+#define ELF64_STT_FUNC    2
+#define ELF64_STT_SECTION 3
 
 // ST_INFO
 #define ELF64_STB_LOCAL  0

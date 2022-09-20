@@ -342,6 +342,16 @@ extern "C" {
     typedef unsigned int TB_AttributeID;
     typedef unsigned int TB_FileID;
 
+    // SO refers to shared objects which mean either shared libraries (.so or .dll)
+    // or executables (.exe or ELF executables)
+    typedef enum {
+        // exports to the rest of the shared object
+        TB_EXTERNAL_SO_LOCAL,
+
+        // exports outside of the shared object
+        TB_EXTERNAL_SO_EXPORT,
+    } TB_ExternalType;
+
     typedef struct TB_Module            TB_Module;
     typedef struct TB_External          TB_External;
     typedef struct TB_Attrib            TB_Attrib;
@@ -830,8 +840,9 @@ extern "C" {
 
     // this is used JIT scenarios to tell the compiler what externals map to
     TB_API void tb_extern_bind_ptr(TB_External* e, void* ptr);
+    TB_API TB_ExternalType tb_extern_get_type(TB_External* e);
 
-    TB_API TB_External* tb_extern_create(TB_Module* m, const char* name);
+    TB_API TB_External* tb_extern_create(TB_Module* m, const char* name, TB_ExternalType type);
     TB_API TB_FileID tb_file_create(TB_Module* m, const char* path);
 
     // Called once you're done with TB operations on a thread (or i guess when it's

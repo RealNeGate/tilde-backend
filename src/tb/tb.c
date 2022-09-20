@@ -1,5 +1,6 @@
 #include "tb_internal.h"
 #include "host.h"
+#include "coroutine.h"
 
 enum { BATCH_SIZE = 8192 };
 
@@ -78,6 +79,16 @@ TB_API TB_Module* tb_module_create_for_host(const TB_FeatureSet* features, bool 
     return tb_module_create(arch, sys, features, is_jit);
 }
 
+/*
+inline static uint64_t foo(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ((long long)ts.tv_sec * 1000000000LL) + ts.tv_nsec;
+}
+
+#define TELL_ME_WHY() for (uint64_t __start = foo(), __i = 0; __i < 1; __i++, printf("Took: %f microseconds\n", (foo() - __start) / 1000.0))
+*/
+
 TB_API TB_Module* tb_module_create(TB_Arch arch, TB_System sys, const TB_FeatureSet* features, bool is_jit) {
     TB_Module* m = tb_platform_heap_alloc(sizeof(TB_Module));
     if (m == NULL) {
@@ -110,7 +121,7 @@ TB_API TB_Module* tb_module_create(TB_Arch arch, TB_System sys, const TB_Feature
     m->files.data[0] = (TB_File) { 0 };
 
     m->functions.count = 0;
-    m->functions.data = tb_platform_heap_alloc(TB_MAX_FUNCTIONS * sizeof(TB_Function));
+    m->functions.data = tb_platform_valloc(TB_MAX_FUNCTIONS * sizeof(TB_Function));
 
     loop(i, TB_MAX_THREADS) {
         m->thread_info[i].global_patches = dyn_array_create(TB_GlobalPatch);
@@ -219,7 +230,7 @@ TB_API void tb_module_destroy(TB_Module* m) {
     tb_platform_vfree(m->prototypes_arena, PROTOTYPES_ARENA_SIZE * sizeof(uint64_t));
 
     tb_platform_heap_free(m->files.data);
-    tb_platform_heap_free(m->functions.data);
+    tb_platform_vfree(m->functions.data, TB_MAX_FUNCTIONS * sizeof(TB_Function));
     tb_platform_heap_free(m);
 }
 
@@ -469,16 +480,20 @@ TB_API void tb_extern_bind_ptr(TB_External* e, void* ptr) {
     e->address = ptr;
 }
 
+TB_API TB_ExternalType tb_extern_get_type(TB_External* e) {
+    return e->type;
+}
+
 TB_API void* tb_function_get_jit_pos(TB_Function* f) {
     return f->compiled_pos;
 }
 
-TB_API TB_External* tb_extern_create(TB_Module* m, const char* name) {
+TB_API TB_External* tb_extern_create(TB_Module* m, const char* name, TB_ExternalType type) {
     assert(name != NULL);
     int tid = tb__get_local_tid();
 
     TB_External* e = pool_put(m->thread_info[tid].externals);
-    *e = (TB_External){ .name = tb_platform_string_alloc(name) };
+    *e = (TB_External){ .type = type, .name = tb_platform_string_alloc(name) };
     return e;
 }
 

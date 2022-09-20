@@ -53,13 +53,14 @@ inline static void* pool__alloc_slot(void** ptr, size_t type_size) {
 }
 
 inline static size_t pool_popcount(void* ptr) {
-    size_t c = 0;
+    if (ptr == NULL) {
+        return 0;
+    }
 
+    size_t c = 0;
     for (PoolHeader* hdr = ((PoolHeader*) ptr) - 1; hdr != NULL; hdr = hdr->next) {
         c += tb_popcount64(hdr->used);
     }
-
-    printf("Popcount: %zu\n", c);
     return c;
 }
 

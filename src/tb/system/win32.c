@@ -10,27 +10,21 @@ void* tb_platform_valloc(size_t size) {
     return VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 }
 
-void* tb_platform_valloc_guard(size_t size) {
-    void* ptr = VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE | PAGE_GUARD);
-    if (ptr == NULL) return NULL;
-
-    SYSTEM_INFO sys_info;
-    GetSystemInfo(&sys_info);
-
-    // mark the last page as a noaccess, this means it should segfault safely on running out of memory
-    DWORD old_protect;
-    VirtualProtect((char*)ptr + (size - sys_info.dwPageSize), sys_info.dwPageSize, PAGE_NOACCESS, &old_protect);
-
-    return ptr;
-}
-
 void tb_platform_vfree(void* ptr, size_t size) {
     VirtualFree(ptr, 0, MEM_RELEASE);
 }
 
-bool tb_platform_vprotect(void* ptr, size_t size, bool execute) {
+bool tb_platform_vprotect(void* ptr, size_t size, TB_MemProtect prot) {
+    DWORD protect;
+    switch (prot) {
+        case TB_PAGE_READONLY: protect = PAGE_READONLY; break;
+        case TB_PAGE_READWRITE: protect = PAGE_READWRITE; break;
+        case TB_PAGE_READEXECUTE: protect = PAGE_EXECUTE_READ; break;
+        default: return false;
+    }
+
     DWORD old_protect;
-    return VirtualProtect(ptr, size, execute ? PAGE_EXECUTE_READ : PAGE_READWRITE, &old_protect);
+    return VirtualProtect(ptr, size, protect, &old_protect);
 }
 
 void* tb_platform_heap_alloc(size_t size) {

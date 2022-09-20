@@ -137,6 +137,7 @@ typedef struct TB_File {
 } TB_File;
 
 struct TB_External {
+    TB_ExternalType type;
     char* name;
     void* address;
 };
@@ -351,7 +352,10 @@ struct TB_Function {
     TB_Line* lines;
 
     // Compilation output
-    void* compiled_pos;
+    union {
+        void* compiled_pos;
+        size_t compiled_symbol_id;
+    };
     TB_FunctionOutput* output;
 };
 

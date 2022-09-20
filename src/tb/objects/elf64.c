@@ -1,3 +1,5 @@
+// Halfway through implementing this ELF64 exporter i realized that my new best friend is
+// COFF, ELF is a bitch.
 #include "elf64.h"
 
 struct TB_ModuleExporter {
@@ -480,6 +482,7 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
         // write DATA patches
         {
             assert(e.write_pos == sections[S_DATA_REL].sh_offset);
+            uint8_t* data = &output[sections[S_DATA].sh_offset];
             TB_FIXED_ARRAY(Elf64_Rela) relocs = {
                 .cap = sections[S_TEXT_REL].sh_size / sizeof(Elf64_Rela),
                 .elems = (Elf64_Rela*) &output[sections[S_DATA_REL].sh_offset]
@@ -492,6 +495,10 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
                     FOREACH_N(k, 0, init->obj_count) {
                         size_t actual_pos = g->pos + init->objects[k].offset;
 
+                        // load the addend from the buffer
+                        uint64_t addend;
+                        memcpy(&addend, &data[actual_pos], sizeof(addend));
+
                         switch (init->objects[k].type) {
                             case TB_INIT_OBJ_RELOC_GLOBAL: {
                                 const TB_Global* g = init->objects[k].reloc_global;
@@ -499,6 +506,7 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
                                 Elf64_Rela rela = {
                                     .r_offset = actual_pos,
                                     .r_info   = ELF64_R_INFO(g->id, R_X86_64_64),
+                                    .r_addend = addend,
                                 };
                                 TB_FIXED_ARRAY_APPEND(relocs, rela);
                                 break;
@@ -511,6 +519,7 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
                                 Elf64_Rela rela = {
                                     .r_offset = actual_pos,
                                     .r_info   = ELF64_R_INFO(id, R_X86_64_64),
+                                    .r_addend = addend,
                                 };
                                 TB_FIXED_ARRAY_APPEND(relocs, rela);
                                 break;
@@ -520,6 +529,7 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
                                 Elf64_Rela rela = {
                                     .r_offset = actual_pos,
                                     .r_info   = ELF64_R_INFO(init->objects[k].reloc_function->compiled_symbol_id, R_X86_64_64),
+                                    .r_addend = addend,
                                 };
                                 TB_FIXED_ARRAY_APPEND(relocs, rela);
                                 break;

@@ -128,7 +128,7 @@ typedef struct Inst2 {
 } Inst2;
 
 static const GPR WIN64_GPR_PARAMETERS[4] = { RCX, RDX, R8, R9 };
-static const GPR SYSV_GPR_PARAMETERS[6] = { RDI, RSI, RCX, RDX, R8, R9 };
+static const GPR SYSV_GPR_PARAMETERS[6] = { RDI, RSI, RDX, RCX, R8, R9 };
 
 typedef enum Inst1 {
     // 0xF7

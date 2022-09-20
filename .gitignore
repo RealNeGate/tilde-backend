@@ -4,6 +4,7 @@ bin/
 negate/
 
 tildebackend.lib
+tildebackend.a
 
 *.cache
 *.swp

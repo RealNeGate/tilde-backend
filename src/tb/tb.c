@@ -677,10 +677,10 @@ void tb_emit_call_patch(TB_Module* m, TB_Function* source, const TB_Function* ta
     dyn_array_put(m->thread_info[local_thread_id].call_patches, p);
 }
 
-void tb_emit_ecall_patch(TB_Module* m, TB_Function* source, const TB_External* target, size_t pos, size_t local_thread_id) {
+void tb_emit_ecall_patch(TB_Module* m, TB_Function* source, const TB_External* target, size_t pos, bool is_function, size_t local_thread_id) {
     assert(pos == (uint32_t)pos);
 
-    TB_ExternFunctionPatch p = { .source = source, .target = target, .pos = pos };
+    TB_ExternFunctionPatch p = { .source = source, .target = target, .is_function = is_function, .pos = pos };
     dyn_array_put(m->thread_info[local_thread_id].ecall_patches, p);
 }
 

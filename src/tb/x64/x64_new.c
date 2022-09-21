@@ -526,7 +526,7 @@ static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r, size_t queue
         // win64
         { 4, 4, 16, WIN64_ABI_CALLER_SAVED,   { RCX, RDX, R8, R9 } },
         // system v
-        { 6, 4, 5, SYSV_ABI_CALLER_SAVED,    { RDI, RSI, RCX, RDX, R8, R9 } },
+        { 6, 4, 5, SYSV_ABI_CALLER_SAVED,    { RDI, RSI, RDX, RCX, R8, R9 } },
         // syscall
         { 6, 4, 5, SYSCALL_ABI_CALLER_SAVED, { RDI, RSI, RDX, R10, R8, R9 } },
     };
@@ -620,7 +620,7 @@ static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r, size_t queue
         }
         case TB_ECALL: {
             const TB_External* target = n->ecall.target;
-            tb_emit_ecall_patch(f->module, f, target, GET_CODE_POS(&ctx->emit) + 1, s_local_thread_id);
+            tb_emit_ecall_patch(f->module, f, target, GET_CODE_POS(&ctx->emit) + 1, true, s_local_thread_id);
 
             // CALL rel32
             EMIT1(&ctx->emit, 0xE8), EMIT4(&ctx->emit, 0x0);
@@ -780,7 +780,7 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
 
                 if (dst.gpr >= 8) EMIT1(&ctx->emit, 0x41);
                 EMIT1(&ctx->emit, 0x8B), EMIT1(&ctx->emit, ((dst.gpr & 7) << 3) | RBP), EMIT4(&ctx->emit, 0x00);
-                tb_emit_ecall_patch(f->module, f, m->tls_index_extern, GET_CODE_POS(&ctx->emit) - 4, s_local_thread_id);
+                tb_emit_ecall_patch(f->module, f, m->tls_index_extern, GET_CODE_POS(&ctx->emit) - 4, false, s_local_thread_id);
 
                 // mov t1, qword gs:[58h]
                 GAD_VAL t1 = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);

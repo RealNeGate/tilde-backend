@@ -365,7 +365,7 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
 
                 if (dst.gpr >= 8) EMIT1(&ctx->emit, 0x41);
                 EMIT1(&ctx->emit, 0x8B), EMIT1(&ctx->emit, ((dst.gpr & 7) << 3) | RBP), EMIT4(&ctx->emit, 0x00);
-                tb_emit_ecall_patch(f->module, f, m->tls_index_extern, GET_CODE_POS(&ctx->emit) - 4, s_local_thread_id);
+                tb_emit_ecall_patch(f->module, f, m->tls_index_extern, GET_CODE_POS(&ctx->emit) - 4, false, s_local_thread_id);
 
                 // mov t1, qword gs:[58h]
                 Val t1 = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
@@ -745,21 +745,34 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
             case TB_KEEPALIVE:
             case TB_POISON:
             break;
-            case TB_EXTERN_ADDRESS:
+            case TB_EXTERN_ADDRESS: {
+                GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
+                fast_def_gpr(ctx, f, r, dst_gpr, TB_TYPE_PTR);
+
+                // On SystemV it's a mov because of the GOT,
+                // on Windows it's a lea.
+                //
+                // mov dst, [rip + some_disp]
+                // lea
+                EMIT1(&ctx->emit, rex(true, dst_gpr, RBP, 0));
+                EMIT1(&ctx->emit, ctx->is_sysv ? 0x8B : 0x8D);
+                EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT, dst_gpr, RBP));
+                EMIT4(&ctx->emit, 0);
+
+                tb_emit_ecall_patch(f->module, f, n->external.value, GET_CODE_POS(&ctx->emit) - 4, false, s_local_thread_id);
+                break;
+            }
             case TB_FUNC_ADDRESS: {
                 GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
                 fast_def_gpr(ctx, f, r, dst_gpr, TB_TYPE_PTR);
 
+                // lea dst, [rip + some_disp]
                 EMIT1(&ctx->emit, rex(true, dst_gpr, RBP, 0));
                 EMIT1(&ctx->emit, 0x8D);
                 EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT, dst_gpr, RBP));
                 EMIT4(&ctx->emit, 0);
 
-                if (reg_type == TB_EXTERN_ADDRESS) {
-                    tb_emit_ecall_patch(f->module, f, n->external.value, GET_CODE_POS(&ctx->emit) - 4, s_local_thread_id);
-                } else {
-                    tb_emit_call_patch(f->module, f, n->func.value, GET_CODE_POS(&ctx->emit) - 4, s_local_thread_id);
-                }
+                tb_emit_call_patch(f->module, f, n->func.value, GET_CODE_POS(&ctx->emit) - 4, s_local_thread_id);
                 break;
             }
             case TB_INTEGER_CONST:
@@ -1975,7 +1988,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 } else if (reg_type == TB_ECALL) {
                     const TB_External* target = n->ecall.target;
 
-                    tb_emit_ecall_patch(f->module, f, target, GET_CODE_POS(&ctx->emit) + 1, s_local_thread_id);
+                    tb_emit_ecall_patch(f->module, f, target, GET_CODE_POS(&ctx->emit) + 1, true, s_local_thread_id);
 
                     // CALL rel32
                     EMIT1(&ctx->emit, 0xE8);
@@ -2496,6 +2509,8 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
             Val src = val_gpr(TB_TYPE_I64, parameter_gprs[param_num]);
             INST2(MOV, &dst, &src, TB_TYPE_I64);
         }
+
+        ctx->stack_usage += (extra_param_count * 8);
     }
 
     // printf("STACK MAP: %s\n", f->name);

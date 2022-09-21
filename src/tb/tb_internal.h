@@ -126,9 +126,11 @@ typedef struct TB_FunctionPatch {
     const TB_Function* target;
 } TB_FunctionPatch;
 
+// Not actually function patches just external patches im sorry for lying
 typedef struct TB_ExternFunctionPatch {
     TB_Function* source;
     uint32_t pos; // relative to the start of the function body
+    bool is_function;
     const TB_External* target;
 } TB_ExternFunctionPatch;
 
@@ -697,7 +699,7 @@ void tb_free_temp_predeccesors(TB_TemporaryStorage* tls, TB_Predeccesors preds);
 uint32_t tb_emit_const_patch(TB_Module* m, TB_Function* source, size_t pos, const void* ptr,size_t len, size_t local_thread_id);
 void tb_emit_global_patch(TB_Module* m, TB_Function* source, size_t pos, const TB_Global* target, size_t local_thread_id);
 void tb_emit_call_patch(TB_Module* m, TB_Function* source, const TB_Function* target, size_t pos, size_t local_thread_id);
-void tb_emit_ecall_patch(TB_Module* m, TB_Function* source, const TB_External* target, size_t pos, size_t local_thread_id);
+void tb_emit_ecall_patch(TB_Module* m, TB_Function* source, const TB_External* target, size_t pos, bool is_function, size_t local_thread_id);
 
 TB_Reg* tb_vla_reserve(TB_Function* f, size_t count);
 

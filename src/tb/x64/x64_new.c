@@ -6,11 +6,6 @@ typedef struct Ctx Ctx;
 static void jmp(TB_CGEmitter* restrict e, int label);
 static void ret_jmp(TB_CGEmitter* restrict e);
 
-static void x64v2_initial_reg_alloc(Ctx* restrict ctx);
-static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
-static void x64v2_resolve_params(Ctx* restrict ctx, TB_Function* f);
-static void x64v2_resolve_stack_slot(Ctx* restrict ctx, TB_Function* f, TB_Node* restrict n);
-
 #define GAD_REG_PRIORITIES { \
     { RAX, RCX, RDX, R8, R9, R10, R11, RDI, RSI, RBX, R12, R13, R14, R15 }, \
     { XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, XMM15 } \
@@ -33,13 +28,7 @@ static void x64v2_resolve_stack_slot(Ctx* restrict ctx, TB_Function* f, TB_Node*
 #define GAD_FN(name) x64v2_ ## name // all exported symbols have this prefix
 #define GAD_NUM_REG_FAMILIES 2
 #define GAD_REGS_IN_FAMILY 16
-#define GAD_INITIAL_REG_ALLOC(ctx) x64v2_initial_reg_alloc(ctx)
-#define GAD_RESOLVE_PARAMS(ctx, f) x64v2_resolve_params(ctx, f)
-#define GAD_RESOLVE_VALUE(ctx, f, r) x64v2_resolve_value(ctx, f, r)
-#define GAD_RESOLVE_STACK_SLOT(ctx, f, n) x64v2_resolve_stack_slot(ctx, f, n)
 #define GAD_MAKE_STACK_SLOT(ctx, f, r_, pos) (Val){ VAL_MEM, .r = (r_), .mem = { .base = RBP, .index = GPR_NONE, .disp = (pos) } }
-#define GAD_GOTO(ctx, label) jmp(&ctx->emit, label)
-#define GAD_RET_JMP(ctx) ret_jmp(&ctx->emit)
 #define GAD_VAL Val
 #include "../codegen/generic_addrdesc.h"
 #include "x64_emitter.h"
@@ -66,6 +55,14 @@ typedef struct {
 typedef enum {
     SHL, SHR, SAR
 } ShiftType;
+
+static void x64v2_goto(Ctx* restrict ctx, TB_Label label) {
+    jmp(&ctx->emit, label);
+}
+
+static void x64v2_ret_jmp(Ctx* restrict ctx) {
+    ret_jmp(&ctx->emit);
+}
 
 static void emit_shift_gpr_imm(Ctx* restrict ctx, TB_Function* f, ShiftType type, GPR dst, uint8_t imm, TB_DataType dt) {
     int bits_in_type = dt.type == TB_PTR ? 64 : dt.data;

@@ -28,6 +28,8 @@ static thread_local size_t s_local_thread_id;
 #define EITHER3(a, b, c, d) ((a) == (b) || (a) == (c) || (a) == (d))
 #define FITS_INTO(a, type)  ((a) == ((type)(a)))
 
+#define TB_TEMP_REG INT_MAX
+
 enum {
     GAD_VAL_UNRESOLVED = 0,
     GAD_VAL_FLAGS      = 1,
@@ -170,6 +172,12 @@ static size_t GAD_FN(resolve_stack_usage)(Ctx* restrict ctx, TB_Function* f, siz
 static void GAD_FN(resolve_local_patches)(Ctx* restrict ctx, TB_Function* f);
 static void GAD_FN(call)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, size_t queue_length_before);
 static void GAD_FN(store)(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
+static void GAD_FN(goto)(Ctx* restrict ctx, TB_Label l);
+static void GAD_FN(ret_jmp)(Ctx* restrict ctx);
+static void GAD_FN(initial_reg_alloc)(Ctx* restrict ctx);
+static void GAD_FN(resolve_params)(Ctx* restrict ctx, TB_Function* f);
+static GAD_VAL GAD_FN(resolve_value)(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
+static void GAD_FN(resolve_stack_slot)(Ctx* restrict ctx, TB_Function* f, TB_Node* restrict n);
 static void GAD_FN(return)(Ctx* restrict ctx, TB_Function* f, TB_Node* restrict n);
 static void GAD_FN(phi_move)(Ctx* restrict ctx, TB_Function* f, GAD_VAL* dst_val, TB_Reg dst, TB_Reg src);
 static void GAD_FN(spill_move)(Ctx* restrict ctx, TB_Function* f, TB_DataType dt, GAD_VAL* dst_val, GAD_VAL* src_val, GAD_VAL* reg_val);
@@ -537,7 +545,7 @@ static ptrdiff_t GAD_FN(await)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int 
     print_indent(depth);
     LISTING("Resolve: r%d\n", r);
 
-    GAD_VAL v = GAD_RESOLVE_VALUE(ctx, f, r);
+    GAD_VAL v = GAD_FN(resolve_value)(ctx, f, r);
     assert(v.type != GAD_VAL_UNRESOLVED);
 
     v.r = r;
@@ -730,7 +738,7 @@ static void GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Label bb, TB_L
             GAD_FN(resolve_leftover)(ctx, f, queue_length_before, true);
 
             if (end->goto_.label != fallthrough) {
-                GAD_GOTO(ctx, end->goto_.label);
+                GAD_FN(goto)(ctx, end->goto_.label);
             }
             break;
         }
@@ -745,7 +753,7 @@ static void GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Label bb, TB_L
 
             // Only jump if we aren't literally about to end the function
             if (end->next != fallthrough) {
-                GAD_RET_JMP(ctx);
+                GAD_FN(ret_jmp)(ctx);
             }
             break;
         }
@@ -832,7 +840,7 @@ static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const
         f->lines = tb_platform_arena_alloc(tally.line_info_count * sizeof(TB_Line));
 
         memset(ctx->queue, 0, f->node_count * sizeof(GAD_VAL));
-        GAD_INITIAL_REG_ALLOC(ctx);
+        GAD_FN(initial_reg_alloc)(ctx);
     }
 
     tb_function_print(f, tb_default_print_callback, stdout, false);
@@ -840,7 +848,7 @@ static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const
     // Analyze function for stack, use counts and phi nodes
     tb_function_calculate_use_count(f, ctx->use_count);
 
-    GAD_RESOLVE_PARAMS(ctx, f);
+    GAD_FN(resolve_params)(ctx, f);
     size_t original_stack_usage = ctx->stack_usage;
 
     // calculate the order of the nodes, it helps since node indices
@@ -862,7 +870,7 @@ static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const
                     .dt = n->dt
                 };
             } else if (n->type == TB_PARAM_ADDR || n->type == TB_LOCAL) {
-                GAD_RESOLVE_STACK_SLOT(ctx, f, n);
+                GAD_FN(resolve_stack_slot)(ctx, f, n);
             } else if (EITHER3(n->type, TB_CALL, TB_ECALL, TB_VCALL)) {
                 int param_usage = CALL_NODE_PARAM_COUNT(n);
                 if (caller_usage < param_usage) caller_usage = param_usage;

@@ -49,13 +49,13 @@ size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
     // push rXX
     for (size_t i = 0; i < 16; i++)
         if (saved & (1ull << i)) {
-		if (i < 8) {
-			out[used++] = 0x50 + i;
-		} else {
-			out[used++] = 0x41;
-			out[used++] = 0x50 + (i & 0b111);
-		}
-	}
+        if (i < 8) {
+            out[used++] = 0x50 + i;
+        } else {
+            out[used++] = 0x41;
+            out[used++] = 0x50 + (i & 0b111);
+        }
+    }
 
     if (stack_usage == (int8_t)stack_usage) {
         // sub rsp, stack_usage
@@ -75,22 +75,22 @@ size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
     // save XMMs
     int tally = stack_usage & ~15u;
     for (size_t i = 0; i < 16; i++) {
-		if (saved & (1ull << (i + 16))) {
-			if (i >= 8) {
-				out[used++] = rex(false, i, 0, 0);
-			}
+        if (saved & (1ull << (i + 16))) {
+            if (i >= 8) {
+                out[used++] = rex(false, i, 0, 0);
+            }
 
-			// movaps [rbp - (A * 16)], xmmI
-			out[used++] = 0x0F;
-			out[used++] = 0x29;
-			out[used++] = mod_rx_rm(MOD_INDIRECT_DISP32, i, RBP);
+            // movaps [rbp - (A * 16)], xmmI
+            out[used++] = 0x0F;
+            out[used++] = 0x29;
+            out[used++] = mod_rx_rm(MOD_INDIRECT_DISP32, i, RBP);
 
-			*((uint32_t*)&out[used]) = -tally;
-			used += 4;
+            *((uint32_t*)&out[used]) = -tally;
+            used += 4;
 
-			tally -= 16;
-		}
-	}
+            tally -= 16;
+        }
+    }
 
     return used;
 }
@@ -98,7 +98,7 @@ size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
 size_t x64_emit_epilogue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
     if ((tb_popcount(saved & 0xFFFF) & 1) == 0) stack_usage += 8;
 
-	// if the stack isn't used then just return
+    // if the stack isn't used then just return
     if (stack_usage == 8) {
         out[0] = 0xC3;
         return 1;
@@ -109,20 +109,20 @@ size_t x64_emit_epilogue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
     // reload XMMs
     int tally = stack_usage & ~15u;
     for (size_t i = 0; i < 16; i++) {
-		if (saved & (1ull << (i + 16))) {
-			if (i >= 8) { out[used++] = rex(false, i, 0, 0); }
+        if (saved & (1ull << (i + 16))) {
+            if (i >= 8) { out[used++] = rex(false, i, 0, 0); }
 
-			// movaps xmmI, [rsp + (A * 16)]
-			out[used++] = 0x0F;
-			out[used++] = 0x28;
-			out[used++] = mod_rx_rm(MOD_INDIRECT_DISP32, i, RBP);
+            // movaps xmmI, [rsp + (A * 16)]
+            out[used++] = 0x0F;
+            out[used++] = 0x28;
+            out[used++] = mod_rx_rm(MOD_INDIRECT_DISP32, i, RBP);
 
-			*((uint32_t*)&out[used]) = -tally;
-			used += 4;
+            *((uint32_t*)&out[used]) = -tally;
+            used += 4;
 
-			tally -= 16;
-		}
-	}
+            tally -= 16;
+        }
+    }
 
     // add rsp, N
     if (stack_usage == (int8_t)stack_usage) {
@@ -138,16 +138,16 @@ size_t x64_emit_epilogue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
         used += 4;
     }
 
-	// pop gpr
+    // pop gpr
     for (size_t i = 16; i--;)
         if (saved & (1ull << i)) {
-		if (i < 8) {
-			out[used++] = 0x58 + i;
-		} else {
-			out[used++] = 0x41;
-			out[used++] = 0x58 + (i & 0b111);
-		}
-	}
+        if (i < 8) {
+            out[used++] = 0x58 + i;
+        } else {
+            out[used++] = 0x41;
+            out[used++] = 0x58 + (i & 0b111);
+        }
+    }
 
     out[used++] = 0x58 + RBP;
     out[used++] = 0xC3;

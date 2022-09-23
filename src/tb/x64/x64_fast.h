@@ -2517,7 +2517,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
 
     // Just the splitting point between parameters
     // and locals in the stack.
-    DynArray(TB_StackSlot) stack_slots = dyn_array_create(TB_StackSlot);
+    DynArray(TB_StackSlot) stack_slots = dyn_array_create_with_initial_cap(TB_StackSlot, 16);
     TB_FOR_BASIC_BLOCK(bb, f) {
         TB_FOR_NODE(r, f, bb) {
             TB_Node* n = &f->nodes[r];
@@ -2570,6 +2570,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
             }
         }
     }
+    dyn_array_trim(stack_slots);
 
     #if 0
     if (strcmp(f->name, "cuikpp_define_empty_slice") == 0) {

@@ -97,9 +97,6 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
 
     const char* path = "fallback.obj";
 
-    // tally up .data relocations
-    uint32_t data_relocation_count = 0;
-
     ////////////////////////////////
     // Generate .xdata section (unwind info)
     ////////////////////////////////
@@ -117,15 +114,6 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
             unwind_info[i] = xdata.count;
             if (out_f) {
                 e->code_gen->emit_win64eh_unwind_info(&xdata, out_f, out_f->prologue_epilogue_metadata, out_f->stack_usage);
-            }
-        }
-    }
-
-    FOREACH_N(t, 0, m->max_threads) {
-        pool_for(TB_Global, g, m->thread_info[t].globals) {
-            TB_Initializer* init = g->init;
-            FOREACH_N(k, 0, init->obj_count) {
-                data_relocation_count += (init->objects[k].type != TB_INIT_OBJ_REGION);
             }
         }
     }
@@ -175,6 +163,16 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
     ////////////////////////////////
     // create headers
     ////////////////////////////////
+    size_t num_of_relocs[S_MAX] = { 0 };
+    FOREACH_N(t, 0, m->max_threads) {
+        pool_for(TB_Global, g, m->thread_info[t].globals) {
+            TB_Initializer* init = g->init;
+            FOREACH_N(k, 0, init->obj_count) {
+                num_of_relocs[S_DATA] += (init->objects[k].type != TB_INIT_OBJ_REGION);
+            }
+        }
+    }
+
     e->header = (COFF_FileHeader){
         .num_sections = number_of_sections,
         .timestamp = time(NULL),
@@ -201,11 +199,11 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
         .raw_data_size = m->data_region_size
     };
 
+    num_of_relocs[S_PDATA] = m->functions.compiled_count * 3;
     e->sections[S_PDATA] = (COFF_SectionHeader){
         .name = { ".pdata" }, // .pdata
         .characteristics = COFF_CHARACTERISTICS_RODATA,
         .raw_data_size = m->functions.compiled_count * 12,
-        .num_reloc = m->functions.compiled_count * 3,
     };
 
     e->sections[S_XDATA] = (COFF_SectionHeader){
@@ -236,7 +234,9 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
         FOREACH_N(i, 0, e->debug_sections.length) {
             e->debug_section_headers[i] = (COFF_SectionHeader) { 0 };
             e->debug_section_headers[i].characteristics = COFF_CHARACTERISTICS_CV;
-            e->debug_section_headers[i].num_reloc = e->debug_sections.data[i].relocation_count;
+
+            size_t reloc_count = e->debug_sections.data[i].relocation_count;
+            e->debug_section_headers[i].num_reloc = reloc_count >= 0xFFFF ? 0xFFFF : reloc_count;
 
             TB_Slice name = e->debug_sections.data[i].name;
             if (name.length > 8) {
@@ -263,14 +263,12 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
 
     // relocation
     {
-        e->sections[S_TEXT].num_reloc = 0;
+        num_of_relocs[S_TEXT] = 0;
         FOREACH_N(i, 0, m->max_threads) {
-            e->sections[S_TEXT].num_reloc += dyn_array_length(m->thread_info[i].const_patches);
-            e->sections[S_TEXT].num_reloc += dyn_array_length(m->thread_info[i].ecall_patches);
-            e->sections[S_TEXT].num_reloc += dyn_array_length(m->thread_info[i].global_patches);
+            num_of_relocs[S_TEXT] += dyn_array_length(m->thread_info[i].const_patches);
+            num_of_relocs[S_TEXT] += dyn_array_length(m->thread_info[i].ecall_patches);
+            num_of_relocs[S_TEXT] += dyn_array_length(m->thread_info[i].global_patches);
         }
-
-        e->sections[S_DATA].num_reloc = data_relocation_count;
     }
 
     // layout sections & relocations
@@ -290,12 +288,24 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
         // Do the relocation lists next
         FOREACH_N(i, 0, S_MAX) {
             e->sections[i].pointer_to_reloc = counter;
-            counter += e->sections[i].num_reloc * sizeof(COFF_ImageReloc);
+            e->sections[i].num_reloc = num_of_relocs[i] >= 0xFFFF ? 0xFFFF : num_of_relocs[i];
+            e->sections[i].characteristics |= (num_of_relocs[i] >= 0xFFFF ? IMAGE_SCN_LNK_NRELOC_OVFL : 0);
+
+            counter += num_of_relocs[i] * sizeof(COFF_ImageReloc);
+            // relocation overflow adds a dummy relocation
+            counter += (num_of_relocs[i] >= 0xFFFF ? sizeof(COFF_ImageReloc) : 0);
         }
 
         FOREACH_N(i, 0, e->debug_sections.length) {
             e->debug_section_headers[i].pointer_to_reloc = counter;
-            counter += e->debug_section_headers[i].num_reloc * sizeof(COFF_ImageReloc);
+
+            size_t reloc_count = e->debug_sections.data[i].relocation_count;
+            e->debug_section_headers[i].num_reloc = reloc_count >= 0xFFFF ? 0xFFFF : reloc_count;
+            e->debug_section_headers[i].characteristics |= (reloc_count >= 0xFFFF ? IMAGE_SCN_LNK_NRELOC_OVFL : 0);
+
+            counter += reloc_count * sizeof(COFF_ImageReloc);
+            // relocation overflow adds a dummy relocation
+            counter += (reloc_count >= 0xFFFF ? sizeof(COFF_ImageReloc) : 0);
         }
 
         e->header.symbol_table = tb_post_inc(&counter, e->header.symbol_count * sizeof(COFF_Symbol));
@@ -573,8 +583,16 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
 
         // write PDATA patches
         {
-            size_t count = 0, capacity = m->functions.compiled_count * 3;
+            size_t count = 0, capacity = num_of_relocs[S_PDATA] + (num_of_relocs[S_PDATA] >= 0xFFFF ? 1 : 0);
             COFF_ImageReloc* relocs = get_temporary_storage(e, capacity * sizeof(COFF_ImageReloc));
+
+            if (num_of_relocs[S_PDATA] >= 0xFFFF) {
+                // because we have more than 65535 relocations the first relocation
+                // stores the 32bit number of relocations in the VirtualAddress field
+                relocs[count++] = (COFF_ImageReloc){
+                    .VirtualAddress = num_of_relocs[S_PDATA]
+                };
+            }
 
             size_t j = 0;
             assert(e->write_pos == e->sections[S_PDATA].pointer_to_reloc);

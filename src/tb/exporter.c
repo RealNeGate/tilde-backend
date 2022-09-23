@@ -27,6 +27,7 @@ TB_API TB_Exports tb_exporter_write_output(TB_Module* m, TB_OutputFlavor flavor,
         // they're going to be doing linking and have to access the file system for some of
         // that.
         [TB_FLAVOR_EXECUTABLE] = {
+            [TB_SYSTEM_WINDOWS] = tb_pe_write_output,
             [TB_SYSTEM_LINUX] = tb_elf64exe_write_output,
         }
     };

@@ -119,7 +119,10 @@ static void align_up_emitter(TB_Emitter* e, size_t u) {
     while (pad--) tb_out1b(e, 0x00);
 }
 
-void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_LinkerInput* restrict input, const char* path, const IDebugFormat* debug_fmt) {
+TB_API TB_Exports tb_pe_write_output(TB_Module* m, const IDebugFormat* dbg) {
+    // void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_LinkerInput* restrict input, const char* path, const IDebugFormat* debug_fmt)
+    const TB_LinkerInput* restrict input = NULL;
+
     TB_TemporaryStorage* tls = tb_tls_allocate();
     LinkerCtx ctx = { .inputs = *input };
 
@@ -308,10 +311,11 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
     size_t data_base = align_up(text_base + text_section_size, 4096);
     if (entrypoint == SIZE_MAX) {
         fprintf(stderr, "error: no entrypoint defined!\n");
-        return;
+        return (TB_Exports){ 0 };
     }
 
     // Target specific: resolve internal call patches
+    const ICodeGen* restrict code_gen = tb__find_code_generator(m);
     code_gen->emit_call_patches(m, func_layout);
 
     // Apply external relocations
@@ -359,7 +363,7 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
         }
     }
 
-    FILE* f = fopen(path, "wb");
+    FILE* f = fopen("foo.exe", "wb");
 
     // write DOS header
     fwrite(dos_stub, sizeof(dos_stub), 1, f);
@@ -515,4 +519,5 @@ void tb_export_pe(TB_Module* m, const ICodeGen* restrict code_gen, const TB_Link
     }
 
     fclose(f);
+    return (TB_Exports){ 0 };
 }

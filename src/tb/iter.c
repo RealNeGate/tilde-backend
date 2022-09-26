@@ -29,9 +29,7 @@ TB_API bool tb_next_node_input(const TB_Function* f, TB_NodeInputIter* iter) {
         case TB_PARAM:
         case TB_GOTO:
         case TB_LINE_INFO:
-        case TB_FUNC_ADDRESS:
-        case TB_EXTERN_ADDRESS:
-        case TB_GLOBAL_ADDRESS:
+        case TB_GET_SYMBOL_ADDRESS:
         case TB_X86INTRIN_STMXCSR:
         case TB_UNREACHABLE:
         case TB_DEBUGBREAK:
@@ -258,8 +256,7 @@ TB_API bool tb_next_node_input(const TB_Function* f, TB_NodeInputIter* iter) {
         }
 
         case TB_CALL:
-        case TB_ICALL:
-        case TB_ECALL: {
+        case TB_ICALL: {
             size_t i = iter->index_++;
             size_t count = n->call.param_end - n->call.param_start;
 

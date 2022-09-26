@@ -158,49 +158,23 @@ static int codeview_number_of_debug_sections(TB_Module* m) {
 
 // Based on this, it's the only nice CodeView source out there:
 // https://github.com/netwide-assembler/nasm/blob/master/output/codeview.c
-static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporaryStorage* tls, const ICodeGen* code_gen, const char* path, size_t function_sym_start, uint32_t* func_layout) {
+static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporaryStorage* tls, const ICodeGen* code_gen, const char* path) {
     TB_ObjectSection* sections = tb_platform_heap_alloc(2 * sizeof(TB_ObjectSection));
     sections[0] = (TB_ObjectSection){ gimme_cstr_as_slice(".debug$S") };
     sections[1] = (TB_ObjectSection){ gimme_cstr_as_slice(".debug$T") };
 
     // debug$S does quite a few relocations :P, namely saying that
     // certain things point to specific areas of .text section
-    sections[0].relocations = tb_platform_heap_alloc(4 * m->functions.compiled_count * sizeof(TB_ObjectReloc));
+    sections[0].relocations = tb_platform_heap_alloc(4 * m->compiled_function_count * sizeof(TB_ObjectReloc));
 
     // Write type table
-    uint32_t* function_type_table = tb_tls_push(tls, m->functions.count * sizeof(uint32_t));
-    uint32_t* file_table_offset = tb_tls_push(tls, m->functions.count * sizeof(uint32_t));
+    uint32_t* file_table_offset = tb_tls_push(tls, m->files.count * sizeof(uint32_t));
 
     TB_Emitter debugs_out = { 0 };
 
     CV_TypeEntry* lookup_table = tb_tls_push(tls, 1024 * sizeof(CV_TypeEntry));
     memset(lookup_table, 0, 1024 * sizeof(CV_TypeEntry));
     CV_Builder builder = tb_codeview_builder_create(1024, lookup_table);
-
-    {
-        // Generate types for all the function prototypes
-        FOREACH_N(i, 0, m->functions.count) {
-            if (m->functions.data[i].output == NULL) continue;
-            const TB_FunctionPrototype* proto = m->functions.data[i].prototype;
-
-            // Create argument list
-            CV_TypeIndex* params = tb_tls_push(tls, proto->param_count * sizeof(CV_TypeIndex));
-            FOREACH_N(i, 0, proto->param_count) {
-                params[i] = convert_to_codeview_type(&builder, proto->params[i].debug_type);
-            }
-
-            CV_TypeIndex arg_list = tb_codeview_builder_add_arg_list(&builder, proto->param_count, params, proto->has_varargs);
-            tb_tls_restore(tls, params);
-
-            // Create the procedure type
-            CV_TypeIndex return_type = get_codeview_type(proto->return_dt);
-            CV_TypeIndex proc = tb_codeview_builder_add_procedure(&builder, return_type, arg_list, proto->param_count);
-
-            // Create the function ID type... which is somehow different from the procedure...
-            // it's basically referring to the procedure but it has a name
-            function_type_table[i] = tb_codeview_builder_add_function_id(&builder, proc, m->functions.data[i].name);
-        }
-    }
 
     // Write symbol info table
     {
@@ -227,7 +201,8 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
 
             // skip the NULL file entry
             size_t pos = 1;
-            loop_range(i, 1, m->files.count) {
+            file_table_offset[0] = 0;
+            FOREACH_N(i, 1, m->files.count) {
                 size_t len = strlen(m->files.data[i].path);
 
                 tb_out_reserve(&debugs_out, len + 1);
@@ -271,42 +246,31 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
 
         // Line info table
         if (true) {
-            FOREACH_N(func_id, 0, m->functions.count) {
-                TB_FunctionOutput* out_f = m->functions.data[func_id].output;
+            TB_FOR_FUNCTIONS(f, m) {
+                TB_FunctionOutput* out_f = f->output;
                 if (!out_f) continue;
 
                 // Layout crap
-                uint32_t function_start = func_layout[func_id];
-                uint32_t function_end = func_layout[func_id + 1];
-
                 uint32_t body_start = out_f->prologue_length;
 
-                size_t line_count = m->functions.data[func_id].line_count;
-                TB_Line* restrict lines = m->functions.data[func_id].lines;
+                size_t line_count = f->line_count;
+                TB_Line* restrict lines = f->lines;
 
                 tb_out4b(&debugs_out, 0x000000F2);
                 size_t field_length_patch = debugs_out.count;
                 tb_out4b(&debugs_out, 0);
 
                 // Source mapping header
+                size_t func_id = f->super.symbol_id;
                 {
                     size_t patch_pos = debugs_out.count;
-                    add_reloc(&sections[0], &(TB_ObjectReloc){
-                            TB_OBJECT_RELOC_SECREL,
-                            function_sym_start + func_id,
-                            patch_pos
-                        });
-
-                    add_reloc(&sections[0], &(TB_ObjectReloc){
-                            TB_OBJECT_RELOC_SECTION,
-                            function_sym_start + func_id,
-                            patch_pos + 4
-                        });
+                    add_reloc(&sections[0], &(TB_ObjectReloc){ TB_OBJECT_RELOC_SECREL, func_id, patch_pos });
+                    add_reloc(&sections[0], &(TB_ObjectReloc){ TB_OBJECT_RELOC_SECTION, func_id, patch_pos + 4 });
                 }
 
                 tb_out4b(&debugs_out, 0); // SECREL  | .text
                 tb_out4b(&debugs_out, 0); // SECTION | .text
-                tb_out4b(&debugs_out, function_end - function_start);
+                tb_out4b(&debugs_out, out_f->code_size);
 
                 // when we make new file line regions
                 // we backpatch the line count for the
@@ -399,18 +363,12 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
         }
 
         // Symbols
-        FOREACH_N(i, 0, m->functions.count) {
-            TB_Function* f = &m->functions.data[i];
+        TB_FOR_FUNCTIONS(f, m) {
             TB_FunctionOutput* out_f = f->output;
             if (!out_f) continue;
 
-            // Layout crap
-            uint32_t function_start = func_layout[i];
-            uint32_t function_end = func_layout[i + 1];
-            uint32_t function_length = function_end - function_start;
-
-            const char* name = f->name;
-            size_t name_len = strlen(f->name) + 1;
+            const char* name = f->super.name;
+            size_t name_len = strlen(f->super.name) + 1;
 
             size_t baseline = debugs_out.count;
             tb_out2b(&debugs_out, 0);
@@ -420,11 +378,32 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
             tb_out4b(&debugs_out, 0); // pointer to this blocks end (left as zero?)
             tb_out4b(&debugs_out, 0); // pointer to the next symbol (left as zero?)
 
-            // TODO(NeGate): correctly fill this
-            tb_out4b(&debugs_out, function_length);        // procedure length
-            tb_out4b(&debugs_out, 0);                      // debug start offset (?)
-            tb_out4b(&debugs_out, function_length);        // debug end offset (?)
-            tb_out4b(&debugs_out, function_type_table[i]); // type index
+            CV_TypeIndex function_type;
+            {
+                const TB_FunctionPrototype* proto = f->prototype;
+
+                // Create argument list
+                CV_TypeIndex* params = tb_tls_push(tls, proto->param_count * sizeof(CV_TypeIndex));
+                FOREACH_N(i, 0, proto->param_count) {
+                    params[i] = convert_to_codeview_type(&builder, proto->params[i].debug_type);
+                }
+
+                CV_TypeIndex arg_list = tb_codeview_builder_add_arg_list(&builder, proto->param_count, params, proto->has_varargs);
+                tb_tls_restore(tls, params);
+
+                // Create the procedure type
+                CV_TypeIndex return_type = get_codeview_type(proto->return_dt);
+                CV_TypeIndex proc = tb_codeview_builder_add_procedure(&builder, return_type, arg_list, proto->param_count);
+
+                // Create the function ID type... which is somehow different from the procedure...
+                // it's basically referring to the procedure but it has a name
+                function_type = tb_codeview_builder_add_function_id(&builder, proc, name);
+            }
+
+            tb_out4b(&debugs_out, out_f->code_size); // procedure length
+            tb_out4b(&debugs_out, 0);                // debug start offset
+            tb_out4b(&debugs_out, out_f->code_size); // debug end offset
+            tb_out4b(&debugs_out, function_type);    // type index
 
             // we save this location because there's two relocations
             // we'll put there:
@@ -432,19 +411,10 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
             //   SECREL    .text     4 bytes
             //   SECTION   .text     2 bytes
             {
+                size_t func_id = f->super.symbol_id;
                 size_t patch_pos = debugs_out.count;
-
-                add_reloc(&sections[0], &(TB_ObjectReloc){
-                        TB_OBJECT_RELOC_SECREL,
-                        function_sym_start + i,
-                        patch_pos
-                    });
-
-                add_reloc(&sections[0], &(TB_ObjectReloc){
-                        TB_OBJECT_RELOC_SECTION,
-                        function_sym_start + i,
-                        patch_pos + 4
-                    });
+                add_reloc(&sections[0], &(TB_ObjectReloc){ TB_OBJECT_RELOC_SECREL, func_id, patch_pos });
+                add_reloc(&sections[0], &(TB_ObjectReloc){ TB_OBJECT_RELOC_SECTION, func_id, patch_pos + 4 });
             }
             tb_out4b(&debugs_out, 0); // offset
             tb_out2b(&debugs_out, 0); // segment
@@ -508,9 +478,7 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
         tb_patch4b(&debugs_out, field_length_patch, (debugs_out.count - field_length_patch) - 4);
         align_up_emitter(&debugs_out, 4);
     }
-
     tb_codeview_builder_done(&builder);
-    tb_tls_restore(tls, function_type_table);
 
     sections[0].raw_data = (TB_Slice){ debugs_out.count, debugs_out.data };
     sections[1].raw_data = (TB_Slice){ builder.type_section.count, builder.type_section.data };

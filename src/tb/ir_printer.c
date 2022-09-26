@@ -88,7 +88,7 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
             break;
         }
         case TB_LINE_INFO: {
-            callback(user_data, "  # line %s:%d", f->module->files.data[n->line_info.file].path, n->line_info.line);
+            callback(user_data, "  # line %s:%d", f->super.module->files.data[n->line_info.file].path, n->line_info.line);
             break;
         }
         case TB_FLOAT32_CONST: {
@@ -297,20 +297,6 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
             callback(user_data, ")");
             break;
         }
-        case TB_ECALL: {
-            const TB_External* e = n->ecall.target;
-
-            callback(user_data, "  r%-8u = call.", i);
-            tb_print_type(dt, callback, user_data);
-            callback(user_data, " %s(", e->name);
-            for (size_t j = n->ecall.param_start; j < n->ecall.param_end; j++) {
-                if (j != n->ecall.param_start) callback(user_data, ", ");
-
-                callback(user_data, "r%u", f->vla.data[j]);
-            }
-            callback(user_data, ")");
-            break;
-        }
         case TB_CALL: {
             callback(user_data, "  r%-8u = call.", i);
             tb_print_type(dt, callback, user_data);
@@ -362,18 +348,8 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
             callback(user_data, "    default -> L%d)", n->switch_.default_label);
             break;
         }
-        case TB_FUNC_ADDRESS: {
-            callback(user_data, "  r%-8u = &%s", i, n->func.value->name);
-            break;
-        }
-        case TB_EXTERN_ADDRESS: {
-            const TB_External* e = n->external.value;
-            callback(user_data, "  r%-8u = &%s", i, e->name);
-            break;
-        }
-        case TB_GLOBAL_ADDRESS: {
-            const TB_Global* g = n->global.value;
-            callback(user_data, "  r%-8u = &%s", i, g->name);
+        case TB_GET_SYMBOL_ADDRESS: {
+            callback(user_data, "  r%-8u = &%s", i, n->sym.value->name);
             break;
         }
         case TB_PARAM:
@@ -428,6 +404,9 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
             callback(user_data, " r%u", n->i_arith.a);
         }
         break;
+        case TB_TRAP:
+        callback(user_data, "  trap");
+        break;
         case TB_UNREACHABLE:
         callback(user_data, "  unreachable");
         break;
@@ -444,7 +423,7 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
 }
 
 TB_API void tb_function_print(TB_Function* f, TB_PrintCallback callback, void* user_data, bool display_nops) {
-    callback(user_data, "%s():\n", f->name);
+    callback(user_data, "%s():\n", f->super.name);
 
     TB_FOR_BASIC_BLOCK(bb, f) {
         callback(user_data, "L%d: # r%u terminates at r%u\n", bb, f->bbs[bb].start, f->bbs[bb].end);

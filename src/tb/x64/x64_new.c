@@ -198,7 +198,7 @@ static void x64v2_resolve_local_patches(Ctx* restrict ctx, TB_Function* f) {
 }
 
 static void x64v2_resolve_params(Ctx* restrict ctx, TB_Function* f) {
-    bool is_sysv = (f->module->target_abi == TB_ABI_SYSTEMV);
+    bool is_sysv = (f->super.module->target_abi == TB_ABI_SYSTEMV);
     const TB_FunctionPrototype* restrict proto = f->prototype;
 
     size_t param_count = proto->param_count;
@@ -260,7 +260,7 @@ static void x64v2_resolve_params(Ctx* restrict ctx, TB_Function* f) {
 }
 
 static void x64v2_resolve_stack_slot(Ctx* restrict ctx, TB_Function* f, TB_Node* restrict n) {
-    bool is_sysv = (f->module->target_abi == TB_ABI_SYSTEMV);
+    bool is_sysv = (f->super.module->target_abi == TB_ABI_SYSTEMV);
 
     if (n->type == TB_PARAM_ADDR) {
         int id = f->nodes[n->param_addr.param].param.id;
@@ -528,7 +528,7 @@ static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r, size_t queue
         { 6, 4, 5, SYSCALL_ABI_CALLER_SAVED, { RDI, RSI, RDX, R10, R8, R9 } },
     };
 
-    bool is_sysv = (f->module->target_abi == TB_ABI_SYSTEMV);
+    bool is_sysv = (f->super.module->target_abi == TB_ABI_SYSTEMV);
     const struct ParamDescriptor* restrict params = &param_descs[is_sysv ? 1 : 0];
     if (type == TB_SCALL) {
         params = &param_descs[2];
@@ -608,16 +608,14 @@ static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r, size_t queue
 
     switch (type) {
         case TB_CALL: {
-            const TB_Function* target = n->call.target;
-            tb_emit_call_patch(f->module, f, target, GET_CODE_POS(&ctx->emit) + 1, s_local_thread_id);
-
-            // CALL rel32
-            EMIT1(&ctx->emit, 0xE8), EMIT4(&ctx->emit, 0x0);
-            break;
-        }
-        case TB_ECALL: {
-            const TB_External* target = n->ecall.target;
-            tb_emit_ecall_patch(f->module, f, target, GET_CODE_POS(&ctx->emit) + 1, true, s_local_thread_id);
+            const TB_Symbol* target = n->call.target;
+            if (target->tag == TB_SYMBOL_FUNCTION) {
+                tb_emit_symbol_patch(f->super.module, f, target, GET_CODE_POS(&ctx->emit) + 1, true, s_local_thread_id);
+            } else if (target->tag == TB_SYMBOL_EXTERNAL) {
+                tb_emit_symbol_patch(f->super.module, f, target, GET_CODE_POS(&ctx->emit) + 1, true, s_local_thread_id);
+            } else {
+                tb_todo();
+            }
 
             // CALL rel32
             EMIT1(&ctx->emit, 0xE8), EMIT4(&ctx->emit, 0x0);
@@ -729,13 +727,13 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
             EMIT1(&ctx->emit, 0x8D);
             EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT, dst.gpr, RBP));
 
-            uint32_t disp = tb_emit_const_patch(f->module, f, GET_CODE_POS(&ctx->emit), str, len, s_local_thread_id);
+            uint32_t disp = tb_emit_const_patch(f->super.module, f, GET_CODE_POS(&ctx->emit), str, len, s_local_thread_id);
             EMIT4(&ctx->emit, disp);
             return dst;
         }
 
         case TB_VA_START: {
-            assert(f->module->target_abi == TB_ABI_WIN64 && "How does va_start even work on SysV?");
+            assert(f->super.module->target_abi == TB_ABI_WIN64 && "How does va_start even work on SysV?");
 
             // on Win64 va_start just means whatever is one parameter away from
             // the parameter you give it (plus in Win64 the parameters in the stack
@@ -762,51 +760,55 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
             return dst;
         }
 
-        case TB_GLOBAL_ADDRESS: {
-            TB_Module* m = f->module;
-            const TB_Global* g = n->global.value;
+        case TB_GET_SYMBOL_ADDRESS: {
+            TB_Module* m = f->super.module;
+            const TB_Symbol* s = n->sym.value;
+            if (s->tag == TB_SYMBOL_GLOBAL) {
+                const TB_Global* g = (const TB_Global*)s;
+                if (g->storage == TB_STORAGE_TLS) {
+                    if (m->tls_index_extern == 0) {
+                        tb_panic("TB error: no tls_index provided\n");
+                    }
 
-            if (g->storage == TB_STORAGE_TLS) {
-                if (m->tls_index_extern == 0) {
-                    tb_panic("TB error: no tls_index provided\n");
-                }
+                    // since t0 dies before dst is allocated we just recycle it
+                    // mov t0, dword    [_tls_index]
+                    GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
 
-                // since t0 dies before dst is allocated we just recycle it
-                // mov t0, dword    [_tls_index]
-                GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
+                    if (dst.gpr >= 8) EMIT1(&ctx->emit, 0x41);
+                    EMIT1(&ctx->emit, 0x8B), EMIT1(&ctx->emit, ((dst.gpr & 7) << 3) | RBP), EMIT4(&ctx->emit, 0x00);
+                    tb_emit_symbol_patch(f->super.module, f, m->tls_index_extern, GET_CODE_POS(&ctx->emit) - 4, false, s_local_thread_id);
 
-                if (dst.gpr >= 8) EMIT1(&ctx->emit, 0x41);
-                EMIT1(&ctx->emit, 0x8B), EMIT1(&ctx->emit, ((dst.gpr & 7) << 3) | RBP), EMIT4(&ctx->emit, 0x00);
-                tb_emit_ecall_patch(f->module, f, m->tls_index_extern, GET_CODE_POS(&ctx->emit) - 4, false, s_local_thread_id);
+                    // mov t1, qword gs:[58h]
+                    GAD_VAL t1 = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);
+                    EMIT1(&ctx->emit, 0x65);
+                    EMIT1(&ctx->emit, t1.gpr >= 8 ? 0x4C : 0x48);
+                    EMIT1(&ctx->emit, 0x8B);
+                    EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT, t1.gpr, RSP));
+                    EMIT1(&ctx->emit, mod_rx_rm(SCALE_X1, RSP, RBP));
+                    EMIT4(&ctx->emit, 0x58);
 
-                // mov t1, qword gs:[58h]
-                GAD_VAL t1 = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, TB_TEMP_REG);
-                EMIT1(&ctx->emit, 0x65);
-                EMIT1(&ctx->emit, t1.gpr >= 8 ? 0x4C : 0x48);
-                EMIT1(&ctx->emit, 0x8B);
-                EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT, t1.gpr, RSP));
-                EMIT1(&ctx->emit, mod_rx_rm(SCALE_X1, RSP, RBP));
-                EMIT4(&ctx->emit, 0x58);
+                    // mov t1, qword [t1+t0*8]
+                    Val mem = val_base_index(TB_TYPE_PTR, t1.gpr, dst.gpr, SCALE_X8);
+                    INST2(MOV, &t1, &mem, TB_TYPE_I64);
 
-                // mov t1, qword [t1+t0*8]
-                Val mem = val_base_index(TB_TYPE_PTR, t1.gpr, dst.gpr, SCALE_X8);
-                INST2(MOV, &t1, &mem, TB_TYPE_I64);
+                    // lea addr, [t1+relocation]
+                    EMIT1(&ctx->emit, rex(true, dst.gpr, t1.gpr, 0)), EMIT1(&ctx->emit, 0x8D);
+                    if ((t1.gpr & 7) == RSP) {
+                        EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT_DISP32, dst.gpr, RSP));
+                        EMIT1(&ctx->emit, mod_rx_rm(SCALE_X1, RSP, t1.gpr));
+                    } else {
+                        EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT_DISP32, dst.gpr, t1.gpr));
+                    }
+                    EMIT4(&ctx->emit, 0);
+                    tb_emit_symbol_patch(f->super.module, f, (TB_Symbol*) n->global.value, GET_CODE_POS(&ctx->emit) - 4, false, s_local_thread_id);
 
-                // lea addr, [t1+relocation]
-                EMIT1(&ctx->emit, rex(true, dst.gpr, t1.gpr, 0)), EMIT1(&ctx->emit, 0x8D);
-                if ((t1.gpr & 7) == RSP) {
-                    EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT_DISP32, dst.gpr, RSP));
-                    EMIT1(&ctx->emit, mod_rx_rm(SCALE_X1, RSP, t1.gpr));
+                    GAD_FN(unlock_register)(ctx, f, X64_REG_CLASS_GPR, t1.gpr);
+                    return dst;
                 } else {
-                    EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT_DISP32, dst.gpr, t1.gpr));
+                    return val_global(n->global.value);
                 }
-                EMIT4(&ctx->emit, 0);
-                tb_emit_global_patch(f->module, f, GET_CODE_POS(&ctx->emit) - 4, n->global.value, s_local_thread_id);
-
-                GAD_FN(unlock_register)(ctx, f, X64_REG_CLASS_GPR, t1.gpr);
-                return dst;
             } else {
-                return val_global(n->global.value);
+                tb_todo();
             }
         }
 
@@ -1089,25 +1091,31 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
     return (Val){ 0 };
 }
 
-static void GAD_FN(emit_call_patches)(TB_Module* restrict m, uint32_t* restrict func_layout) {
-    loop(i, m->max_threads) {
-        TB_FunctionPatch* patches = m->thread_info[i].call_patches;
+static size_t GAD_FN(emit_call_patches)(TB_Module* restrict m) {
+    size_t r = 0;
+    FOREACH_N(i, 0, m->max_threads) {
+        TB_SymbolPatch* patches = m->thread_info[i].symbol_patches;
 
-        loop(j, dyn_array_length(patches)) {
-            TB_FunctionPatch*  patch = &patches[j];
-            TB_FunctionOutput* out_f = patch->source->output;
-            assert(out_f && "Patch cannot be applied to function with no compiled output");
+        dyn_array_for(j, patches) {
+            TB_SymbolPatch* patch = &patches[j];
 
-            // x64 thinks of relative addresses as being relative
-            // to the end of the instruction or in this case just
-            // 4 bytes ahead hence the +4.
-            size_t actual_pos = func_layout[patch->source - m->functions.data] +
-                out_f->prologue_length + patch->pos + 4;
+            if (patch->target->tag == TB_SYMBOL_FUNCTION) {
+                TB_FunctionOutput* out_f = patch->source->output;
+                assert(out_f && "Patch cannot be applied to function with no compiled output");
 
-            uint32_t p = func_layout[patch->target - m->functions.data] - actual_pos;
-            memcpy(&out_f->code[out_f->prologue_length + patch->pos], &p, sizeof(uint32_t));
+                // x64 thinks of relative addresses as being relative
+                // to the end of the instruction or in this case just
+                // 4 bytes ahead hence the +4.
+                size_t actual_pos = out_f->code_pos + out_f->prologue_length + patch->pos + 4;
+
+                uint32_t p = ((TB_Function*) patch->target)->output->code_pos - actual_pos;
+                memcpy(&out_f->code[out_f->prologue_length + patch->pos], &p, sizeof(uint32_t));
+                r += 1;
+            }
         }
     }
+
+    return r;
 }
 
 #if _MSC_VER

@@ -48,8 +48,20 @@ inline static void* pool__alloc_slot(void** ptr, size_t type_size) {
         return &hdr->data[((i * 64) + index) * type_size];
     }
 
-    assert(0);
+    assert(0 && "TODO: implement the rest of the pool allocator");
     return NULL;
+}
+
+inline static void pool__destroy(void** ptr, size_t type_size) {
+    if (*ptr == NULL) return;
+
+    PoolHeader* hdr = ((PoolHeader*) *ptr) - 1;
+    while (hdr != NULL) {
+        PoolHeader* next = hdr->next;
+        tb_platform_vfree(hdr, sizeof(PoolHeader) + (MAX_SLOTS * type_size));
+        hdr = next;
+    }
+    *ptr = NULL;
 }
 
 inline static size_t pool_popcount(void* ptr) {
@@ -68,6 +80,8 @@ inline static size_t pool_popcount(void* ptr) {
 
 #define pool_put(p) \
 pool__alloc_slot((void**) &(p), sizeof(*(p)))
+
+#define pool_destroy(p) pool__destroy((void**) &(p), sizeof(*(p)))
 
 #define pool_for(T, it, p) \
 for (PoolHeader *p_ = (PoolHeader*)(p), *hdr_ = p_ ? (p_ - 1) : NULL; hdr_; hdr_ = hdr_->next) \

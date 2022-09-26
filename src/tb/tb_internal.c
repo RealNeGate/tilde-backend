@@ -50,9 +50,7 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace) {
                 case TB_PARAM:
                 case TB_GOTO:
                 case TB_LINE_INFO:
-                case TB_FUNC_ADDRESS:
-                case TB_EXTERN_ADDRESS:
-                case TB_GLOBAL_ADDRESS:
+                case TB_GET_SYMBOL_ADDRESS:
                 case TB_X86INTRIN_STMXCSR:
                 case TB_UNREACHABLE:
                 case TB_DEBUGBREAK:
@@ -209,8 +207,7 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace) {
                 }
 
                 case TB_CALL:
-                case TB_ICALL:
-                case TB_ECALL: {
+                case TB_ICALL: {
                     FOREACH_N(it, n->call.param_start, n->call.param_end) {
                         X(f->vla.data[it]);
                     }

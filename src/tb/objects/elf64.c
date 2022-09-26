@@ -40,86 +40,6 @@ static void zero_data(TB_ModuleExporter* restrict e, uint8_t* restrict output, s
     e->write_pos += length;
 }
 
-size_t tb_helper_write_text_section(size_t write_pos, TB_Module* m, uint8_t* output, uint32_t pos) {
-    assert(write_pos == pos);
-    FOREACH_N(i, 0, m->functions.count) {
-        TB_FunctionOutput* out_f = m->functions.data[i].output;
-        if (out_f != NULL) {
-            memcpy(output + write_pos, out_f->code, out_f->code_size);
-            write_pos += out_f->code_size;
-        }
-    }
-
-    return write_pos;
-}
-
-size_t tb_helper_write_data_section(size_t write_pos, TB_Module* m, uint8_t* output, uint32_t pos) {
-    assert(write_pos == pos);
-    uint8_t* data = &output[pos];
-
-    FOREACH_N(i, 0, m->max_threads) {
-        pool_for(TB_Global, g, m->thread_info[i].globals) {
-            if (g->storage != TB_STORAGE_DATA) continue;
-
-            TB_Initializer* init = g->init;
-
-            // clear out space
-            memset(&data[g->pos], 0, init->size);
-
-            FOREACH_N(k, 0, init->obj_count) {
-                if (init->objects[k].type == TB_INIT_OBJ_REGION) {
-                    memcpy(&data[g->pos + init->objects[k].offset], init->objects[k].region.ptr, init->objects[k].region.size);
-                }
-            }
-        }
-    }
-
-    return write_pos + m->data_region_size;
-}
-
-size_t tb_helper_write_rodata_section(size_t write_pos, TB_Module* m, uint8_t* output, uint32_t pos) {
-    assert(write_pos == pos);
-
-    uint8_t* rdata = &output[pos];
-    FOREACH_N(i, 0, m->max_threads) {
-        FOREACH_N(j, 0, dyn_array_length(m->thread_info[i].const_patches)) {
-            TB_ConstPoolPatch* p = &m->thread_info[i].const_patches[j];
-            memcpy(&rdata[p->rdata_pos], p->data, p->length);
-        }
-    }
-
-    return write_pos + m->rdata_region_size;
-}
-
-static void* get_temporary_storage(TB_ModuleExporter* e, size_t request_size) {
-    if (e->temporary_memory_capacity < request_size) {
-        e->temporary_memory_capacity = tb_next_pow2(request_size);
-        if (e->temporary_memory_capacity < (4*1024*1024)) {
-            e->temporary_memory_capacity = (4*1024*1024);
-        }
-
-        e->temporary_memory = tb_platform_heap_realloc(e->temporary_memory, e->temporary_memory_capacity);
-    }
-
-    return e->temporary_memory;
-}
-
-// returns array of m->functions.count+1 where the last slot is the size of the text section
-static uint32_t* get_text_section_layout(TB_Module* m) {
-    uint32_t* func_layout = tb_platform_heap_alloc((m->functions.count + 1) * sizeof(uint32_t));
-
-    size_t offset = 0;
-    FOREACH_N(i, 0, m->functions.count) {
-        TB_FunctionOutput* out_f = m->functions.data[i].output;
-
-        func_layout[i] = offset;
-        if (out_f) offset += out_f->code_size;
-    }
-
-    func_layout[m->functions.count] = offset;
-    return func_layout;
-}
-
 TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg) {
     // used by the sections array
     enum {
@@ -154,10 +74,9 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
     size_t unique_id_counter = function_sym_start;
 
     // all the local function symbols
-    FOREACH_N(i, 0, m->functions.count) {
-        if (m->functions.data[i].linkage != TB_LINKAGE_PUBLIC) {
-            m->functions.data[i].compiled_symbol_id = unique_id_counter;
-            unique_id_counter += 1;
+    TB_FOR_FUNCTIONS(f, m) {
+        if (f->linkage != TB_LINKAGE_PUBLIC) {
+            f->compiled_symbol_id = unique_id_counter++;
         }
     }
 
@@ -165,8 +84,7 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
     FOREACH_N(i, 0, m->max_threads) {
         pool_for(TB_Global, g, m->thread_info[i].globals) {
             if (g->linkage != TB_LINKAGE_PUBLIC) {
-                g->id = unique_id_counter;
-                unique_id_counter += 1;
+                g->super.symbol_id = unique_id_counter++;
             }
         }
     }
@@ -176,7 +94,7 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
     FOREACH_N(i, 0, m->max_threads) {
         pool_for(TB_Global, g, m->thread_info[i].globals) {
             if (g->linkage == TB_LINKAGE_PUBLIC) {
-                g->id = unique_id_counter;
+                g->super.symbol_id = unique_id_counter;
                 unique_id_counter += 1;
             }
         }
@@ -184,16 +102,16 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
 
     // all the nonlocal function symbols
     // uint32_t last_nonlocal_global_id = unique_id_counter;
-    FOREACH_N(i, 0, m->functions.count) {
-        if (m->functions.data[i].linkage == TB_LINKAGE_PUBLIC) {
-            m->functions.data[i].compiled_symbol_id = unique_id_counter;
+    TB_FOR_FUNCTIONS(f, m) {
+        if (f->linkage == TB_LINKAGE_PUBLIC) {
+            f->compiled_symbol_id = unique_id_counter;
             unique_id_counter += 1;
         }
     }
 
     FOREACH_N(i, 0, m->max_threads) {
         pool_for(TB_External, ext, m->thread_info[i].externals) {
-            ext->address = (void*) (uintptr_t) unique_id_counter;
+            ext->super.address = (void*) (uintptr_t) unique_id_counter;
             unique_id_counter += 1;
         }
     }
@@ -300,28 +218,16 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
     }
 
     // Code section
-    // [m->functions.count + 1] last slot is the size of the text section
-    uint32_t* func_layout = tb_platform_heap_alloc((m->functions.count + 1) * sizeof(uint32_t));
-    {
-        size_t offset = 0;
-        FOREACH_N(i, 0, m->functions.count) {
-            TB_FunctionOutput* out_f = m->functions.data[i].output;
+    sections[S_TEXT].sh_size = tb_helper_get_text_section_layout(m, 0);
 
-            func_layout[i] = offset;
-            if (out_f) offset += out_f->code_size;
-        }
-        func_layout[m->functions.count] = offset;
-        sections[S_TEXT].sh_size = offset;
-
-        // Target specific: resolve internal call patches
-        code_gen->emit_call_patches(m, func_layout);
-    }
+    // Target specific: resolve internal call patches
+    size_t local_patch_count = code_gen->emit_call_patches(m);
 
     FOREACH_N(i, 0, m->max_threads) {
-        sections[S_TEXT_REL].sh_size += dyn_array_length(m->thread_info[i].ecall_patches) * sizeof(Elf64_Rela);
+        sections[S_TEXT_REL].sh_size += dyn_array_length(m->thread_info[i].symbol_patches) * sizeof(Elf64_Rela);
         sections[S_TEXT_REL].sh_size += dyn_array_length(m->thread_info[i].const_patches) * sizeof(Elf64_Rela);
-        sections[S_TEXT_REL].sh_size += dyn_array_length(m->thread_info[i].global_patches) * sizeof(Elf64_Rela);
     }
+    sections[S_TEXT_REL].sh_size -= local_patch_count * sizeof(Elf64_Rela);
 
     FOREACH_N(t, 0, m->max_threads) {
         pool_for(TB_Global, g, m->thread_info[t].globals) {
@@ -341,13 +247,11 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
         put_symbol(&strtbl, &stab, SECTION_NAMES[i], ELF64_ST_INFO(ELF64_STB_LOCAL, ELF64_STT_SECTION), i, 0, 0);
     }
 
-    FOREACH_N(i, 0, m->functions.count) {
-        TB_FunctionOutput* out_f = m->functions.data[i].output;
+    TB_FOR_FUNCTIONS(f, m) {
+        TB_FunctionOutput* out_f = f->output;
 
-        if (out_f != NULL && m->functions.data[i].linkage != TB_LINKAGE_PUBLIC) {
-            // calculate size
-            size_t func_size = func_layout[i + 1] - func_layout[i];
-            put_symbol(&strtbl, &stab, m->functions.data[i].name, ELF64_ST_INFO(ELF64_STB_LOCAL, ELF64_STT_FUNC), 2, func_layout[i], func_size);
+        if (out_f != NULL && f->linkage != TB_LINKAGE_PUBLIC) {
+            put_symbol(&strtbl, &stab, f->super.name, ELF64_ST_INFO(ELF64_STB_GLOBAL, ELF64_STT_FUNC), 2, out_f->code_pos, out_f->code_size);
         }
     }
 
@@ -355,7 +259,7 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
     FOREACH_N(i, 0, m->max_threads) {
         pool_for(TB_Global, g, m->thread_info[i].globals) {
             if (g->linkage != TB_LINKAGE_PUBLIC) {
-                put_symbol(&strtbl, &stab, g->name, ELF64_ST_INFO(ELF64_STB_LOCAL, ELF64_STT_OBJECT), S_DATA, g->pos, 0);
+                put_symbol(&strtbl, &stab, g->super.name, ELF64_ST_INFO(ELF64_STB_LOCAL, ELF64_STT_OBJECT), S_DATA, g->pos, 0);
             }
         }
     }
@@ -364,24 +268,22 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
     FOREACH_N(i, 0, m->max_threads) {
         pool_for(TB_Global, g, m->thread_info[i].globals) {
             if (g->linkage == TB_LINKAGE_PUBLIC) {
-                put_symbol(&strtbl, &stab, g->name, ELF64_ST_INFO(ELF64_STB_GLOBAL, ELF64_STT_OBJECT), S_DATA, g->pos, 0);
+                put_symbol(&strtbl, &stab, g->super.name, ELF64_ST_INFO(ELF64_STB_GLOBAL, ELF64_STT_OBJECT), S_DATA, g->pos, 0);
             }
         }
     }
 
     // nonlocal functions
-    FOREACH_N(i, 0, m->functions.count) {
-        TB_FunctionOutput* out_f = m->functions.data[i].output;
-        if (out_f != NULL && m->functions.data[i].linkage == TB_LINKAGE_PUBLIC) {
-            // calculate size
-            size_t func_size = func_layout[i + 1] - func_layout[i];
-            put_symbol(&strtbl, &stab, m->functions.data[i].name, ELF64_ST_INFO(ELF64_STB_GLOBAL, ELF64_STT_FUNC), 2, func_layout[i], func_size);
+    TB_FOR_FUNCTIONS(f, m) {
+        TB_FunctionOutput* out_f = f->output;
+        if (out_f != NULL && f->linkage == TB_LINKAGE_PUBLIC) {
+            put_symbol(&strtbl, &stab, f->super.name, ELF64_ST_INFO(ELF64_STB_GLOBAL, ELF64_STT_FUNC), 2, out_f->code_pos, out_f->code_size);
         }
     }
 
     FOREACH_N(i, 0, m->max_threads) {
         pool_for(TB_External, external, m->thread_info[i].externals) {
-            put_symbol(&strtbl, &stab, external->name, ELF64_ST_INFO(ELF64_STB_GLOBAL, 0), 0, 0, 0);
+            put_symbol(&strtbl, &stab, external->super.name, ELF64_ST_INFO(ELF64_STB_GLOBAL, 0), 0, 0, 0);
         }
     }
 
@@ -423,51 +325,45 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
             };
 
             FOREACH_N(i, 0, m->max_threads) {
-                FOREACH_N(j, 0, dyn_array_length(m->thread_info[i].ecall_patches)) {
-                    TB_ExternFunctionPatch* p = &m->thread_info[i].ecall_patches[j];
+                dyn_array_for(j, m->thread_info[i].symbol_patches) {
+                    TB_SymbolPatch* p = &m->thread_info[i].symbol_patches[j];
+                    size_t symbol_id = p->target->symbol_id;
+                    assert(symbol_id != 0);
+
                     TB_FunctionOutput* out_f = p->source->output;
+                    size_t actual_pos = out_f->code_pos + out_f->prologue_length + p->pos;
 
-                    size_t actual_pos = func_layout[p->source - m->functions.data] +
-                        out_f->prologue_length + p->pos;
+                    if (p->target->tag == TB_SYMBOL_EXTERNAL) {
+                        Elf64_Rela rela = {
+                            .r_offset = actual_pos,
+                            .r_info   = ELF64_R_INFO(symbol_id, p->is_function ? R_X86_64_PLT32 : R_X86_64_GOTPCREL),
+                            .r_addend = -4
+                        };
+                        TB_FIXED_ARRAY_APPEND(relocs, rela);
+                    } else if (p->target->tag == TB_SYMBOL_GLOBAL) {
+                        TB_Global* global = (TB_Global*) p->target;
+                        assert(global->super.tag == TB_SYMBOL_GLOBAL);
+                        assert(global->storage == TB_STORAGE_DATA);
 
-                    int symbol_id = (uintptr_t) p->target->address;
-                    Elf64_Rela rela = {
-                        .r_offset = actual_pos,
-                        .r_info   = ELF64_R_INFO(symbol_id, p->is_function ? R_X86_64_PLT32 : R_X86_64_GOTPCREL),
-                        .r_addend = -4
-                    };
-                    TB_FIXED_ARRAY_APPEND(relocs, rela);
+                        Elf64_Rela rela = {
+                            .r_offset = actual_pos,
+                            .r_info   = ELF64_R_INFO(symbol_id, R_X86_64_PC32),
+                            .r_addend = -4
+                        };
+                        TB_FIXED_ARRAY_APPEND(relocs, rela);
+                    } else {
+                        tb_todo();
+                    }
                 }
 
                 FOREACH_N(j, 0, dyn_array_length(m->thread_info[i].const_patches)) {
                     TB_ConstPoolPatch* p = &m->thread_info[i].const_patches[j];
                     TB_FunctionOutput* out_f = p->source->output;
 
-                    size_t actual_pos = func_layout[p->source - m->functions.data] +
-                        out_f->prologue_length + p->pos;
-
+                    size_t actual_pos = out_f->code_pos + out_f->prologue_length + p->pos;
                     Elf64_Rela rela = {
                         .r_offset = actual_pos,
                         .r_info   = ELF64_R_INFO(S_RODATA, R_X86_64_PC32),
-                        .r_addend = -4
-                    };
-                    TB_FIXED_ARRAY_APPEND(relocs, rela);
-                }
-
-                FOREACH_N(j, 0, dyn_array_length(m->thread_info[i].global_patches)) {
-                    TB_GlobalPatch* p = &m->thread_info[i].global_patches[j];
-                    TB_FunctionOutput* out_f = p->source->output;
-
-                    size_t actual_pos = func_layout[p->source - m->functions.data]
-                        + out_f->prologue_length + p->pos;
-
-                    int symbol_id = p->target->id;
-                    assert(symbol_id != 0);
-
-                    assert(p->target->storage != TB_STORAGE_TLS && "TODO");
-                    Elf64_Rela rela = {
-                        .r_offset = actual_pos,
-                        .r_info   = ELF64_R_INFO(symbol_id, R_X86_64_PC32),
                         .r_addend = -4
                     };
                     TB_FIXED_ARRAY_APPEND(relocs, rela);
@@ -505,7 +401,7 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
 
                                 Elf64_Rela rela = {
                                     .r_offset = actual_pos,
-                                    .r_info   = ELF64_R_INFO(g->id, R_X86_64_64),
+                                    .r_info   = ELF64_R_INFO(g->super.symbol_id, R_X86_64_64),
                                     .r_addend = addend,
                                 };
                                 TB_FIXED_ARRAY_APPEND(relocs, rela);
@@ -514,7 +410,7 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
 
                             case TB_INIT_OBJ_RELOC_EXTERN: {
                                 const TB_External* ext = init->objects[k].reloc_extern;
-                                int id = (uintptr_t) ext->address;
+                                int id = (uintptr_t) ext->super.address;
 
                                 Elf64_Rela rela = {
                                     .r_offset = actual_pos,
@@ -556,7 +452,6 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
     // Done
     tb_platform_heap_free(strtbl.data);
     tb_platform_heap_free(stab.data);
-    tb_platform_heap_free(func_layout);
 
     return (TB_Exports){ .count = 1, .files = { { output_size, output } } };
 }
@@ -621,11 +516,8 @@ TB_API TB_Exports tb_elf64exe_write_output(TB_Module* m, const IDebugFormat* dbg
     };
 
     // Code section
-    // [m->functions.count + 1] last slot is the size of the text section
-    uint32_t* func_layout = get_text_section_layout(m);
+    size_t code_section_size = tb_helper_get_text_section_layout(m, 0);
     {
-        size_t code_section_size = func_layout[m->functions.count];
-
         // memory size is aligned to 4K bytes because of page alignment
         sections[S_TEXT].p_memsz = align_up(code_section_size, sections[S_TEXT].p_align);
         sections[S_TEXT].p_filesz = code_section_size;
@@ -644,11 +536,11 @@ TB_API TB_Exports tb_elf64exe_write_output(TB_Module* m, const IDebugFormat* dbg
     {
         // Target specific: resolve internal call patches
         const ICodeGen* restrict code_gen = tb__find_code_generator(m);
-        code_gen->emit_call_patches(m, func_layout);
+        code_gen->emit_call_patches(m);
 
         // TODO: Handle rodata relocations
         FOREACH_N(i, 0, m->max_threads) {
-            FOREACH_N(j, 0, dyn_array_length(m->thread_info[i].ecall_patches)) {
+            dyn_array_for(j, m->thread_info[i].symbol_patches) {
                 //TB_ExternFunctionPatch* p = &m->thread_info[i].ecall_patches[j];
                 //TB_FunctionOutput* out_f = p->source->output;
                 tb_todo();
@@ -659,8 +551,7 @@ TB_API TB_Exports tb_elf64exe_write_output(TB_Module* m, const IDebugFormat* dbg
                 TB_FunctionOutput* out_f = p->source->output;
                 assert(out_f && "Patch cannot be applied to function with no compiled output");
 
-                size_t actual_pos = func_layout[p->source - m->functions.data] +
-                    out_f->prologue_length + p->pos + 4;
+                size_t actual_pos = out_f->code_pos + out_f->prologue_length + p->pos + 4;
 
                 uint32_t* patch_mem = (uint32_t*) &out_f->code[out_f->prologue_length + p->pos];
                 *patch_mem += sections[S_RODATA].p_vaddr - actual_pos;

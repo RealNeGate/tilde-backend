@@ -198,17 +198,14 @@ static bool end_lua_pass(lua_State* L, int arg_count) {
 }
 
 static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const TB_Pass passes[]) {
-    TB_Function* functions = m->functions.data;
     bool changes = false;
 
-    FOREACH_N(i, 0, m->functions.count) {
-        TB_Function* f = &functions[i];
-
+    TB_FOR_FUNCTIONS(f, m) {
         // printf("ORIGINAL\n");
         // tb_function_print(f, tb_default_print_callback, stdout, false);
         // printf("\n\n");
         if (tb_function_validate(f) > 0) {
-            fprintf(stderr, "Validator failed on %s on original IR\n", f->name);
+            fprintf(stderr, "Validator failed on %s on original IR\n", f->super.name);
             abort();
         }
 
@@ -240,7 +237,7 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
                     TB_LoopInfo loops = tb_get_loop_info(f, preds, doms);
 
                     FOREACH_N(k, 0, loops.count) {
-                        const TB_Loop* l = &loops.loops[i];
+                        const TB_Loop* l = &loops.loops[k];
 
                         if (passes[j].l_state != NULL) {
                             lua_State* L = begin_lua_pass(passes[j].l_state);
@@ -269,7 +266,7 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
                     // printf("\n\n");
 
                     if (tb_function_validate(f) > 0) {
-                        fprintf(stderr, "Validator failed on %s after %s\n", f->name, passes[j].name);
+                        fprintf(stderr, "Validator failed on %s after %s\n", f->super.name, passes[j].name);
                         abort();
                     }
                 }

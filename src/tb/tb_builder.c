@@ -60,10 +60,6 @@ TB_API bool tb_node_is_terminator(TB_Function* f, TB_Reg r) {
     return f->nodes[r].type == TB_IF || f->nodes[r].type == TB_GOTO || f->nodes[r].type == TB_RET;
 }
 
-TB_API TB_Reg tb_node_get_last_register(TB_Function* f) {
-    return f->node_end;
-}
-
 TB_API TB_Reg tb_node_load_get_address(TB_Function* f, TB_Reg r) {
     tb_assume(f->nodes[r].type == TB_LOAD);
 
@@ -501,23 +497,11 @@ TB_API TB_Reg tb_inst_member_access(TB_Function* f, TB_Reg base, int32_t offset)
     return r;
 }
 
-TB_API TB_Reg tb_inst_get_func_address(TB_Function* f, const TB_Function* target) {
-    TB_Reg r = tb_make_reg(f, TB_FUNC_ADDRESS, TB_TYPE_PTR);
-    f->nodes[r].func.value = target;
-    return r;
-}
-
-TB_API TB_Reg tb_inst_get_extern_address(TB_Function* f, const TB_External* target) {
-    TB_Reg r = tb_make_reg(f, TB_EXTERN_ADDRESS, TB_TYPE_PTR);
-    f->nodes[r].external.value = target;
-    return r;
-}
-
-TB_API TB_Reg tb_inst_get_global_address(TB_Function* f, const TB_Global* target) {
+TB_API TB_Reg tb_inst_get_symbol_address(TB_Function* f, const TB_Symbol* target) {
     assert(target != NULL);
 
-    TB_Reg r = tb_make_reg(f, TB_GLOBAL_ADDRESS, TB_TYPE_PTR);
-    f->nodes[r].global = (struct TB_NodeGlobal) { target };
+    TB_Reg r = tb_make_reg(f, TB_GET_SYMBOL_ADDRESS, TB_TYPE_PTR);
+    f->nodes[r].sym.value = target;
     return r;
 }
 
@@ -547,7 +531,8 @@ TB_API TB_Reg tb_inst_syscall(TB_Function* f, TB_DataType dt, TB_Reg syscall_num
     return r;
 }
 
-TB_API TB_Reg tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Reg* params) {
+TB_API TB_Reg tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Symbol* target, size_t param_count, const TB_Reg* params) {
+    assert(target->tag != TB_SYMBOL_NONE);
     int param_start = f->vla.count;
 
     TB_Reg* vla = tb_vla_reserve(f, param_count);
@@ -557,7 +542,7 @@ TB_API TB_Reg tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* ta
     int param_end = f->vla.count;
 
     TB_Reg r = tb_make_reg(f, TB_CALL, dt);
-    f->nodes[r].call = (struct TB_NodeFunctionCall) { param_start, param_end, target };
+    f->nodes[r].call = (struct TB_NodeCall) { param_start, param_end, target };
     return r;
 }
 
@@ -572,20 +557,6 @@ TB_API TB_Reg tb_inst_vcall(TB_Function* f, TB_DataType dt, const TB_Reg target,
 
     TB_Reg r = tb_make_reg(f, TB_VCALL, dt);
     f->nodes[r].vcall = (struct TB_NodeDynamicCall) { param_start, param_end, target };
-    return r;
-}
-
-TB_API TB_Reg tb_inst_ecall(TB_Function* f, TB_DataType dt, const TB_External* target, size_t param_count, const TB_Reg* params) {
-    int param_start = f->vla.count;
-
-    TB_Reg* vla = tb_vla_reserve(f, param_count);
-    memcpy(vla, params, param_count * sizeof(TB_Reg));
-    f->vla.count += param_count;
-
-    int param_end = f->vla.count;
-
-    TB_Reg r = tb_make_reg(f, TB_ECALL, dt);
-    f->nodes[r].ecall = (struct TB_NodeExternCall) { param_start, param_end, target };
     return r;
 }
 

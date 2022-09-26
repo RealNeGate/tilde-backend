@@ -701,7 +701,6 @@ static void GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Label bb, TB_L
 
             case TB_CALL:
             case TB_SCALL:
-            case TB_ECALL:
             case TB_VCALL: {
                 // if we delay resolution we can avoid weird spills and shuffles for
                 // the parameters
@@ -871,7 +870,7 @@ static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const
                 };
             } else if (n->type == TB_PARAM_ADDR || n->type == TB_LOCAL) {
                 GAD_FN(resolve_stack_slot)(ctx, f, n);
-            } else if (EITHER3(n->type, TB_CALL, TB_ECALL, TB_VCALL)) {
+            } else if (EITHER2(n->type, TB_CALL, TB_VCALL)) {
                 int param_usage = CALL_NODE_PARAM_COUNT(n);
                 if (caller_usage < param_usage) caller_usage = param_usage;
             }

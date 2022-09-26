@@ -1,3 +1,4 @@
+#ifdef _WIN32
 #include "../tb_internal.h"
 #include <ctype.h>
 
@@ -151,3 +152,4 @@ void* tb_platform_arena_alloc(size_t size) {
 void tb_platform_arena_free(void) {
     tb__arena_free(&tb__global_arena);
 }
+#endif

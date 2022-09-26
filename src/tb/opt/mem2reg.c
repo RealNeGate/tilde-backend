@@ -293,7 +293,7 @@ static bool attempt_sroa(TB_Function* f, TB_TemporaryStorage* tls, TB_Reg addres
     size_t config_count = 0;
     AggregateConfig* configs = tb_tls_push(tls, 0);
 
-    int pointer_size = tb__find_code_generator(f->module)->pointer_size;
+    int pointer_size = tb__find_code_generator(f->super.module)->pointer_size;
 
     int acceptable_use_count = 0;
     TB_FOR_BASIC_BLOCK(bb, f) {
@@ -385,10 +385,6 @@ static bool attempt_sroa(TB_Function* f, TB_TemporaryStorage* tls, TB_Reg addres
 // opt_hoist_locals earlier
 bool mem2reg(TB_Function* f) {
     TB_TemporaryStorage* tls = tb_tls_allocate();
-
-    if (strcmp(f->name, "bar") == 0) {
-        tb_function_print(f, tb_default_print_callback, stderr, true);
-    }
 
     ////////////////////////////////
     // Decide which stack slots to promote
@@ -596,7 +592,7 @@ static Coherency tb_get_stack_slot_coherency(TB_Function* f, TB_Reg address, TB_
     *out_use_count = use_count;
 
     int value_based_use_count = 0;
-    int pointer_size = tb__find_code_generator(f->module)->pointer_size;
+    int pointer_size = tb__find_code_generator(f->super.module)->pointer_size;
 
     // pick the first load/store and use that as the baseline
     TB_DataType dt = TB_TYPE_VOID;

@@ -52,8 +52,7 @@ static bool dead_expr_elim(TB_Function* f) {
 
                         case TB_CALL:
                         case TB_SCALL:
-                        case TB_VCALL:
-                        case TB_ECALL: {
+                        case TB_VCALL: {
                             // convert it to a void CALL just because
                             n->dt = TB_TYPE_VOID;
                             break;
@@ -73,9 +72,7 @@ static bool dead_expr_elim(TB_Function* f) {
                             break;
                         }
                         // delete:
-                        case TB_GLOBAL_ADDRESS:
-                        case TB_FUNC_ADDRESS:
-                        case TB_EXTERN_ADDRESS:
+                        case TB_GET_SYMBOL_ADDRESS:
                         case TB_INTEGER_CONST:
                         case TB_ARRAY_ACCESS:
                         case TB_MEMBER_ACCESS:

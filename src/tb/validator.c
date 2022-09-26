@@ -78,27 +78,27 @@ TB_API int tb_function_validate(TB_Function* f) {
         switch (v.type) {
             case TB_VALIDATION_SUCCESS: break;
             case TB_VALIDATION_NO_TERMINATOR: {
-                fprintf(stderr, "%s:L%d: no terminator at the end of basic block.\n", f->name, v.no_terminator_label);
+                fprintf(stderr, "%s:L%d: no terminator at the end of basic block.\n", f->super.name, v.no_terminator_label);
                 break;
             }
             case TB_VALIDATION_TERMINATOR_HAS_NEXT: {
-                fprintf(stderr, "%s:r%d: terminator should not have a valid next.\n", f->name, v.terminator_has_next);
+                fprintf(stderr, "%s:r%d: terminator should not have a valid next.\n", f->super.name, v.terminator_has_next);
                 break;
             }
             case TB_VALIDATION_NON_TERMINATOR_HAS_NO_NEXT: {
-                fprintf(stderr, "%s:r%d: non-terminator should have a valid next.\n", f->name, v.non_terminator_no_next);
+                fprintf(stderr, "%s:r%d: non-terminator should have a valid next.\n", f->super.name, v.non_terminator_no_next);
                 break;
             }
             case TB_VALIDATION_OUT_OF_PLACE_TERMINATOR: {
-                fprintf(stderr, "%s:r%d: cannot place a terminator in the middle of a basic block.\n", f->name, v.out_of_place_terminator);
+                fprintf(stderr, "%s:r%d: cannot place a terminator in the middle of a basic block.\n", f->super.name, v.out_of_place_terminator);
                 break;
             }
             case TB_VALIDATION_TERMINATOR_MISMATCH: {
-                fprintf(stderr, "%s:L%d: terminator is not described correctly in the linked list.\n", f->name, v.terminator_mismatch);
+                fprintf(stderr, "%s:L%d: terminator is not described correctly in the linked list.\n", f->super.name, v.terminator_mismatch);
                 break;
             }
             case TB_VALIDATION_SELF_REFERENCE: {
-                fprintf(stderr, "%s:r%d: self referencial node.\n", f->name, v.self_reference);
+                fprintf(stderr, "%s:r%d: self referencial node.\n", f->super.name, v.self_reference);
                 break;
             }
         }

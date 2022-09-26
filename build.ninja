@@ -1,0 +1,53 @@
+
+cflags = -I include -I deps/luajit/src -Wall -Werror -Wno-unused-function -D_CRT_SECURE_NO_WARNINGS -msse4.2
+
+rule cc
+  depfile = $out.d
+  command = clang $in $cflags -MD -MF $out.d -c -o $out
+  description = cc $in $out
+
+
+rule lib
+  command = lib /nologo $in /out:$out
+  description = LIB $out
+
+build bin/debug_builder.o: cc src/tb\debug_builder.c
+build bin/exporter.o: cc src/tb\exporter.c
+build bin/hash.o: cc src/tb\hash.c
+build bin/ir_printer.o: cc src/tb\ir_printer.c
+build bin/iter.o: cc src/tb\iter.c
+build bin/symbols.o: cc src/tb\symbols.c
+build bin/tb.o: cc src/tb\tb.c
+build bin/tb_analysis.o: cc src/tb\tb_analysis.c
+build bin/tb_atomic.o: cc src/tb\tb_atomic.c
+build bin/tb_builder.o: cc src/tb\tb_builder.c
+build bin/tb_internal.o: cc src/tb\tb_internal.c
+build bin/tb_jit.o: cc src/tb\tb_jit.c
+build bin/tb_optimizer.o: cc src/tb\tb_optimizer.c
+build bin/validator.o: cc src/tb\validator.c
+build bin/tree.o: cc src/tb/codegen\tree.c
+build bin/BigInt.o: cc src/tb/bigint\BigInt.c
+build bin/coff.o: cc src/tb/objects\coff.c
+build bin/coff_parse.o: cc src/tb/objects\coff_parse.c
+build bin/elf64.o: cc src/tb/objects\elf64.c
+build bin/export_helper.o: cc src/tb/objects\export_helper.c
+build bin/macho.o: cc src/tb/objects\macho.c
+build bin/pe.o: cc src/tb/objects\pe.c
+build bin/posix.o: cc src/tb/system\posix.c
+build bin/win32.o: cc src/tb/system\win32.c
+build bin/codeview.o: cc src/tb/debug\codeview.c
+build bin/cv_type_builder.o: cc src/tb/debug/cv\cv_type_builder.c
+build bin/branchless.o: cc src/tb/opt\branchless.c
+build bin/canonical.o: cc src/tb/opt\canonical.c
+build bin/copy_elision.o: cc src/tb/opt\copy_elision.c
+build bin/dead_code_elim.o: cc src/tb/opt\dead_code_elim.c
+build bin/deshort_circuit.o: cc src/tb/opt\deshort_circuit.c
+build bin/hoist_locals.o: cc src/tb/opt\hoist_locals.c
+build bin/load_elim.o: cc src/tb/opt\load_elim.c
+build bin/mem2reg.o: cc src/tb/opt\mem2reg.c
+build bin/merge_ret.o: cc src/tb/opt\merge_ret.c
+build bin/refinement.o: cc src/tb/opt\refinement.c
+build bin/x64.o: cc src/tb/x64\x64.c
+build bin/x64_new.o: cc src/tb/x64\x64_new.c
+build bin/aarch64.o: cc src/tb/aarch64\aarch64.c
+build tildebackend.lib: lib bin/debug_builder.o bin/exporter.o bin/hash.o bin/ir_printer.o bin/iter.o bin/symbols.o bin/tb.o bin/tb_analysis.o bin/tb_atomic.o bin/tb_builder.o bin/tb_internal.o bin/tb_jit.o bin/tb_optimizer.o bin/validator.o bin/tree.o bin/BigInt.o bin/coff.o bin/coff_parse.o bin/elf64.o bin/export_helper.o bin/macho.o bin/pe.o bin/posix.o bin/win32.o bin/codeview.o bin/cv_type_builder.o bin/branchless.o bin/canonical.o bin/copy_elision.o bin/dead_code_elim.o bin/deshort_circuit.o bin/hoist_locals.o bin/load_elim.o bin/mem2reg.o bin/merge_ret.o bin/refinement.o bin/x64.o bin/x64_new.o bin/aarch64.o

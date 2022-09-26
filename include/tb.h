@@ -186,10 +186,9 @@ extern "C" {
         TB_POISON,
 
         TB_ICALL, /* internal use only, inline call */
-        TB_CALL,  /* standard function call */
+        TB_CALL,  /* function call */
         TB_SCALL, /* system call */
         TB_VCALL, /* virtual call */
-        TB_ECALL, /* extern call */
 
         /* Memory operations */
         TB_STORE,
@@ -232,9 +231,7 @@ extern "C" {
         TB_PARAM_ADDR,
 
         TB_PARAM,
-        TB_FUNC_ADDRESS,
-        TB_EXTERN_ADDRESS,
-        TB_GLOBAL_ADDRESS,
+        TB_GET_SYMBOL_ADDRESS,
 
         TB_MEMBER_ACCESS,
         TB_ARRAY_ACCESS,
@@ -352,14 +349,56 @@ extern "C" {
         TB_EXTERNAL_SO_EXPORT,
     } TB_ExternalType;
 
-    typedef struct TB_Module            TB_Module;
-    typedef struct TB_External          TB_External;
-    typedef struct TB_Attrib            TB_Attrib;
     typedef struct TB_Global            TB_Global;
+    typedef struct TB_External          TB_External;
+    typedef struct TB_Function          TB_Function;
+
+    typedef struct TB_Module            TB_Module;
+    typedef struct TB_Attrib            TB_Attrib;
     typedef struct TB_DebugType         TB_DebugType;
     typedef struct TB_Initializer       TB_Initializer;
-    typedef struct TB_Function          TB_Function;
     typedef struct TB_FunctionPrototype TB_FunctionPrototype;
+
+    // Refers generically to objects within a module
+    //
+    // TB_Function, TB_Global, and TB_External are all subtypes of TB_Symbol
+    // and thus are safely allowed to cast into a symbol for operations.
+    typedef struct TB_Symbol {
+        enum TB_SymbolTag {
+            TB_SYMBOL_NONE,
+
+            // symbol is dead now
+            TB_SYMBOL_TOMBSTONE,
+            // refers to another symbol
+            TB_SYMBOL_SYMLINK,
+
+            TB_SYMBOL_EXTERNAL,
+            TB_SYMBOL_GLOBAL,
+            TB_SYMBOL_FUNCTION,
+
+            TB_SYMBOL_MAX,
+        } tag;
+
+        // refers to the next symbol with the same tag
+        struct TB_Symbol* next;
+        char* name;
+
+        // It's kinda a weird circular reference but yea
+        TB_Module* module;
+
+        union {
+            // if we're JITing then this maps to the address of the symbol
+            void* address;
+            size_t symbol_id;
+        };
+
+        // after this point it's tag-specific storage
+    } TB_Symbol;
+
+    typedef struct TB_Symlink {
+        TB_Symbol super;
+        struct TB_Symbol* link;
+    } TB_Symlink;
 
     // references to a node within a TB_Function
     // these are virtual registers so they don't necessarily
@@ -403,9 +442,9 @@ extern "C" {
                 size_t length;
                 const char* data;
             } string;
-            struct TB_NodeFunction {
-                const TB_Function* value;
-            } func;
+            struct TB_NodeGetSymbolAddress {
+                const TB_Symbol* value;
+            } sym;
             struct TB_NodeExtern {
                 const TB_External* value;
             } external;
@@ -510,18 +549,14 @@ extern "C" {
             struct TB_NodeGoto {
                 TB_Label label;
             } goto_;
-            struct TB_NodeExternCall {
+            struct TB_NodeCall {
                 int param_start, param_end;
-                const TB_External* target;
-            } ecall;
+                const TB_Symbol* target;
+            } call;
             struct TB_NodeDynamicCall {
                 int param_start, param_end;
                 TB_Reg target;
             } vcall;
-            struct TB_NodeFunctionCall {
-                int param_start, param_end;
-                const TB_Function* target;
-            } call;
             struct TB_NodeSysCall {
                 int param_start, param_end;
                 TB_Reg target;
@@ -751,8 +786,7 @@ extern "C" {
     // returns false if it fails.
     TB_API bool tb_module_compile_function(TB_Module* m, TB_Function* f, TB_ISelMode isel_mode);
 
-    // Used with TB_FunctionBatchIter, same as tb_module_compile_function but multiple
-    TB_API bool tb_module_compile_functions(TB_Module* m, size_t count, TB_Function* funcs, TB_ISelMode isel_mode);
+    TB_API size_t tb_module_get_function_count(TB_Module* m);
 
     // Frees all resources for the TB_Module and it's functions, globals and
     // compiled code.
@@ -761,7 +795,7 @@ extern "C" {
     // When targetting windows & thread local storage, you'll need to bind a tls index
     // which is usually just a global that the runtime support has initialized, if you
     // dont and the tls_index is used, it'll crash
-    TB_API void tb_module_set_tls_index(TB_Module* m, TB_External* e);
+    TB_API void tb_module_set_tls_index(TB_Module* m, TB_Symbol* e);
 
     ////////////////////////////////
     // Exporter
@@ -794,52 +828,15 @@ extern "C" {
     ////////////////////////////////
     TB_API void tb_module_export_jit(TB_Module* m);
 
-    typedef struct TB_FunctionIter {
-        // public
-        TB_Function* f;
+    #define TB_FOR_FUNCTIONS(it, module) for (TB_Function* it = tb_first_function(module); it != NULL; it = tb_next_function(it))
+    TB_API TB_Function* tb_first_function(TB_Module* m);
+    TB_API TB_Function* tb_next_function(TB_Function* f);
 
-        // internal
-        TB_Module* module_;
-        size_t index_;
-    } TB_FunctionIter;
-
-    #define TB_FOR_FUNCTIONS(it, module) for (TB_FunctionIter it = { .module_ = (module) }; tb_next_function(&it);)
-    TB_API TB_FunctionIter tb_function_iter(TB_Module* m);
-    TB_API bool tb_next_function(TB_FunctionIter* it);
-
-    typedef struct TB_FunctionBatchIter {
-        // public
-        TB_Function* start;
-        size_t count;
-
-        // internal
-        TB_Module* module_;
-        size_t index_;
-    } TB_FunctionBatchIter;
-
-    #define TB_FOR_FUNCTION_BATCH(it, module) for (TB_FunctionBatchIter it = { .module_ = (module) }; tb_next_function_batch(&it);)
-    TB_API size_t tb_estimate_function_batch_count(TB_Module* m);
-    TB_API TB_FunctionBatchIter tb_function_batch_iter(TB_Module* m);
-    TB_API bool tb_next_function_batch(TB_FunctionBatchIter* it);
-
-    typedef struct TB_ExternalIter {
-        // public
-        TB_External* e;
-
-        // internal
-        TB_Module* module_;
-        void* p_;
-        size_t a_, b_, c_;
-    } TB_ExternalIter;
-
-    #define TB_FOR_EXTERNALS(it, module) for (TB_ExternalIter it = tb_external_iter(module); tb_next_external(&it);)
-    TB_API TB_ExternalIter tb_external_iter(TB_Module* m);
-    TB_API bool tb_next_external(TB_ExternalIter* it);
-
-    TB_API const char* tb_extern_get_name(TB_External* e);
+    #define TB_FOR_EXTERNALS(it, module) for (TB_External* it = tb_first_external(module); it != NULL; it = tb_next_external(it))
+    TB_API TB_External* tb_first_external(TB_Module* m);
+    TB_API TB_External* tb_next_external(TB_External* e);
 
     // this is used JIT scenarios to tell the compiler what externals map to
-    TB_API void tb_extern_bind_ptr(TB_External* e, void* ptr);
     TB_API TB_ExternalType tb_extern_get_type(TB_External* e);
 
     TB_API TB_External* tb_extern_create(TB_Module* m, const char* name, TB_ExternalType type);
@@ -988,8 +985,9 @@ extern "C" {
 
     TB_API void* tb_function_get_jit_pos(TB_Function* f);
 
-    TB_API void tb_function_set_name(TB_Function* f, const char* name);
-    TB_API const char* tb_function_get_name(TB_Function* f);
+    TB_API void tb_symbol_bind_ptr(TB_Symbol* s, void* ptr);
+    TB_API void tb_symbol_set_name(TB_Symbol* s, const char* name);
+    TB_API const char* tb_symbol_get_name(TB_Symbol* s);
 
     TB_API void tb_function_set_prototype(TB_Function* f, const TB_FunctionPrototype* p);
     TB_API const TB_FunctionPrototype* tb_function_get_prototype(TB_Function* f);
@@ -1064,9 +1062,7 @@ extern "C" {
     // where base is a pointer
     TB_API TB_Reg tb_inst_member_access(TB_Function* f, TB_Reg base, int32_t offset);
 
-    TB_API TB_Reg tb_inst_get_func_address(TB_Function* f, const TB_Function* target);
-    TB_API TB_Reg tb_inst_get_extern_address(TB_Function* f, const TB_External* target);
-    TB_API TB_Reg tb_inst_get_global_address(TB_Function* f, const TB_Global* target);
+    TB_API TB_Reg tb_inst_get_symbol_address(TB_Function* f, const TB_Symbol* target);
 
     // Performs a conditional select between two values, if the operation is
     // performed wide then the cond is expected to be the same type as a and b where
@@ -1151,10 +1147,9 @@ extern "C" {
     TB_API TB_Reg tb_inst_x86_rsqrt(TB_Function* f, TB_Reg a);
 
     // Control flow
-    TB_API TB_Reg tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Function* target, size_t param_count, const TB_Reg* params);
+    TB_API TB_Reg tb_inst_call(TB_Function* f, TB_DataType dt, const TB_Symbol* target, size_t param_count, const TB_Reg* params);
     TB_API TB_Reg tb_inst_syscall(TB_Function* f, TB_DataType dt, TB_Reg syscall_num, size_t param_count, const TB_Reg* params);
     TB_API TB_Reg tb_inst_vcall(TB_Function* f, TB_DataType dt, TB_Reg target, size_t param_count, const TB_Reg* params);
-    TB_API TB_Reg tb_inst_ecall(TB_Function* f, TB_DataType dt, const TB_External* target, size_t param_count, const TB_Reg* params);
 
     TB_API TB_Reg tb_inst_phi2(TB_Function* f, TB_Label a_label, TB_Reg a, TB_Label b_label, TB_Reg b);
     TB_API void tb_inst_goto(TB_Function* f, TB_Label id);

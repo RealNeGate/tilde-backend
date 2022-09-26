@@ -119,8 +119,7 @@ static bool is_address_node(TB_Function* f, TB_Reg r) {
     switch (f->nodes[r].type) {
         case TB_LOCAL:
         case TB_PARAM_ADDR:
-        case TB_EXTERN_ADDRESS:
-        case TB_GLOBAL_ADDRESS:
+        case TB_GET_SYMBOL_ADDRESS:
         case TB_ARRAY_ACCESS:
         case TB_MEMBER_ACCESS:
         return true;
@@ -350,8 +349,8 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
     } else {
         if (fits_into_int32(n)) {
             return val_imm(n->dt, n->integer.single_word);
-        } else if (n->type == TB_GLOBAL_ADDRESS) {
-            TB_Module* m = f->module;
+        } else if (n->type == TB_GET_SYMBOL_ADDRESS && n->sym.value->tag == TB_SYMBOL_GLOBAL) {
+            TB_Module* m = f->super.module;
             const TB_Global* g = n->global.value;
 
             if (g->storage == TB_STORAGE_TLS) {
@@ -365,7 +364,7 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
 
                 if (dst.gpr >= 8) EMIT1(&ctx->emit, 0x41);
                 EMIT1(&ctx->emit, 0x8B), EMIT1(&ctx->emit, ((dst.gpr & 7) << 3) | RBP), EMIT4(&ctx->emit, 0x00);
-                tb_emit_ecall_patch(f->module, f, m->tls_index_extern, GET_CODE_POS(&ctx->emit) - 4, false, s_local_thread_id);
+                tb_emit_symbol_patch(f->super.module, f, m->tls_index_extern, GET_CODE_POS(&ctx->emit) - 4, false, s_local_thread_id);
 
                 // mov t1, qword gs:[58h]
                 Val t1 = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
@@ -389,7 +388,7 @@ static Val fast_eval(X64_FastCtx* ctx, TB_Function* f, TB_Reg r) {
                     EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT_DISP32, dst.gpr, t1.gpr));
                 }
                 EMIT4(&ctx->emit, 0);
-                tb_emit_global_patch(f->module, f, GET_CODE_POS(&ctx->emit) - 4, n->global.value, s_local_thread_id);
+                tb_emit_symbol_patch(f->super.module, f, (TB_Symbol*) n->global.value, GET_CODE_POS(&ctx->emit) - 4, false, s_local_thread_id);
 
                 fast_def_gpr(ctx, f, r, dst.gpr, TB_TYPE_PTR);
                 fast_kill_temp_gpr(ctx, f, t1.gpr);
@@ -739,13 +738,13 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
             case TB_PHI1:
             case TB_PHI2:
             case TB_PHIN:
-            case TB_GLOBAL_ADDRESS:
             case TB_PARAM_ADDR:
             case TB_LOCAL:
             case TB_KEEPALIVE:
             case TB_POISON:
             break;
-            case TB_EXTERN_ADDRESS: {
+
+            case TB_GET_SYMBOL_ADDRESS: {
                 GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
                 fast_def_gpr(ctx, f, r, dst_gpr, TB_TYPE_PTR);
 
@@ -759,22 +758,10 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT, dst_gpr, RBP));
                 EMIT4(&ctx->emit, 0);
 
-                tb_emit_ecall_patch(f->module, f, n->external.value, GET_CODE_POS(&ctx->emit) - 4, false, s_local_thread_id);
+                tb_emit_symbol_patch(f->super.module, f, n->sym.value, GET_CODE_POS(&ctx->emit) - 4, false, s_local_thread_id);
                 break;
             }
-            case TB_FUNC_ADDRESS: {
-                GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
-                fast_def_gpr(ctx, f, r, dst_gpr, TB_TYPE_PTR);
 
-                // lea dst, [rip + some_disp]
-                EMIT1(&ctx->emit, rex(true, dst_gpr, RBP, 0));
-                EMIT1(&ctx->emit, 0x8D);
-                EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT, dst_gpr, RBP));
-                EMIT4(&ctx->emit, 0);
-
-                tb_emit_call_patch(f->module, f, n->func.value, GET_CODE_POS(&ctx->emit) - 4, s_local_thread_id);
-                break;
-            }
             case TB_INTEGER_CONST:
             if (!fits_into_int32(n)) {
                 assert(dt.type == TB_PTR || (dt.type == TB_INT && dt.data <= 64));
@@ -818,7 +805,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     *rdata_payload = imm;
 
                     uint32_t pos = tb_emit_const_patch(
-                        f->module, f, GET_CODE_POS(&ctx->emit) - 4,
+                        f->super.module, f, GET_CODE_POS(&ctx->emit) - 4,
                         rdata_payload, sizeof(uint32_t),
                         s_local_thread_id
                     );
@@ -855,7 +842,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     *rdata_payload = imm;
 
                     uint32_t pos = tb_emit_const_patch(
-                        f->module, f, GET_CODE_POS(&ctx->emit) - 4,
+                        f->super.module, f, GET_CODE_POS(&ctx->emit) - 4,
                         rdata_payload, sizeof(uint64_t),
                         s_local_thread_id
                     );
@@ -874,7 +861,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 EMIT1(&ctx->emit, 0x8D);
                 EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT, dst_gpr, RBP));
 
-                uint32_t disp = tb_emit_const_patch(f->module, f, GET_CODE_POS(&ctx->emit), str, len, s_local_thread_id);
+                uint32_t disp = tb_emit_const_patch(f->super.module, f, GET_CODE_POS(&ctx->emit), str, len, s_local_thread_id);
                 EMIT4(&ctx->emit, disp);
                 break;
             }
@@ -959,7 +946,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 GPR index_reg = val.gpr;
                 uint8_t stride_as_shift = 0;
 
-                if (tb_is_power_of_two(stride)) {
+                if (stride > 0 && tb_is_power_of_two(stride)) {
                     stride_as_shift = tb_ffs(stride) - 1;
 
                     if (stride_as_shift > 3) {
@@ -1774,7 +1761,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                         payload = rdata_payload;
                     }
 
-                    uint32_t disp = tb_emit_const_patch(f->module, f, GET_CODE_POS(&ctx->emit), payload, 2 * sizeof(uint64_t), s_local_thread_id);
+                    uint32_t disp = tb_emit_const_patch(f->super.module, f, GET_CODE_POS(&ctx->emit), payload, 2 * sizeof(uint64_t), s_local_thread_id);
                     EMIT4(&ctx->emit, disp);
                 } else {
                     // we probably want some recycling eventually...
@@ -1890,7 +1877,6 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
             case TB_CALL:
             case TB_SCALL:
-            case TB_ECALL:
             case TB_VCALL: {
                 int param_start = n->call.param_start;
                 int param_count = n->call.param_end - n->call.param_start;
@@ -1979,16 +1965,14 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
                 // CALL instruction and patch
                 if (reg_type == TB_CALL) {
-                    const TB_Function* target = n->call.target;
-                    tb_emit_call_patch(f->module, f, target, GET_CODE_POS(&ctx->emit) + 1, s_local_thread_id);
-
-                    // CALL rel32
-                    EMIT1(&ctx->emit, 0xE8);
-                    EMIT4(&ctx->emit, 0);
-                } else if (reg_type == TB_ECALL) {
-                    const TB_External* target = n->ecall.target;
-
-                    tb_emit_ecall_patch(f->module, f, target, GET_CODE_POS(&ctx->emit) + 1, true, s_local_thread_id);
+                    const TB_Symbol* target = n->call.target;
+                    if (target->tag == TB_SYMBOL_FUNCTION) {
+                        tb_emit_symbol_patch(f->super.module, f, target, GET_CODE_POS(&ctx->emit) + 1, true, s_local_thread_id);
+                    } else if (target->tag == TB_SYMBOL_EXTERNAL) {
+                        tb_emit_symbol_patch(f->super.module, f, target, GET_CODE_POS(&ctx->emit) + 1, true, s_local_thread_id);
+                    } else {
+                        tb_todo();
+                    }
 
                     // CALL rel32
                     EMIT1(&ctx->emit, 0xE8);
@@ -2434,7 +2418,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
         ctx->gpr_available = 14;
         ctx->xmm_available = 16;
         ctx->temp_load_reg = GPR_NONE;
-        ctx->is_sysv = (f->module->target_abi == TB_ABI_SYSTEMV);
+        ctx->is_sysv = (f->super.module->target_abi == TB_ABI_SYSTEMV);
         memset(ctx->addresses, 0, f->node_count * sizeof(AddressDesc));
     }
 
@@ -2477,7 +2461,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                         fast_def_stack(ctx, f, r, 16 + (i * 8), dt);
                     }
                 }
-            } else if (EITHER3(n->type, TB_CALL, TB_ECALL, TB_VCALL)) {
+            } else if (EITHER2(n->type, TB_CALL, TB_VCALL)) {
                 int param_usage = CALL_NODE_PARAM_COUNT(n);
                 if (caller_usage < param_usage) { caller_usage = param_usage; }
             }

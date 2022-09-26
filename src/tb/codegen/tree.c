@@ -53,85 +53,82 @@ static TreeNode* walk(TreeNodeArena* arena, TB_Function* f, TB_Reg* use_count, T
     TB_Node* restrict n = &f->nodes[r];
     TreeNode* result = NULL;
     switch (n->type) {
-		case TB_PARAM:
-		case TB_LOCAL:
-		case TB_PARAM_ADDR:
-		case TB_INTEGER_CONST:
-		case TB_FLOAT32_CONST:
-		case TB_FLOAT64_CONST:
-		case TB_STRING_CONST:
-		case TB_GLOBAL_ADDRESS:
-		case TB_FUNC_ADDRESS:
-		case TB_EXTERN_ADDRESS:
-		case TB_PHI2:
-		case TB_CALL:
-		case TB_ECALL:
-		case TB_VCALL:
-		result = push_leaf(arena, r);
-		break;
+        case TB_PARAM:
+        case TB_LOCAL:
+        case TB_PARAM_ADDR:
+        case TB_INTEGER_CONST:
+        case TB_FLOAT32_CONST:
+        case TB_FLOAT64_CONST:
+        case TB_STRING_CONST:
+        case TB_GET_SYMBOL_ADDRESS:
+        case TB_PHI2:
+        case TB_CALL:
+        case TB_VCALL:
+        result = push_leaf(arena, r);
+        break;
 
-		case TB_LOAD:
-		result = push_unary(arena, r, walk(arena, f, use_count, n->load.address));
-		break;
+        case TB_LOAD:
+        result = push_unary(arena, r, walk(arena, f, use_count, n->load.address));
+        break;
 
-		case TB_TRUNCATE:
-		case TB_ZERO_EXT:
-		case TB_SIGN_EXT:
-		case TB_FLOAT_EXT:
-		case TB_INT2PTR:
-		case TB_PTR2INT:
-		case TB_FLOAT2INT:
-		case TB_INT2FLOAT:
-		case TB_NEG:
-		case TB_NOT:
-		case TB_X86INTRIN_SQRT:
-		case TB_X86INTRIN_RSQRT:
-		result = push_unary(arena, r, walk(arena, f, use_count, n->unary.src));
-		break;
+        case TB_TRUNCATE:
+        case TB_ZERO_EXT:
+        case TB_SIGN_EXT:
+        case TB_FLOAT_EXT:
+        case TB_INT2PTR:
+        case TB_PTR2INT:
+        case TB_FLOAT2INT:
+        case TB_INT2FLOAT:
+        case TB_NEG:
+        case TB_NOT:
+        case TB_X86INTRIN_SQRT:
+        case TB_X86INTRIN_RSQRT:
+        result = push_unary(arena, r, walk(arena, f, use_count, n->unary.src));
+        break;
 
-		case TB_ARRAY_ACCESS:
-		result = push_binary(arena, r, walk(arena, f, use_count, n->array_access.base), walk(arena, f, use_count, n->array_access.index));
-		break;
+        case TB_ARRAY_ACCESS:
+        result = push_binary(arena, r, walk(arena, f, use_count, n->array_access.base), walk(arena, f, use_count, n->array_access.index));
+        break;
 
-		case TB_MEMBER_ACCESS:
-		result = push_unary(arena, r, walk(arena, f, use_count, n->member_access.base));
-		break;
+        case TB_MEMBER_ACCESS:
+        result = push_unary(arena, r, walk(arena, f, use_count, n->member_access.base));
+        break;
 
-		case TB_FADD:
-		case TB_FSUB:
-		case TB_FMUL:
-		case TB_FDIV:
-		result = push_binary(arena, r, walk(arena, f, use_count, n->f_arith.a), walk(arena, f, use_count, n->f_arith.b));
-		break;
+        case TB_FADD:
+        case TB_FSUB:
+        case TB_FMUL:
+        case TB_FDIV:
+        result = push_binary(arena, r, walk(arena, f, use_count, n->f_arith.a), walk(arena, f, use_count, n->f_arith.b));
+        break;
 
-		case TB_AND:
-		case TB_OR:
-		case TB_XOR:
-		case TB_ADD:
-		case TB_SUB:
-		case TB_MUL:
-		case TB_SHL:
-		case TB_SHR:
-		case TB_SAR:
-		case TB_UDIV:
-		case TB_SDIV:
-		case TB_UMOD:
-		case TB_SMOD:
-		result = push_binary(arena, r, walk(arena, f, use_count, n->i_arith.a), walk(arena, f, use_count, n->i_arith.b));
-		break;
+        case TB_AND:
+        case TB_OR:
+        case TB_XOR:
+        case TB_ADD:
+        case TB_SUB:
+        case TB_MUL:
+        case TB_SHL:
+        case TB_SHR:
+        case TB_SAR:
+        case TB_UDIV:
+        case TB_SDIV:
+        case TB_UMOD:
+        case TB_SMOD:
+        result = push_binary(arena, r, walk(arena, f, use_count, n->i_arith.a), walk(arena, f, use_count, n->i_arith.b));
+        break;
 
-		case TB_CMP_EQ:
-		case TB_CMP_NE:
-		case TB_CMP_SLT:
-		case TB_CMP_SLE:
-		case TB_CMP_ULT:
-		case TB_CMP_ULE:
-		case TB_CMP_FLT:
-		case TB_CMP_FLE:
-		result = push_binary(arena, r, walk(arena, f, use_count, n->cmp.a), walk(arena, f, use_count, n->cmp.b));
-		break;
+        case TB_CMP_EQ:
+        case TB_CMP_NE:
+        case TB_CMP_SLT:
+        case TB_CMP_SLE:
+        case TB_CMP_ULT:
+        case TB_CMP_ULE:
+        case TB_CMP_FLT:
+        case TB_CMP_FLE:
+        result = push_binary(arena, r, walk(arena, f, use_count, n->cmp.a), walk(arena, f, use_count, n->cmp.b));
+        break;
 
-		default: tb_unreachable();
+        default: tb_unreachable();
     }
 
     // we need to either make a decision to spawn a shared point or
@@ -140,8 +137,8 @@ static TreeNode* walk(TreeNodeArena* arena, TB_Function* f, TB_Reg* use_count, T
     if (TB_UNLIKELY(use_count[r] > 1)) {
         // volatile load always shares, immediates never split
         if (n->type == TB_INTEGER_CONST) {
-			return result;
-		}
+            return result;
+        }
 
         // shared point
         TreeNode* search = find(arena, r);
@@ -266,7 +263,7 @@ TreeNode* tb_tree_generate(TreeNodeArena* arena, TB_Function* f, TB_Reg* use_cou
 static void print_node(TreeNode* n, int depth) {
     for (int i = 0; i < depth; i++) printf("  ");
 
-	if (n->use_count) printf("Node SHARED r%d (%p):\n", n->reg, n);
+    if (n->use_count) printf("Node SHARED r%d (%p):\n", n->reg, n);
     else printf("Node r%d (%p):\n", n->reg, n);
 
     if (n->operands[0]) print_node(n->operands[0], depth + 1);

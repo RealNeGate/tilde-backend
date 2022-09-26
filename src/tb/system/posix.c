@@ -1,3 +1,4 @@
+#ifndef _WIN32
 #include "../tb_internal.h"
 
 void* tb_platform_valloc(size_t size) {
@@ -123,3 +124,4 @@ void tb_platform_arena_free(void) {
         c = next;
     }
 }
+#endif

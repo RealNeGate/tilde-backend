@@ -126,10 +126,6 @@ TB_API TB_Exports tb_pe_write_output(TB_Module* m, const IDebugFormat* dbg) {
     TB_TemporaryStorage* tls = tb_tls_allocate();
     LinkerCtx ctx = { .inputs = *input };
 
-    // Buffer stores all the positions of each
-    // function relative to the .text section start.
-    uint32_t* func_layout = tb_platform_heap_alloc((1+m->functions.count) * sizeof(uint32_t));
-
     // Generate import lookup table
     ctx.imports = dyn_array_create(ImportTable);
 
@@ -157,19 +153,19 @@ TB_API TB_Exports tb_pe_write_output(TB_Module* m, const IDebugFormat* dbg) {
     uint32_t thunk_id_counter = 0;
     loop(i, m->max_threads) {
         pool_for(TB_External, e, m->thread_info[i].externals) {
-            ptrdiff_t search = nl_strmap_get_cstr(ctx.import_nametable, e->name);
+            ptrdiff_t search = nl_strmap_get_cstr(ctx.import_nametable, e->super.name);
             if (search < 0) {
-                tb_panic("Could not link external: %s\n", e->name);
+                tb_panic("Could not link external: %s\n", e->super.name);
             }
 
             ImportTable* table = &ctx.imports[ctx.import_nametable[search]];
 
             ImportThunk t = { 0 };
-            t.name = nl_slice__cstr(e->name);
+            t.name = nl_slice__cstr(e->super.name);
             t.thunk_id = thunk_id_counter++;
 
             dyn_array_put(table->thunks, t);
-            e->address = &table->thunks[dyn_array_length(table->thunks) - 1];
+            e->super.address = &table->thunks[dyn_array_length(table->thunks) - 1];
         }
     }
 
@@ -292,20 +288,19 @@ TB_API TB_Exports tb_pe_write_output(TB_Module* m, const IDebugFormat* dbg) {
     // Layout functions (and find entrypoint)
     size_t text_section_size = align_up(trampolines_size, 16);
     size_t entrypoint = SIZE_MAX;
-    FOREACH_N(i, 0, m->functions.count) {
-        TB_FunctionOutput* out_f = m->functions.data[i].output;
-        func_layout[i] = text_section_size;
-        if (out_f == NULL) continue;
-
-        if (m->functions.data[i].name[0] == entrypoint_name_first_char) {
-            if (strcmp(m->functions.data[i].name, entrypoint_name) == 0) {
-                entrypoint = text_section_size;
+    TB_FOR_FUNCTIONS(f, m) {
+        TB_FunctionOutput* out_f = f->output;
+        if (out_f != NULL) {
+            if (f->super.name[0] == entrypoint_name_first_char) {
+                if (strcmp(f->super.name, entrypoint_name) == 0) {
+                    entrypoint = text_section_size;
+                }
             }
-        }
 
-        text_section_size += out_f->code_size;
+            out_f->code_pos = text_section_size;
+            text_section_size += out_f->code_size;
+        }
     }
-    func_layout[m->functions.count] = text_section_size;
     text_section_size = align_up(text_section_size, 512);
 
     size_t data_base = align_up(text_base + text_section_size, 4096);
@@ -316,47 +311,48 @@ TB_API TB_Exports tb_pe_write_output(TB_Module* m, const IDebugFormat* dbg) {
 
     // Target specific: resolve internal call patches
     const ICodeGen* restrict code_gen = tb__find_code_generator(m);
-    code_gen->emit_call_patches(m, func_layout);
+    code_gen->emit_call_patches(m);
 
     // Apply external relocations
     ptrdiff_t const_data_rva = 0x1000 + import_table.count;
-    ptrdiff_t global_data_rva = 0x1000 + import_table.count;
+    // ptrdiff_t global_data_rva = 0x1000 + import_table.count;
     FOREACH_N(i, 0, m->max_threads) {
-        FOREACH_N(j, 0, dyn_array_length(m->thread_info[i].ecall_patches)) {
-            TB_ExternFunctionPatch* patch = &m->thread_info[i].ecall_patches[j];
-            TB_FunctionOutput* out_f = patch->source->output;
+        FOREACH_N(j, 0, dyn_array_length(m->thread_info[i].symbol_patches)) {
+            TB_SymbolPatch* patch = &m->thread_info[i].symbol_patches[j];
 
-            size_t actual_pos = func_layout[patch->source - m->functions.data] +
-                out_f->prologue_length + patch->pos + 4;
+            if (patch->target->tag == TB_SYMBOL_EXTERNAL) {
+                TB_FunctionOutput* out_f = patch->source->output;
 
-            ImportThunk* thunk = patch->target->address;
-            assert(thunk != NULL);
+                size_t actual_pos = out_f->code_pos + out_f->prologue_length + patch->pos + 4;
 
-            uint32_t p = (thunk->thunk_id * 6) - actual_pos;
-            memcpy(&out_f->code[patch->pos], &p, sizeof(uint32_t));
+                ImportThunk* thunk = patch->target->address;
+                assert(thunk != NULL);
+
+                uint32_t p = (thunk->thunk_id * 6) - actual_pos;
+                memcpy(&out_f->code[patch->pos], &p, sizeof(uint32_t));
+            } else {
+                tb_todo();
+            }
         }
 
-        FOREACH_N(j, 0, dyn_array_length(m->thread_info[i].global_patches)) {
-            TB_GlobalPatch* patch = &m->thread_info[i].global_patches[j];
+        /*FOREACH_N(j, 0, dyn_array_length(m->thread_info[i].global_patches)) {
+            TB_SymbolPatch* patch = &m->thread_info[i].global_patches[j];
             TB_FunctionOutput* out_f = patch->source->output;
 
-            size_t actual_pos = func_layout[patch->source - m->functions.data] +
-                out_f->prologue_length + patch->pos + 4;
-
-            const TB_Global* global = patch->target;
-            (void)global;
+            size_t actual_pos = out_f->code_pos + out_f->prologue_length + patch->pos + 4;
+            TB_Global* global = (TB_Global*) patch->target;
+            assert(global->super.tag == TB_SYMBOL_GLOBAL);
             assert(global->storage == TB_STORAGE_DATA);
 
             int32_t p = global_data_rva - actual_pos;
             *((int32_t*)&out_f->code[patch->pos]) += p;
-        }
+        }*/
 
         FOREACH_N(j, 0, dyn_array_length(m->thread_info[i].const_patches)) {
             TB_ConstPoolPatch* patch = &m->thread_info[i].const_patches[j];
             TB_FunctionOutput* out_f = patch->source->output;
 
-            size_t actual_pos = text_base + func_layout[patch->source - m->functions.data] +
-                out_f->prologue_length + patch->pos + 4;
+            size_t actual_pos = text_base + out_f->code_pos + out_f->prologue_length + patch->pos + 4;
 
             int32_t p = const_data_rva - actual_pos;
             *((int32_t*)&out_f->code[patch->pos]) += p;
@@ -478,8 +474,8 @@ TB_API TB_Exports tb_pe_write_output(TB_Module* m, const IDebugFormat* dbg) {
         fwrite(trampolines, trampolines_size, 1, f);
         pad_file(tls, f, 0xCC, 16);
 
-        FOREACH_N(i, 0, m->functions.count) {
-            TB_FunctionOutput* out_f = m->functions.data[i].output;
+        TB_FOR_FUNCTIONS(func, m) {
+            TB_FunctionOutput* out_f = func->output;
             if (out_f) fwrite(out_f->code, out_f->code_size, 1, f);
         }
         pad_file(tls, f, 0xCC, 0x200);

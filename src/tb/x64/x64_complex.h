@@ -662,7 +662,7 @@ TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB
         ctx->vgpr_count = 1;
         ctx->vxmm_count = 1;
 
-        ctx->is_sysv = (f->module->target_abi == TB_ABI_SYSTEMV);
+        ctx->is_sysv = (f->super.module->target_abi == TB_ABI_SYSTEMV);
 
         f->line_count = 0;
         f->lines = tb_platform_arena_alloc(tally.line_info_count * sizeof(TB_Line));
@@ -681,9 +681,9 @@ TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB
             TB_Node* n = &f->nodes[r];
             if (n->type == TB_PHI2) {
                 ctx->phis[ctx->phi_count++] = (PhiValue) { n - f->nodes };
-            } else if (n->type == TB_CALL || n->type == TB_ECALL || n->type == TB_VCALL) {
+            } else if (n->type == TB_CALL || n->type == TB_VCALL) {
                 int param_usage = CALL_NODE_PARAM_COUNT(n);
-                if (caller_usage < param_usage) { caller_usage = param_usage; }
+                if (caller_usage < param_usage) caller_usage = param_usage;
             }
         }
     }

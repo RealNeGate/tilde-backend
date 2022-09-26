@@ -29,6 +29,14 @@ size_t tb_atomic_size_add(size_t* dst, size_t src) {
 size_t tb_atomic_size_store(size_t* dst, size_t src) {
     return InterlockedExchange64((LONG64*)dst, src);
 }
+
+void* tb_atomic_ptr_exchange(void** address, void* new_value) {
+    return _InterlockedExchangePointer(address, new_value);
+}
+
+void* tb_atomic_ptr_cmpxchg(void** address, void* old_value, void* new_value) {
+    return _InterlockedCompareExchangePointer(address, new_value, old_value);
+}
 #elif defined(__GNUC__)
 #include <stddef.h>
 
@@ -54,6 +62,14 @@ size_t tb_atomic_size_add(size_t* dst, size_t src) {
 
 size_t tb_atomic_size_store(size_t* dst, size_t src) {
     return __atomic_exchange_n(dst, src, __ATOMIC_SEQ_CST);
+}
+
+void* tb_atomic_ptr_exchange(void** address, void* new_value) {
+    return __atomic_exchange_n(address, new_value, __ATOMIC_SEQ_CST);
+}
+
+void* tb_atomic_ptr_cmpxchg(void** address, void* old_value, void* new_value) {
+    return __atomic_compare_exchange(address, old_value, new_value, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
 }
 
 #else

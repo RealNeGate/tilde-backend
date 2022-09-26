@@ -39,7 +39,7 @@ static void emit_memory_operand(TB_CGEmitter* restrict e, uint8_t rx, const Val*
         EMIT1(e, ((rx & 7) << 3) | RBP);
         EMIT4(e, a->global.disp);
 
-        tb_emit_global_patch(e->f->module, e->f, e->count - 4, a->global.g, s_local_thread_id);
+        tb_emit_symbol_patch(e->f->super.module, e->f, (TB_Symbol*) a->global.g, e->count - 4, false, s_local_thread_id);
     } else {
         tb_unreachable();
     }
@@ -84,7 +84,7 @@ static void inst1(TB_CGEmitter* restrict e, Inst1 op, const Val* r) {
         EMIT1(e, ((rx & 7) << 3) | RBP);
         EMIT4(e, r->global.disp);
 
-        tb_emit_global_patch(e->f->module, e->f, e->count - 4, r->global.g, s_local_thread_id);
+        tb_emit_symbol_patch(e->f->super.module, e->f, (TB_Symbol*) r->global.g, e->count - 4, false, s_local_thread_id);
     } else {
         tb_unreachable();
     }

@@ -42,17 +42,6 @@ static TB_CodeRegion* get_or_allocate_code_region(TB_Module* m, int tid) {
     return m->code_regions[tid];
 }
 
-TB_API void tb_function_free(TB_Function* f) {
-    // NOTE(NeGate): Doesn't free the name, it's kept forever
-    if (f->nodes == NULL) return;
-
-    tb_platform_heap_free(f->nodes);
-    tb_platform_heap_free(f->vla.data);
-
-    f->nodes = NULL;
-    f->vla.data = NULL;
-}
-
 TB_API TB_DataType tb_vector_type(TB_DataTypeEnum type, int width) {
     assert(tb_is_power_of_two(width));
     return (TB_DataType) { .type = type, .width = tb_ffs(width) - 1 };
@@ -120,14 +109,9 @@ TB_API TB_Module* tb_module_create(TB_Arch arch, TB_System sys, const TB_Feature
     m->files.data = tb_platform_heap_alloc(64 * sizeof(TB_File));
     m->files.data[0] = (TB_File) { 0 };
 
-    m->functions.count = 0;
-    m->functions.data = tb_platform_valloc(TB_MAX_FUNCTIONS * sizeof(TB_Function));
-
-    loop(i, TB_MAX_THREADS) {
-        m->thread_info[i].global_patches = dyn_array_create(TB_GlobalPatch);
+    FOREACH_N(i, 0, TB_MAX_THREADS) {
         m->thread_info[i].const_patches  = dyn_array_create(TB_ConstPoolPatch);
-        m->thread_info[i].call_patches   = dyn_array_create(TB_FunctionPatch);
-        m->thread_info[i].ecall_patches  = dyn_array_create(TB_ExternFunctionPatch);
+        m->thread_info[i].symbol_patches = dyn_array_create(TB_SymbolPatch);
     }
 
     // we start a little off the start just because
@@ -138,6 +122,7 @@ TB_API TB_Module* tb_module_create(TB_Arch arch, TB_System sys, const TB_Feature
 }
 
 TB_API bool tb_module_compile_function(TB_Module* m, TB_Function* f, TB_ISelMode isel_mode) {
+    assert(f->output == NULL);
     ICodeGen* restrict code_gen = tb__find_code_generator(m);
 
     // Machine code gen
@@ -184,32 +169,64 @@ TB_API bool tb_module_compile_function(TB_Module* m, TB_Function* f, TB_ISelMode
         func_out->code_size += (prologue_len + epilogue_len);
     }
 
-    tb_atomic_size_add(&m->functions.compiled_count, 1);
+    tb_atomic_size_add(&m->compiled_function_count, 1);
     region->size += func_out->code_size;
 
     f->output = func_out;
     return true;
 }
 
-TB_API bool tb_module_compile_functions(TB_Module* m, size_t count, TB_Function funcs[], TB_ISelMode isel_mode) {
-    FOREACH_N(i, 0, count) {
-        tb_module_compile_function(m, &funcs[i], isel_mode);
+TB_API size_t tb_module_get_function_count(TB_Module* m) {
+    return m->symbol_count[TB_SYMBOL_FUNCTION];
+}
+
+TB_API void tb_module_kill_symbol(TB_Module* m, TB_Symbol* sym) {
+    switch (sym->tag) {
+        case TB_SYMBOL_TOMBSTONE: break;
+        case TB_SYMBOL_SYMLINK: break;
+        case TB_SYMBOL_FUNCTION: {
+            TB_Function* f = (TB_Function*) sym;
+
+            tb_platform_heap_free(f->bbs);
+            tb_platform_heap_free(f->nodes);
+            tb_platform_heap_free(f->attrib_pool);
+            tb_platform_heap_free(f->vla.data);
+            break;
+        }
+        case TB_SYMBOL_EXTERNAL: break;
+        case TB_SYMBOL_GLOBAL: break;
+        default: tb_unreachable();
     }
 
-    return true;
+    sym->tag = TB_SYMBOL_TOMBSTONE;
 }
 
 TB_API void tb_module_destroy(TB_Module* m) {
     tb_platform_arena_free();
     tb_platform_string_free();
 
-    loop(i, m->functions.count) {
-        tb_function_free(&m->functions.data[i]);
+    {
+        TB_Symbol* s = m->first_symbol_of_tag[TB_SYMBOL_FUNCTION];
+
+        if (s != NULL) {
+            enum TB_SymbolTag tag = s->tag;
+
+            do {
+                TB_Symbol* next = s->next;
+                tb_assume(tag == s->tag);
+
+                // TODO(NeGate): probably wanna have a custom heap for the symbol table
+                tb_platform_heap_free(s);
+                s = next;
+            } while (s != NULL);
+        }
     }
 
-    loop(i, m->max_threads) if (m->code_regions[i]) {
-        tb_platform_vfree(m->code_regions[i], m->code_regions[i]->capacity);
-        m->code_regions[i] = NULL;
+    FOREACH_N(i, 0, m->max_threads) {
+        if (m->code_regions[i] != NULL) {
+            tb_platform_vfree(m->code_regions[i], m->code_regions[i]->capacity);
+            m->code_regions[i] = NULL;
+        }
     }
 
     if (m->jit_region) {
@@ -217,20 +234,18 @@ TB_API void tb_module_destroy(TB_Module* m) {
         m->jit_region = NULL;
     }
 
-    loop(i, m->max_threads) {
-        // TODO(NeGate): free pools
-        //dyn_array_destroy(m->thread_info[i].initializers);
-        //dyn_array_destroy(m->thread_info[i].externals);
+    FOREACH_N(i, 0, m->max_threads) {
+        pool_destroy(m->thread_info[i].globals);
+        pool_destroy(m->thread_info[i].externals);
+        pool_destroy(m->thread_info[i].debug_types);
 
-        dyn_array_destroy(m->thread_info[i].call_patches);
-        dyn_array_destroy(m->thread_info[i].ecall_patches);
+        dyn_array_destroy(m->thread_info[i].symbol_patches);
         dyn_array_destroy(m->thread_info[i].const_patches);
     }
 
     tb_platform_vfree(m->prototypes_arena, PROTOTYPES_ARENA_SIZE * sizeof(uint64_t));
 
     tb_platform_heap_free(m->files.data);
-    tb_platform_vfree(m->functions.data, TB_MAX_FUNCTIONS * sizeof(TB_Function));
     tb_platform_heap_free(m);
 }
 
@@ -292,15 +307,8 @@ TB_API void tb_prototype_add_param_named(TB_FunctionPrototype* p, TB_DataType dt
 }
 
 TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_Linkage linkage) {
-    size_t i = tb_atomic_size_add(&m->functions.count, 1);
-    if (i >= TB_MAX_FUNCTIONS) {
-        tb_panic("cannot spawn more TB functions\n");
-    }
-
-    TB_Function* f = &m->functions.data[i];
-    *f = (TB_Function) {
-        .module = m, .linkage = linkage, .name = tb_platform_string_alloc(name)
-    };
+    TB_Function* f = (TB_Function*) tb_symbol_alloc(m, TB_SYMBOL_FUNCTION, name, sizeof(TB_Function));
+    f->linkage = linkage;
 
     f->bb_capacity = 4;
     f->bb_count = 1;
@@ -323,19 +331,19 @@ TB_API TB_Function* tb_function_create(TB_Module* m, const char* name, TB_Linkag
     return f;
 }
 
-TB_API void tb_function_set_name(TB_Function* f, const char* name) {
-    f->name = tb_platform_string_alloc(name);
+TB_API void tb_symbol_set_name(TB_Symbol* s, const char* name) {
+    s->name = tb_platform_string_alloc(name);
 }
 
-TB_API const char* tb_function_get_name(TB_Function* f) {
-    return f->name;
+TB_API const char* tb_symbol_get_name(TB_Symbol* s) {
+    return s->name;
 }
 
 TB_API void tb_function_set_prototype(TB_Function* f, const TB_FunctionPrototype* p) {
     size_t old_param_count = f->prototype != NULL ? f->prototype->param_count : 0;
     size_t new_param_count = p->param_count;
 
-    const ICodeGen* restrict code_gen = tb__find_code_generator(f->module);
+    const ICodeGen* restrict code_gen = tb__find_code_generator(f->super.module);
 
     f->params = tb_platform_heap_realloc(f->params, sizeof(TB_Reg) * new_param_count);
     if (new_param_count > 0 && f->params == NULL) {
@@ -449,10 +457,15 @@ TB_API TB_Global* tb_global_create(TB_Module* m, const char* name, TB_StorageCla
 
     TB_Global* g = pool_put(m->thread_info[tid].globals);
     *g = (TB_Global){
-        .name = tb_platform_string_alloc(name),
+        .super = {
+            .tag = TB_SYMBOL_GLOBAL,
+            .name = tb_platform_string_alloc(name),
+            .module = m,
+        },
         .linkage = linkage,
         .storage = storage
     };
+    tb_symbol_append(m, (TB_Symbol*) g);
 
     return g;
 }
@@ -472,12 +485,12 @@ TB_API void tb_global_set_initializer(TB_Module* m, TB_Global* global, TB_Initia
     global->init = init;
 }
 
-TB_API void tb_module_set_tls_index(TB_Module* m, TB_External* e) {
+TB_API void tb_module_set_tls_index(TB_Module* m, TB_Symbol* e) {
     m->tls_index_extern = e;
 }
 
-TB_API void tb_extern_bind_ptr(TB_External* e, void* ptr) {
-    e->address = ptr;
+TB_API void tb_symbol_bind_ptr(TB_Symbol* s, void* ptr) {
+    s->address = ptr;
 }
 
 TB_API TB_ExternalType tb_extern_get_type(TB_External* e) {
@@ -493,101 +506,32 @@ TB_API TB_External* tb_extern_create(TB_Module* m, const char* name, TB_External
     int tid = tb__get_local_tid();
 
     TB_External* e = pool_put(m->thread_info[tid].externals);
-    *e = (TB_External){ .type = type, .name = tb_platform_string_alloc(name) };
+    *e = (TB_External){
+        .super = {
+            .tag = TB_SYMBOL_EXTERNAL,
+            .name = tb_platform_string_alloc(name),
+            .module = m,
+        },
+        .type = type,
+    };
+    tb_symbol_append(m, (TB_Symbol*) e);
     return e;
 }
 
-TB_API TB_FunctionIter tb_function_iter(TB_Module* m) {
-    return (TB_FunctionIter){ .module_ = m };
+TB_API TB_Function* tb_first_function(TB_Module* m) {
+    return (TB_Function*) m->first_symbol_of_tag[TB_SYMBOL_FUNCTION];
 }
 
-TB_API bool tb_next_function(TB_FunctionIter* it) {
-    TB_Module* m = it->module_;
-    if (it->index_ < m->functions.count) {
-        it->f = &m->functions.data[it->index_++];
-        return true;
-    }
-
-    return false;
+TB_API TB_Function* tb_next_function(TB_Function* f) {
+    return (TB_Function*) f->super.next;
 }
 
-TB_API size_t tb_estimate_function_batch_count(TB_Module* m) {
-    return (m->functions.count + BATCH_SIZE - 1) / BATCH_SIZE;
+TB_API TB_External* tb_first_external(TB_Module* m) {
+    return (TB_External*) m->first_symbol_of_tag[TB_SYMBOL_EXTERNAL];
 }
 
-TB_API TB_FunctionBatchIter tb_function_batch_iter(TB_Module* m) {
-    return (TB_FunctionBatchIter){ .module_ = m };
-}
-
-TB_API bool tb_next_function_batch(TB_FunctionBatchIter* it) {
-    TB_Module* m = it->module_;
-    size_t i = it->index_, limit = m->functions.count;
-    if (i >= limit) {
-        return false;
-    }
-
-    if (i + BATCH_SIZE >= limit) {
-        it->count = BATCH_SIZE - ((i + BATCH_SIZE) - limit);
-    } else {
-        it->count = BATCH_SIZE;
-    }
-
-    it->start = &m->functions.data[i];
-    it->index_ = i + BATCH_SIZE;
-    return true;
-}
-
-TB_API TB_ExternalIter tb_external_iter(TB_Module* m) {
-    return (TB_ExternalIter){ .module_ = m, .p_ = m->thread_info[0].externals };
-}
-
-// TODO(NeGate): Redo this bs
-TB_API bool tb_next_external(TB_ExternalIter* it) {
-    for (;;) {
-        if (it->p_ != NULL) {
-            PoolHeader* hdr = ((PoolHeader*) it->p_) - 1;
-
-            // you basically just have to write the iterator backwards from the for loop
-            // go check pool.h for the original
-            size_t a = it->a_;
-            if (a < MAX_SLOTS) {
-                if (hdr->allocated[a] != 0) {
-                    size_t b = it->b_++;
-                    if (b < 64) {
-                        if ((hdr->allocated[it->a_] & (1ull << b)) == 0) {
-                            continue;
-                        }
-
-                        it->e = &((TB_External*) hdr->data)[(it->a_ * 64) + b];
-                        return true;
-                    }
-                }
-
-                it->b_ = 0;
-                it->a_ += 1;
-                continue;
-            }
-
-            PoolHeader* next = hdr->next;
-            if (next != NULL) {
-                it->a_ = 0;
-                it->p_ = next->data;
-                continue;
-            }
-        }
-
-        size_t c = ++it->c_;
-        if (c < it->module_->max_threads) {
-            it->p_ = it->module_->thread_info[c].externals;
-            continue;
-        }
-
-        return false;
-    }
-}
-
-TB_API const char* tb_extern_get_name(TB_External* e) {
-    return e->name;
+TB_API TB_External* tb_next_external(TB_External* e) {
+    return (TB_External*) e->super.next;
 }
 
 //
@@ -670,25 +614,11 @@ void tb_tls_restore(TB_TemporaryStorage* store, void* ptr) {
     store->used = i;
 }
 
-void tb_emit_call_patch(TB_Module* m, TB_Function* source, const TB_Function* target, size_t pos, size_t local_thread_id) {
+void tb_emit_symbol_patch(TB_Module* m, TB_Function* source, const TB_Symbol* target, size_t pos, bool is_function, size_t local_thread_id) {
     assert(pos == (uint32_t)pos);
 
-    TB_FunctionPatch p = { .source = source, .target = target, .pos = pos };
-    dyn_array_put(m->thread_info[local_thread_id].call_patches, p);
-}
-
-void tb_emit_ecall_patch(TB_Module* m, TB_Function* source, const TB_External* target, size_t pos, bool is_function, size_t local_thread_id) {
-    assert(pos == (uint32_t)pos);
-
-    TB_ExternFunctionPatch p = { .source = source, .target = target, .is_function = is_function, .pos = pos };
-    dyn_array_put(m->thread_info[local_thread_id].ecall_patches, p);
-}
-
-void tb_emit_global_patch(TB_Module* m, TB_Function* source, size_t pos, const TB_Global* target, size_t local_thread_id) {
-    assert(pos == (uint32_t)pos);
-
-    TB_GlobalPatch p = { .source = source, .pos = pos, .target = target };
-    dyn_array_put(m->thread_info[local_thread_id].global_patches, p);
+    TB_SymbolPatch p = { .source = source, .target = target, .is_function = is_function, .pos = pos };
+    dyn_array_put(m->thread_info[local_thread_id].symbol_patches, p);
 }
 
 uint32_t tb_emit_const_patch(TB_Module* m, TB_Function* source, size_t pos, const void* ptr, size_t len, size_t local_thread_id) {

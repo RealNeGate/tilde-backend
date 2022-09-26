@@ -53,10 +53,6 @@
 #define TB_TEMPORARY_STORAGE_SIZE (1 << 20)
 #endif
 
-#ifndef TB_MAX_FUNCTIONS
-#define TB_MAX_FUNCTIONS (1 << 22)
-#endif
-
 // ***********************************
 // Atomics
 // ***********************************
@@ -75,6 +71,9 @@ int tb_atomic_int_store(int* dst, int src);
 size_t tb_atomic_size_load(size_t* dst);
 size_t tb_atomic_size_add(size_t* dst, size_t src);
 size_t tb_atomic_size_store(size_t* dst, size_t src);
+
+void* tb_atomic_ptr_exchange(void** address, void* new_value);
+void* tb_atomic_ptr_cmpxchg(void** address, void* old_value, void* new_value);
 
 #define PROTOTYPES_ARENA_SIZE   (32u << 20u)
 #define CODE_REGION_BUFFER_SIZE (1024 * 1024 * 1024)
@@ -104,6 +103,11 @@ struct { size_t cap, count; T* elems; }
 #define TB_FOR_NODE(it, f, bb) for (TB_Reg it = f->bbs[bb].start; it != 0; it = f->nodes[it].next)
 #define TB_FOR_NODE_AFTER(it, f, first) for (TB_Reg it = f->nodes[reg].start; it != 0; it = f->nodes[it].next)
 
+#define TB_FOR_SYMBOL_WITH_TAG(it, m, tag) for (TB_Symbol* it = m->first_symbol_of_tag[tag]; it != NULL; it = it->next)
+
+#undef TB_FOR_FUNCTIONS
+#define TB_FOR_FUNCTIONS(it, m) for (TB_Function* it = (TB_Function*) m->first_symbol_of_tag[TB_SYMBOL_FUNCTION]; it != NULL; it = (TB_Function*) it->super.next)
+
 typedef struct TB_ConstPoolPatch {
     TB_Function* source;
     uint32_t pos; // relative to the start of the function body
@@ -114,43 +118,30 @@ typedef struct TB_ConstPoolPatch {
     const void* data;
 } TB_ConstPoolPatch;
 
-typedef struct TB_GlobalPatch {
-    TB_Function* source;
-    uint32_t pos; // relative to the start of the function body
-    const TB_Global* target;
-} TB_GlobalPatch;
-
-typedef struct TB_FunctionPatch {
-    TB_Function* source;
-    uint32_t pos; // relative to the start of the function body
-    const TB_Function* target;
-} TB_FunctionPatch;
-
-// Not actually function patches just external patches im sorry for lying
-typedef struct TB_ExternFunctionPatch {
+typedef struct TB_SymbolPatch {
     TB_Function* source;
     uint32_t pos; // relative to the start of the function body
     bool is_function;
-    const TB_External* target;
-} TB_ExternFunctionPatch;
+    const TB_Symbol* target;
+} TB_SymbolPatch;
 
 typedef struct TB_File {
     char* path;
 } TB_File;
 
 struct TB_External {
+    TB_Symbol super;
     TB_ExternalType type;
-    char* name;
-    void* address;
 };
 
 struct TB_Global {
-    char* name;
+    TB_Symbol super;
+
     TB_Linkage linkage;
-    TB_Initializer* init;
-    int id;
-    uint32_t pos;
     TB_StorageClass storage;
+
+    TB_Initializer* init;
+    uint32_t pos;
 };
 
 typedef struct TB_PrototypeParam {
@@ -306,15 +297,19 @@ typedef struct TB_FunctionOutput {
     uint64_t stack_usage;
 
     uint8_t* code;
+
+    // relative to the export-specific text section
+    size_t code_pos;
     size_t code_size;
+
+    // export-specific
+    uint32_t unwind_info;
 
     DynArray(TB_StackSlot) stack_slots;
 } TB_FunctionOutput;
 
 struct TB_Function {
-    char* name;
-    // It's kinda a weird circular reference but yea
-    TB_Module* module;
+    TB_Symbol super;
 
     const TB_FunctionPrototype* prototype;
     TB_Linkage linkage;
@@ -327,7 +322,7 @@ struct TB_Function {
     TB_BasicBlock* bbs;
 
     // Nodes array
-    TB_Reg node_capacity, node_count, node_end;
+    TB_Reg node_capacity, node_count;
     TB_Node* nodes;
 
     // Used by the IR building
@@ -358,6 +353,7 @@ struct TB_Function {
         void* compiled_pos;
         size_t compiled_symbol_id;
     };
+
     TB_FunctionOutput* output;
 };
 
@@ -383,21 +379,26 @@ struct TB_Module {
 
     // This is a hack for windows since they've got this idea
     // of a _tls_index
-    TB_External* tls_index_extern;
+    TB_Symbol* tls_index_extern;
 
     // Convert this into a dynamic memory arena... maybe
     tb_atomic_size_t prototypes_arena_size;
     uint64_t* prototypes_arena;
+
+    tb_atomic_size_t compiled_function_count;
+
+    // symbol table
+    tb_atomic_size_t symbol_count[TB_SYMBOL_MAX];
+    TB_Symbol* first_symbol_of_tag[TB_SYMBOL_MAX];
+    TB_Symbol* last_symbol_of_tag[TB_SYMBOL_MAX];
 
     alignas(64) struct {
         Pool(TB_DebugType) debug_types;
         Pool(TB_Global) globals;
         Pool(TB_External) externals;
 
-        DynArray(TB_GlobalPatch) global_patches;
         DynArray(TB_ConstPoolPatch) const_patches;
-        DynArray(TB_FunctionPatch) call_patches;
-        DynArray(TB_ExternFunctionPatch) ecall_patches;
+        DynArray(TB_SymbolPatch) symbol_patches;
     } thread_info[TB_MAX_THREADS];
 
     struct {
@@ -405,12 +406,6 @@ struct TB_Module {
         size_t capacity;
         TB_File* data;
     } files;
-
-    struct {
-        tb_atomic_size_t compiled_count;
-        tb_atomic_size_t count;
-        TB_Function* data;
-    } functions;
 
     void* jit_region;
     size_t jit_region_size;
@@ -446,7 +441,9 @@ typedef struct {
     int minimum_addressable_size, pointer_size;
 
     void (*get_data_type_size)(TB_DataType dt, TB_CharUnits* out_size, TB_CharUnits* out_align);
-    void (*emit_call_patches)(TB_Module* restrict m, uint32_t* restrict func_layout);
+
+    // return the number of patches resolved
+    size_t (*emit_call_patches)(TB_Module* restrict m);
 
     size_t (*emit_prologue)(uint8_t* out, uint64_t saved, uint64_t stack_usage);
     size_t (*emit_epilogue)(uint8_t* out, uint64_t saved, uint64_t stack_usage);
@@ -467,7 +464,7 @@ typedef struct {
 
     // functions are laid out linearly based on their function IDs and
     // thus function_sym_start tells you what the starting point is in the symbol table
-    TB_SectionGroup (*generate_debug_info)(TB_Module* m, TB_TemporaryStorage* tls, const ICodeGen* code_gen, const char* path, size_t function_sym_start, uint32_t* func_layout);
+    TB_SectionGroup (*generate_debug_info)(TB_Module* m, TB_TemporaryStorage* tls, const ICodeGen* code_gen, const char* path);
 } IDebugFormat;
 
 // Macro enjoyer
@@ -682,9 +679,19 @@ do {                                           \
 #define CALL_NODE_PARAM_COUNT(n) (n->call.param_end - n->call.param_start)
 
 ////////////////////////////////
+// EXPORTER HELPER
+////////////////////////////////
+size_t tb_helper_write_text_section(size_t write_pos, TB_Module* m, uint8_t* output, uint32_t pos);
+size_t tb_helper_write_data_section(size_t write_pos, TB_Module* m, uint8_t* output, uint32_t pos);
+size_t tb_helper_write_rodata_section(size_t write_pos, TB_Module* m, uint8_t* output, uint32_t pos);
+size_t tb_helper_get_text_section_layout(TB_Module* m, size_t symbol_id_start);
+
+////////////////////////////////
 // ANALYSIS
 ////////////////////////////////
 int tb__get_local_tid(void);
+TB_Symbol* tb_symbol_alloc(TB_Module* m, enum TB_SymbolTag tag, const char* name, size_t size);
+void tb_symbol_append(TB_Module* m, TB_Symbol* s);
 
 // TODO(NeGate): refactor this stuff such that it starts with two underscores, it makes
 // it more clear that these are TB private
@@ -697,9 +704,7 @@ TB_Predeccesors tb_get_temp_predeccesors(TB_Function* f, TB_TemporaryStorage* tl
 void tb_free_temp_predeccesors(TB_TemporaryStorage* tls, TB_Predeccesors preds);
 
 uint32_t tb_emit_const_patch(TB_Module* m, TB_Function* source, size_t pos, const void* ptr,size_t len, size_t local_thread_id);
-void tb_emit_global_patch(TB_Module* m, TB_Function* source, size_t pos, const TB_Global* target, size_t local_thread_id);
-void tb_emit_call_patch(TB_Module* m, TB_Function* source, const TB_Function* target, size_t pos, size_t local_thread_id);
-void tb_emit_ecall_patch(TB_Module* m, TB_Function* source, const TB_External* target, size_t pos, bool is_function, size_t local_thread_id);
+void tb_emit_symbol_patch(TB_Module* m, TB_Function* source, const TB_Symbol* target, size_t pos, bool is_function, size_t local_thread_id);
 
 TB_Reg* tb_vla_reserve(TB_Function* f, size_t count);
 

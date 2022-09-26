@@ -21,25 +21,31 @@ static thread_local size_t s_local_thread_id;
 #define DEBUG_LOG(...) ((void)0)
 #endif
 
-static void x64_emit_call_patches(TB_Module* restrict m, uint32_t* restrict func_layout) {
-    loop(i, m->max_threads) {
-        TB_FunctionPatch* patches = m->thread_info[i].call_patches;
+static size_t x64_emit_call_patches(TB_Module* restrict m) {
+    size_t r = 0;
+    FOREACH_N(i, 0, m->max_threads) {
+        TB_SymbolPatch* patches = m->thread_info[i].symbol_patches;
 
-        loop(j, dyn_array_length(patches)) {
-            TB_FunctionPatch*  patch = &patches[j];
-            TB_FunctionOutput* out_f = patch->source->output;
-            assert(out_f && "Patch cannot be applied to function with no compiled output");
+        dyn_array_for(j, patches) {
+            TB_SymbolPatch* patch = &patches[j];
 
-            // x64 thinks of relative addresses as being relative
-            // to the end of the instruction or in this case just
-            // 4 bytes ahead hence the +4.
-            size_t actual_pos = func_layout[patch->source - m->functions.data] +
-                out_f->prologue_length + patch->pos + 4;
+            if (patch->target->tag == TB_SYMBOL_FUNCTION) {
+                TB_FunctionOutput* out_f = patch->source->output;
+                assert(out_f && "Patch cannot be applied to function with no compiled output");
 
-            uint32_t p = func_layout[patch->target - m->functions.data] - actual_pos;
-            memcpy(&out_f->code[out_f->prologue_length + patch->pos], &p, sizeof(uint32_t));
+                // x64 thinks of relative addresses as being relative
+                // to the end of the instruction or in this case just
+                // 4 bytes ahead hence the +4.
+                size_t actual_pos = out_f->code_pos + out_f->prologue_length + patch->pos + 4;
+
+                uint32_t p = ((TB_Function*) patch->target)->output->code_pos - actual_pos;
+                memcpy(&out_f->code[out_f->prologue_length + patch->pos], &p, sizeof(uint32_t));
+                r += 1;
+            }
         }
     }
+
+    return r;
 }
 
 static int get_data_type_size(const TB_DataType dt) {

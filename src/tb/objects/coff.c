@@ -414,7 +414,6 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
                         };
                         TB_FIXED_ARRAY_APPEND(relocs, r);
                     } else if (p->target->tag == TB_SYMBOL_GLOBAL) {
-                        printf("%s : %s (%zu)\n", p->source->super.name, p->target->name, p->target->symbol_id);
                         COFF_ImageReloc r = {
                             .Type = ((TB_Global*) p->target)->storage == TB_STORAGE_TLS ? IMAGE_REL_AMD64_SECREL : IMAGE_REL_AMD64_REL32,
                             .SymbolTableIndex = p->target->symbol_id,

@@ -1,3 +1,4 @@
+#ifdef TB_USE_LUAJIT
 #include "../tb_internal.h"
 
 #ifdef _WIN32
@@ -55,3 +56,4 @@ LJ_EXPORT bool tb__is_izero(TB_Function* f, TB_Reg r) {
 
 	return false;
 }
+#endif

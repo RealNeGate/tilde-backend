@@ -1,6 +1,7 @@
 #include "tb_internal.h"
 #include <stdarg.h>
 
+#ifdef TB_USE_LUAJIT
 #include <lua.h>
 #include <lualib.h>
 #include <lauxlib.h>
@@ -8,6 +9,7 @@
 
 #include "opt/lua_glue.h"
 #include "opt/lua_prelude.inc"
+#endif
 
 #ifdef _WIN32
 #define strdup(s) _strdup(s)
@@ -179,6 +181,7 @@ static void end_crap() {
     fclose(debug_file);
 }
 
+#ifdef TB_USE_LUAJIT
 static lua_State* begin_lua_pass(void* l_state) {
     lua_State* L = lua_newthread(l_state);
     lua_getglobal(L, "DA_FUNC");
@@ -196,6 +199,7 @@ static bool end_lua_pass(lua_State* L, int arg_count) {
         return false;
     }
 }
+#endif
 
 static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const TB_Pass passes[]) {
     bool changes = false;
@@ -214,10 +218,14 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
                 case TB_BASIC_BLOCK_PASS: {
                     TB_FOR_BASIC_BLOCK(bb, f) {
                         if (passes[j].l_state != NULL) {
+                            #ifdef TB_USE_LUAJIT
                             lua_State* L = begin_lua_pass(passes[j].l_state);
                             lua_pushlightuserdata(L, f);
                             lua_pushinteger(L, bb);
                             changes |= end_lua_pass(L, 2);
+                            #else
+                            tb_panic("Not compiled with luajit support");
+                            #endif
                         } else {
                             changes |= passes[j].bb_run(f, bb);
                         }
@@ -240,10 +248,14 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
                         const TB_Loop* l = &loops.loops[k];
 
                         if (passes[j].l_state != NULL) {
+                            #ifdef TB_USE_LUAJIT
                             lua_State* L = begin_lua_pass(passes[j].l_state);
                             lua_pushlightuserdata(L, f);
                             lua_pushlightuserdata(L, (void*) l);
                             changes |= end_lua_pass(L, 2);
+                            #else
+                            tb_panic("Not compiled with luajit support");
+                            #endif
                         } else {
                             changes |= passes[j].loop_run(f, l);
                         }
@@ -255,9 +267,13 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
 
                 case TB_FUNCTION_PASS:
                 if (passes[j].l_state != NULL) {
+                    #ifdef TB_USE_LUAJIT
                     lua_State* L = begin_lua_pass(passes[j].l_state);
                     lua_pushlightuserdata(L, f);
                     changes |= end_lua_pass(L, 1);
+                    #else
+                    tb_panic("Not compiled with luajit support");
+                    #endif
                 } else {
                     changes |= passes[j].func_run(f);
 
@@ -287,9 +303,13 @@ static bool schedule_module_level_opt(TB_Module* m, const TB_Pass* pass) {
     }
 
     if (pass->l_state != NULL) {
+        #ifdef TB_USE_LUAJIT
         lua_State* L = begin_lua_pass(pass->l_state);
         lua_pushlightuserdata(L, m);
         return end_lua_pass(L, 1);
+        #else
+        tb_panic("Not compiled with luajit support");
+        #endif
     } else {
         return pass->mod_run(m);
     }
@@ -327,6 +347,7 @@ TB_API bool tb_module_optimize(TB_Module* m, size_t pass_count, const TB_Pass pa
     return changes;
 }
 
+#ifdef TB_USE_LUAJIT
 TB_API TB_Pass tb_opt_load_lua_pass(const char* path, enum TB_PassMode mode) {
     lua_State *L = luaL_newstate();
     if (L == NULL) abort();
@@ -367,3 +388,4 @@ TB_API TB_Pass tb_opt_load_lua_pass(const char* path, enum TB_PassMode mode) {
 TB_API void tb_opt_unload_lua_pass(TB_Pass* p) {
     lua_close((lua_State*) p->l_state);
 }
+#endif

@@ -1194,8 +1194,10 @@ extern "C" {
     // Applies optimizations to the entire module
     TB_API bool tb_module_optimize(TB_Module* m, size_t pass_count, const TB_Pass passes[]);
 
+    #ifdef TB_USE_LUAJIT
     TB_API TB_Pass tb_opt_load_lua_pass(const char* path, enum TB_PassMode mode);
     TB_API void tb_opt_unload_lua_pass(TB_Pass* p);
+    #endif
 
     // analysis
     TB_API TB_Predeccesors tb_get_predeccesors(TB_Function* f);

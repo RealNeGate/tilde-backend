@@ -342,6 +342,7 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
                         TB_FIXED_ARRAY_APPEND(relocs, rela);
                     } else if (p->target->tag == TB_SYMBOL_GLOBAL) {
                         TB_Global* global = (TB_Global*) p->target;
+                        ((void) global);
                         assert(global->super.tag == TB_SYMBOL_GLOBAL);
                         assert(global->storage == TB_STORAGE_DATA);
 

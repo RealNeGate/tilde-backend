@@ -22,3 +22,5 @@ run4coder.bat
 project.4coder
 tb.rdbg
 build.ninja
+.ninja_deps
+.ninja_log

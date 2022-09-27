@@ -25,9 +25,6 @@ struct TB_ModuleExporter {
     uint32_t string_table_cap;
     char** string_table;
 
-    size_t function_sym_start;
-    size_t external_sym_start;
-
     size_t string_table_pos;
     size_t tls_section_num;
 
@@ -112,18 +109,18 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
 
     // mark each with a unique id
     size_t function_sym_start = (number_of_sections * 2);
-    e->external_sym_start = e->function_sym_start + m->compiled_function_count;
+    size_t external_sym_start = function_sym_start + m->compiled_function_count;
 
     size_t text_section_size = tb_helper_get_text_section_layout(m, function_sym_start);
     size_t unique_id_counter = 0;
     FOREACH_N(i, 0, m->max_threads) {
         pool_for(TB_External, ext, m->thread_info[i].externals) {
-            ext->super.symbol_id = e->external_sym_start + unique_id_counter;
+            ext->super.symbol_id = external_sym_start + unique_id_counter;
             unique_id_counter += 1;
         }
 
         pool_for(TB_Global, g, m->thread_info[i].globals) {
-            g->super.symbol_id = e->external_sym_start + unique_id_counter;
+            g->super.symbol_id = external_sym_start + unique_id_counter;
             unique_id_counter += 1;
         }
     }
@@ -324,7 +321,8 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
         // PDATA section
         {
             assert(e->write_pos == sections[S_PDATA].raw_data_pos);
-            uint32_t* pdata = get_temporary_storage(e, m->compiled_function_count * 12);
+            uint32_t* pdata = (uint32_t*) &output[e->write_pos];
+            e->write_pos += m->compiled_function_count * 12;
 
             size_t j = 0;
             TB_FOR_FUNCTIONS(f, m) {
@@ -336,8 +334,6 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
                     j += 3;
                 }
             }
-
-            WRITE(pdata, m->compiled_function_count * 12);
         }
 
         // XDATA section
@@ -348,7 +344,8 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
 
         // TLS section
         {
-            char* tls = get_temporary_storage(e, m->tls_region_size);
+            uint8_t* tls = &output[e->write_pos];
+            e->write_pos += m->tls_region_size;
 
             assert(e->write_pos == sections[S_TLS].raw_data_pos);
             FOREACH_N(i, 0, m->max_threads) {
@@ -368,8 +365,6 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
                     }
                 }
             }
-
-            WRITE(tls, m->tls_region_size);
         }
 
         // write DEBUG sections
@@ -381,7 +376,7 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
         // write TEXT patches
         {
             TB_FIXED_ARRAY(COFF_ImageReloc) relocs = {
-                .cap = num_of_relocs[S_TEXT] / sizeof(COFF_ImageReloc),
+                .cap = num_of_relocs[S_TEXT],
                 .elems = (COFF_ImageReloc*) &output[sections[S_TEXT].pointer_to_reloc]
             };
 
@@ -438,8 +433,10 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
 
         // write DATA patches
         {
-            size_t count = 0, capacity = sections[S_DATA].num_reloc;
-            COFF_ImageReloc* relocs = get_temporary_storage(e, capacity * sizeof(COFF_ImageReloc));
+            TB_FIXED_ARRAY(COFF_ImageReloc) relocs = {
+                .cap = num_of_relocs[S_DATA],
+                .elems = (COFF_ImageReloc*) &output[sections[S_DATA].pointer_to_reloc]
+            };
 
             assert(e->write_pos == sections[S_DATA].pointer_to_reloc);
             FOREACH_N(i, 0, m->max_threads) {
@@ -453,36 +450,36 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
                             case TB_INIT_OBJ_RELOC_GLOBAL: {
                                 const TB_Global* g = init->objects[k].reloc_global;
 
-                                assert(count < capacity);
-                                relocs[count++] = (COFF_ImageReloc) {
+                                COFF_ImageReloc r = {
                                     .Type = IMAGE_REL_AMD64_ADDR64,
                                     .SymbolTableIndex = g->super.symbol_id,
                                     .VirtualAddress = actual_pos
                                 };
+                                TB_FIXED_ARRAY_APPEND(relocs, r);
                                 break;
                             }
 
                             case TB_INIT_OBJ_RELOC_EXTERN: {
                                 const TB_External* e = init->objects[k].reloc_extern;
 
-                                assert(count < capacity);
-                                relocs[count++] = (COFF_ImageReloc) {
+                                COFF_ImageReloc r = {
                                     .Type = IMAGE_REL_AMD64_ADDR64,
                                     .SymbolTableIndex = e->super.symbol_id,
                                     .VirtualAddress = actual_pos
                                 };
+                                TB_FIXED_ARRAY_APPEND(relocs, r);
                                 break;
                             }
 
                             case TB_INIT_OBJ_RELOC_FUNCTION: {
                                 size_t symbol_id = init->objects[k].reloc_function->super.symbol_id;
 
-                                assert(count < capacity);
-                                relocs[count++] = (COFF_ImageReloc) {
+                                COFF_ImageReloc r = {
                                     .Type = IMAGE_REL_AMD64_ADDR64,
                                     .SymbolTableIndex = symbol_id,
                                     .VirtualAddress = actual_pos
                                 };
+                                TB_FIXED_ARRAY_APPEND(relocs, r);
                                 break;
                             }
 
@@ -492,21 +489,24 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
                 }
             }
 
-            assert(count == capacity);
-            WRITE(relocs, count * sizeof(COFF_ImageReloc));
+            assert(relocs.count == relocs.cap);
+            e->write_pos += relocs.count * sizeof(COFF_ImageReloc);
         }
 
         // write PDATA patches
         {
-            size_t count = 0, capacity = num_of_relocs[S_PDATA] + (num_of_relocs[S_PDATA] >= 0xFFFF ? 1 : 0);
-            COFF_ImageReloc* relocs = get_temporary_storage(e, capacity * sizeof(COFF_ImageReloc));
+            TB_FIXED_ARRAY(COFF_ImageReloc) relocs = {
+                .cap = num_of_relocs[S_PDATA] + (num_of_relocs[S_PDATA] >= 0xFFFF ? 1 : 0),
+                .elems = (COFF_ImageReloc*) &output[sections[S_PDATA].pointer_to_reloc]
+            };
 
             if (num_of_relocs[S_PDATA] >= 0xFFFF) {
                 // because we have more than 65535 relocations the first relocation
                 // stores the 32bit number of relocations in the VirtualAddress field
-                relocs[count++] = (COFF_ImageReloc){
+                COFF_ImageReloc r = {
                     .VirtualAddress = num_of_relocs[S_PDATA]
                 };
+                TB_FIXED_ARRAY_APPEND(relocs, r);
             }
 
             size_t j = 0;
@@ -515,28 +515,31 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
                 TB_FunctionOutput* out_f = f->output;
                 if (!out_f) continue;
 
-                relocs[count++] = (COFF_ImageReloc){
+                COFF_ImageReloc r = {
                     .Type = IMAGE_REL_AMD64_ADDR32NB,
                     .SymbolTableIndex = 0, // text section
                     .VirtualAddress = (j * 12)
                 };
+                TB_FIXED_ARRAY_APPEND(relocs, r);
 
-                relocs[count++] = (COFF_ImageReloc){
+                r = (COFF_ImageReloc){
                     .Type = IMAGE_REL_AMD64_ADDR32NB,
                     .SymbolTableIndex = 0, // text section
                     .VirtualAddress = (j * 12) + 4
                 };
+                TB_FIXED_ARRAY_APPEND(relocs, r);
 
-                relocs[count++] = (COFF_ImageReloc){
+                r = (COFF_ImageReloc){
                     .Type = IMAGE_REL_AMD64_ADDR32NB,
                     .SymbolTableIndex = 8, // xdata section
                     .VirtualAddress = (j * 12) + 8
                 };
+                TB_FIXED_ARRAY_APPEND(relocs, r);
                 j += 1;
             }
 
-            assert(count == capacity);
-            WRITE(relocs, count * sizeof(COFF_ImageReloc));
+            assert(relocs.count == relocs.cap);
+            e->write_pos += relocs.count * sizeof(COFF_ImageReloc);
         }
 
         if (e->debug_sections.length > 0) {

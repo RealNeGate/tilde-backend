@@ -14,8 +14,8 @@ typedef enum {
 
 typedef struct Mem2Reg_Ctx {
     TB_TemporaryStorage* tls;
-    TB_Function*         f;
-    size_t               bb_count;
+    TB_Function* f;
+    size_t bb_count;
 
     // Stack slots we're going to convert into
     // SSA form
@@ -54,28 +54,13 @@ static int get_variable_id(Mem2Reg_Ctx* restrict c, TB_Reg r) {
 static TB_Reg new_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, int var, TB_Label block, TB_DataType dt) {
     TB_Reg r = f->bbs[block].start;
 
-    // skip past other phi nodes
-    TB_FOR_NODE(j, f, block) {
-        if (!tb_node_is_phi_node(f, j) && f->nodes[j].type != TB_PASS) {
-            break;
-        }
-        r = j;
-    }
+    // add as first BB node
+    tb_function_reserve_nodes(f, 1);
+    TB_Reg new_phi_reg = f->node_count++;
+    f->nodes[new_phi_reg] = (TB_Node) { .type = TB_NULL, .dt = dt, .next = r };
+    f->bbs[block].start = new_phi_reg;
 
-    TB_Reg new_phi_reg = 0;
-    if (r == f->bbs[block].start) {
-        // add as first BB node
-        tb_function_reserve_nodes(f, 1);
-        new_phi_reg = f->node_count++;
-
-        f->nodes[new_phi_reg] = (TB_Node) { .type = TB_NULL, .dt = TB_TYPE_VOID, .next = r };
-        f->bbs[block].start = new_phi_reg;
-    } else {
-        new_phi_reg = tb_function_insert_after(f, block, r);
-    }
     OPTIMIZER_LOG(new_phi_reg, "Insert new PHI node (in L%d)", block);
-    f->nodes[new_phi_reg].dt = dt;
-
     return new_phi_reg;
 }
 
@@ -110,9 +95,8 @@ static TB_Reg read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_Label
         val = new_phi(c, c->f, var, block, c->f->nodes[c->to_promote[var]].dt);
         c->incomplete_phis[(block * c->to_promote_count) + var] = val;
     } else if (c->pred_count[block] == 0) {
-        // TODO(NeGate): Idk how to handle this ngl, i
-        // don't think it's possible tho
-        //abort();
+        // this value came from nowhere because it's poison?
+        val = 0;
     } else if (c->pred_count[block] == 1) {
         // Optimize the common case of one predecessor: No phi needed
         val = read_variable(c, var, c->preds[block][0]);
@@ -145,7 +129,6 @@ static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB
     }
 
     // Get operands
-    TB_Node* phi_node = &f->nodes[phi_reg];
     if (!tb_node_is_phi_node(f, phi_reg)) {
         return phi_reg;
     }
@@ -176,10 +159,11 @@ static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB
     tb_tls_restore(c->tls, &uses[use_count]);
 
     // replace all references
-    OPTIMIZER_LOG(phi_reg, "  renamed trivial PHI with PASS r%d", same);
     assert(same != TB_NULL_REG);
-    phi_node->type = TB_PASS;
-    phi_node->pass.value = same;
+    OPTIMIZER_LOG(phi_reg, "  renamed trivial PHI with PASS r%d", same);
+
+    tb_function_find_replace_reg(f, phi_reg, same);
+    tb_murder_reg(f, phi_reg);
 
     // Try to recursively remove all phi users, which might have become trivial
     FOREACH_N(i, 0, use_count) if (uses[i] == phi_reg) {
@@ -191,8 +175,17 @@ static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB
 
 static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg, TB_Label label, TB_Reg reg) {
     assert(reg >= 1 && reg < f->node_count);
+    // walk past pass nodes
+    while (f->nodes[reg].type == TB_PASS) {
+        reg = f->nodes[reg].pass.value;
+    }
 
     // we're using NULL nodes as the baseline PHI0
+    if (phi_reg == reg) {
+        return;
+    }
+
+    // printf("PHI r%d adding to r%d\n", phi_reg, reg);
     OPTIMIZER_LOG(phi_reg, "  adding r%d to PHI", reg);
     TB_DataType dt = f->nodes[reg].dt;
 
@@ -445,6 +438,8 @@ bool mem2reg(TB_Function* f) {
         // doesn't need to mem2reg
         return (changes != 0);
     }
+
+    tb_function_print(f, tb_default_print_callback, stdout, false);
 
     Mem2Reg_Ctx c = { 0 };
     c.tls = tls;

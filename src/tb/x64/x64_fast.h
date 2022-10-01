@@ -1078,49 +1078,6 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 TB_Reg val_reg  = n->mem_op.src;
                 TB_Reg size_reg = n->mem_op.size;
 
-                // memset on constant size
-                if (f->nodes[size_reg].type == TB_INTEGER_CONST &&
-                    f->nodes[size_reg].integer.num_words == 1) {
-                    int64_t sz = f->nodes[size_reg].integer.single_word;
-                    assert(sz > 0 && "Cannot memset on negative numbers or zero");
-
-                    {
-                        LegalInt l = legalize_int(dt);
-                        Val src = val_gpr(dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
-
-                        // convert byte into pattern
-                        //  XY
-                        //  vv
-                        //  XYXYXYXY
-                        INST2(XOR, &src, &src, TB_TYPE_I32);
-
-                        if (!tb_node_is_constant_zero(f, val_reg)) {
-                            fast_folded_op(ctx, f, MOV, &src, val_reg);
-                            if (l.mask) fast_mask_out(ctx, f, l, &src);
-
-                            // imul dst, index, 0x10101010
-                            EMIT1(&ctx->emit, rex(true, src.gpr, src.gpr, 0));
-                            EMIT1(&ctx->emit, 0x69);
-                            EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, src.gpr, src.gpr));
-                            EMIT4(&ctx->emit, 0x10101010);
-
-                            fast_memset_const_size(ctx, f, dst_reg, &src, sz, false);
-                        } else {
-                            fast_memset_const_size(ctx, f, dst_reg, &src, sz, true);
-                        }
-
-                        fast_kill_temp_gpr(ctx, f, src.gpr);
-                    }
-
-                    assert(dst_reg != val_reg);
-                    assert(dst_reg != size_reg);
-                    assert(val_reg != size_reg);
-                    fast_kill_reg(ctx, f, dst_reg);
-                    fast_kill_reg(ctx, f, val_reg);
-                    fast_kill_reg(ctx, f, size_reg);
-                    break;
-                }
-
                 // rep stosb, ol' reliable
                 fast_evict_gpr(ctx, f, RAX);
                 fast_evict_gpr(ctx, f, RCX);

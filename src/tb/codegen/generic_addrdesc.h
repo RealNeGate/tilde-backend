@@ -58,7 +58,6 @@ struct Ctx {
     uint32_t label_patch_count;
     uint32_t ret_patch_count;
 
-    uint32_t* labels;
     LabelPatch* label_patches;
     ReturnPatch* ret_patches;
 
@@ -575,7 +574,7 @@ static GAD_VAL GAD_FN(get_val)(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
     return ctx->queue[i];
 }
 
-static void GAD_FN(eval_bb_edge)(Ctx* restrict ctx, TB_Function* f, TB_Label to, TB_Label from) {
+static void GAD_FN(eval_bb_edge)(Ctx* restrict ctx, TB_Function* f, TB_Label from, TB_Label to) {
     TB_FOR_NODE(r, f, to) {
         TB_Node* n = &f->nodes[r];
 
@@ -656,7 +655,7 @@ static void GAD_FN(resolve_leftover)(Ctx* restrict ctx, TB_Function* f, int queu
 
 // returns the register for the next basic block
 static void GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Label bb, TB_Label fallthrough) {
-    ctx->labels[bb] = GET_CODE_POS(&ctx->emit);
+    ctx->emit.labels[bb] = GET_CODE_POS(&ctx->emit);
 
     size_t queue_length_before = ctx->queue_length;
     TB_Reg bb_end = f->bbs[bb].end;
@@ -842,7 +841,7 @@ static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const
         GAD_FN(initial_reg_alloc)(ctx);
     }
 
-    tb_function_print(f, tb_default_print_callback, stdout, false);
+    // tb_function_print(f, tb_default_print_callback, stdout, false);
 
     // Analyze function for stack, use counts and phi nodes
     tb_function_calculate_use_count(f, ctx->use_count);
@@ -886,11 +885,11 @@ static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const
     };
     tb_function_get_postorder_explicit(f, &walk);
 
-    assert(walk.traversal[0] == 0 && "Codegen traversal must always start with L0");
+    assert(walk.traversal[walk.count - 1] == 0 && "Codegen traversal must always start with L0");
     FOREACH_REVERSE_N(i, 0, walk.count) {
         TB_Label bb = walk.traversal[i];
 
-        LISTING("Eval BB: L%d\n", f->nodes[bb].label.id);
+        LISTING("Eval BB: L%d\n", bb);
         GAD_FN(eval_bb)(ctx, f, bb, i > 0 ? walk.traversal[i - 1] : 0);
     }
 

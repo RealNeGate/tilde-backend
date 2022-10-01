@@ -25,7 +25,7 @@ int tb_function_find_uses_of_node(const TB_Function* f, TB_Reg def, TB_Reg uses[
             TB_Node* n = &f->nodes[r];
 
             TB_FOR_INPUT_IN_NODE(it, f, n) {
-                if (it.r == def) uses[count++] = it.r;
+                if (it.r == def) uses[count++] = r;
             }
         }
     }
@@ -336,12 +336,12 @@ TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStora
         TB_Node* end = &f->nodes[f->bbs[bb].end];
         switch (end->type) {
             case TB_IF:
-            if (l == end->if_.if_true) preds[count++] = l;
-            if (l == end->if_.if_false) preds[count++] = l;
+            if (l == end->if_.if_true) preds[count++] = bb;
+            if (l == end->if_.if_false) preds[count++] = bb;
             break;
 
             case TB_GOTO:
-            if (l == end->goto_.label) preds[count++] = l;
+            if (l == end->goto_.label) preds[count++] = bb;
             break;
 
             case TB_SWITCH: {
@@ -349,10 +349,10 @@ TB_Label* tb_calculate_immediate_predeccessors(TB_Function* f, TB_TemporaryStora
                 TB_SwitchEntry* entries = (TB_SwitchEntry*) &f->vla.data[end->switch_.entries_start];
 
                 FOREACH_N(i, 0, entry_count) {
-                    if (l == entries[i].value) preds[count++] = l;
+                    if (l == entries[i].value) preds[count++] = bb;
                 }
 
-                if (l == end->switch_.default_label) preds[count++] = l;
+                if (l == end->switch_.default_label) preds[count++] = bb;
                 break;
             }
             // these blocks have no successors

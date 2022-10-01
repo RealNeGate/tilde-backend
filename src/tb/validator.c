@@ -70,7 +70,7 @@ TB_API int tb_function_validate(TB_Function* f) {
         if (v.type != TB_VALIDATION_SUCCESS) {
             if (error_count == 0) {
                 // only print the first time
-                tb_function_print(f, tb_default_print_callback, stderr, true);
+                tb_function_print(f, tb_default_print_callback, stderr, false);
             }
             error_count += 1;
         }

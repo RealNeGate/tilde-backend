@@ -205,9 +205,10 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
     bool changes = false;
 
     TB_FOR_FUNCTIONS(f, m) {
-        // printf("ORIGINAL\n");
-        // tb_function_print(f, tb_default_print_callback, stdout, false);
-        // printf("\n\n");
+        printf("ORIGINAL\n");
+        tb_function_print(f, tb_default_print_callback, stdout, false);
+        printf("\n\n");
+
         if (tb_function_validate(f) > 0) {
             fprintf(stderr, "Validator failed on %s on original IR\n", f->super.name);
             abort();
@@ -277,9 +278,9 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
                 } else {
                     changes |= passes[j].func_run(f);
 
-                    // printf("%s\n", passes[j].name);
-                    // tb_function_print(f, tb_default_print_callback, stdout, false);
-                    // printf("\n\n");
+                    printf("%s\n", passes[j].name);
+                    tb_function_print(f, tb_default_print_callback, stdout, false);
+                    printf("\n\n");
 
                     if (tb_function_validate(f) > 0) {
                         fprintf(stderr, "Validator failed on %s after %s\n", f->super.name, passes[j].name);

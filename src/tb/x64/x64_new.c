@@ -40,6 +40,7 @@ static void ret_jmp(TB_CGEmitter* restrict e);
 
 size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usage);
 size_t x64_emit_epilogue(uint8_t* out, uint64_t saved, uint64_t stack_usage);
+void x64_emit_win64eh_unwind_info(TB_Emitter* e, TB_FunctionOutput* out_f, uint64_t saved, uint64_t stack_usage);
 
 enum {
     X64_REG_CLASS_GPR,
@@ -193,7 +194,7 @@ static void x64v2_resolve_local_patches(Ctx* restrict ctx, TB_Function* f) {
         uint32_t pos = ctx->label_patches[i].pos;
         uint32_t target_lbl = ctx->label_patches[i].target_lbl;
 
-        PATCH4(&ctx->emit, pos, ctx->labels[target_lbl] - (pos + 4));
+        PATCH4(&ctx->emit, pos, ctx->emit.labels[target_lbl] - (pos + 4));
     }
 }
 
@@ -468,17 +469,22 @@ static void x64v2_phi_move(Ctx* restrict ctx, TB_Function* f, GAD_VAL* dst_val, 
     LegalInt l = legalize_int(f->nodes[src].dt);
 
     if (f->nodes[src].type == TB_ADD && f->nodes[src].i_arith.a == dst) {
-        GAD_VAL src_val = GAD_FN(get_val_gpr)(ctx, f, f->nodes[src].i_arith.b);
+        ptrdiff_t i = GAD_FN(find)(ctx, f, f->nodes[src].i_arith.b);
 
-        INST2(ADD, dst_val, &src_val, f->nodes[src].dt);
-        if (l.mask) x64v2_mask_out(ctx, f, l, dst_val);
-    } else {
-        GAD_VAL src_val = GAD_FN(get_val_gpr)(ctx, f, src);
+        if (i >= 0) {
+            GAD_VAL src_val = GAD_FN(get_val_gpr)(ctx, f, f->nodes[src].i_arith.b);
 
-        // mask is unnecessary due to type safety
-        // if (l.mask) x64v2_mask_out(ctx, f, l, &src_val);
-        INST2(MOV, dst_val, &src_val, l.dt);
+            INST2(ADD, dst_val, &src_val, f->nodes[src].dt);
+            if (l.mask) x64v2_mask_out(ctx, f, l, dst_val);
+            return;
+        }
     }
+
+    GAD_VAL src_val = GAD_FN(get_val_gpr)(ctx, f, src);
+
+    // mask is unnecessary due to type safety
+    // if (l.mask) x64v2_mask_out(ctx, f, l, &src_val);
+    INST2(MOV, dst_val, &src_val, l.dt);
 }
 
 static void x64v2_store(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
@@ -942,13 +948,12 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
             } else {
                 if (written_to_dst) {
                     INST2(ADD, &dst, &base, TB_TYPE_PTR);
-                    return dst;
                 } else {
-                    tb_assert_once("does this path get hit?");
-
-                    return val_base_index(TB_TYPE_PTR, base.gpr, index.gpr, SCALE_X1);
+                    // tb_assert_once("does this path get hit?");
                     // INST2(LEA, &dst, &addr, TB_TYPE_PTR);
+                    return val_base_index(TB_TYPE_PTR, base.gpr, index.gpr, SCALE_X1);
                 }
+                return dst;
             }
         }
 
@@ -1129,6 +1134,7 @@ ICodeGen tb__x64v2_codegen = {
     .emit_call_patches   = x64v2_emit_call_patches,
     .emit_prologue       = x64_emit_prologue,
     .emit_epilogue       = x64_emit_epilogue,
+    .emit_win64eh_unwind_info = x64_emit_win64eh_unwind_info,
 
     .fast_path    = x64v2_compile_function,
     //.complex_path = x64_complex_compile_function

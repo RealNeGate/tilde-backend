@@ -518,7 +518,7 @@ do {                                 \
     }                                \
 } while (0)
 
-#define tb_assert_once(msg) (fprintf(stderr, "%s:%d: assert_once \"%s\"\n", __FILE__, __LINE__, msg), abort())
+#define tb_assert_once(msg) (fprintf(stderr, "%s:%d: assert_once \"%s\"\n", __FILE__, __LINE__, msg), __debugbreak())
 
 #ifdef _WIN32
 #define tb_panic(...)                     \

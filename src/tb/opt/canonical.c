@@ -76,9 +76,9 @@ static bool remove_passes(TB_Function* f) {
     TB_FOR_BASIC_BLOCK(bb, f) {
         TB_FOR_NODE(r, f, bb) {
             if (f->nodes[r].type == TB_PASS) {
-                OPTIMIZER_LOG(r, "Replacing PASS with r%d", f->nodes[r].unary.src);
+                OPTIMIZER_LOG(r, "Replacing PASS with r%d", f->nodes[r].pass.value);
 
-                tb_function_find_replace_reg(f, r, f->nodes[r].unary.src);
+                tb_function_find_replace_reg(f, r, f->nodes[r].pass.value);
                 tb_murder_reg(f, r);
                 changes++;
             }

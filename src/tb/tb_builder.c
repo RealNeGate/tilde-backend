@@ -561,17 +561,23 @@ TB_API TB_Reg tb_inst_vcall(TB_Function* f, TB_DataType dt, const TB_Reg target,
 }
 
 TB_API void tb_inst_memset(TB_Function* f, TB_Reg dst, TB_Reg val, TB_Reg size, TB_CharUnits align) {
-    TB_Reg r = tb_make_reg(f, TB_MEMSET, TB_TYPE_PTR);
+    tb_assume(TB_IS_POINTER_TYPE(f->nodes[dst].dt));
+    tb_assume(TB_IS_INTEGER_TYPE(f->nodes[val].dt) && f->nodes[val].dt.data == 8);
+
+    TB_Reg r = tb_make_reg(f, TB_MEMSET, TB_TYPE_I8);
     f->nodes[r].mem_op = (struct TB_NodeMemoryOp) { dst, val, size, align };
 }
 
 TB_API void tb_inst_memcpy(TB_Function* f, TB_Reg dst, TB_Reg src, TB_Reg size, TB_CharUnits align) {
-    TB_Reg r = tb_make_reg(f, TB_MEMCPY, TB_TYPE_PTR);
+    tb_assume(TB_IS_POINTER_TYPE(f->nodes[dst].dt));
+    tb_assume(TB_IS_POINTER_TYPE(f->nodes[src].dt));
+
+    TB_Reg r = tb_make_reg(f, TB_MEMCPY, TB_TYPE_I8);
     f->nodes[r].mem_op = (struct TB_NodeMemoryOp) { dst, src, size, align };
 }
 
 TB_API void tb_inst_memclr(TB_Function* f, TB_Reg addr, TB_CharUnits size, TB_CharUnits align) {
-    TB_Reg r = tb_make_reg(f, TB_MEMCLR, TB_TYPE_PTR);
+    TB_Reg r = tb_make_reg(f, TB_MEMCLR, TB_TYPE_I8);
     f->nodes[r].clear = (struct TB_NodeMemoryClear) { addr, size, align };
 }
 

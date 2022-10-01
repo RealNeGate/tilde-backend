@@ -1,6 +1,6 @@
 #include "../objects/win64eh.h"
 
-static void x64_emit_win64eh_unwind_info(TB_Emitter* e, TB_FunctionOutput* out_f, uint64_t saved, uint64_t stack_usage) {
+void x64_emit_win64eh_unwind_info(TB_Emitter* e, TB_FunctionOutput* out_f, uint64_t saved, uint64_t stack_usage) {
     size_t patch_pos = e->count;
     UnwindInfo unwind = {
         .version = 1,

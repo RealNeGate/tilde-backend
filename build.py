@@ -8,6 +8,7 @@ parser = argparse.ArgumentParser(description='Compiles TB')
 parser.add_argument('targets', metavar='N', type=str, nargs='+', help='decide which targets to compile with')
 parser.add_argument('--useluajit', action='store_true', help='enable using luajit for TB passes')
 parser.add_argument('--opt', action='store_true', help='runs optimize on compiled source')
+parser.add_argument('--asan', action='store_true', help='compile with ASAN')
 
 args = parser.parse_args()
 source_patterns = [
@@ -26,6 +27,9 @@ for i in args.targets:
 
 ninja = open('build.ninja', 'w')
 cflags = "-g -I include -I deps/luajit/src -Wall -Werror -Wno-unused-function"
+
+if args.asan:
+	cflags += " -fsanitize=address"
 
 if args.useluajit:
 	cflags += " -DTB_USE_LUAJIT"

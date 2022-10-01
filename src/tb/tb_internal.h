@@ -73,7 +73,7 @@ size_t tb_atomic_size_add(size_t* dst, size_t src);
 size_t tb_atomic_size_store(size_t* dst, size_t src);
 
 void* tb_atomic_ptr_exchange(void** address, void* new_value);
-void* tb_atomic_ptr_cmpxchg(void** address, void* old_value, void* new_value);
+bool tb_atomic_ptr_cmpxchg(void** address, void* old_value, void* new_value);
 
 #define PROTOTYPES_ARENA_SIZE   (32u << 20u)
 #define CODE_REGION_BUFFER_SIZE (1024 * 1024 * 1024)

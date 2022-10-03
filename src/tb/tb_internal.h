@@ -45,7 +45,7 @@
 // ***********************************
 // TODO: get rid of all these
 #ifndef TB_MAX_THREADS
-#define TB_MAX_THREADS 16
+#define TB_MAX_THREADS 64
 #endif
 
 // Per-thread
@@ -76,7 +76,7 @@ void* tb_atomic_ptr_exchange(void** address, void* new_value);
 bool tb_atomic_ptr_cmpxchg(void** address, void* old_value, void* new_value);
 
 #define PROTOTYPES_ARENA_SIZE   (32u << 20u)
-#define CODE_REGION_BUFFER_SIZE (1024 * 1024 * 1024)
+#define CODE_REGION_BUFFER_SIZE (256 * 1024 * 1024)
 
 typedef struct TB_Emitter {
     size_t capacity, count;

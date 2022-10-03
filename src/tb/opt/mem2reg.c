@@ -439,8 +439,6 @@ bool mem2reg(TB_Function* f) {
         return (changes != 0);
     }
 
-    tb_function_print(f, tb_default_print_callback, stdout, false);
-
     Mem2Reg_Ctx c = { 0 };
     c.tls = tls;
     c.f = f;
@@ -551,6 +549,106 @@ bool mem2reg(TB_Function* f) {
     FOREACH_N(j, 1, c.bb_count) {
         seal_block(&c, j);
         //assert(c.sealed_blocks[j]);
+    }
+
+	// clean up more phi nodes potentially
+    TB_FOR_BASIC_BLOCK(bb, f) {
+        TB_FOR_NODE(r, f, bb) {
+            if (!tb_node_is_phi_node(f, r)) continue;
+
+            TB_Node* n = &f->nodes[r];
+            int count = tb_node_get_phi_width(f, r);
+            TB_PhiInput* inputs = tb_node_get_phi_inputs(f, r);
+            if (count == 0) {
+                tb_murder_reg(f, r);
+            } else if (count == 1) {
+                OPTIMIZER_LOG(r, "removed trivial phi");
+
+                TB_Reg val = inputs[0].val;
+                assert(val > 0 && val < f->node_count);
+                if (n->type == TB_PHIN) {
+                    tb_platform_heap_free(inputs);
+                }
+
+                // remove useless phi
+                n->type = TB_PASS;
+                n->pass.value = r;
+                changes++;
+            } else {
+                // check if none of the paths diverge
+                TB_Reg first = inputs[0].val;
+                bool match = true;
+                FOREACH_N(j, 1, count) {
+                    if (first != inputs[j].val) {
+                        match = false;
+                        break;
+                    }
+                }
+
+                if (match) {
+                    // replace with a simple PASS
+                    OPTIMIZER_LOG(r, "removed phi with no divergent paths");
+
+                    n->type = TB_PASS;
+                    n->pass.value = first;
+                    changes++;
+                } else {
+                    // Check for any duplicate inputs
+                    size_t new_length = 0;
+                    TB_PhiInput* new_inputs = tb_tls_push(tls, 0);
+
+                    FOREACH_N(j, 0, count) {
+                        TB_Reg a = inputs[j].val;
+                        TB_Reg b = inputs[j].label;
+
+                        bool duplicate = false;
+                        if (a == r) {
+                            duplicate = true;
+                        } else if (f->nodes[a].type != TB_NULL) {
+                            FOREACH_N(k, 0, j) {
+                                if (inputs[k].val == a && inputs[k].label == b) {
+                                    duplicate = true;
+                                    break;
+                                }
+                            }
+                        } else {
+                            duplicate = true;
+                        }
+
+                        if (!duplicate) {
+                            if (a != TB_NULL_REG && f->nodes[a].type == TB_NULL) {
+                                a = TB_NULL_REG;
+                            }
+
+                            tb_tls_push(tls, sizeof(TB_PhiInput));
+                            new_inputs[new_length++] = (TB_PhiInput){ .label = b, .val = a };
+                        }
+                    }
+
+                    if (new_length != count) {
+                        // Pass it off to more permanent storage
+                        if (n->type == TB_PHIN) {
+                            tb_platform_heap_free(inputs);
+                        }
+
+                        if (new_length == 0) {
+                            OPTIMIZER_LOG(r, "Deduplicated away the PHI node");
+                            n->type = TB_NULL;
+                        } else {
+                            OPTIMIZER_LOG(r, "Deduplicated PHI node entries");
+                            TB_PhiInput* more_permanent_store = tb_platform_heap_alloc(new_length * sizeof(TB_PhiInput));
+                            memcpy(more_permanent_store, new_inputs, new_length * sizeof(TB_PhiInput));
+
+                            n->type = TB_PHIN;
+                            n->phi.count = new_length;
+                            n->phi.inputs = more_permanent_store;
+                            changes++;
+                        }
+                    }
+                    tb_tls_restore(tls, new_inputs);
+                }
+            }
+        }
     }
 
     return true;

@@ -1,4 +1,5 @@
 #include "tb_internal.h"
+#include "incbin.h"
 #include <stdarg.h>
 
 #ifdef TB_USE_LUAJIT
@@ -42,143 +43,44 @@ static void print_to_buffer(void* user_data, const char* fmt, ...) {
 #define RESET_TEXT ""
 #endif
 
-#if 0
-static DynArray(char*) split_lines(const char* src) {
-    DynArray(char*) lines = dyn_array_create(char*);
-    char* clone = strdup(src);
-
-    // iterate and split the clone's lines
-    char* ctx;
-    char* line = strtok_r(clone, "\n", &ctx);
-    while (line != NULL) {
-        dyn_array_put(lines, line);
-        line = strtok_r(NULL, "\n", &ctx);
-    }
-
-    return lines;
-}
-
-// https://github.com/alexdzyoba/diff
-static int* lcslen(size_t xl, char** x, size_t yl, char** y) {
-    size_t stride = xl*1;
-    int* c = calloc((xl+1) * (yl+1), sizeof(int));
-
-    loop(i, xl) {
-        loop(j, yl) {
-            if (strcmp(x[i], y[j]) == 0) {
-                c[(i+1) + ((j+1) * stride)] = 1 + c[i + (j * stride)];
-            } else {
-                int a = c[i + ((j+1) * stride)];
-                int b = c[(i+1) + (j * stride)];
-
-                c[(i+1) + ((j+1) * stride)] = a > b ? a : b;
-            }
-        }
-    }
-
-    return c;
-}
-
-static void print_diff2(int* c, size_t cstride, char** x, char** y, int i, int j) {
-    if (i < 0 && j < 0) {
-        // do nothing?
-        return;
-    } else if (i < 0) {
-        print_diff2(c, cstride, x, y, i, j - 1);
-        printf(GREEN_TEXT"+ %s\n"RESET_TEXT, y[j]);
-    } else if (j < 0) {
-        print_diff2(c, cstride, x, y, i - 1, j);
-        printf(RED_TEXT"- %s\n"RESET_TEXT, x[i]);
-    } else if (strcmp(x[i], y[j]) == 0) {
-        print_diff2(c, cstride, x, y, i - 1, j - 1);
-        printf("  %s\n", x[i]);
-    } else if (c[(i+1) + (j * cstride)] >= c[i + ((j+1) * cstride)]) {
-        print_diff2(c, cstride, x, y, i, j - 1);
-        printf(GREEN_TEXT"+ %s\n"RESET_TEXT, y[j]);
-    } else {
-        print_diff2(c, cstride, x, y, i - 1, j);
-        printf(RED_TEXT"- %s\n"RESET_TEXT, x[i]);
-    }
-}
-
-static void diff(size_t xl, char** x, size_t yl, char** y) {
-    int* c = lcslen(xl, x, yl, y);
-    print_diff2(c, xl + 1, x, y, xl - 1, yl - 1);
-}
-
 static void print_diff(const char* description, const char* oldstr, const char* newstr) {
-    fprintf(debug_file, "  %s\n", description);
+    printf("  %s\n", description);
+    for (;;) {
+        const char* oldend = oldstr ? strchr(oldstr, '\n') : NULL;
+        const char* newend = newstr ? strchr(newstr, '\n') : NULL;
 
-    DynArray(char*) old_lines = split_lines(oldstr);
-    DynArray(char*) new_lines = split_lines(newstr);
-    diff(dyn_array_length(old_lines), old_lines, dyn_array_length(new_lines), new_lines);
+        int l = 0;
 
-    fprintf(debug_file, RESET_TEXT "\n\n\n");
+        if ((oldend - oldstr) == (newend - newstr) && memcmp(oldstr, newstr, newend - newstr) == 0) {
+            printf(RESET_TEXT);
+            l += printf("%.*s", (int)(oldend - oldstr), oldstr);
+            // pad to 80 columns
+            while (l < 80) printf(" "), l += 1;
+            printf(RESET_TEXT "|");
+        } else {
+            printf(GREEN_TEXT);
+            if (oldstr) l += printf("%.*s", (int)(oldend - oldstr), oldstr);
+            // pad to 80 columns
+            while (l < 80) printf(" "), l += 1;
 
-    dyn_array_destroy(old_lines);
-    dyn_array_destroy(new_lines);
-}
-#endif
+            printf(RESET_TEXT "|");
 
-static void html_print(void* user_data, const char* fmt, ...) {
-    char tmp[1024];
-
-    va_list ap;
-    va_start(ap, fmt);
-    int result = vsnprintf(tmp, sizeof(tmp), fmt, ap);
-    va_end(ap);
-
-    if (result < 0 || result >= sizeof(tmp)) {
-        tb_panic("Ran out of space in my internal buffer");
-    }
-
-    // print but replace the escape chars
-    FILE* f = (FILE*) user_data;
-
-    const char* start = tmp;
-    const char* s = start;
-    for (; *s; s++) {
-        if (*s == '<' || *s == '>' || *s == '"' || *s == '\'' || *s == '&') {
-            fprintf(f, "%.*s", (int)(s - start), start);
-
-            switch (*s) {
-                case '<': fprintf(f, "&lt;"); break;
-                case '>': fprintf(f, "&gt;"); break;
-                case '"': fprintf(f, "&quot;"); break;
-                case '\'': fprintf(f, "&#39;"); break;
-                case '&': fprintf(f, "&amp;"); break;
-                default: tb_todo();
-            }
-
-            start = s + 1;
+            printf(RED_TEXT);
+            if (newstr) l += printf("%.*s", (int)(newend - newstr), newstr);
         }
+        printf("\n");
+
+        if (oldend == NULL || newend == NULL) {
+            break;
+        }
+
+        oldstr = oldend + 1;
+        newstr = newend + 1;
     }
 
-    if (start != s) {
-        fprintf(f, "%.*s", (int)(s - start), start);
-    }
-}
-
-static void log_function(FILE* out, const char* title, TB_Function* f) {
-    #if 0
-    printf("\x1b[H");
-    tb_function_print(f, tb_default_print_callback, out, false);
-    #else
-    fprintf(out, "<td valign=\"top\">\n");
-    fprintf(out, "%s:<br>\n", title);
-    fprintf(out, "<pre>\n");
-    tb_function_print(f, html_print, out, false);
-    fprintf(out, "</pre>\n");
-    fprintf(out, "</td>\n");
-    #endif
-}
-
-static FILE* debug_file;
-static void end_crap() {
-    fprintf(debug_file, "</table>\n");
-    fprintf(debug_file, "</body>\n");
-    fprintf(debug_file, "</html>\n");
-    fclose(debug_file);
+    printf(RESET_TEXT);
+    printf("\n\n\n");
+    //__debugbreak();
 }
 
 #ifdef TB_USE_LUAJIT
@@ -201,18 +103,28 @@ static bool end_lua_pass(lua_State* L, int arg_count) {
 }
 #endif
 
+INCBIN(html_prelude, "src/tb/embed.txt")
 static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const TB_Pass passes[]) {
     bool changes = false;
 
+    int buffer_num = 0;
+    char* buffers[2] = {
+        tb_platform_heap_alloc(DIFF_BUFFER_SIZE),
+        tb_platform_heap_alloc(DIFF_BUFFER_SIZE),
+    };
+
     TB_FOR_FUNCTIONS(f, m) {
-        printf("ORIGINAL\n");
-        tb_function_print(f, tb_default_print_callback, stdout, false);
-        printf("\n\n");
+        // printf("ORIGINAL\n");
+        // tb_function_print(f, tb_default_print_callback, stdout, false);
+        // printf("\n\n");
 
         if (tb_function_validate(f) > 0) {
             fprintf(stderr, "Validator failed on %s on original IR\n", f->super.name);
             abort();
         }
+
+        tb_function_print(f, print_to_buffer, buffers[buffer_num], false);
+        buffer_num = 1;
 
         FOREACH_N(j, 0, pass_count) {
             switch (passes[j].mode) {
@@ -278,9 +190,9 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
                 } else {
                     changes |= passes[j].func_run(f);
 
-                    printf("%s\n", passes[j].name);
-                    tb_function_print(f, tb_default_print_callback, stdout, false);
-                    printf("\n\n");
+                    // printf("%s\n", passes[j].name);
+                    // tb_function_print(f, tb_default_print_callback, stdout, false);
+                    // printf("\n\n");
 
                     if (tb_function_validate(f) > 0) {
                         fprintf(stderr, "Validator failed on %s after %s\n", f->super.name, passes[j].name);
@@ -291,9 +203,21 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
 
                 default: tb_unreachable();
             }
+
+            tb_function_print(f, print_to_buffer, buffers[buffer_num], false);
+            int next = (buffer_num + 1) % 2;
+            print_diff(passes[j].name, buffers[next], buffers[buffer_num]);
+            buffer_num = next;
+
+            // pause
+            printf("Was just %s\n", passes[j].name);
+            getchar();
+            printf("==================================================\n\n\n");
         }
     }
 
+    tb_platform_heap_free(buffers[1]);
+    tb_platform_heap_free(buffers[0]);
     return changes;
 }
 

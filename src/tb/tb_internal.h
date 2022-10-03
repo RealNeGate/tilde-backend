@@ -665,14 +665,14 @@ inline static bool tb_next_biggest(int* result, int v, size_t n, const int* arr)
 #endif
 
 // NOTE(NeGate): clean this up
-#if 1
+#if 0
 #define OPTIMIZER_LOG(at, ...) ((void) (at))
 #else
-#define OPTIMIZER_LOG(at, ...)                 \
-do {                                           \
-    printf("%s:r%d: ", f->name, (TB_Reg)(at)); \
-    printf(__VA_ARGS__);                       \
-    printf(" (part of %s)\n", __FUNCTION__);   \
+#define OPTIMIZER_LOG(at, ...)                       \
+do {                                                 \
+    printf("%s:r%d: ", f->super.name, (TB_Reg)(at)); \
+    printf(__VA_ARGS__);                             \
+    printf(" (part of %s)\n", __FUNCTION__);         \
 } while (0)
 #endif
 

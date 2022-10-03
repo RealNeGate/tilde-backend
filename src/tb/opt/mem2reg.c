@@ -31,10 +31,9 @@ typedef struct Mem2Reg_Ctx {
     // [bb_count]
     bool* sealed_blocks;
 
+    TB_Predeccesors preds;
     // [bb_count]
-    int* pred_count;
-    // [bb_count][pred_count[i]]
-    TB_Label** preds;
+    TB_Label* doms;
 } Mem2Reg_Ctx;
 
 static int bits_in_data_type(int pointer_size, TB_DataType dt);
@@ -94,12 +93,12 @@ static TB_Reg read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_Label
         // incomplete CFG
         val = new_phi(c, c->f, var, block, c->f->nodes[c->to_promote[var]].dt);
         c->incomplete_phis[(block * c->to_promote_count) + var] = val;
-    } else if (c->pred_count[block] == 0) {
+    } else if (c->preds.count[block] == 0) {
         // this value came from nowhere because it's poison?
         val = 0;
-    } else if (c->pred_count[block] == 1) {
+    } else if (c->preds.count[block] == 1) {
         // Optimize the common case of one predecessor: No phi needed
-        val = read_variable(c, var, c->preds[block][0]);
+        val = read_variable(c, var, c->preds.preds[block][0]);
     } else {
         // Break potential cycles with operandless phi
         val = new_phi(c, c->f, var, block, c->f->nodes[c->to_promote[var]].dt);
@@ -113,9 +112,9 @@ static TB_Reg read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_Label
 
 static TB_Reg add_phi_operands(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg, TB_Label block, int var) {
     // Determine operands from predecessors
-    FOREACH_N(i, 0, c->pred_count[block]) {
-        TB_Reg val = read_variable(c, var, c->preds[block][i]);
-        if (val) add_phi_operand(c, c->f, phi_reg, c->preds[block][i], val);
+    FOREACH_N(i, 0, c->preds.count[block]) {
+        TB_Reg val = read_variable(c, var, c->preds.preds[block][i]);
+        if (val) add_phi_operand(c, c->f, phi_reg, c->preds.preds[block][i], val);
     }
 
     return try_remove_trivial_phi(c, c->f, phi_reg);
@@ -241,7 +240,7 @@ static void seal_block(Mem2Reg_Ctx* restrict c, TB_Label block) {
         if (phi_reg) add_phi_operands(c, c->f, phi_reg, block, i);
     }
 
-    c->sealed_blocks[block] = true;
+    c->sealed_blocks[block] = 0;
 }
 
 typedef struct {
@@ -458,22 +457,22 @@ bool mem2reg(TB_Function* f) {
     memset(c.sealed_blocks, 0, c.bb_count * sizeof(bool));
 
     // Calculate all the immediate predecessors
-    // First BB has no predecessors
-    {
-        c.pred_count = tb_tls_push(tls, c.bb_count * sizeof(int));
-        c.preds = tb_tls_push(tls, c.bb_count * sizeof(TB_Label*));
+    c.preds = tb_get_temp_predeccesors(f, tls);
 
-        // entry label has no predecessors
-        c.pred_count[0] = 0;
-        c.preds[0] = NULL;
+    // find dominators
+    c.doms = tb_tls_push(tls, f->bb_count * sizeof(TB_Label));
+    tb_get_dominators(f, c.preds, c.doms);
 
-        FOREACH_N(j, 1, c.bb_count) {
-            c.preds[j] = (TB_Label*)tb_tls_push(tls, 0);
-            tb_calculate_immediate_predeccessors(f, tls, j, &c.pred_count[j]);
-        }
-    }
+    // We generate nodes via a postorder walk
+    TB_PostorderWalk walk = {
+        .visited = tb_tls_push(tls, f->bb_count * sizeof(bool)),
+        .traversal = tb_tls_push(tls, f->bb_count * sizeof(TB_Reg)),
+    };
+    tb_function_get_postorder_explicit(f, &walk);
 
-    TB_FOR_BASIC_BLOCK(bb, f) {
+    FOREACH_REVERSE_N(i, 0, walk.count) {
+        TB_Label bb = walk.traversal[i];
+
         TB_FOR_NODE(r, f, bb) {
             TB_Node* n = &f->nodes[r];
 
@@ -544,6 +543,18 @@ bool mem2reg(TB_Function* f) {
                 }
             }
         }
+
+        bool ready = true;
+        FOREACH_N(j, 0, c.preds.count[bb]) {
+            if (!c.sealed_blocks[j]) {
+                ready = false;
+                break;
+            }
+        }
+
+        if (ready) {
+            seal_block(&c, bb);
+        }
     }
 
     FOREACH_N(j, 1, c.bb_count) {
@@ -551,7 +562,7 @@ bool mem2reg(TB_Function* f) {
         //assert(c.sealed_blocks[j]);
     }
 
-	// clean up more phi nodes potentially
+    // clean up more phi nodes potentially
     TB_FOR_BASIC_BLOCK(bb, f) {
         TB_FOR_NODE(r, f, bb) {
             if (!tb_node_is_phi_node(f, r)) continue;
@@ -634,6 +645,10 @@ bool mem2reg(TB_Function* f) {
                         if (new_length == 0) {
                             OPTIMIZER_LOG(r, "Deduplicated away the PHI node");
                             n->type = TB_NULL;
+                        } else if (new_length == 1) {
+                            OPTIMIZER_LOG(r, "Deduplicated away the PHI node into PASS");
+                            n->type = TB_PASS;
+                            n->pass.value = new_inputs[0].val;
                         } else {
                             OPTIMIZER_LOG(r, "Deduplicated PHI node entries");
                             TB_PhiInput* more_permanent_store = tb_platform_heap_alloc(new_length * sizeof(TB_PhiInput));
@@ -642,8 +657,8 @@ bool mem2reg(TB_Function* f) {
                             n->type = TB_PHIN;
                             n->phi.count = new_length;
                             n->phi.inputs = more_permanent_store;
-                            changes++;
                         }
+                        changes++;
                     }
                     tb_tls_restore(tls, new_inputs);
                 }

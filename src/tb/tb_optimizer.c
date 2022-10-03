@@ -1,5 +1,4 @@
 #include "tb_internal.h"
-#include "incbin.h"
 #include <stdarg.h>
 
 #ifdef TB_USE_LUAJIT
@@ -45,7 +44,7 @@ static void print_to_buffer(void* user_data, const char* fmt, ...) {
 
 static void print_diff(const char* description, const char* oldstr, const char* newstr) {
     printf("  %s\n", description);
-    for (;;) {
+    /* for (;;) {
         const char* oldend = oldstr ? strchr(oldstr, '\n') : NULL;
         const char* newend = newstr ? strchr(newstr, '\n') : NULL;
 
@@ -58,14 +57,14 @@ static void print_diff(const char* description, const char* oldstr, const char* 
             while (l < 80) printf(" "), l += 1;
             printf(RESET_TEXT "|");
         } else {
-            printf(GREEN_TEXT);
+            printf(RED_TEXT);
             if (oldstr) l += printf("%.*s", (int)(oldend - oldstr), oldstr);
             // pad to 80 columns
             while (l < 80) printf(" "), l += 1;
 
             printf(RESET_TEXT "|");
 
-            printf(RED_TEXT);
+            printf(GREEN_TEXT);
             if (newstr) l += printf("%.*s", (int)(newend - newstr), newstr);
         }
         printf("\n");
@@ -79,7 +78,8 @@ static void print_diff(const char* description, const char* oldstr, const char* 
     }
 
     printf(RESET_TEXT);
-    printf("\n\n\n");
+    printf("\n\n\n");*/
+    printf("%s\n\n\n", newstr);
     //__debugbreak();
 }
 
@@ -103,15 +103,17 @@ static bool end_lua_pass(lua_State* L, int arg_count) {
 }
 #endif
 
-INCBIN(html_prelude, "src/tb/embed.txt")
+#define TB_DEBUG_DIFF_TOOL 0
 static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const TB_Pass passes[]) {
     bool changes = false;
 
+    #if TB_DEBUG_DIFF_TOOL
     int buffer_num = 0;
     char* buffers[2] = {
         tb_platform_heap_alloc(DIFF_BUFFER_SIZE),
         tb_platform_heap_alloc(DIFF_BUFFER_SIZE),
     };
+    #endif
 
     TB_FOR_FUNCTIONS(f, m) {
         // printf("ORIGINAL\n");
@@ -123,8 +125,10 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
             abort();
         }
 
+        #if TB_DEBUG_DIFF_TOOL
         tb_function_print(f, print_to_buffer, buffers[buffer_num], false);
         buffer_num = 1;
+        #endif
 
         FOREACH_N(j, 0, pass_count) {
             switch (passes[j].mode) {
@@ -204,20 +208,27 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
                 default: tb_unreachable();
             }
 
+            tb_function_print(f, tb_default_print_callback, stdout, false);
+
+            #if TB_DEBUG_DIFF_TOOL
             tb_function_print(f, print_to_buffer, buffers[buffer_num], false);
             int next = (buffer_num + 1) % 2;
             print_diff(passes[j].name, buffers[next], buffers[buffer_num]);
             buffer_num = next;
+            #endif
 
             // pause
-            printf("Was just %s\n", passes[j].name);
-            getchar();
-            printf("==================================================\n\n\n");
+            // printf("Was just %s\n", passes[j].name);
+            // getchar();
+            // printf("==================================================\n\n\n");
         }
     }
 
+    #if TB_DEBUG_DIFF_TOOL
     tb_platform_heap_free(buffers[1]);
     tb_platform_heap_free(buffers[0]);
+    #endif
+
     return changes;
 }
 

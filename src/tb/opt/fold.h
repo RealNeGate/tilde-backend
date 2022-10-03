@@ -1,3 +1,30 @@
+// pattern operand options
+enum {
+    ZERO, INT, ANY,
+};
+
+// fold result types
+typedef struct {
+    enum {
+        FOLDED_FAIL,    // do nothing
+        FOLDED_POISON,  // value is erronous
+        FOLDED_CONST,   // result is the value
+        FOLDED_PASS,    // value is equivalent to a previous one
+    } tag;
+    union {
+        TB_Reg pass;
+        uint64_t result;
+    };
+} Folded;
+
+#define F_FAIL(x) ((Folded){ FOLDED_FAIL })
+#define F_POISON(x) ((Folded){ FOLDED_POISON })
+#define F_CONST(x) ((Folded){ FOLDED_CONST, .result = (x) })
+#define F_PASS(r) ((Folded){ FOLDED_PASS, .pass = (r) })
+
+#define FOLDS \
+X(TB_ADD, INT, INT)
+
 #define MASK_UPTO(pos) (~UINT64_C(0) >> (64 - pos))
 #define BEXTR(src,pos) (((src) >> (pos)) & 1)
 static uint64_t sxt(uint64_t src, uint64_t src_bits, uint64_t dst_bits) {

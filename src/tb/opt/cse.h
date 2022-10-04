@@ -33,6 +33,8 @@ static bool is_node_the_same(TB_Node* a, TB_Node* b) {
         case TB_TRUNCATE:
         case TB_X86INTRIN_LDMXCSR:
         case TB_BITCAST:
+        case TB_ZERO_EXT:
+        case TB_SIGN_EXT:
         bytes = sizeof(struct TB_NodeUnary);
         break;
 
@@ -202,8 +204,8 @@ static TB_Reg cse_attempt(TB_Function* f, CSE_Context* ctx, TB_TemporaryStorage*
         TB_Reg found = walk_dominators_for_similar_def(f, ctx->defs, ctx->doms, ctx->doms[ctx->bb], r);
         if (found != TB_NULL_REG && r != found) {
             OPTIMIZER_LOG(r, "Removed BB-global duplicate expression");
-            n->type = TB_PASS;
-            n->pass.value = found;
+            tb_function_find_replace_reg(f, r, found);
+            tb_murder_reg(f, r);
             return true;
         }
 
@@ -213,8 +215,8 @@ static TB_Reg cse_attempt(TB_Function* f, CSE_Context* ctx, TB_TemporaryStorage*
 
             if (r != other && is_node_the_same(n, &f->nodes[other])) {
                 OPTIMIZER_LOG(r, "Removed BB-local duplicate expression");
-                n->type = TB_PASS;
-                n->pass.value = other;
+                tb_function_find_replace_reg(f, r, other);
+                tb_murder_reg(f, r);
                 return true;
             }
         }

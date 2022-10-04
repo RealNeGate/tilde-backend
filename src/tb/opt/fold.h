@@ -1,3 +1,4 @@
+#if 0
 // pattern operand options
 enum {
     ZERO, INT, ANY,
@@ -22,8 +23,8 @@ typedef struct {
 #define F_CONST(x) ((Folded){ FOLDED_CONST, .result = (x) })
 #define F_PASS(r) ((Folded){ FOLDED_PASS, .pass = (r) })
 
-#define FOLDS \
-X(TB_ADD, INT, INT)
+// #define FOLDS X(TB_ADD, INT, INT)
+#endif
 
 #define MASK_UPTO(pos) (~UINT64_C(0) >> (64 - pos))
 #define BEXTR(src,pos) (((src) >> (pos)) & 1)

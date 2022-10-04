@@ -665,7 +665,7 @@ inline static bool tb_next_biggest(int* result, int v, size_t n, const int* arr)
 #endif
 
 // NOTE(NeGate): clean this up
-#if 0
+#if 1
 #define OPTIMIZER_LOG(at, ...) ((void) (at))
 #else
 #define OPTIMIZER_LOG(at, ...)                       \

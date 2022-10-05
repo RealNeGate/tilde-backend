@@ -129,6 +129,69 @@ TB_API TB_Predeccesors tb_get_predeccesors(TB_Function* f) {
     return p;
 }
 
+TB_API TB_DominanceFrontiers tb_get_dominance_frontiers(TB_Function* f, TB_Predeccesors p, const TB_Label* doms) {
+    TB_DominanceFrontiers df = { 0 };
+    df.count = tb_platform_heap_alloc(f->bb_count * sizeof(int));
+    df._ = tb_platform_heap_alloc(f->bb_count * sizeof(TB_Label*));
+
+    memset(df.count, 0, f->bb_count * sizeof(int));
+    memset(df._, 0, f->bb_count * sizeof(TB_Label*));
+
+    FOREACH_N(bb, 0, f->bb_count) {
+        if (p.count[bb] >= 2) {
+            FOREACH_N(k, 0, p.count[bb]) {
+                TB_Label runner = p.preds[bb][k];
+                while (runner != doms[bb]) {
+                    // add to frontier
+                    size_t i = df.count[runner]++;
+                    df._[runner] = tb_platform_heap_realloc(df._[runner], (i + 1) * sizeof(TB_Label));
+                    df._[runner][i] = bb;
+
+                    runner = doms[runner];
+                }
+            }
+        }
+    }
+
+    #if 0
+    // GraphViz output
+    printf("digraph %s {\n", f->super.name);
+    printf("  subgraph CFG {\n");
+    FOREACH_N(bb, 0, f->bb_count) {
+        FOREACH_N(j, 0, p.count[bb]) {
+            printf("    L%d -> L%td;\n", p.preds[bb][j], bb);
+        }
+        printf("\n");
+    }
+    printf("  }\n\n");
+    printf("  subgraph Doms {\n");
+    FOREACH_N(bb, 0, f->bb_count) {
+        printf("    D%d -> D%td;\n", doms[bb], bb);
+    }
+    printf("  }\n\n");
+    printf("  subgraph DomFrontier {\n");
+    FOREACH_N(bb, 0, f->bb_count) {
+        FOREACH_N(j, 0, df.count[bb]) {
+            printf("    F%d -> F%td;\n", df._[bb][j], bb);
+        }
+        printf("\n");
+    }
+    printf("  }\n\n");
+    printf("}\n");
+    #endif
+
+    return df;
+}
+
+TB_API void tb_free_dominance_frontiers(TB_Function* f, TB_DominanceFrontiers* frontiers) {
+    FOREACH_N(bb, 0, f->bb_count) {
+        tb_platform_heap_free(frontiers->_[bb]);
+    }
+
+    tb_platform_heap_free(frontiers->_);
+    tb_platform_heap_free(frontiers->count);
+}
+
 // https://www.cs.rice.edu/~keith/EMBED/dom.pdf
 TB_API size_t tb_get_dominators(TB_Function* f, TB_Predeccesors preds, TB_Label* doms) {
     if (doms == NULL) {

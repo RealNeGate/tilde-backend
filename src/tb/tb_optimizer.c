@@ -208,7 +208,7 @@ static bool schedule_function_level_opts(TB_Module* m, size_t pass_count, const 
                 default: tb_unreachable();
             }
 
-            // tb_function_print(f, tb_default_print_callback, stdout, false);
+            tb_function_print(f, tb_default_print_callback, stdout, false);
 
             #if TB_DEBUG_DIFF_TOOL
             tb_function_print(f, print_to_buffer, buffers[buffer_num], false);

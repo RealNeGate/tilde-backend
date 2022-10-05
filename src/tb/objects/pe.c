@@ -182,7 +182,7 @@ TB_API TB_Exports tb_pe_write_output(TB_Module* m, const IDebugFormat* dbg) {
             import_entry_count += dyn_array_length(ctx.imports[i].thunks) + 1;
         }
     }
-    dyn_array_length(ctx.imports) = j; // trimmed
+    dyn_array_set_length(ctx.imports, j); // trimmed
 
     // Generate bytes for the import table
     TB_Emitter import_table = { 0 };

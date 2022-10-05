@@ -64,6 +64,7 @@ extern "C" {
     } TB_ABI;
 
     typedef enum TB_OutputFlavor {
+        TB_FLAVOR_ASSEMBLY,   // .s  .asm
         TB_FLAVOR_OBJECT,     // .o  .obj
         TB_FLAVOR_SHARED,     // .so .dll
         TB_FLAVOR_STATIC,     // .a  .lib
@@ -611,6 +612,11 @@ extern "C" {
         int* count;
         TB_Label** preds;
     } TB_Predeccesors;
+
+    typedef struct TB_DominanceFrontiers {
+        int* count;
+        TB_Label** _;
+    } TB_DominanceFrontiers;
 
     typedef enum {
         TB_OBJECT_RELOC_NONE, // how?
@@ -1201,6 +1207,8 @@ extern "C" {
 
     // analysis
     TB_API TB_Predeccesors tb_get_predeccesors(TB_Function* f);
+    TB_API TB_DominanceFrontiers tb_get_dominance_frontiers(TB_Function* f, TB_Predeccesors p, const TB_Label* doms);
+    TB_API void tb_free_dominance_frontiers(TB_Function* f, TB_DominanceFrontiers* frontiers);
 
     typedef struct {
         size_t count;

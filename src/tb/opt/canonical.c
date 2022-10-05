@@ -51,11 +51,12 @@ static bool compact_regs(TB_Function* f) {
                 bool start_of_bb = (prev == r);
 
                 // check for however many sequencial NOPs
-                for (;;) {
+                do {
                     TB_Reg next = nodes[r].next;
-                    if (next == 0 || nodes[next].type != TB_NULL) break;
+                    if (next == 0) break;
+
                     r = next;
-                }
+                } while (nodes[r].type == TB_NULL);
 
                 if (start_of_bb) {
                     // this is the start of the basic block, changed the starting point in it instead
@@ -110,7 +111,23 @@ static bool inst_combine(TB_Function* f) {
                     // (cmp (sxt/zxt A) (int B))
                     // VVV
                     // (cmp A (int B))
-                    if (a->type == TB_SIGN_EXT && b->type == TB_INTEGER_CONST && TB_DATA_TYPE_EQUALS(f->nodes[a->unary.src].dt, b->dt)) {
+                    if (a->type == TB_SIGN_EXT && b->type == TB_SIGN_EXT) {
+                        OPTIMIZER_LOG(r, "removed unnecessary sign extension");
+                        TB_DataType dt = f->nodes[a->unary.src].dt;
+
+                        n->cmp.dt = dt;
+                        n->cmp.a = a->unary.src;
+                        n->cmp.b = b->unary.src;
+                        changes++;
+                    } else if (a->type == TB_ZERO_EXT && b->type == TB_ZERO_EXT) {
+                        OPTIMIZER_LOG(r, "removed unnecessary zero extension");
+                        TB_DataType dt = f->nodes[a->unary.src].dt;
+
+                        n->cmp.dt = dt;
+                        n->cmp.a = a->unary.src;
+                        n->cmp.b = b->unary.src;
+                        changes++;
+                    } else if (a->type == TB_SIGN_EXT && b->type == TB_INTEGER_CONST && TB_DATA_TYPE_EQUALS(f->nodes[a->unary.src].dt, b->dt)) {
                         OPTIMIZER_LOG(r, "removed unnecessary sign extension for compare against constants");
 
                         n->cmp.a = a->unary.src;

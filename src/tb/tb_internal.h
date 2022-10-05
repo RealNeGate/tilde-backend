@@ -33,6 +33,7 @@
 #include "tb_platform.h"
 #include "bigint/BigInt.h"
 #include "dyn_array.h"
+#include "set.h"
 #include "builtins.h"
 #include "pool.h"
 

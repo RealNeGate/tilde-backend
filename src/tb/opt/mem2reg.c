@@ -1,5 +1,5 @@
-// Based on "Simple and Efficient SSA Construction":
-// https://pp.info.uni-karlsruhe.de/uploads/publikationen/braun13cc.pdf
+// Based on Dominance Frontiers
+//    https://www.ed.tus.ac.jp/j-mune/keio/m/ssa2.pdf
 #include "../tb_internal.h"
 
 typedef enum {

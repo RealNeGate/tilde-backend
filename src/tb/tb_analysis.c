@@ -254,6 +254,12 @@ TB_API size_t tb_get_dominators(TB_Function* f, TB_Predeccesors preds, TB_Label*
         }
     }
 
+    // if it's still undefined it's unreachable but for now we'll make
+    // it map to the entrypoint to avoid array bounds issues and such
+    FOREACH_N(i, 1, f->bb_count){
+        if (doms[i] == -1) doms[i] = 0;
+    }
+
     return f->bb_count;
 }
 

@@ -41,6 +41,7 @@ bool tb_atomic_ptr_cmpxchg(void** address, void* old_value, void* new_value) {
 #elif __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_ATOMICS__)
 #include <stdatomic.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 int tb_atomic_int_load(int* dst) {
     return atomic_load((atomic_int*) dst);

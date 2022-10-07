@@ -518,15 +518,16 @@ do {                                 \
     }                                \
 } while (0)
 
-#define tb_assert_once(msg) (fprintf(stderr, "%s:%d: assert_once \"%s\"\n", __FILE__, __LINE__, msg), __debugbreak())
 
 #ifdef _WIN32
+#define tb_assert_once(msg) (fprintf(stderr, "%s:%d: assert_once \"%s\"\n", __FILE__, __LINE__, msg), __debugbreak())
 #define tb_panic(...)                     \
 do {                                      \
     printf(__VA_ARGS__);                  \
     __fastfail(FAST_FAIL_FATAL_APP_EXIT); \
 } while (0)
 #else
+#define tb_assert_once(msg) (fprintf(stderr, "%s:%d: assert_once \"%s\"\n", __FILE__, __LINE__, msg), __builtin_debugtrap())
 #define tb_panic(...)                     \
 do {                                      \
     printf(__VA_ARGS__);                  \

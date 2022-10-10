@@ -29,3 +29,15 @@ void tb_symbol_append(TB_Module* m, TB_Symbol* s) {
     TB_Symbol* last = tb_atomic_ptr_exchange((void**) &m->last_symbol_of_tag[tag], s);
     if (last) last->next = s;
 }
+
+TB_API TB_Function* tb_symbol_as_function(TB_Symbol* s) {
+    return s->tag == TB_SYMBOL_FUNCTION ? (TB_Function*) s : NULL;
+}
+
+TB_API TB_External* tb_symbol_as_external(TB_Symbol* s) {
+    return s->tag == TB_SYMBOL_EXTERNAL ? (TB_External*) s : NULL;
+}
+
+TB_API TB_Global* tb_symbol_as_global(TB_Symbol* s) {
+    return s->tag == TB_SYMBOL_GLOBAL ? (TB_Global*) s : NULL;
+}

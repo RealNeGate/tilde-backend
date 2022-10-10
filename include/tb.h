@@ -979,6 +979,14 @@ extern "C" {
     TB_API int tb_function_validate(TB_Function* f);
 
     ////////////////////////////////
+    // Symbols
+    ////////////////////////////////
+    // returns NULL if the tag doesn't match
+    TB_API TB_Function* tb_symbol_as_function(TB_Symbol* s);
+    TB_API TB_External* tb_symbol_as_external(TB_Symbol* s);
+    TB_API TB_Global* tb_symbol_as_global(TB_Symbol* s);
+
+    ////////////////////////////////
     // Function IR Generation
     ////////////////////////////////
     // the user_data is expected to be a valid FILE*

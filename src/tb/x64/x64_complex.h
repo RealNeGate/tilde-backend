@@ -196,7 +196,7 @@ static void print_machine_operand(const MIR_Operand* operand) {
 }
 
 static void print_machine_insts(X64_ComplexCtx* restrict ctx) {
-    loop(i, ctx->inst_count) {
+    FOREACH_N(i, 0, ctx->inst_count) {
         MIR_Inst* inst = &ctx->insts[i];
         switch (inst->type) {
             case MIR_INST_DEF: {
@@ -441,7 +441,7 @@ static MIR_Operand complex_isel(X64_ComplexCtx* restrict ctx, TB_Function* f, Tr
 
             if (should_use_lea_arith) {
                 // accumulate and collapse LEA operations to get an optimal multiply
-                loop(steps, 2) {
+                FOREACH_N(steps, 0, 2) {
                     if (multipliers[steps] == 0) break;
                     int shift = tb_ffs(multipliers[steps] & ~1u) - 1;
 
@@ -568,7 +568,7 @@ static RegAllocResult complex_regalloc(X64_ComplexCtx* restrict ctx, TB_Function
     memset(vgpr_vals, 0, ctx->vgpr_count * sizeof(Val));
 
     uint16_t gpr_alloc = 0;
-    loop_reverse(i, ctx->inst_count) {
+    FOREACH_REVERSE_N(i, 0, ctx->inst_count) {
         MIR_Inst* inst = &ctx->insts[i];
         switch (inst->type) {
             case MIR_INST_DEF: {
@@ -737,7 +737,7 @@ TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB
 
     // Compute live intervals
     LiveInterval* intervals = tb_platform_heap_alloc(ctx->vgpr_count * sizeof(LiveInterval));
-    loop(i, ctx->inst_count) {
+    FOREACH_N(i, 0, ctx->inst_count) {
         MIR_Inst* inst = &ctx->insts[i];
         switch (inst->type) {
             case MIR_INST_DEF:
@@ -762,7 +762,7 @@ TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB
     RegAllocResult regalloc = complex_regalloc(ctx, f);
     (void)regalloc;
     // TODO(NeGate): Generate machine code
-    loop(i, ctx->inst_count) {
+    FOREACH_N(i, 0, ctx->inst_count) {
         MIR_Inst* inst = &ctx->insts[i];
         switch (inst->type) {
             case MIR_INST_DEF:

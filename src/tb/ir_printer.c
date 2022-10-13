@@ -76,7 +76,7 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
                 callback(user_data, "  r%-8u = ", i);
                 tb_print_type(dt, callback, user_data);
                 callback(user_data, " 0x");
-                loop_reverse(i, n->integer.num_words) {
+                FOREACH_REVERSE_N(i, 0, n->integer.num_words) {
                     callback(user_data, " %"PRIx64, n->integer.words[i]);
                 }
             }

@@ -274,9 +274,9 @@ TB_API bool tb_is_dominated_by(TB_Label* doms, TB_Label expected_dom, TB_Label b
 TB_API TB_LoopInfo tb_get_loop_info(TB_Function* f, TB_Predeccesors preds, TB_Label* doms) {
     // Find loops
     DynArray(TB_Loop) loops = dyn_array_create(TB_Loop);
-    loop(bb, f->bb_count) {
+    FOREACH_N(bb, 0, f->bb_count) {
         TB_Label backedge = 0;
-        loop(j, preds.count[bb]) {
+        FOREACH_N(j, 0, preds.count[bb]) {
             if (tb_is_dominated_by(doms, bb, preds.preds[bb][j])) {
                 backedge = preds.preds[bb][j];
                 break;
@@ -300,8 +300,8 @@ TB_API TB_LoopInfo tb_get_loop_info(TB_Function* f, TB_Predeccesors preds, TB_La
             l.body = realloc(l.body, l.body_count * sizeof(TB_Label));
 
             // check if we have a parent...
-            loop_reverse(o, dyn_array_length(loops)) {
-                loop(j, loops[o].body_count) {
+            FOREACH_REVERSE_N(o, 0, dyn_array_length(loops)) {
+                FOREACH_N(j, 0, loops[o].body_count) {
                     if (bb == loops[o].body[j]) {
                         l.parent_loop = o;
                         goto fatherfull_behavior;

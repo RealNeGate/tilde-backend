@@ -251,7 +251,7 @@ TB_API void tb_module_destroy(TB_Module* m) {
 
 TB_API TB_FileID tb_file_create(TB_Module* m, const char* path) {
     // skip the NULL file entry
-    loop_range(i, 1, m->files.count) {
+    FOREACH_N(i, 1, m->files.count) {
         if (strcmp(m->files.data[i].path, path) == 0) return i;
     }
 
@@ -642,7 +642,7 @@ uint32_t tb_emit_const_patch(TB_Module* m, TB_Function* source, size_t pos, cons
 // OBJECT FILE
 //
 void tb_object_free(TB_ObjectFile* obj) {
-    loop(i, obj->section_count) {
+    FOREACH_N(i, 0, obj->section_count) {
         free(obj->sections[i].relocations);
     }
     free(obj);

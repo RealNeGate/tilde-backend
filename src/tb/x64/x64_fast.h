@@ -219,7 +219,7 @@ static const GPR GPR_PRIORITIES[] = {
 static GPR fast_alloc_gpr(X64_FastCtx* restrict ctx, TB_Function* f, TB_Reg r) {
     assert(ctx->gpr_available > 0);
 
-    loop(i, COUNTOF(GPR_PRIORITIES)) {
+    FOREACH_N(i, 0, COUNTOF(GPR_PRIORITIES)) {
         GPR gpr = GPR_PRIORITIES[i];
 
         if (ctx->gpr_allocator[gpr] == TB_NULL_REG) {
@@ -687,7 +687,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
 
         #if 0
         printf("r%d:\tXMM = { ", r);
-        loop(i, 16) {
+        FOREACH_N(i, 0, 16) {
             printf("XMM%zu:", i);
             if (ctx->xmm_allocator[i] == TB_TEMP_REG) printf("R    ");
             else printf("r%-3d ", ctx->xmm_allocator[i]);

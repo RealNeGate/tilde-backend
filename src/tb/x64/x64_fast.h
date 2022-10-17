@@ -904,7 +904,15 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
             case TB_MEMBER_ACCESS: {
                 Val addr = fast_eval_address(ctx, f, n->member_access.base);
 
-                if (addr.type == VAL_MEM) {
+                if (addr.type == VAL_IMM) {
+                    addr.imm += n->member_access.offset;
+
+                    GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
+                    fast_def_gpr(ctx, f, r, dst_gpr, TB_TYPE_PTR);
+
+                    Val dst = val_gpr(dt, dst_gpr);
+                    INST2(MOV, &dst, &addr, dt);
+                } else if (addr.type == VAL_MEM) {
                     assert(ctx->tile.mapping == 0);
                     addr.mem.disp += n->member_access.offset;
 
@@ -1923,13 +1931,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 // CALL instruction and patch
                 if (reg_type == TB_CALL) {
                     const TB_Symbol* target = n->call.target;
-                    if (target->tag == TB_SYMBOL_FUNCTION) {
-                        tb_emit_symbol_patch(f->super.module, f, target, GET_CODE_POS(&ctx->emit) + 1, true, s_local_thread_id);
-                    } else if (target->tag == TB_SYMBOL_EXTERNAL) {
-                        tb_emit_symbol_patch(f->super.module, f, target, GET_CODE_POS(&ctx->emit) + 1, true, s_local_thread_id);
-                    } else {
-                        tb_todo();
-                    }
+                    tb_emit_symbol_patch(f->super.module, f, target, GET_CODE_POS(&ctx->emit) + 1, true, s_local_thread_id);
 
                     // CALL rel32
                     EMIT1(&ctx->emit, 0xE8);

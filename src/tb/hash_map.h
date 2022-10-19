@@ -73,8 +73,7 @@ NL_HASH_MAP_API void nl_map__free(NL_MapHeader* restrict table);
 
 #ifdef NL_MAP_IMPL
 
-// murmur3 32-bit without UB unaligned accesses
-// https://github.com/RealNeGate/scribbles/blob/master/hashing/hash_functions.c#L151
+// FNV1A
 inline static uint32_t nl_map__raw_hash(size_t len, const void *key) {
     const uint8_t* data = key;
     uint32_t h = 0x811C9DC5;

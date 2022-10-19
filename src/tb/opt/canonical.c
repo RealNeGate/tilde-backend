@@ -2,6 +2,9 @@
 #include "cse.h"
 #include "fold.h"
 
+#define NL_MAP_IMPL
+#include "../hash_map.h"
+
 static void replace_label(TB_Function* f, TB_Label old, TB_Label new) {
     f->bbs[old] = (TB_BasicBlock){ 0 };
 
@@ -51,11 +54,12 @@ static bool compact_regs(TB_Function* f) {
                 bool start_of_bb = (prev == r);
 
                 // check for however many sequencial NOPs
-                for (;;) {
+                do {
                     TB_Reg next = nodes[r].next;
-                    if (next == 0 || nodes[next].type != TB_NULL) break;
+                    if (next == 0) break;
+
                     r = next;
-                }
+                } while (nodes[r].type == TB_NULL);
 
                 if (start_of_bb) {
                     // this is the start of the basic block, changed the starting point in it instead
@@ -73,14 +77,243 @@ static bool compact_regs(TB_Function* f) {
 
 static bool remove_passes(TB_Function* f) {
     int changes = 0;
-    TB_FOR_BASIC_BLOCK(bb, f) {
-        TB_FOR_NODE(r, f, bb) {
-            if (f->nodes[r].type == TB_PASS) {
-                OPTIMIZER_LOG(r, "Replacing PASS with r%d", f->nodes[r].pass.value);
 
-                tb_function_find_replace_reg(f, r, f->nodes[r].pass.value);
-                tb_murder_reg(f, r);
-                changes++;
+    if (f->node_count > 1000) {
+        NL_Map(TB_Reg, TB_Reg) def_table = { 0 };
+
+        TB_FOR_BASIC_BLOCK(bb, f) {
+            TB_FOR_NODE(r, f, bb) {
+                TB_Node* n = &f->nodes[r];
+
+                #define X(reg)                                     \
+                do {                                               \
+                    ptrdiff_t search = nl_map_get(def_table, reg); \
+                    if (search >= 0) {                             \
+                        reg = def_table[search].v;                 \
+                    }                                              \
+                } while (0)
+
+                switch (n->type) {
+                    case TB_NULL:
+                    case TB_INTEGER_CONST:
+                    case TB_FLOAT32_CONST:
+                    case TB_FLOAT64_CONST:
+                    case TB_STRING_CONST:
+                    case TB_LOCAL:
+                    case TB_PARAM:
+                    case TB_GOTO:
+                    case TB_LINE_INFO:
+                    case TB_GET_SYMBOL_ADDRESS:
+                    case TB_X86INTRIN_STMXCSR:
+                    case TB_UNREACHABLE:
+                    case TB_DEBUGBREAK:
+                    case TB_TRAP:
+                    case TB_POISON:
+                    break;
+
+                    case TB_INITIALIZE:
+                    X(n->init.addr);
+                    break;
+
+                    case TB_KEEPALIVE:
+                    case TB_VA_START:
+                    case TB_NOT:
+                    case TB_NEG:
+                    case TB_X86INTRIN_SQRT:
+                    case TB_X86INTRIN_RSQRT:
+                    case TB_INT2PTR:
+                    case TB_PTR2INT:
+                    case TB_UINT2FLOAT:
+                    case TB_FLOAT2UINT:
+                    case TB_INT2FLOAT:
+                    case TB_FLOAT2INT:
+                    case TB_TRUNCATE:
+                    case TB_X86INTRIN_LDMXCSR:
+                    case TB_BITCAST:
+                    X(n->unary.src);
+                    break;
+
+                    case TB_ATOMIC_LOAD:
+                    case TB_ATOMIC_XCHG:
+                    case TB_ATOMIC_ADD:
+                    case TB_ATOMIC_SUB:
+                    case TB_ATOMIC_AND:
+                    case TB_ATOMIC_XOR:
+                    case TB_ATOMIC_OR:
+                    case TB_ATOMIC_CMPXCHG:
+                    X(n->atomic.addr);
+                    X(n->atomic.src);
+                    break;
+
+                    case TB_ATOMIC_CMPXCHG2:
+                    X(n->atomic.src);
+                    break;
+
+                    case TB_MEMCPY:
+                    case TB_MEMSET:
+                    X(n->mem_op.dst);
+                    X(n->mem_op.src);
+                    X(n->mem_op.size);
+                    break;
+
+                    case TB_MEMBER_ACCESS:
+                    X(n->member_access.base);
+                    break;
+
+                    case TB_ARRAY_ACCESS:
+                    X(n->array_access.base);
+                    X(n->array_access.index);
+                    break;
+
+                    case TB_PARAM_ADDR:
+                    X(n->param_addr.param);
+                    break;
+
+                    case TB_PASS:
+                    X(n->pass.value);
+                    break;
+
+                    case TB_PHI1:
+                    X(n->phi1.inputs[0].val);
+                    break;
+
+                    case TB_PHI2:
+                    FOREACH_N(it, 0, 2) {
+                        X(n->phi2.inputs[it].val);
+                    }
+                    break;
+
+                    case TB_PHIN:
+                    FOREACH_N(it, 0, n->phi.count) {
+                        X(n->phi.inputs[it].val);
+                    }
+                    break;
+
+                    case TB_LOAD:
+                    X(n->load.address);
+                    break;
+
+                    case TB_STORE:
+                    X(n->store.address);
+                    X(n->store.value);
+                    break;
+
+                    case TB_ZERO_EXT:
+                    case TB_SIGN_EXT:
+                    case TB_FLOAT_EXT:
+                    X(n->unary.src);
+                    break;
+
+                    case TB_AND:
+                    case TB_OR:
+                    case TB_XOR:
+                    case TB_ADD:
+                    case TB_SUB:
+                    case TB_MUL:
+                    case TB_UDIV:
+                    case TB_SDIV:
+                    case TB_UMOD:
+                    case TB_SMOD:
+                    case TB_SAR:
+                    case TB_SHL:
+                    case TB_SHR:
+                    X(n->i_arith.a);
+                    X(n->i_arith.b);
+                    break;
+
+                    case TB_FADD:
+                    case TB_FSUB:
+                    case TB_FMUL:
+                    case TB_FDIV:
+                    X(n->f_arith.a);
+                    X(n->f_arith.b);
+                    break;
+
+                    case TB_CMP_EQ:
+                    case TB_CMP_NE:
+                    case TB_CMP_SLT:
+                    case TB_CMP_SLE:
+                    case TB_CMP_ULT:
+                    case TB_CMP_ULE:
+                    case TB_CMP_FLT:
+                    case TB_CMP_FLE:
+                    X(n->cmp.a);
+                    X(n->cmp.b);
+                    break;
+
+                    case TB_SCALL: {
+                        X(n->scall.target);
+
+                        FOREACH_N(it, n->scall.param_start, n->scall.param_end) {
+                            X(f->vla.data[it]);
+                        }
+                        break;
+                    }
+
+                    case TB_VCALL: {
+                        X(n->vcall.target);
+
+                        FOREACH_N(it, n->vcall.param_start, n->vcall.param_end) {
+                            X(f->vla.data[it]);
+                        }
+                        break;
+                    }
+
+                    case TB_CALL:
+                    case TB_ICALL: {
+                        FOREACH_N(it, n->call.param_start, n->call.param_end) {
+                            X(f->vla.data[it]);
+                        }
+                        break;
+                    }
+
+                    case TB_SWITCH: X(n->switch_.key); break;
+                    case TB_IF: X(n->if_.cond); break;
+                    case TB_RET: X(n->ret.value); break;
+
+                    default: tb_todo();
+                }
+                #undef X
+
+                if (f->nodes[r].type == TB_PASS) {
+                    OPTIMIZER_LOG(r, "Replacing PASS with r%d", f->nodes[r].pass.value);
+
+                    // if the node we're pointing to is also in the map then we look at it's parent
+                    TB_Reg pointee = f->nodes[r].pass.value;
+                    ptrdiff_t search;
+                    while (search = nl_map_get(def_table, pointee), search >= 0) {
+                        pointee = def_table[search].v;
+                    }
+
+                    nl_map_put(def_table, r, pointee);
+
+                    // if it matches find, then remove find from the basic block
+                    if (f->bbs[bb].start == r) {
+                        f->bbs[bb].start = f->nodes[f->bbs[bb].start].next;
+                    }
+
+                    if (f->bbs[bb].end == r) {
+                        f->bbs[bb].end = tb_node_get_previous(f, f->bbs[bb].end);
+                    }
+
+                    f->nodes[r].type = TB_NULL;
+                    changes++;
+                }
+            }
+        }
+
+        nl_map_free(def_table);
+    } else {
+        int changes = 0;
+        TB_FOR_BASIC_BLOCK(bb, f) {
+            TB_FOR_NODE(r, f, bb) {
+                if (f->nodes[r].type == TB_PASS) {
+                    OPTIMIZER_LOG(r, "Replacing PASS with r%d", f->nodes[r].pass.value);
+
+                    tb_function_find_replace_reg(f, r, f->nodes[r].pass.value);
+                    tb_murder_reg(f, r);
+                    changes++;
+                }
             }
         }
     }
@@ -110,7 +343,23 @@ static bool inst_combine(TB_Function* f) {
                     // (cmp (sxt/zxt A) (int B))
                     // VVV
                     // (cmp A (int B))
-                    if (a->type == TB_SIGN_EXT && b->type == TB_INTEGER_CONST && TB_DATA_TYPE_EQUALS(f->nodes[a->unary.src].dt, b->dt)) {
+                    if (a->type == TB_SIGN_EXT && b->type == TB_SIGN_EXT) {
+                        OPTIMIZER_LOG(r, "removed unnecessary sign extension");
+                        TB_DataType dt = f->nodes[a->unary.src].dt;
+
+                        n->cmp.dt = dt;
+                        n->cmp.a = a->unary.src;
+                        n->cmp.b = b->unary.src;
+                        changes++;
+                    } else if (a->type == TB_ZERO_EXT && b->type == TB_ZERO_EXT) {
+                        OPTIMIZER_LOG(r, "removed unnecessary zero extension");
+                        TB_DataType dt = f->nodes[a->unary.src].dt;
+
+                        n->cmp.dt = dt;
+                        n->cmp.a = a->unary.src;
+                        n->cmp.b = b->unary.src;
+                        changes++;
+                    } else if (a->type == TB_SIGN_EXT && b->type == TB_INTEGER_CONST && TB_DATA_TYPE_EQUALS(f->nodes[a->unary.src].dt, b->dt)) {
                         OPTIMIZER_LOG(r, "removed unnecessary sign extension for compare against constants");
 
                         n->cmp.a = a->unary.src;

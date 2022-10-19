@@ -43,7 +43,9 @@ static TreeNode* push_binary(TreeNodeArena* arena, TB_Reg r, TreeNode* a, TreeNo
 
 static TreeNode* find(TreeNodeArena* arena, TB_Reg r) {
     for (TreeNodePage* p = arena->base; p; p = p->next) {
-        loop(i, p->count) if (p->nodes[i].reg == r) return &p->nodes[i];
+        FOREACH_N(i, 0, p->count) {
+            if (p->nodes[i].reg == r) return &p->nodes[i];
+        }
     }
 
     return NULL;

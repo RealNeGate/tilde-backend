@@ -61,7 +61,7 @@ static FILE* locate_file(LinkerCtx* restrict ctx, const char* path) {
     if (file) return file;
 
     char temp_str[FILENAME_MAX];
-    loop(i, ctx->inputs.search_dir_count) {
+    FOREACH_N(i, 0, ctx->inputs.search_dir_count) {
         snprintf(temp_str, FILENAME_MAX, "%s/%s", ctx->inputs.search_dirs[i], path);
 
         file = fopen(temp_str, "rb");
@@ -85,7 +85,7 @@ static void pad_file(TB_TemporaryStorage* tls, FILE* file, char pad, size_t alig
 }
 
 static void import_archive(LinkerCtx* restrict ctx, TB_ArchiveFile* restrict ar) {
-    loop(i, ar->import_count) {
+    FOREACH_N(i, 0, ar->import_count) {
         TB_ArchiveImport* restrict import = &ar->imports[i];
         NL_Slice libname = { strlen(import->libname), (uint8_t*) import->libname };
 
@@ -129,7 +129,7 @@ TB_API TB_Exports tb_pe_write_output(TB_Module* m, const IDebugFormat* dbg) {
     // Generate import lookup table
     ctx.imports = dyn_array_create(ImportTable);
 
-    loop(i, ctx.inputs.input_count) {
+    FOREACH_N(i, 0, ctx.inputs.input_count) {
         FILE* file = locate_file(&ctx, ctx.inputs.inputs[i]);
         if (file == NULL) {
             tb_panic("Could not locate file: %s\n", ctx.inputs.inputs[i]);
@@ -151,7 +151,7 @@ TB_API TB_Exports tb_pe_write_output(TB_Module* m, const IDebugFormat* dbg) {
 
     // Find all the imports & place them into the right buckets
     uint32_t thunk_id_counter = 0;
-    loop(i, m->max_threads) {
+    FOREACH_N(i, 0, m->max_threads) {
         pool_for(TB_External, e, m->thread_info[i].externals) {
             ptrdiff_t search = nl_strmap_get_cstr(ctx.import_nametable, e->super.name);
             if (search < 0) {
@@ -182,7 +182,7 @@ TB_API TB_Exports tb_pe_write_output(TB_Module* m, const IDebugFormat* dbg) {
             import_entry_count += dyn_array_length(ctx.imports[i].thunks) + 1;
         }
     }
-    dyn_array_length(ctx.imports) = j; // trimmed
+    dyn_array_set_length(ctx.imports, j); // trimmed
 
     // Generate bytes for the import table
     TB_Emitter import_table = { 0 };
@@ -458,8 +458,8 @@ TB_API TB_Exports tb_pe_write_output(TB_Module* m, const IDebugFormat* dbg) {
             fwrite(import_table.data, import_table.count, 1, f);
 
             char* rdata = tb_platform_heap_alloc(m->rdata_region_size);
-            loop(i, m->max_threads) {
-                loop(j, dyn_array_length(m->thread_info[i].const_patches)) {
+            FOREACH_N(i, 0, m->max_threads) {
+                dyn_array_for(j, m->thread_info[i].const_patches) {
                     TB_ConstPoolPatch* p = &m->thread_info[i].const_patches[j];
                     memcpy(&rdata[p->rdata_pos], p->data, p->length);
                 }

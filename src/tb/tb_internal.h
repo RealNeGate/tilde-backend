@@ -33,6 +33,7 @@
 #include "tb_platform.h"
 #include "bigint/BigInt.h"
 #include "dyn_array.h"
+#include "set.h"
 #include "builtins.h"
 #include "pool.h"
 
@@ -550,15 +551,6 @@ for (ptrdiff_t it = (start), end__ = (end); it < end__; ++it)
 #define FOREACH_REVERSE_N(it, start, end) \
 for (ptrdiff_t it = (end), start__ = (start); (it--) > start__;)
 
-#define loop(iterator, count) \
-for (size_t iterator = 0, end__ = (count); iterator < end__; ++iterator)
-
-#define loop_range(iterator, start, count) \
-for (size_t iterator = (start), end__ = (count); iterator < end__; ++iterator)
-
-#define loop_reverse(iterator, count) \
-for (size_t iterator = (count); iterator--;)
-
 // sometimes you just gotta do it to em'
 // imagine i++ but like i++y (more like ((i += y) - y)) or something idk
 inline static size_t tb_post_inc(size_t* a, size_t b) {
@@ -646,7 +638,7 @@ inline static bool tb_is_power_of_two(uint64_t x) {
 tb_next_biggest(result, v, COUNTOF((int[]) { __VA_ARGS__ }), (int[]) { __VA_ARGS__ })
 
 inline static bool tb_next_biggest(int* result, int v, size_t n, const int* arr) {
-    loop(i, n) if (v <= arr[i]) {
+    FOREACH_N(i, 0, n) if (v <= arr[i]) {
         *result = arr[i];
         return true;
     }
@@ -666,7 +658,7 @@ inline static bool tb_next_biggest(int* result, int v, size_t n, const int* arr)
 #endif
 
 // NOTE(NeGate): clean this up
-#if 0
+#if 1
 #define OPTIMIZER_LOG(at, ...) ((void) (at))
 #else
 #define OPTIMIZER_LOG(at, ...)                       \

@@ -1,5 +1,5 @@
-#include "../objects/coff.h"
-#include "cv/cv.h"
+#include "../../objects/coff.h"
+#include "cv.h"
 
 // constant sized "hash map" which is used to
 // deduplicate types in the codeview
@@ -72,7 +72,6 @@ static uint16_t convert_to_codeview_type(CV_Builder* builder, TB_DebugType* type
         return type->cv_type_id;
     }
 
-    // find_or_make_cv_type(sect, type_entry_count, lookup_table, );
     switch (type->tag) {
         case TB_DEBUG_TYPE_VOID: return (type->cv_type_id = T_VOID);
         case TB_DEBUG_TYPE_BOOL: return (type->cv_type_id = T_BOOL08); // T_BOOL08
@@ -226,7 +225,7 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
             tb_out4b(&debugs_out, 0);
 
             size_t pos = 0;
-            loop_range(i, 1, m->files.count) {
+            FOREACH_N(i, 1, m->files.count) {
                 uint8_t sum[16];
                 md5sum_file(sum, m->files.data[i].path);
 

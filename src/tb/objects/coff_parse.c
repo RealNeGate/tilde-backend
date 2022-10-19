@@ -254,7 +254,7 @@ TB_ObjectFile* tb_object_parse_coff(const TB_Slice file) {
         }
 
         // Process aux symbols
-        loop(j, sym->aux_symbols_count) {
+        FOREACH_N(j, 0, sym->aux_symbols_count) {
             // TODO(NeGate): idk do something
         }
 
@@ -265,7 +265,7 @@ TB_ObjectFile* tb_object_parse_coff(const TB_Slice file) {
     obj_file->symbols = realloc(obj_file->symbols, obj_file->symbol_count * sizeof(TB_ObjectSymbol));
 
     obj_file->section_count = header->num_sections;
-    loop(i, header->num_sections) {
+    FOREACH_N(i, 0, header->num_sections) {
         // TODO(NeGate): bounds check this
         size_t section_offset = sizeof(COFF_FileHeader) + (i * sizeof(COFF_SectionHeader));
         COFF_SectionHeader* sec = (COFF_SectionHeader*) &file.data[section_offset];
@@ -291,7 +291,7 @@ TB_ObjectFile* tb_object_parse_coff(const TB_Slice file) {
             COFF_ImageReloc* src_relocs = (COFF_ImageReloc*) &file.data[sec->pointer_to_reloc];
 
             TB_ObjectReloc* dst_relocs = malloc(sec->num_reloc * sizeof(TB_ObjectReloc));
-            loop(j, sec->num_reloc) {
+            FOREACH_N(j, 0, sec->num_reloc) {
                 dst_relocs[j] = (TB_ObjectReloc){ 0 };
                 switch (src_relocs[j].Type) {
                     case IMAGE_REL_AMD64_ADDR32NB: dst_relocs[j].type = TB_OBJECT_RELOC_ADDR32NB; break;

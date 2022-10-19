@@ -44,7 +44,7 @@ uint32_t tb__crc32(uint32_t crc, size_t length, const void* d) {
     const uint8_t* data = d;
 
     crc ^= 0xFFFFFFFFU;
-    loop(i, length) {
+    FOREACH_N(i, 0, length) {
         int table_index = (crc ^ data[i]) & 0xff;
         crc = crc_table[table_index] ^ (crc >> 8);
     }

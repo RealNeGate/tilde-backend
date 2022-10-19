@@ -1,5 +1,5 @@
-// Based on "Simple and Efficient SSA Construction":
-// https://pp.info.uni-karlsruhe.de/uploads/publikationen/braun13cc.pdf
+// Based on Dominance Frontiers
+//    https://www.ed.tus.ac.jp/j-mune/keio/m/ssa2.pdf
 #include "../tb_internal.h"
 
 typedef enum {
@@ -24,12 +24,6 @@ typedef struct Mem2Reg_Ctx {
 
     // [to_promote_count][bb_count]
     TB_Reg* current_def;
-
-    // [to_promote_count][bb_count]
-    TB_Reg* incomplete_phis;
-
-    // [bb_count]
-    bool* sealed_blocks;
 
     TB_Predeccesors preds;
     // [bb_count]
@@ -63,128 +57,12 @@ static TB_Reg new_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, int var, TB_Label
     return new_phi_reg;
 }
 
-static TB_Reg read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_Label block);
-static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg);
-static TB_Reg add_phi_operands(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg, TB_Label label, int var);
-static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg, TB_Label label, TB_Reg reg);
-
-////////////////////////////////
-// Algorithm 1: Implementation of local value numbering
-////////////////////////////////
-static void write_variable(Mem2Reg_Ctx* c, int var, TB_Label block, TB_Reg value) {
-    c->current_def[(var * c->bb_count) + block] = value;
-}
-
-static TB_Reg read_variable(Mem2Reg_Ctx* restrict c, int var, TB_Label block) {
-    if (c->current_def[(var * c->bb_count) + block] != 0) {
-        return c->current_def[(var * c->bb_count) + block];
-    }
-
-    return read_variable_recursive(c, var, block);
-}
-
-////////////////////////////////
-// Algorithm 2: Implementation of global value numbering
-////////////////////////////////
-static TB_Reg read_variable_recursive(Mem2Reg_Ctx* restrict c, int var, TB_Label block) {
-    TB_Reg val = 0;
-
-    if (!c->sealed_blocks[block]) {
-        // incomplete CFG
-        val = new_phi(c, c->f, var, block, c->f->nodes[c->to_promote[var]].dt);
-        c->incomplete_phis[(block * c->to_promote_count) + var] = val;
-    } else if (c->preds.count[block] == 0) {
-        // this value came from nowhere because it's poison?
-        val = 0;
-    } else if (c->preds.count[block] == 1) {
-        // Optimize the common case of one predecessor: No phi needed
-        val = read_variable(c, var, c->preds.preds[block][0]);
-    } else {
-        // Break potential cycles with operandless phi
-        val = new_phi(c, c->f, var, block, c->f->nodes[c->to_promote[var]].dt);
-        write_variable(c, var, block, val);
-        val = add_phi_operands(c, c->f, val, block, var);
-    }
-
-    write_variable(c, var, block, val);
-    return val;
-}
-
-static TB_Reg add_phi_operands(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg, TB_Label block, int var) {
-    // Determine operands from predecessors
-    FOREACH_N(i, 0, c->preds.count[block]) {
-        TB_Reg val = read_variable(c, var, c->preds.preds[block][i]);
-        if (val) add_phi_operand(c, c->f, phi_reg, c->preds.preds[block][i], val);
-    }
-
-    return try_remove_trivial_phi(c, c->f, phi_reg);
-}
-
-// Algorithm 3: Detect and recursively remove a trivial phi function
-static TB_Reg try_remove_trivial_phi(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg) {
-    // Walk past any pass nodes
-    while (f->nodes[phi_reg].type == TB_PASS) {
-        phi_reg = f->nodes[phi_reg].pass.value;
-    }
-
-    // Get operands
-    if (!tb_node_is_phi_node(f, phi_reg)) {
-        return phi_reg;
-    }
-
-    int count = tb_node_get_phi_width(f, phi_reg);
-    TB_PhiInput* inputs = tb_node_get_phi_inputs(f, phi_reg);
-
-    TB_Reg same = TB_NULL_REG;
-    FOREACH_N(i, 0, count) {
-        // Unique value or self-reference
-        if (inputs[i].val == phi_reg || inputs[i].val == same) continue;
-
-        // The phi merges at least two values: not trivial
-        if (same != TB_NULL_REG) return phi_reg;
-
-        same = inputs[i].val;
-    }
-
-    if (same == TB_NULL_REG) {
-        // The phi is unreachable or in the start block
-        return 0;
-    }
-
-    TB_Reg* uses = tb_tls_push(c->tls, f->node_count * sizeof(TB_Reg));
-    int use_count = tb_function_find_uses_of_node(f, phi_reg, uses);
-
-    // trim the memory to avoid wasting too much
-    tb_tls_restore(c->tls, &uses[use_count]);
-
-    // replace all references
-    assert(same != TB_NULL_REG);
-    OPTIMIZER_LOG(phi_reg, "  renamed trivial PHI with PASS r%d", same);
-
-    tb_function_find_replace_reg(f, phi_reg, same);
-    tb_murder_reg(f, phi_reg);
-
-    // Try to recursively remove all phi users, which might have become trivial
-    FOREACH_N(i, 0, use_count) if (uses[i] == phi_reg) {
-        try_remove_trivial_phi(c, f, uses[i]);
-    }
-
-    return same;
-}
-
 static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_reg, TB_Label label, TB_Reg reg) {
-    assert(reg >= 1 && reg < f->node_count);
-    // walk past pass nodes
-    while (f->nodes[reg].type == TB_PASS) {
-        reg = f->nodes[reg].pass.value;
-    }
-
     // we're using NULL nodes as the baseline PHI0
     if (phi_reg == reg) {
         return;
     }
 
-    // printf("PHI r%d adding to r%d\n", phi_reg, reg);
     OPTIMIZER_LOG(phi_reg, "  adding r%d to PHI", reg);
     TB_DataType dt = f->nodes[reg].dt;
 
@@ -231,16 +109,119 @@ static void add_phi_operand(Mem2Reg_Ctx* restrict c, TB_Function* f, TB_Reg phi_
     }
 }
 
-// Algorithm 4: Handling incomplete CFGs
-static void seal_block(Mem2Reg_Ctx* restrict c, TB_Label block) {
-    //printf("SEAL_BLOCK L%d\n", block);
+static void write_variable(Mem2Reg_Ctx* c, int var, TB_Label block, TB_Reg value) {
+    c->current_def[(var * c->bb_count) + block] = value;
+}
 
-    FOREACH_N(i, 0, c->to_promote_count) {
-        TB_Reg phi_reg = c->incomplete_phis[(block * c->to_promote_count) + i];
-        if (phi_reg) add_phi_operands(c, c->f, phi_reg, block, i);
+static void ssa_replace_phi_arg(Mem2Reg_Ctx* c, TB_Function* f, TB_Label bb, TB_Label dst, DynArray(TB_Reg)* stack) {
+    FOREACH_N(var, 0, c->to_promote_count) {
+        TB_Reg phi_reg = c->current_def[(var * f->bb_count) + dst];
+        if (!tb_node_is_phi_node(f, phi_reg)) continue;
+
+        int count = tb_node_get_phi_width(f, phi_reg);
+        TB_PhiInput* inputs = tb_node_get_phi_inputs(f, phi_reg);
+        TB_Reg top = stack[var][dyn_array_length(stack[var]) - 1];
+
+        bool found = false;
+        FOREACH_N(j, 0, count) {
+            if (inputs[j].label == bb) {
+                // try to replace
+                inputs[j].val = top;
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            add_phi_operand(c, f, phi_reg, bb, top);
+        }
+    }
+}
+
+static void ssa_rename(Mem2Reg_Ctx* c, TB_Function* f, TB_Label bb, DynArray(TB_Reg)* stack) {
+    // push phi nodes
+    size_t* old_len = tb_tls_push(c->tls, sizeof(size_t) * f->bb_count);
+    FOREACH_N(var, 0, c->to_promote_count) {
+        TB_Reg value = c->current_def[(var * f->bb_count) + bb];
+        if (tb_node_is_phi_node(f, value)) {
+            dyn_array_put(stack[var], value);
+        }
+
+        old_len[var] = dyn_array_length(stack[var]);
     }
 
-    c->sealed_blocks[block] = 0;
+    // rewrite operations
+    TB_FOR_NODE(r, f, bb) {
+        TB_Node* n = &f->nodes[r];
+
+        if (n->type == TB_LOCAL) {
+            int var = get_variable_id(c, r);
+            if (var >= 0) {
+                tb_kill_op(f, r);
+            }
+        } else if (n->type == TB_PARAM_ADDR) {
+            int var = get_variable_id(c, r);
+            if (var >= 0) {
+                dyn_array_put(stack[var], n->param_addr.param);
+                tb_kill_op(f, r);
+            }
+        } else if (n->type == TB_MEMSET) {
+            int var = get_variable_id(c, n->mem_op.dst);
+            if (var >= 0) {
+                dyn_array_put(stack[var], r);
+            }
+        } else if (n->type == TB_STORE) {
+            int var = get_variable_id(c, n->mem_op.dst);
+            if (var >= 0) {
+                dyn_array_put(stack[var], n->store.value);
+                tb_kill_op(f, r);
+            }
+        } else if (n->type == TB_LOAD) {
+            int var = get_variable_id(c, n->load.address);
+            if (var >= 0) {
+                assert(dyn_array_length(stack[var]) > 0);
+
+                n->type = TB_PASS;
+                n->pass.value = stack[var][dyn_array_length(stack[var]) - 1];
+            }
+        }
+    }
+
+    // replace phi arguments on successor
+    TB_Node* end = &f->nodes[f->bbs[bb].end];
+    if (end->type == TB_NULL || end->type == TB_RET || end->type == TB_TRAP || end->type == TB_UNREACHABLE) {
+        /* RET can't do shit in this context */
+    } else if (end->type == TB_GOTO) {
+        ssa_replace_phi_arg(c, f, bb, end->goto_.label, stack);
+    } else if (end->type == TB_IF) {
+        ssa_replace_phi_arg(c, f, bb, end->if_.if_true, stack);
+        ssa_replace_phi_arg(c, f, bb, end->if_.if_false, stack);
+    } else if (end->type == TB_SWITCH) {
+        // each entry takes up two slots in the VLA storage (i just put random crap in there like arguments for function calls)
+        size_t entry_count = (end->switch_.entries_end - end->switch_.entries_start) / 2;
+        TB_SwitchEntry* entries = (TB_SwitchEntry*) &f->vla.data[end->switch_.entries_start];
+
+        ssa_replace_phi_arg(c, f, bb, end->switch_.default_label, stack);
+
+        FOREACH_REVERSE_N(i, 0, entry_count) {
+            ssa_replace_phi_arg(c, f, bb, entries[i].value, stack);
+        }
+    } else {
+        tb_todo();
+    }
+
+    // for each successor s of the BB in the dominator
+    //    rename(s)
+    FOREACH_N(s, 1, f->bb_count) {
+        if (c->doms[s] == bb) {
+            ssa_rename(c, f, s, stack);
+        }
+    }
+
+    FOREACH_N(var, 0, c->to_promote_count) {
+        dyn_array_set_length(stack[var], old_len[var]);
+    }
+    tb_tls_restore(c->tls, old_len);
 }
 
 typedef struct {
@@ -449,13 +430,6 @@ bool mem2reg(TB_Function* f) {
     c.current_def = tb_tls_push(tls, to_promote_count * c.bb_count * sizeof(TB_Reg));
     memset(c.current_def, 0, to_promote_count * c.bb_count * sizeof(TB_Reg));
 
-    c.incomplete_phis = tb_tls_push(tls, to_promote_count * c.bb_count * sizeof(TB_Reg));
-    memset(c.incomplete_phis, 0, to_promote_count * c.bb_count * sizeof(TB_Reg));
-
-    // TODO(NeGate): Maybe we should bitpack this?
-    c.sealed_blocks = tb_tls_push(tls, c.bb_count * sizeof(bool));
-    memset(c.sealed_blocks, 0, c.bb_count * sizeof(bool));
-
     // Calculate all the immediate predecessors
     c.preds = tb_get_temp_predeccesors(f, tls);
 
@@ -463,48 +437,23 @@ bool mem2reg(TB_Function* f) {
     c.doms = tb_tls_push(tls, f->bb_count * sizeof(TB_Label));
     tb_get_dominators(f, c.preds, c.doms);
 
-    // We generate nodes via a postorder walk
-    TB_PostorderWalk walk = {
-        .visited = tb_tls_push(tls, f->bb_count * sizeof(bool)),
-        .traversal = tb_tls_push(tls, f->bb_count * sizeof(TB_Reg)),
-    };
-    tb_function_get_postorder_explicit(f, &walk);
+    TB_DominanceFrontiers df = tb_get_dominance_frontiers(f, c.preds, c.doms);
 
-    FOREACH_REVERSE_N(i, 0, walk.count) {
-        TB_Label bb = walk.traversal[i];
-
+    ////////////////////////////////
+    // Phase 1: Insert phi functions
+    ////////////////////////////////
+    // Identify the final value of all the variables in the function per basic block
+    FOREACH_N(bb, 0, f->bb_count) {
         TB_FOR_NODE(r, f, bb) {
             TB_Node* n = &f->nodes[r];
 
             switch (n->type) {
-                case TB_LOCAL: {
-                    int var = get_variable_id(&c, r);
-                    if (var >= 0) tb_kill_op(f, r);
-                    break;
-                }
                 case TB_PARAM_ADDR: {
                     // Parameter stack slots map to parameter registers
                     // so we need to tell mem2reg about that.
                     int var = get_variable_id(&c, r);
                     if (var >= 0) {
                         write_variable(&c, var, bb, n->param_addr.param);
-                        tb_kill_op(f, r);
-                    }
-                    break;
-                }
-                case TB_LOAD: {
-                    int var = get_variable_id(&c, n->load.address);
-                    if (var >= 0) {
-                        TB_Reg value = read_variable(&c, var, bb);
-                        assert(value);
-
-                        if (!TB_DATA_TYPE_EQUALS(f->nodes[r].dt, f->nodes[value].dt)) {
-                            f->nodes[r].type = TB_BITCAST;
-                            f->nodes[r].unary.src = value;
-                        } else {
-                            f->nodes[r].type = TB_PASS;
-                            f->nodes[r].pass.value = value;
-                        }
                     }
                     break;
                 }
@@ -536,136 +485,81 @@ bool mem2reg(TB_Function* f) {
                 case TB_STORE: {
                     int var = get_variable_id(&c, n->store.address);
                     if (var >= 0) {
-                        tb_kill_op(f, r);
                         write_variable(&c, var, bb, n->store.value);
                     }
                     break;
                 }
             }
         }
+    }
 
-        bool ready = true;
-        FOREACH_N(j, 0, c.preds.count[bb]) {
-            if (!c.sealed_blocks[j]) {
-                ready = false;
-                break;
+    // for each global name we'll insert phi nodes
+    size_t queue_count;
+    TB_Label* queue = tb_tls_push(tls, f->bb_count * sizeof(TB_Label));
+    Set ever_worked = set_create(f->bb_count);
+    Set has_already = set_create(f->bb_count);
+
+    FOREACH_N(var, 0, c.to_promote_count) {
+        set_clear(&ever_worked);
+        set_clear(&has_already);
+        queue_count = 0;
+
+        FOREACH_N(bb, 0, f->bb_count) {
+            TB_Reg r = c.current_def[(var * f->bb_count) + bb];
+            if (r != 0) {
+                set_put(&ever_worked, bb);
+                queue[queue_count++] = bb;
             }
         }
 
-        if (ready) {
-            seal_block(&c, bb);
-        }
-    }
+        // it's a global name
+        if (queue_count > 1) {
+            // insert phi per dominance of the blocks it's defined in
+            size_t i = 0;
+            while (i < queue_count) {
+                TB_Label bb = queue[i];
+                TB_Reg value = c.current_def[(var * f->bb_count) + bb];
+                TB_DataType dt = f->nodes[value].dt;
 
-    FOREACH_N(j, 1, c.bb_count) {
-        seal_block(&c, j);
-        //assert(c.sealed_blocks[j]);
-    }
+                FOREACH_N(k, 0, df.count[bb]) {
+                    TB_Label l = df._[bb][k];
+                    if (!set_first_time(&has_already, l)) continue;
 
-    // clean up more phi nodes potentially
-    TB_FOR_BASIC_BLOCK(bb, f) {
-        TB_FOR_NODE(r, f, bb) {
-            if (!tb_node_is_phi_node(f, r)) continue;
+                    TB_Reg phi_reg = c.current_def[(var * f->bb_count) + l];
+                    if (phi_reg == 0) {
+                        phi_reg = new_phi(&c, f, var, l, dt);
+                    } else if (!tb_node_is_phi_node(f, phi_reg)) {
+                        TB_Reg old_reg = phi_reg;
+                        phi_reg = new_phi(&c, f, var, l, dt);
+                        add_phi_operand(&c, f, phi_reg, l, old_reg);
+                    }
 
-            TB_Node* n = &f->nodes[r];
-            int count = tb_node_get_phi_width(f, r);
-            TB_PhiInput* inputs = tb_node_get_phi_inputs(f, r);
-            if (count == 0) {
-                tb_murder_reg(f, r);
-            } else if (count == 1) {
-                OPTIMIZER_LOG(r, "removed trivial phi");
+                    c.current_def[(var * f->bb_count) + l] = phi_reg;
+                    add_phi_operand(&c, f, phi_reg, bb, value);
 
-                TB_Reg val = inputs[0].val;
-                assert(val > 0 && val < f->node_count);
-                if (n->type == TB_PHIN) {
-                    tb_platform_heap_free(inputs);
-                }
-
-                // remove useless phi
-                n->type = TB_PASS;
-                n->pass.value = r;
-                changes++;
-            } else {
-                // check if none of the paths diverge
-                TB_Reg first = inputs[0].val;
-                bool match = true;
-                FOREACH_N(j, 1, count) {
-                    if (first != inputs[j].val) {
-                        match = false;
-                        break;
+                    if (set_first_time(&ever_worked, l)) {
+                        queue[queue_count++] = l;
                     }
                 }
 
-                if (match) {
-                    // replace with a simple PASS
-                    OPTIMIZER_LOG(r, "removed phi with no divergent paths");
-
-                    n->type = TB_PASS;
-                    n->pass.value = first;
-                    changes++;
-                } else {
-                    // Check for any duplicate inputs
-                    size_t new_length = 0;
-                    TB_PhiInput* new_inputs = tb_tls_push(tls, 0);
-
-                    FOREACH_N(j, 0, count) {
-                        TB_Reg a = inputs[j].val;
-                        TB_Reg b = inputs[j].label;
-
-                        bool duplicate = false;
-                        if (a == r) {
-                            duplicate = true;
-                        } else if (f->nodes[a].type != TB_NULL) {
-                            FOREACH_N(k, 0, j) {
-                                if (inputs[k].val == a && inputs[k].label == b) {
-                                    duplicate = true;
-                                    break;
-                                }
-                            }
-                        } else {
-                            duplicate = true;
-                        }
-
-                        if (!duplicate) {
-                            if (a != TB_NULL_REG && f->nodes[a].type == TB_NULL) {
-                                a = TB_NULL_REG;
-                            }
-
-                            tb_tls_push(tls, sizeof(TB_PhiInput));
-                            new_inputs[new_length++] = (TB_PhiInput){ .label = b, .val = a };
-                        }
-                    }
-
-                    if (new_length != count) {
-                        // Pass it off to more permanent storage
-                        if (n->type == TB_PHIN) {
-                            tb_platform_heap_free(inputs);
-                        }
-
-                        if (new_length == 0) {
-                            OPTIMIZER_LOG(r, "Deduplicated away the PHI node");
-                            n->type = TB_NULL;
-                        } else if (new_length == 1) {
-                            OPTIMIZER_LOG(r, "Deduplicated away the PHI node into PASS");
-                            n->type = TB_PASS;
-                            n->pass.value = new_inputs[0].val;
-                        } else {
-                            OPTIMIZER_LOG(r, "Deduplicated PHI node entries");
-                            TB_PhiInput* more_permanent_store = tb_platform_heap_alloc(new_length * sizeof(TB_PhiInput));
-                            memcpy(more_permanent_store, new_inputs, new_length * sizeof(TB_PhiInput));
-
-                            n->type = TB_PHIN;
-                            n->phi.count = new_length;
-                            n->phi.inputs = more_permanent_store;
-                        }
-                        changes++;
-                    }
-                    tb_tls_restore(tls, new_inputs);
-                }
+                i += 1;
             }
         }
     }
+    set_free(&ever_worked);
+    set_free(&has_already);
+    tb_tls_restore(tls, queue);
 
+    ////////////////////////////////
+    // Phase 2: Rename loads and stores
+    ////////////////////////////////
+    DynArray(TB_Reg)* stack = tb_tls_push(tls, c.to_promote_count * sizeof(DynArray(TB_Reg)));
+    FOREACH_N(var, 0, c.to_promote_count) {
+        stack[var] = dyn_array_create_with_initial_cap(TB_Reg, 16);
+    }
+
+    ssa_rename(&c, f, 0, stack);
+    tb_free_dominance_frontiers(f, &df);
     return true;
 }
 

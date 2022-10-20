@@ -127,7 +127,7 @@ static NL_MapHeader* nl_map__resize(NL_MapHeader* table, size_t entry_size, size
     size_t old_size = table->size;
     size_t new_size = old_size * 2;
 
-    printf("Resize %zu -> %zu...\n", old_size, new_size);
+    // printf("Resize %zu -> %zu...\n", old_size, new_size);
     NL_MapHeader* new_table = nl_map__alloc(new_size, entry_size);
 
     // go per bucket and relocate them

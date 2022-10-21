@@ -2690,7 +2690,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                     }
                     // mov key, [jump_table + key*4]
                     Val arith = val_base_index(TB_TYPE_PTR, tmp.gpr, key.gpr, SCALE_X4);
-                    INST2(MOV, &key, &arith, TB_TYPE_I32);
+                    INST2(MOVSXD, &key, &arith, TB_TYPE_I64);
                     // add key, jump_table
                     INST2(ADD, &key, &tmp, TB_TYPE_PTR);
                     // jmp key

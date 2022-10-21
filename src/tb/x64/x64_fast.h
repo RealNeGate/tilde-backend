@@ -1445,8 +1445,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                         invert = true;
                     }
 
-                    if (ctx->use_count[lhs] == 1 &&
-                        ctx->addresses[lhs].type == ADDRESS_DESC_GPR) {
+                    if (ctx->use_count[lhs] == 1 && ctx->addresses[lhs].type == ADDRESS_DESC_GPR) {
                         Val val = val_gpr(cmp_dt, ctx->addresses[lhs].gpr);
                         fast_folded_op(ctx, f, CMP, &val, rhs);
                     } else {
@@ -2643,12 +2642,12 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                 TB_SwitchEntry* entries = (TB_SwitchEntry*) &f->vla.data[end->switch_.entries_start];
 
                 // check if there's at most only one space between entries
-                int64_t last = entries[0].key;
-                int64_t min = last, max = last;
+                uint64_t last = entries[0].key;
+                uint64_t min = last, max = last;
 
                 bool use_jump_table = true;
                 FOREACH_N(i, 1, entry_count) {
-                    int64_t key = entries[i].key;
+                    uint64_t key = entries[i].key;
                     min = (min > key) ? key : min;
                     max = (max > key) ? max : key;
 
@@ -2676,9 +2675,22 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                     EMIT1(&ctx->emit, 0x8D);
                     EMIT1(&ctx->emit, mod_rx_rm(0, tmp.gpr, RBP));
                     EMIT4(&ctx->emit, 0);
+                    // CAST key to 64bit
+                    int bits_in_type = l.dt.type == TB_PTR ? 64 : l.dt.data;
+                    if (bits_in_type == 8) {
+                        INST2(MOVSXB, &key, &key, TB_TYPE_I64);
+                    } else if (bits_in_type == 16) {
+                        INST2(MOVSXW, &key, &key, TB_TYPE_I64);
+                    } else if (bits_in_type == 32) {
+                        INST2(MOVSXD, &key, &key, TB_TYPE_I64);
+                    } else if (bits_in_type == 64) {
+                        // no instruction necessary
+                    } else {
+                        assert(0 && "TODO: implement arbitrary precision sign extend here");
+                    }
                     // mov key, [jump_table + key*4]
                     Val arith = val_base_index(TB_TYPE_PTR, tmp.gpr, key.gpr, SCALE_X4);
-                    INST2(MOV, &key, &arith, TB_TYPE_PTR);
+                    INST2(MOV, &key, &arith, TB_TYPE_I32);
                     // add key, jump_table
                     INST2(ADD, &key, &tmp, TB_TYPE_PTR);
                     // jmp key

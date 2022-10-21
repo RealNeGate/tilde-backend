@@ -78,7 +78,7 @@ static bool compact_regs(TB_Function* f) {
 static bool remove_passes(TB_Function* f) {
     int changes = 0;
 
-    if (f->node_count > 1000) {
+    if (f->node_count > 300) {
         NL_Map(TB_Reg, TB_Reg) def_table = { 0 };
 
         TB_FOR_BASIC_BLOCK(bb, f) {

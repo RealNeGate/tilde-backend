@@ -2328,9 +2328,16 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
 // temporary storage can't fit the necessary memory, it'll fallback to the heap
 // to avoid just crashing.
 TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t out_capacity, size_t local_thread_id) {
+    typedef struct {
+        // pos, origin is relative to the function body.
+        // target is label
+        uint32_t pos, origin, target;
+    } JumpTablePatch;
+
     s_local_thread_id = local_thread_id;
 
     TB_TemporaryStorage* tls = tb_tls_allocate();
+    DynArray(JumpTablePatch) jump_table_patches = NULL;
 
     // Allocate all the memory we'll need
     bool is_ctx_heap_allocated = false;
@@ -2632,22 +2639,107 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
 
                 fast_evict_everything(ctx, f);
 
-                // Shitty if-chain
-                // CMP key, 0
-                // JE .case0
-                // CMP key, 10
-                // JE .case10
-                // JMP .default
                 size_t entry_count = (end->switch_.entries_end - end->switch_.entries_start) / 2;
-                FOREACH_N(i, 0, entry_count) {
-                    TB_SwitchEntry* entry = (TB_SwitchEntry*)&f->vla.data[end->switch_.entries_start + (i * 2)];
-                    Val operand = val_imm(l.dt, entry->key);
+                TB_SwitchEntry* entries = (TB_SwitchEntry*) &f->vla.data[end->switch_.entries_start];
 
-                    INST2(CMP, &key, &operand, l.dt);
-                    JCC(E, entry->value);
+                // check if there's at most only one space between entries
+                int64_t last = entries[0].key;
+                int64_t min = last, max = last;
+
+                bool use_jump_table = true;
+                FOREACH_N(i, 1, entry_count) {
+                    int64_t key = entries[i].key;
+                    min = (min > key) ? key : min;
+                    max = (max > key) ? max : key;
+
+                    int64_t dist = entries[i].key - last;
+                    if (dist > 2) {
+                        use_jump_table = false;
+                        break;
+                    }
+                    last = entries[i].key;
                 }
 
-                JMP(end->switch_.default_label);
+                if (use_jump_table) {
+                    // Simple range check
+                    Val min_val = val_imm(TB_TYPE_I64, min);
+                    INST2(SUB, &key, &min_val, l.dt);
+                    Val range_val = val_imm(TB_TYPE_I64, max - min);
+                    INST2(CMP, &key, &range_val, l.dt);
+                    JCC(GE, end->switch_.default_label);
+
+                    // Jump table call
+                    // lea jump_table, [rip + JUMP_TABLE]
+                    size_t jump_table_patch = GET_CODE_POS(&ctx->emit) + 3;
+                    Val tmp = val_gpr(TB_TYPE_PTR, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
+                    EMIT1(&ctx->emit, rex(true, tmp.gpr, 0, 0));
+                    EMIT1(&ctx->emit, 0x8D);
+                    EMIT1(&ctx->emit, mod_rx_rm(0, tmp.gpr, RBP));
+                    EMIT4(&ctx->emit, 0);
+                    // mov key, [jump_table + key*4]
+                    Val arith = val_base_index(TB_TYPE_PTR, tmp.gpr, key.gpr, SCALE_X4);
+                    INST2(LEA, &key, &arith, TB_TYPE_PTR);
+                    // add key, jump_table
+                    INST2(ADD, &key, &tmp, TB_TYPE_PTR);
+                    // jmp key
+                    if (key.gpr >= 8) EMIT1(&ctx->emit, rex(true, 0, key.gpr, 0));
+                    EMIT1(&ctx->emit, 0xFF);
+                    EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 4, key.gpr));
+                    fast_kill_temp_gpr(ctx, f, tmp.gpr);
+
+                    uint32_t jump_table_start = GET_CODE_POS(&ctx->emit);
+                    PATCH4(&ctx->emit, jump_table_patch, jump_table_start - (jump_table_patch + 4));
+
+                    // Construct jump table
+                    //   similar to clang we use relative jumps since this avoids
+                    //   passing unnecessary absolute relocations to the linker/loader
+                    if (jump_table_patches == NULL) {
+                        jump_table_patches = dyn_array_create_with_initial_cap(JumpTablePatch, tb_next_pow2(max - min));
+                    }
+
+                    size_t jump_table_bytes = (max - min) * 4;
+                    void* p = tb_cgemit_reserve(&ctx->emit, jump_table_bytes);
+                    memset(p, 0, jump_table_bytes);
+                    tb_cgemit_commit(p, jump_table_bytes);
+
+                    Set entries_set = set_create(max - min);
+                    FOREACH_N(i, 0, entry_count) {
+                        JumpTablePatch p;
+                        p.pos = jump_table_start + ((entries[i].key - min) * 4);
+                        p.origin = jump_table_start;
+                        p.target = entries[i].value;
+
+                        dyn_array_put(jump_table_patches, p);
+                        set_put(&entries_set, entries[i].key - min);
+                    }
+
+                    // handle default cases
+                    FOREACH_N(i, 0, max - min) {
+                        if (!set_get(&entries_set, i)) {
+                            JumpTablePatch p;
+                            p.pos = jump_table_start + (i * 4);
+                            p.origin = jump_table_start;
+                            p.target = end->switch_.default_label;
+                            dyn_array_put(jump_table_patches, p);
+                        }
+                    }
+                    set_free(&entries_set);
+                } else {
+                    // Shitty if-chain
+                    // CMP key, 0
+                    // JE .case0
+                    // CMP key, 10
+                    // JE .case10
+                    // JMP .default
+                    FOREACH_N(i, 0, entry_count) {
+                        Val operand = val_imm(l.dt, entries[i].key);
+
+                        INST2(CMP, &key, &operand, l.dt);
+                        JCC(E, entries[i].value);
+                    }
+
+                    JMP(end->switch_.default_label);
+                }
             }
         } else {
             tb_function_print(f, tb_default_print_callback, stderr, true);
@@ -2680,6 +2772,18 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
         uint32_t target_lbl = ctx->emit.label_patches[i].target_lbl;
 
         PATCH4(&ctx->emit, pos, ctx->emit.labels[target_lbl] - (pos + 4));
+    }
+
+    // Resolve jump table patches
+    if (jump_table_patches != NULL) {
+        FOREACH_N(i, 0, dyn_array_length(jump_table_patches)) {
+            uint32_t pos = jump_table_patches[i].pos;
+            uint32_t src = jump_table_patches[i].origin;
+            uint32_t target = ctx->emit.labels[jump_table_patches[i].target];
+
+            PATCH4(&ctx->emit, pos, target - src);
+        }
+        dyn_array_destroy(jump_table_patches);
     }
 
     if (f->line_count > 0) {

@@ -304,7 +304,6 @@ static bool remove_passes(TB_Function* f) {
 
         nl_map_free(def_table);
     } else {
-        int changes = 0;
         TB_FOR_BASIC_BLOCK(bb, f) {
             TB_FOR_NODE(r, f, bb) {
                 if (f->nodes[r].type == TB_PASS) {

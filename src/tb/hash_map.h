@@ -65,7 +65,7 @@ typedef struct {
 
 #ifndef NL_STRING_MAP_INLINE
 NL_HASH_MAP_API NL_MapInsert nl_map__insert(void* map, size_t entry_size, size_t key_size, const void* key);
-NL_HASH_MAP_API ptrdiff_t nl_map__get(NL_MapHeader* restrict table, size_t key_size, const void* key, size_t entry_size);
+NL_HASH_MAP_API ptrdiff_t nl_map__get(NL_MapHeader* restrict table, size_t entry_size, size_t key_size, const void* key);
 NL_HASH_MAP_API void nl_map__free(NL_MapHeader* restrict table);
 #endif
 
@@ -102,7 +102,7 @@ NL_HASH_MAP_API NL_MapHeader* nl_map__alloc(size_t size, size_t entry_size) {
 
     NL_MapHeader* table = NL_MALLOC(sizeof(NL_MapHeader) + (size * entry_size));
     table->size = size;
-    table->buckets = NL_CALLOC(size / NL_MAP_BUCKET_SIZE, sizeof(NL_Slice));
+    table->buckets = NL_CALLOC(size / NL_MAP_BUCKET_SIZE, sizeof(uint8_t));
     return table;
 }
 

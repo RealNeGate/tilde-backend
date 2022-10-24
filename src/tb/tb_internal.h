@@ -37,10 +37,6 @@
 #include "builtins.h"
 #include "pool.h"
 
-#define NL_STRING_MAP_INLINE
-#define NL_STRING_MAP_IMPL
-#include "string_map.h"
-
 // ***********************************
 // Constraints
 // ***********************************

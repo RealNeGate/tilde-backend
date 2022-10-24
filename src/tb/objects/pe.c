@@ -1,7 +1,7 @@
 #include "coff.h"
 
 typedef struct {
-    NL_Slice name;
+    TB_Slice name;
     // this is the location the thunk will call
     uint32_t ds_address;
     // this is the ID of the thunk
@@ -9,7 +9,7 @@ typedef struct {
 } ImportThunk;
 
 typedef struct {
-    NL_Slice libpath;
+    TB_Slice libpath;
     DynArray(ImportThunk) thunks;
 } ImportTable;
 
@@ -17,7 +17,7 @@ typedef struct {
     TB_LinkerInput inputs;
 
     // symbol name -> imports
-    NL_Strmap(int) import_nametable;
+    // NL_Strmap(int) import_nametable;
     DynArray(ImportTable) imports;
 } LinkerCtx;
 
@@ -87,7 +87,7 @@ static void pad_file(TB_TemporaryStorage* tls, FILE* file, char pad, size_t alig
 static void import_archive(LinkerCtx* restrict ctx, TB_ArchiveFile* restrict ar) {
     FOREACH_N(i, 0, ar->import_count) {
         TB_ArchiveImport* restrict import = &ar->imports[i];
-        NL_Slice libname = { strlen(import->libname), (uint8_t*) import->libname };
+        TB_Slice libname = { strlen(import->libname), (uint8_t*) import->libname };
 
         ptrdiff_t import_index = -1;
         dyn_array_for(j, ctx->imports) {
@@ -110,7 +110,8 @@ static void import_archive(LinkerCtx* restrict ctx, TB_ArchiveFile* restrict ar)
             t->thunks = dyn_array_create(ImportThunk);
         }
 
-        nl_strmap_put_cstr(ctx->import_nametable, import->name, import_index);
+        __debugbreak();
+        // nl_strmap_put_cstr(ctx->import_nametable, import->name, import_index);
     }
 }
 
@@ -153,15 +154,15 @@ TB_API TB_Exports tb_pe_write_output(TB_Module* m, const IDebugFormat* dbg) {
     uint32_t thunk_id_counter = 0;
     FOREACH_N(i, 0, m->max_threads) {
         pool_for(TB_External, e, m->thread_info[i].externals) {
-            ptrdiff_t search = nl_strmap_get_cstr(ctx.import_nametable, e->super.name);
+            ptrdiff_t search = -1; //nl_strmap_get_cstr(ctx.import_nametable, e->super.name);
             if (search < 0) {
                 tb_panic("Could not link external: %s\n", e->super.name);
             }
 
-            ImportTable* table = &ctx.imports[ctx.import_nametable[search]];
+            ImportTable* table = NULL; // &ctx.imports[ctx.import_nametable[search]];
 
             ImportThunk t = { 0 };
-            t.name = nl_slice__cstr(e->super.name);
+            t.name = (TB_Slice){ strlen(e->super.name), (uint8_t*) e->super.name };
             t.thunk_id = thunk_id_counter++;
 
             dyn_array_put(table->thunks, t);

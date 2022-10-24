@@ -2790,8 +2790,8 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
     if (jump_table_patches != NULL) {
         FOREACH_N(i, 0, dyn_array_length(jump_table_patches)) {
             uint32_t pos = jump_table_patches[i].pos;
-            uint32_t src = jump_table_patches[i].origin;
-            uint32_t target = ctx->emit.labels[jump_table_patches[i].target];
+            int32_t src = jump_table_patches[i].origin;
+            int32_t target = ctx->emit.labels[jump_table_patches[i].target];
 
             PATCH4(&ctx->emit, pos, target - src);
         }

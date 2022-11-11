@@ -2645,7 +2645,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                 uint64_t last = entries[0].key;
                 uint64_t min = last, max = last;
 
-                bool use_jump_table = true;
+                /*bool use_jump_table = true;
                 FOREACH_N(i, 1, entry_count) {
                     uint64_t key = entries[i].key;
                     min = (min > key) ? key : min;
@@ -2657,9 +2657,9 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                         break;
                     }
                     last = entries[i].key;
-                }
+                }*/
 
-                if (use_jump_table) {
+                if (0 /* use_jump_table */) {
                     // Simple range check
                     Val min_val = val_imm(TB_TYPE_I64, min);
                     INST2(SUB, &key, &min_val, l.dt);

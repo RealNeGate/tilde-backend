@@ -384,7 +384,8 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
                 // Create argument list
                 CV_TypeIndex* params = tb_tls_push(tls, proto->param_count * sizeof(CV_TypeIndex));
                 FOREACH_N(i, 0, proto->param_count) {
-                    params[i] = convert_to_codeview_type(&builder, proto->params[i].debug_type);
+                    TB_DebugType* t = proto->params[i].debug_type;
+                    params[i] = t ? convert_to_codeview_type(&builder, t) : T_VOID;
                 }
 
                 CV_TypeIndex arg_list = tb_codeview_builder_add_arg_list(&builder, proto->param_count, params, proto->has_varargs);

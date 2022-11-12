@@ -2531,7 +2531,6 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
     // Evaluate basic blocks
     TB_FOR_BASIC_BLOCK(bb, f) {
         ctx->emit.labels[bb] = GET_CODE_POS(&ctx->emit);
-        printf("L[%d] = %zu\n", bb, GET_CODE_POS(&ctx->emit));
 
         // Generate instructions
         fast_eval_basic_block(ctx, f, bb);
@@ -2701,7 +2700,6 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                     fast_kill_temp_gpr(ctx, f, tmp.gpr);
 
                     uint32_t jump_table_start = GET_CODE_POS(&ctx->emit);
-                    printf("USING JUMP TABLE AT %d\n", jump_table_start);
                     PATCH4(&ctx->emit, jump_table_patch, jump_table_start - (jump_table_patch + 4));
 
                     // Construct jump table
@@ -2795,7 +2793,6 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
             int32_t src = jump_table_patches[i].origin;
             int32_t target = ctx->emit.labels[jump_table_patches[i].target];
 
-            printf("- JMPREL %d: %d to %d (aka L%d)\n", target - src, src, target, jump_table_patches[i].target);
             PATCH4(&ctx->emit, pos, target - src);
         }
         dyn_array_destroy(jump_table_patches);

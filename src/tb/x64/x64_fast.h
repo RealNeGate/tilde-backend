@@ -2531,6 +2531,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
     // Evaluate basic blocks
     TB_FOR_BASIC_BLOCK(bb, f) {
         ctx->emit.labels[bb] = GET_CODE_POS(&ctx->emit);
+        printf("L[%d] = %zu\n", bb, GET_CODE_POS(&ctx->emit));
 
         // Generate instructions
         fast_eval_basic_block(ctx, f, bb);
@@ -2645,7 +2646,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                 uint64_t last = entries[0].key;
                 uint64_t min = last, max = last;
 
-                /*bool use_jump_table = true;
+                bool use_jump_table = true;
                 FOREACH_N(i, 1, entry_count) {
                     uint64_t key = entries[i].key;
                     min = (min > key) ? key : min;
@@ -2657,9 +2658,9 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                         break;
                     }
                     last = entries[i].key;
-                }*/
+                }
 
-                if (0 /* use_jump_table */) {
+                if (use_jump_table) {
                     // Simple range check
                     Val min_val = val_imm(TB_TYPE_I64, min);
                     INST2(SUB, &key, &min_val, l.dt);
@@ -2700,6 +2701,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                     fast_kill_temp_gpr(ctx, f, tmp.gpr);
 
                     uint32_t jump_table_start = GET_CODE_POS(&ctx->emit);
+                    printf("USING JUMP TABLE AT %d\n", jump_table_start);
                     PATCH4(&ctx->emit, jump_table_patch, jump_table_start - (jump_table_patch + 4));
 
                     // Construct jump table
@@ -2709,12 +2711,12 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                         jump_table_patches = dyn_array_create_with_initial_cap(JumpTablePatch, tb_next_pow2(max - min));
                     }
 
-                    size_t jump_table_bytes = (max - min) * 4;
+                    size_t jump_table_bytes = ((max+1) - min) * 4;
                     void* p = tb_cgemit_reserve(&ctx->emit, jump_table_bytes);
                     memset(p, 0, jump_table_bytes);
-                    tb_cgemit_commit(p, jump_table_bytes);
+                    tb_cgemit_commit(&ctx->emit, jump_table_bytes);
 
-                    Set entries_set = set_create(max - min);
+                    Set entries_set = set_create((max+1) - min);
                     FOREACH_N(i, 0, entry_count) {
                         JumpTablePatch p;
                         p.pos = jump_table_start + ((entries[i].key - min) * 4);
@@ -2726,7 +2728,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                     }
 
                     // handle default cases
-                    FOREACH_N(i, 0, max - min) {
+                    FOREACH_N(i, 0, (max+1) - min) {
                         if (!set_get(&entries_set, i)) {
                             JumpTablePatch p;
                             p.pos = jump_table_start + (i * 4);
@@ -2793,6 +2795,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
             int32_t src = jump_table_patches[i].origin;
             int32_t target = ctx->emit.labels[jump_table_patches[i].target];
 
+            printf("- JMPREL %d: %d to %d (aka L%d)\n", target - src, src, target, jump_table_patches[i].target);
             PATCH4(&ctx->emit, pos, target - src);
         }
         dyn_array_destroy(jump_table_patches);

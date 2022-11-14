@@ -2645,7 +2645,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                 uint64_t last = entries[0].key;
                 uint64_t min = last, max = last;
 
-                bool use_jump_table = true;
+                bool use_jump_table = false;
                 FOREACH_N(i, 1, entry_count) {
                     uint64_t key = entries[i].key;
                     min = (min > key) ? key : min;

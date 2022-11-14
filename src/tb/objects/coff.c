@@ -28,8 +28,6 @@ struct TB_ModuleExporter {
     size_t string_table_pos;
     size_t tls_section_num;
 
-    TB_Emitter xdata;
-
     TB_SectionGroup debug_sections;
     COFF_SectionHeader* debug_section_headers;
 
@@ -87,12 +85,12 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
     ////////////////////////////////
     // Generate .xdata section (unwind info)
     ////////////////////////////////
+    TB_Emitter xdata = { 0 };
     {
         if (e->code_gen->emit_win64eh_unwind_info == NULL) {
             tb_panic("write_xdata_section: emit_win64eh_unwind_info is required.");
         }
 
-        TB_Emitter xdata = { 0 };
         TB_FOR_FUNCTIONS(f, m) {
             TB_FunctionOutput* out_f = f->output;
 
@@ -179,7 +177,7 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
         [S_XDATA] = (COFF_SectionHeader){
             .name = { ".xdata" }, // .xdata
             .characteristics = COFF_CHARACTERISTICS_RODATA,
-            .raw_data_size = e->xdata.count,
+            .raw_data_size = xdata.count,
             .num_reloc = 0,
         },
         [S_TLS] = (COFF_SectionHeader){
@@ -339,7 +337,7 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
         // XDATA section
         {
             assert(e->write_pos == sections[S_XDATA].raw_data_pos);
-            WRITE(e->xdata.data, e->xdata.count);
+            WRITE(xdata.data, xdata.count);
         }
 
         // TLS section
@@ -719,7 +717,7 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
     tb_platform_heap_free(e->temporary_memory);
     tb_platform_heap_free(e->debug_section_headers);
     tb_platform_heap_free(e->string_table);
-    tb_platform_heap_free(e->xdata.data);
+    tb_platform_heap_free(xdata.data);
     tb_platform_heap_free(e);
     return (TB_Exports){ .count = 1, .files = { { output_size, output } } };
 }

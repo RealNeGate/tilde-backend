@@ -40,17 +40,16 @@ extern "C" {
         TB_ARCH_UNKNOWN,
 
         TB_ARCH_X86_64,
-        // unsupported but planned
-        TB_ARCH_AARCH64
+        TB_ARCH_AARCH64, // unsupported but planned
+        TB_ARCH_WASM32,
     } TB_Arch;
 
     typedef enum TB_System {
         TB_SYSTEM_WINDOWS,
         TB_SYSTEM_LINUX,
         TB_SYSTEM_MACOS,
-
-        // Not supported yet
-        TB_SYSTEM_ANDROID,
+        TB_SYSTEM_ANDROID, // Not supported yet
+        TB_SYSTEM_WEB,
 
         TB_SYSTEM_MAX,
     } TB_System;

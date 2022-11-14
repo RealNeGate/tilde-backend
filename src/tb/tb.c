@@ -16,6 +16,7 @@ ICodeGen* tb__find_code_generator(TB_Module* m) {
         case TB_ARCH_X86_64: return &tb__x64_codegen;
         #endif
         // case TB_ARCH_AARCH64: return &tb__aarch64_codegen;
+        case TB_ARCH_WASM32: return &tb__wasm32_codegen;
         default: return NULL;
     }
 }
@@ -478,6 +479,7 @@ TB_API void tb_global_set_initializer(TB_Module* m, TB_Global* global, TB_Initia
     size_t align_mask = init->align - 1;
     pos = (pos + align_mask) & ~align_mask;
 
+    assert(init);
     assert(pos < UINT32_MAX && "Cannot fit global into space");
     assert((pos + init->size) < UINT32_MAX && "Cannot fit global into space");
 

@@ -1858,7 +1858,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 }
 
                 // evaluate parameters
-                FOREACH_REVERSE_N(j, 0, param_count) {
+                FOREACH_N(j, 0, param_count) {
                     TB_Reg      param_reg = f->vla.data[param_start + j];
                     TB_DataType param_dt  = f->nodes[param_reg].dt;
 

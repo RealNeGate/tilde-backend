@@ -592,6 +592,22 @@ TB_API TB_Reg tb_inst_not(TB_Function* f, TB_Reg n) {
     return r;
 }
 
+TB_API TB_Reg tb_inst_bswap(TB_Function* f, TB_Reg n) {
+    TB_DataType dt = f->nodes[n].dt;
+
+    TB_Reg r = tb_make_reg(f, TB_BSWAP, dt);
+    f->nodes[r].unary = (struct TB_NodeUnary) { n };
+    return r;
+}
+
+TB_API TB_Reg tb_inst_clz(TB_Function* f, TB_Reg n) {
+    TB_DataType dt = f->nodes[n].dt;
+
+    TB_Reg r = tb_make_reg(f, TB_CLZ, dt);
+    f->nodes[r].unary = (struct TB_NodeUnary) { n };
+    return r;
+}
+
 TB_API TB_Reg tb_inst_neg(TB_Function* f, TB_Reg n) {
     TB_DataType dt = f->nodes[n].dt;
 

@@ -453,7 +453,7 @@ TB_API void tb_initializer_add_extern(TB_Module* m, TB_Initializer* init, size_t
     };
 }
 
-TB_API TB_Global* tb_global_create(TB_Module* m, const char* name, TB_StorageClass storage, TB_Linkage linkage) {
+TB_API TB_Global* tb_global_create(TB_Module* m, const char* name, TB_StorageClass storage, TB_DebugType* dbg_type, TB_Linkage linkage) {
     int tid = tb__get_local_tid();
 
     TB_Global* g = pool_put(m->thread_info[tid].globals);
@@ -463,6 +463,7 @@ TB_API TB_Global* tb_global_create(TB_Module* m, const char* name, TB_StorageCla
             .name = tb_platform_string_alloc(name),
             .module = m,
         },
+        .dbg_type = dbg_type,
         .linkage = linkage,
         .storage = storage
     };

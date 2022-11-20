@@ -47,6 +47,8 @@ TB_API bool tb_next_node_input(const TB_Function* f, TB_NodeInputIter* iter) {
 
         case TB_KEEPALIVE:
         case TB_VA_START:
+        case TB_BSWAP:
+        case TB_CLZ:
         case TB_NOT:
         case TB_NEG:
         case TB_X86INTRIN_SQRT:

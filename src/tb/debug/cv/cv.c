@@ -162,9 +162,17 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
     sections[0] = (TB_ObjectSection){ gimme_cstr_as_slice(".debug$S") };
     sections[1] = (TB_ObjectSection){ gimme_cstr_as_slice(".debug$T") };
 
+    size_t global_count = 0;
+    FOREACH_N(i, 0, m->max_threads) {
+        global_count += pool_popcount(m->thread_info[i].globals);
+    }
+
     // debug$S does quite a few relocations :P, namely saying that
     // certain things point to specific areas of .text section
-    sections[0].relocations = tb_platform_heap_alloc(4 * m->compiled_function_count * sizeof(TB_ObjectReloc));
+    sections[0].relocations = tb_platform_heap_alloc(
+        (2 * global_count) +
+        (4 * m->compiled_function_count * sizeof(TB_ObjectReloc))
+    );
 
     // Write type table
     uint32_t* file_table_offset = tb_tls_push(tls, m->files.count * sizeof(uint32_t));
@@ -359,6 +367,34 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
             tb_outs_UNSAFE(&debugs_out, sizeof(creator_str), (const uint8_t*)creator_str);
 
             tb_out2b(&debugs_out, 0);
+        }
+
+        FOREACH_N(i, 0, m->max_threads) {
+            pool_for(TB_Global, g, m->thread_info[i].globals) {
+                const char* name = g->super.name;
+                size_t name_len = strlen(g->super.name) + 1;
+                CV_TypeIndex type = g->dbg_type ? convert_to_codeview_type(&builder, g->dbg_type) : T_VOID;
+
+                printf("%-20s : %d\n", name, type);
+                size_t baseline = debugs_out.count;
+                tb_out2b(&debugs_out, 0);
+                tb_out2b(&debugs_out, S_GDATA32);
+                tb_out4b(&debugs_out, type); // type index
+                {
+                    size_t id = g->super.symbol_id;
+                    size_t patch_pos = debugs_out.count;
+                    add_reloc(&sections[0], &(TB_ObjectReloc){ TB_OBJECT_RELOC_SECREL, id, patch_pos });
+                    add_reloc(&sections[0], &(TB_ObjectReloc){ TB_OBJECT_RELOC_SECTION, id, patch_pos + 4 });
+                }
+                tb_out4b(&debugs_out, 0); // offset
+                tb_out2b(&debugs_out, 0); // section
+
+                tb_out_reserve(&debugs_out, name_len);
+                tb_outs_UNSAFE(&debugs_out, name_len, (const uint8_t*) name);
+
+                // patch field length
+                tb_patch2b(&debugs_out, baseline, (debugs_out.count - baseline) - 2);
+            }
         }
 
         // Symbols

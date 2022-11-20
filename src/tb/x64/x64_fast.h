@@ -411,7 +411,7 @@ static void fast_folded_op(X64_FastCtx* ctx, TB_Function* f, Inst2Type op, const
     Val rhs = fast_eval(ctx, f, rhs_reg);
 
     TB_Node* restrict n = &f->nodes[rhs_reg];
-    LegalInt l = legalize_int(op == MOVSXD ? TB_TYPE_I64 : n->dt);
+    LegalInt l = legalize_int((op == MOVSXD || op == MOVSXW) ? TB_TYPE_I64 : n->dt);
     //assert(l.mask == 0 && "TODO");
 
     if (!rhs.is_spill && is_value_mem(&rhs) && n->type != TB_LOAD) {
@@ -735,14 +735,23 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
         switch (reg_type) {
             case TB_NULL:
             case TB_PARAM:
-            case TB_PHI1:
-            case TB_PHI2:
-            case TB_PHIN:
             case TB_PARAM_ADDR:
             case TB_LOCAL:
             case TB_KEEPALIVE:
             case TB_POISON:
             break;
+
+            case TB_PHI1:
+            case TB_PHI2:
+            case TB_PHIN: {
+                if (ctx->addresses[r].type == ADDRESS_DESC_NONE) {
+                    int size = get_data_type_size(dt);
+                    int pos  = STACK_ALLOC(size, size);
+
+                    fast_def_spill(ctx, f, r, pos, dt);
+                }
+                break;
+            }
 
             case TB_GET_SYMBOL_ADDRESS: {
                 GPR dst_gpr = fast_alloc_gpr(ctx, f, r);
@@ -1683,9 +1692,44 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 fast_kill_reg(ctx, f, n->unary.src);
                 break;
             }
+            case TB_BSWAP: {
+                // we probably want some recycling eventually...
+                Val val = val_gpr(dt, fast_alloc_gpr(ctx, f, r));
+                fast_def_gpr(ctx, f, r, val.gpr, dt);
+
+                fast_folded_op(ctx, f, MOV, &val, n->unary.src);
+
+                // BSWAP     0F C8+rd
+                EMIT1(&ctx->emit, rex(false, val.gpr, 0, 0));
+                EMIT1(&ctx->emit, 0x0F);
+                EMIT1(&ctx->emit, 0xC8 + (val.gpr & 0b111));
+                fast_kill_reg(ctx, f, n->unary.src);
+                break;
+            }
+            case TB_CLZ: {
+                tb_todo();
+                // For now, we'll emulate CLZ with
+                //   bsr dst, src
+                //   xor dst, BIT_WIDTH-1
+                /*Val src = fast_eval(ctx, f, n->unary.src);
+
+                // we probably want some recycling eventually...
+                Val dst = val_gpr(dt, fast_alloc_gpr(ctx, f, r));
+                fast_def_gpr(ctx, f, r, dst.gpr, dt);
+
+                // bsr dst, src    |    REX.W 0x0F 0xBD /r
+                EMIT1(&ctx->emit, rex(true, dst.gpr, src.base, src.index));
+                EMIT1(&ctx->emit, 0x0F);
+                EMIT1(&ctx->emit, 0xBD);
+                emit_memory_operand(&ctx->emit, dst.gpr, &src);
+
+                Val bit_width_mask = val_imm(dt, dt.data - 1);
+                INST2(XOR, &dst, &bit_width_mask, TB_TYPE_I64);*/
+                break;
+            }
             case TB_NOT:
             case TB_NEG: {
-                assert(dt.width == 0 && "TODO: Implement vector negate");
+                assert(dt.width == 0 && "TODO: Implement vector not and negate");
                 bool is_not = reg_type == TB_NOT;
 
                 if (TB_IS_FLOAT_TYPE(dt)) {

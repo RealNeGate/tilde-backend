@@ -134,6 +134,7 @@ struct TB_External {
 struct TB_Global {
     TB_Symbol super;
 
+    TB_DebugType* dbg_type;
     TB_Linkage linkage;
     TB_StorageClass storage;
 

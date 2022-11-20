@@ -451,17 +451,17 @@ enum {
 };
 
 enum {
-    S_LPROC32_ID = 0x1146,
-    S_GPROC32_ID = 0x1147,
-
+    S_LDATA32        = 0x110c, // Module-local symbol
+    S_GDATA32        = 0x110d, // Global data symbol
+    S_LPROC32_ID     = 0x1146,
+    S_GPROC32_ID     = 0x1147,
     S_INLINESITE     = 0x114d, // inlined function callsite.
     S_INLINESITE_END = 0x114e,
     S_PROC_ID_END    = 0x114f,
-
-    S_FRAMEPROC = 0x1012, // extra frame and proc information
-    S_REGREL32  = 0x1111, // register relative address
-    S_LOCAL = 0x113e,     // defines a local symbol in optimized code
-    S_DEFRANGE = 0x113f,  // defines a single range of addresses in which symbol can be evaluated
+    S_FRAMEPROC      = 0x1012, // extra frame and proc information
+    S_REGREL32       = 0x1111, // register relative address
+    S_LOCAL          = 0x113e, // defines a local symbol in optimized code
+    S_DEFRANGE       = 0x113f, // defines a single range of addresses in which symbol can be evaluated
     S_DEFRANGE_FRAMEPOINTER_REL = 0x1142, // range for stack symbol.
 };
 

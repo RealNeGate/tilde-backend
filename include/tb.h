@@ -258,6 +258,10 @@ extern "C" {
         /* Select */
         TB_SELECT,
 
+        /* Bitmagic */
+        TB_BSWAP,
+        TB_CLZ,
+
         /* Unary operations */
         TB_NOT,
         TB_NEG,
@@ -891,7 +895,7 @@ extern "C" {
     ////////////////////////////////
     // Constant Initializers
     ////////////////////////////////
-    TB_API TB_Global* tb_global_create(TB_Module* m, const char* name, TB_StorageClass storage, TB_Linkage linkage);
+    TB_API TB_Global* tb_global_create(TB_Module* m, const char* name, TB_StorageClass storage, TB_DebugType* dbg_type, TB_Linkage linkage);
     TB_API void tb_global_set_initializer(TB_Module* m, TB_Global* global, TB_Initializer* initializer);
 
     ////////////////////////////////
@@ -1091,6 +1095,10 @@ extern "C" {
     TB_API TB_Reg tb_inst_mul(TB_Function* f, TB_Reg a, TB_Reg b, TB_ArithmaticBehavior arith_behavior);
     TB_API TB_Reg tb_inst_div(TB_Function* f, TB_Reg a, TB_Reg b, bool signedness);
     TB_API TB_Reg tb_inst_mod(TB_Function* f, TB_Reg a, TB_Reg b, bool signedness);
+
+    // Bitmagic operations
+    TB_API TB_Reg tb_inst_bswap(TB_Function* f, TB_Reg n);
+    TB_API TB_Reg tb_inst_clz(TB_Function* f, TB_Reg n);
 
     // Bitwise operations
     TB_API TB_Reg tb_inst_not(TB_Function* f, TB_Reg n);

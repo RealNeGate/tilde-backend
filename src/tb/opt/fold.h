@@ -392,6 +392,14 @@ static bool const_fold(TB_Function* f, TB_Node* n) {
                 }
             }
         }
+    } else if (n->type == TB_CLZ) {
+        TB_Node* src = &f->nodes[n->unary.src];
+
+        if (src->type == TB_INTEGER_CONST && src->dt.type == TB_INT && src->dt.data <= 64) {
+            n->type = TB_INTEGER_CONST;
+            n->integer.num_words = 1;
+            n->integer.single_word = __builtin_clz(src->integer.single_word);
+        }
     } else if (n->type == TB_SIGN_EXT) {
         TB_Node* src = &f->nodes[n->unary.src];
 

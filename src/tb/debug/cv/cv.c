@@ -375,7 +375,7 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
                 size_t name_len = strlen(g->super.name) + 1;
                 CV_TypeIndex type = g->dbg_type ? convert_to_codeview_type(&builder, g->dbg_type) : T_VOID;
 
-                printf("%-20s : %d\n", name, type);
+                // printf("%-20s : %d\n", name, type);
                 size_t baseline = debugs_out.count;
                 tb_out2b(&debugs_out, 0);
                 tb_out2b(&debugs_out, S_GDATA32);

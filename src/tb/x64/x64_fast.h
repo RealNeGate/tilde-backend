@@ -2637,9 +2637,6 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
             // JMP .false # elidable if it points to the next instruction
             JCC(cc, if_true);
             if (!has_fallthrough) JMP(if_false);
-        } else if (end->type == TB_UNREACHABLE) {
-            EMIT1(&ctx->emit, 0x0F);
-            EMIT1(&ctx->emit, 0x0B);
         } else if (end->type == TB_GOTO) {
             // save out PHI nodes
             TB_Label target_label = end->goto_.label;

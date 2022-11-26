@@ -527,7 +527,7 @@ static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r, size_t queue
         GPR gprs[6];
     } param_descs[] = {
         // win64
-        { 4, 4, 16, WIN64_ABI_CALLER_SAVED,   { RCX, RDX, R8, R9 } },
+        { 4, 4, 16, WIN64_ABI_CALLER_SAVED,  { RCX, RDX, R8, R9 } },
         // system v
         { 6, 4, 5, SYSV_ABI_CALLER_SAVED,    { RDI, RSI, RDX, RCX, R8, R9 } },
         // syscall
@@ -545,19 +545,19 @@ static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r, size_t queue
 
     int param_start = n->call.param_start;
     int param_count = n->call.param_end - n->call.param_start;
-    FOREACH_REVERSE_N(i, 0, param_count) {
+    FOREACH_N(i, 0, param_count) {
         TB_Reg param_reg = f->vla.data[param_start + i];
         TB_DataType param_dt = f->nodes[param_reg].dt;
 
         if (TB_IS_FLOAT_TYPE(param_dt) || param_dt.width) {
             tb_todo();
             /*if (j < params->xmm_count) {
-                    tb_todo();
-                } else {
+                tb_todo();
+            } else {
                 GAD_VAL dst = val_base_disp(param_dt, RSP, 8 * i);
                 GAD_VAL src = GAD_FN(get_val_gpr)(ctx, f, param_reg);
                 INST2(MOV, &dst, &src, param_dt);
-        }*/
+            }*/
         } else {
             Val dst;
             if (i < params->gpr_count) {
@@ -860,6 +860,23 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
             return dst;
         }
 
+        case TB_TRUNCATE: {
+            // TB_DataType src_dt = f->nodes[n->unary.src].dt;
+
+            if (TB_IS_FLOAT_TYPE(n->dt)) {
+                tb_todo();
+            } else {
+                GAD_VAL src = GAD_FN(get_val_gpr)(ctx, f, n->unary.src);
+                GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
+
+                LegalInt l = legalize_int(n->dt);
+                INST2(MOV, &dst, &src, l.dt);
+
+                if (l.mask) x64v2_mask_out(ctx, f, l, &dst);
+                return dst;
+            }
+        }
+
         case TB_LOAD: {
             LegalInt l = legalize_int(n->dt);
 
@@ -965,13 +982,21 @@ static Val x64v2_resolve_value(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
         case TB_MUL: {
             const static Inst2Type ops[] = { AND, OR, XOR, ADD, SUB, IMUL };
 
-            GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
             GAD_VAL a = GAD_FN(get_val_gpr)(ctx, f, n->i_arith.a);
             GAD_VAL b = GAD_FN(get_val_gpr)(ctx, f, n->i_arith.b);
+            if (ctx->use_count[n->i_arith.a] == 0 && a.type == GAD_VAL_REGISTER + X64_REG_CLASS_GPR) {
+                ctx->reg_allocator[X64_REG_CLASS_GPR][a.reg] = r;
+                ctx->regs_available[X64_REG_CLASS_GPR] += 1;
 
-            INST2(MOV, &dst, &a, n->dt);
-            INST2(ops[type - TB_AND], &dst, &b, n->dt);
-            return dst;
+                INST2(ops[type - TB_AND], &a, &b, n->dt);
+                return a;
+            } else {
+                GAD_VAL dst = GAD_FN(alloc_reg)(ctx, f, X64_REG_CLASS_GPR, r);
+
+                INST2(MOV, &dst, &a, n->dt);
+                INST2(ops[type - TB_AND], &dst, &b, n->dt);
+                return dst;
+            }
         }
 
         case TB_NOT:

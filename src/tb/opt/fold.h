@@ -18,12 +18,14 @@ typedef struct {
     };
 } Folded;
 
-#define F_FAIL(x) ((Folded){ FOLDED_FAIL })
+#define F_FAIL(x)   ((Folded){ FOLDED_FAIL })
 #define F_POISON(x) ((Folded){ FOLDED_POISON })
-#define F_CONST(x) ((Folded){ FOLDED_CONST, .result = (x) })
-#define F_PASS(r) ((Folded){ FOLDED_PASS, .pass = (r) })
+#define F_CONST(x)  ((Folded){ FOLDED_CONST, .result = (x) })
+#define F_PASS(r)   ((Folded){ FOLDED_PASS, .pass = (r) })
 
-// #define FOLDS X(TB_ADD, INT, INT)
+// #define ARRAY_ACCESS(arr, index) ((index) < COUNTOF(arr) ? (arr)[index] : 0)
+
+typedef Folded(*fold_fn)(TB_Function* f, TB_DataType dt, TB_NodeTypeEnum node_type, TB_Node* a, TB_Node* b);
 #endif
 
 #define MASK_UPTO(pos) (~UINT64_C(0) >> (64 - pos))

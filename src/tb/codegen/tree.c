@@ -176,17 +176,13 @@ static void schedule_phis(TreeNodeArena* arena, TB_Function* f, TB_Reg* use_coun
                     else arena->first_link = chain;
 
                     arena->last_link = chain;
-                    goto success;
                 }
             }
-
-            tb_unreachable();
-            success:;
         }
     }
 }
 
-TreeNode* tb_tree_generate(TreeNodeArena* arena, TB_Function* f, TB_Reg* use_count) {
+TreeNode* tb_tree_generate(TreeNodeArena* arena, TB_Function* f, TB_Reg* use_count, TB_Label bb) {
     if (!arena->base) {
         arena->base = arena->top = tb_platform_heap_alloc(sizeof(TreeNodePage));
         arena->base->next = NULL;
@@ -196,66 +192,64 @@ TreeNode* tb_tree_generate(TreeNodeArena* arena, TB_Function* f, TB_Reg* use_cou
     arena->first_link = NULL;
     arena->last_link = NULL;
 
-    TB_FOR_BASIC_BLOCK(bb, f) {
-        // Evaluate all side effect instructions
-        TB_FOR_NODE(r, f, bb) {
-            TB_Node* n = &f->nodes[r];
-            TB_NodeTypeEnum reg_type = n->type;
+    // Evaluate all side effect instructions
+    TB_FOR_NODE(r, f, bb) {
+        TB_Node* n = &f->nodes[r];
+        TB_NodeTypeEnum reg_type = n->type;
 
-            switch (reg_type) {
-                case TB_STORE: {
-                    TreeNode* tree_node = push_binary(arena, r, walk(arena, f, use_count, n->store.address), walk(arena, f, use_count, n->store.value));
+        switch (reg_type) {
+            case TB_STORE: {
+                TreeNode* tree_node = push_binary(arena, r, walk(arena, f, use_count, n->store.address), walk(arena, f, use_count, n->store.value));
 
-                    TreeNode* chain = append(arena);
-                    *chain = (TreeNode) { 0, .operands = { tree_node } };
+                TreeNode* chain = append(arena);
+                *chain = (TreeNode) { 0, .operands = { tree_node } };
 
-                    if (arena->last_link) arena->last_link->operands[1] = chain;
-                    else arena->first_link = chain;
+                if (arena->last_link) arena->last_link->operands[1] = chain;
+                else arena->first_link = chain;
 
-                    arena->last_link = chain;
-                    break;
-                }
-
-                case TB_IF:
-                case TB_GOTO:
-                case TB_TRAP:
-                case TB_SWITCH:
-                case TB_UNREACHABLE: {
-                    TreeNode* tree_node = NULL;
-                    if (n->type == TB_IF) {
-                        schedule_phis(arena, f, use_count, bb, n->if_.if_true);
-                        schedule_phis(arena, f, use_count, bb, n->if_.if_false);
-
-                        tree_node = push_unary(arena, r, walk(arena, f, use_count, n->if_.cond));
-                    } else if (n->type == TB_GOTO) {
-                        schedule_phis(arena, f, use_count, bb, n->goto_.label);
-
-                        tree_node = push_leaf(arena, r);
-                    } else if (n->type == TB_RET) {
-                        if (n->ret.value) {
-                            tree_node = push_unary(arena, r, walk(arena, f, use_count, n->ret.value));
-                        } else {
-                            tree_node = push_leaf(arena, r);
-                        }
-                    } else if (n->type == TB_TRAP || n->type == TB_UNREACHABLE) {
-                        tree_node = push_leaf(arena, r);
-                    } else {
-                        tb_todo();
-                    }
-
-                    // Append terminator
-                    TreeNode* chain = append(arena);
-                    *chain = (TreeNode) { 0, .operands = { tree_node } };
-
-                    if (arena->last_link) arena->last_link->operands[1] = chain;
-                    else arena->first_link = chain;
-                    break;
-                }
-
-                default:
-                if (TB_IS_NODE_SIDE_EFFECT(reg_type)) tb_todo();
+                arena->last_link = chain;
                 break;
             }
+
+            case TB_IF:
+            case TB_GOTO:
+            case TB_TRAP:
+            case TB_SWITCH:
+            case TB_UNREACHABLE: {
+                TreeNode* tree_node = NULL;
+                if (n->type == TB_IF) {
+                    schedule_phis(arena, f, use_count, bb, n->if_.if_true);
+                    schedule_phis(arena, f, use_count, bb, n->if_.if_false);
+
+                    tree_node = push_unary(arena, r, walk(arena, f, use_count, n->if_.cond));
+                } else if (n->type == TB_GOTO) {
+                    schedule_phis(arena, f, use_count, bb, n->goto_.label);
+
+                    tree_node = push_leaf(arena, r);
+                } else if (n->type == TB_RET) {
+                    if (n->ret.value) {
+                        tree_node = push_unary(arena, r, walk(arena, f, use_count, n->ret.value));
+                    } else {
+                        tree_node = push_leaf(arena, r);
+                    }
+                } else if (n->type == TB_TRAP || n->type == TB_UNREACHABLE) {
+                    tree_node = push_leaf(arena, r);
+                } else {
+                    tb_todo();
+                }
+
+                // Append terminator
+                TreeNode* chain = append(arena);
+                *chain = (TreeNode) { 0, .operands = { tree_node } };
+
+                if (arena->last_link) arena->last_link->operands[1] = chain;
+                else arena->first_link = chain;
+                break;
+            }
+
+            default:
+            if (TB_IS_NODE_SIDE_EFFECT(reg_type)) tb_todo();
+            break;
         }
     }
 

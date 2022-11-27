@@ -23,7 +23,7 @@ inline static void set_free(Set* s) {
 }
 
 inline static void set_clear(Set* s) {
-    memset(s->data, 0, s->capacity * sizeof(uint64_t));
+    memset(s->data, 0, ((s->capacity + 63) / 64) * sizeof(uint64_t));
 }
 
 inline static bool set_first_time(Set* s, size_t index) {

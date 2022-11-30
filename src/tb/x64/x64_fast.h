@@ -1707,24 +1707,30 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                 break;
             }
             case TB_CLZ: {
-                tb_todo();
                 // For now, we'll emulate CLZ with
                 //   bsr dst, src
                 //   xor dst, BIT_WIDTH-1
-                /*Val src = fast_eval(ctx, f, n->unary.src);
+                Val src = fast_eval(ctx, f, n->unary.src);
 
                 // we probably want some recycling eventually...
                 Val dst = val_gpr(dt, fast_alloc_gpr(ctx, f, r));
                 fast_def_gpr(ctx, f, r, dst.gpr, dt);
 
                 // bsr dst, src    |    REX.W 0x0F 0xBD /r
-                EMIT1(&ctx->emit, rex(true, dst.gpr, src.base, src.index));
+                if (src.type == VAL_MEM) {
+                    EMIT1(&ctx->emit, rex(true, dst.gpr, src.mem.base, src.mem.index));
+                } else if (src.type == VAL_GPR) {
+                    EMIT1(&ctx->emit, rex(true, dst.gpr, src.gpr, 0));
+                } else {
+                    tb_todo();
+                }
                 EMIT1(&ctx->emit, 0x0F);
                 EMIT1(&ctx->emit, 0xBD);
                 emit_memory_operand(&ctx->emit, dst.gpr, &src);
 
                 Val bit_width_mask = val_imm(dt, dt.data - 1);
-                INST2(XOR, &dst, &bit_width_mask, TB_TYPE_I64);*/
+                INST2(XOR, &dst, &bit_width_mask, TB_TYPE_I64);
+                fast_kill_reg(ctx, f, n->unary.src);
                 break;
             }
             case TB_NOT:
@@ -1917,7 +1923,7 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                             fast_folded_op_sse(ctx, f, FP_MOV, &dst, param_reg);
                         } else {
                             Val dst = val_base_disp(param_dt, RSP, 8 * j);
-                            fast_folded_op(ctx, f, MOV, &dst, param_reg);
+                            fast_folded_op_sse(ctx, f, FP_MOV, &dst, param_reg);
                         }
                     } else {
                         // Win64 has 4 GPR parameters (RCX, RDX, R8, R9)

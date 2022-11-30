@@ -77,6 +77,7 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace) {
                 case TB_TRUNCATE:
                 case TB_X86INTRIN_LDMXCSR:
                 case TB_BITCAST:
+                case TB_CLZ:
                 X(n->unary.src);
                 break;
 

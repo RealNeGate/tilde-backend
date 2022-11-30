@@ -50,12 +50,14 @@ void BigInt_divmod(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * C, Bi
 void BigInt_and(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * Out); /* Out = A & B */
 void BigInt_or(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * Out);  /* Out = A | B */
 void BigInt_xor(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * Out); /* Out = A ^ B */
+void BigInt_not(size_t NumWords, BigInt_t * A); /* Out = ~A */
 void BigInt_lshift(size_t NumWords, BigInt_t * B, int nbits); /* B = A << nbits */
 void BigInt_rshift(size_t NumWords, BigInt_t * B, int nbits); /* B = A >> nbits */
 
 /* Special operators and comparison */
 int  BigInt_cmp(size_t NumWords, BigInt_t * A, BigInt_t * B); /* Compare: returns LARGER, EQUAL or SMALLER */
 int  BigInt_is_zero(size_t NumWords, BigInt_t * BigInt); /* For comparison with zero */
+int  BigInt_is_small_num(size_t NumWords, BigInt_t * BigInt, BigInt_t Comparand);
 void BigInt_inc(size_t NumWords, BigInt_t * BigInt); /* Increment: add one to BigInt */
 void BigInt_dec(size_t NumWords, BigInt_t * BigInt); /* Decrement: subtract one from BigInt */
 int  BigInt_bextr(size_t NumWords, BigInt_t * BigInt, int Bit); /* Read bit:  grabs a bit from any point in the BigInt */

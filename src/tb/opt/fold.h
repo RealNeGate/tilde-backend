@@ -1,32 +1,4 @@
-#if 0
-// pattern operand options
-enum {
-    ZERO, INT, ANY,
-};
-
-// fold result types
-typedef struct {
-    enum {
-        FOLDED_FAIL,    // do nothing
-        FOLDED_POISON,  // value is erronous
-        FOLDED_CONST,   // result is the value
-        FOLDED_PASS,    // value is equivalent to a previous one
-    } tag;
-    union {
-        TB_Reg pass;
-        uint64_t result;
-    };
-} Folded;
-
-#define F_FAIL(x)   ((Folded){ FOLDED_FAIL })
-#define F_POISON(x) ((Folded){ FOLDED_POISON })
-#define F_CONST(x)  ((Folded){ FOLDED_CONST, .result = (x) })
-#define F_PASS(r)   ((Folded){ FOLDED_PASS, .pass = (r) })
-
-// #define ARRAY_ACCESS(arr, index) ((index) < COUNTOF(arr) ? (arr)[index] : 0)
-
-typedef Folded(*fold_fn)(TB_Function* f, TB_DataType dt, TB_NodeTypeEnum node_type, TB_Node* a, TB_Node* b);
-#endif
+#include "../hash_map.h"
 
 #define MASK_UPTO(pos) (~UINT64_C(0) >> (64 - pos))
 #define BEXTR(src,pos) (((src) >> (pos)) & 1)
@@ -195,7 +167,7 @@ static BinOpReg create_binop(TB_Function* f, TB_Reg r, TB_Reg x, TB_Reg y) {
 }
 
 static bool phi_motion(TB_Function* f, TB_Node* n) {
-    TB_Reg r = (n - f->nodes);
+    /*TB_Reg r = (n - f->nodes);
 
     if (tb_node_is_phi_node(f, r)) {
         int count = tb_node_get_phi_width(f, r);
@@ -252,7 +224,7 @@ static bool phi_motion(TB_Function* f, TB_Node* n) {
             f->nodes[shared_op].i_arith.b = r;
             return true;
         }
-    }
+    }*/
 
     return false;
 }
@@ -273,249 +245,333 @@ static bool reassoc(TB_Function* f, TB_Node* n) {
     return result.changes;
 }
 
+static bool is_commutative(TB_NodeTypeEnum type) {
+    switch (type) {
+        case TB_ADD: case TB_MUL:
+        case TB_AND: case TB_XOR: case TB_OR:
+        case TB_CMP_NE: case TB_CMP_EQ:
+        return true;
+
+        default:
+        return false;
+    }
+}
+
 static bool const_fold(TB_Function* f, TB_Node* n) {
     TB_DataType dt = n->dt;
 
-    if ((n->type >= TB_CMP_EQ && n->type <= TB_CMP_ULE) || (n->type >= TB_ADD && n->type <= TB_SMOD)) {
-        // we don't fold anything but integers
-        if (dt.type != TB_INT) return false;
+    switch (n->type) {
+        ////////////////////////////////
+        // Unary operator folding
+        ////////////////////////////////
+        // This is merely true
+        //   -x => ~x + 1
+        case TB_NEG: {
+            TB_Node* src = &f->nodes[n->unary.src];
 
-        TB_Node* a = &f->nodes[n->i_arith.a];
-        TB_Node* b = &f->nodes[n->i_arith.b];
-        // printf("TRY FOLD? r%d OP r%d\n", n->i_arith.a, n->i_arith.b);
-
-        if (a->type == TB_INTEGER_CONST && b->type == TB_INTEGER_CONST) {
-            if (a->integer.num_words == 1) {
-                OPTIMIZER_LOG(n - f->nodes, "constant fold");
-                assert(b->integer.num_words == 1);
-
-                uint64_t ai = a->integer.single_word;
-                uint64_t bi = b->integer.single_word;
-
-                uint64_t result;
-                if (n->type >= TB_CMP_EQ && n->type <= TB_CMP_ULE) {
-                    result = single_word_compare_fold(n->type, dt, ai, bi) ? 1 : 0;
-                } else {
-                    ArithResult r = single_word_arith_fold(n->type, dt, ai, bi, n->i_arith.arith_behavior);
-                    if (r.poison) {
-                        n->type = TB_POISON;
-                        return true;
-                    }
-
-                    result = r.result;
-                }
+            if (src->type == TB_INTEGER_CONST) {
+                assert(src->dt.type == TB_INT && src->dt.data > 0);
 
                 n->type = TB_INTEGER_CONST;
-                n->dt = dt;
-                n->integer.num_words = 1;
-                n->integer.single_word = result;
+                n->integer.num_words = src->integer.num_words;
+
+                if (src->integer.num_words == 1) {
+                    n->integer.single_word = ~src->integer.single_word + 1;
+                } else {
+                    BigInt_t* words = tb_platform_heap_alloc(BigIntWordSize * src->integer.num_words);
+                    BigInt_copy(src->integer.num_words, words, src->integer.words);
+                    BigInt_not(src->integer.num_words, words);
+                    BigInt_inc(src->integer.num_words, words);
+                    n->integer.words = words;
+                }
                 return true;
-            } else {
-                OPTIMIZER_LOG(n - f->nodes, "TODO implement large int fold");
-            }
-        } else if (b->type == TB_INTEGER_CONST && b->integer.num_words == 1) {
-            OPTIMIZER_LOG(n - f->nodes, "partial folding");
-
-            TB_Reg ar = n->i_arith.a;
-            if (b->integer.single_word == 0) {
-                switch (n->type) {
-                    case TB_ADD: case TB_SUB:
-                    case TB_XOR: case TB_OR:
-                    case TB_SHL: case TB_SHR:
-                    case TB_SAR:
-                    n->type = TB_PASS;
-                    n->pass.value = ar;
-                    return true;
-
-                    case TB_MUL: case TB_AND:
-                    n->type = TB_INTEGER_CONST;
-                    n->integer.num_words = 1;
-                    n->integer.single_word = 0;
-                    return true;
-
-                    case TB_SDIV: case TB_UDIV:
-                    n->type = TB_POISON;
-                    return true;
-
-                    default: break;
-                }
-            } else if (b->integer.single_word == 1) {
-                switch (n->type) {
-                    case TB_MUL: case TB_SDIV: case TB_UDIV:
-                    n->type = TB_PASS;
-                    n->pass.value = ar;
-                    return true;
-
-                    default: break;
-                }
             }
 
-            TB_Reg r = n - f->nodes;
-            TB_Label bb = tb_find_label_from_reg(f, ar);
-            if (n->type == TB_MUL) {
-                // (a * b) => (a << log2(b)) where b is a power of two
-                uint64_t log2 = tb_ffs(b->integer.single_word) - 1;
-                if (b->integer.single_word == (UINT64_C(1) << log2)) {
-                    OPTIMIZER_LOG(r, "converted power-of-two multiply into left shift");
-
-                    // It's a power of two, swap in a left-shift
-                    // just slap it right after the label
-                    TB_Reg new_op = tb_function_insert_after(f, bb, ar);
-
-                    f->nodes[new_op].type = TB_INTEGER_CONST;
-                    f->nodes[new_op].dt = dt;
-                    f->nodes[new_op].integer.num_words = 1;
-                    f->nodes[new_op].integer.single_word = log2;
-
-                    n->type = TB_SHL;
-                    n->dt = dt;
-                    n->i_arith = (struct TB_NodeIArith) { .a = a - f->nodes, .b = new_op };
-                    return true;
-                }
-            } else if (n->type == TB_UMOD || n->type == TB_SMOD) {
-                // (mod a N) => (and a N-1) where N is a power of two
-                uint64_t mask = b->integer.single_word;
-                if (tb_is_power_of_two(mask)) {
-                    OPTIMIZER_LOG(r, "converted modulo into AND with constant mask");
-
-                    // generate mask
-                    TB_Reg extra_reg = tb_function_insert_after(f, bb, ar);
-                    TB_Node* extra = &f->nodes[extra_reg];
-                    extra->type = TB_INTEGER_CONST;
-                    extra->dt = n->dt;
-                    extra->integer.num_words = 1;
-                    extra->integer.single_word = mask - 1;
-
-                    // new AND operation to replace old MOD
-                    n = &f->nodes[r];
-                    n->type = TB_AND;
-                    n->i_arith.b = extra_reg;
-                    return true;
-                }
-            }
+            break;
         }
-    } else if (n->type == TB_CLZ) {
-        TB_Node* src = &f->nodes[n->unary.src];
 
-        if (src->type == TB_INTEGER_CONST && src->dt.type == TB_INT && src->dt.data <= 64) {
-            n->type = TB_INTEGER_CONST;
-            n->integer.num_words = 1;
-            n->integer.single_word = __builtin_clz(src->integer.single_word);
-        }
-    } else if (n->type == TB_SIGN_EXT) {
-        TB_Node* src = &f->nodes[n->unary.src];
+        case TB_NOT: {
+            TB_Node* src = &f->nodes[n->unary.src];
 
-        if (src->type == TB_INTEGER_CONST) {
-            assert(src->dt.type == TB_INT && src->dt.data > 0);
-            assert(n->dt.type == TB_INT && n->dt.data > 0);
+            if (src->type == TB_INTEGER_CONST) {
+                assert(src->dt.type == TB_INT && src->dt.data > 0);
 
-            if (src->integer.num_words == 1 && n->dt.data <= 64) {
-                // fast path: single word
                 n->type = TB_INTEGER_CONST;
-                n->integer.num_words = 1;
-                n->integer.single_word = sxt(src->integer.single_word, src->dt.data, dt.data);
-            } else {
-                int src_num_words = src->integer.num_words;
-                int dst_num_words = (n->dt.data + (BigIntWordSize*8) - 1) / (BigIntWordSize*8);
-                BigInt_t* words = tb_platform_heap_alloc(BigIntWordSize * dst_num_words);
+                n->integer.num_words = src->integer.num_words;
 
-                bool is_signed = false;
-                if (src_num_words == 1) {
-                    is_signed = BEXTR(src->integer.single_word, src->dt.data-1);
-                    src->integer.words[0] = src->integer.single_word;
+                if (src->integer.num_words == 1) {
+                    n->integer.single_word = ~src->integer.single_word;
                 } else {
-                    is_signed = BigInt_bextr(src->integer.num_words, src->integer.words, src->dt.data-1);
-                    memcpy(words, src->integer.words, BigIntWordSize * src_num_words);
+                    BigInt_t* words = tb_platform_heap_alloc(BigIntWordSize * src->integer.num_words);
+                    BigInt_copy(src->integer.num_words, words, src->integer.words);
+                    BigInt_not(src->integer.num_words, words);
+                    n->integer.words = words;
+                }
+                return true;
+            }
+
+            break;
+        }
+
+        case TB_ZERO_EXT:
+        case TB_SIGN_EXT: {
+            TB_Node* src = &f->nodes[n->unary.src];
+            if (src->type == TB_INTEGER_CONST) {
+                size_t src_num_words = src->integer.num_words;
+                BigInt_t* src_words = src->integer.num_words == 1 ? &src->integer.single_word : src->integer.words;
+
+                size_t dst_num_words = (n->dt.data + (BigIntWordSize*8) - 1) / (BigIntWordSize*8);
+                bool is_signed = false;
+                if (n->type == TB_SIGN_EXT) {
+                    is_signed = BigInt_bextr(src_num_words, src_words, src->dt.data-1);
                 }
 
-                // fixup the bits here
-                uint64_t mask = ~UINT64_C(0) >> (64 - (src->dt.data % 64));
-                if (is_signed) words[src_num_words-1] |= mask;
-                else words[src->integer.num_words-1] &= ~mask;
+                BigInt_t temp;
+                BigInt_t* words = dst_num_words == 1 ? &temp : tb_platform_heap_alloc(BigIntWordSize * dst_num_words);
+                BigInt_copy(src_num_words, words, src_words);
 
                 FOREACH_N(i, src_num_words, dst_num_words) {
                     words[i] = is_signed ? ~UINT64_C(0) : 0;
                 }
 
+                // fixup the bits here
+                uint64_t shift = (64 - (src->dt.data % 64)), mask = (~UINT64_C(0) >> shift) << shift;
+                if (is_signed) words[src_num_words - 1] |= mask;
+                else words[src_num_words - 1] &= ~mask;
+
                 n->type = TB_INTEGER_CONST;
                 n->integer.num_words = dst_num_words;
-                n->integer.words = words;
-            }
-
-            return true;
-        }
-    } else if (n->type == TB_ZERO_EXT) {
-        TB_Node* src = &f->nodes[n->unary.src];
-
-        if (src->type == TB_INTEGER_CONST) {
-            assert(src->dt.type == TB_INT && src->dt.data > 0);
-
-            if (src->integer.num_words == 1 && dt.data <= 64) {
-                // fast path: single word
-                uint64_t mask = ~UINT64_C(0) >> (64 - dt.data);
-                uint64_t num = (src->integer.single_word & mask);
-
-                n->type = TB_INTEGER_CONST;
-                n->integer.num_words = 1;
-                n->integer.single_word = num;
-            } else {
-                int src_num_words = src->integer.num_words;
-                int dst_num_words = (n->dt.data + (BigIntWordSize*8) - 1) / (BigIntWordSize*8);
-                BigInt_t* words = tb_platform_heap_alloc(BigIntWordSize * dst_num_words);
-
-                if (src_num_words == 1) {
-                    src->integer.words[0] = src->integer.single_word;
+                if (dst_num_words == 1) {
+                    n->integer.single_word = words[0];
                 } else {
-                    memcpy(words, src->integer.words, BigIntWordSize * src_num_words);
+                    n->integer.words = words;
                 }
-
-                // fixup the bits here
-                uint64_t mask = ~UINT64_C(0) >> (64 - (src->dt.data % 64));
-                words[src->integer.num_words-1] &= ~mask;
-
-                FOREACH_N(i, src->integer.num_words, dst_num_words) {
-                    words[i] = 0;
-                }
-
-                n->type = TB_INTEGER_CONST;
-                n->integer.num_words = dst_num_words;
-                n->integer.words = words;
             }
-
-            return true;
+            break;
         }
-    } else if (n->type == TB_TRUNCATE) {
-        TB_Node* src = &f->nodes[n->unary.src];
 
-        if (src->type == TB_INTEGER_CONST) {
-            assert(src->dt.type == TB_INT && src->dt.data > 0);
+        case TB_TRUNCATE: {
+            TB_Node* src = &f->nodes[n->unary.src];
+            if (src->type == TB_INTEGER_CONST) {
+                size_t dst_num_words = (n->dt.data + (BigIntWordSize*8) - 1) / (BigIntWordSize*8);
+                BigInt_t* src_words = src->integer.num_words == 1 ? &src->integer.single_word : src->integer.words;
 
-            if (src->integer.num_words == 1) {
-                // fast path: single word
-                uint64_t mask = ~UINT64_C(0) >> (64 - (src->dt.data % 64));
-
-                n->type = TB_INTEGER_CONST;
-                n->integer.num_words = 1;
-                n->integer.single_word = src->integer.single_word & mask;
-            } else {
-                int dst_num_words = (n->dt.data + (BigIntWordSize*8) - 1) / (BigIntWordSize*8);
-                BigInt_t* words = tb_platform_heap_alloc(BigIntWordSize * dst_num_words);
-
-                // copy old stuff
-                memcpy(words, src->integer.words, BigIntWordSize * dst_num_words);
+                BigInt_t temp;
+                BigInt_t* words = dst_num_words == 1 ? &temp : tb_platform_heap_alloc(BigIntWordSize * dst_num_words);
+                BigInt_copy(dst_num_words, words, src_words);
 
                 // fixup the bits here
-                uint64_t mask = ~UINT64_C(0) >> (64 - (src->dt.data % 64));
+                uint64_t shift = (64 - (src->dt.data % 64)), mask = (~UINT64_C(0) >> shift) << shift;
                 words[dst_num_words-1] &= ~mask;
 
                 n->type = TB_INTEGER_CONST;
-                n->integer.num_words = 1;
-                n->integer.words = words;
+                n->integer.num_words = dst_num_words;
+                if (dst_num_words == 1) {
+                    n->integer.single_word = words[0];
+                } else {
+                    n->integer.words = words;
+                }
+            }
+            break;
+        }
+
+        ////////////////////////////////
+        // Binary operator folding
+        ////////////////////////////////
+        case TB_AND:
+        case TB_OR:
+        case TB_XOR:
+        case TB_ADD:
+        case TB_SUB:
+        case TB_MUL:
+        case TB_SHL:
+        case TB_SHR:
+        case TB_SAR:
+        case TB_UDIV:
+        case TB_SDIV:
+        case TB_UMOD:
+        case TB_SMOD:
+        case TB_CMP_EQ:
+        case TB_CMP_NE:
+        case TB_CMP_SLT:
+        case TB_CMP_SLE:
+        case TB_CMP_ULT:
+        case TB_CMP_ULE:
+        case TB_CMP_FLT:
+        case TB_CMP_FLE: {
+            // if it's commutative: move constants to the right
+            if (is_commutative(n->type) && f->nodes[n->i_arith.a].type == TB_INTEGER_CONST && f->nodes[n->i_arith.b].type != TB_INTEGER_CONST) {
+                tb_swap(TB_Reg, n->i_arith.a, n->i_arith.b);
             }
 
-            return true;
+            TB_Node* a = &f->nodes[n->i_arith.a];
+            TB_Node* b = &f->nodes[n->i_arith.b];
+
+            if (n->dt.type == TB_FLOAT && n->dt.data == TB_FLT_32 && a->type == TB_FLOAT32_CONST && b->type == TB_FLOAT32_CONST) {
+                // comparisons
+                if (n->type >= TB_CMP_EQ && n->type <= TB_CMP_FLE) {
+                    bool result = false;
+                    switch (n->type) {
+                        case TB_CMP_EQ: result = (a->flt32.value == b->flt32.value); break;
+                        case TB_CMP_NE: result = (a->flt32.value != b->flt32.value); break;
+                        case TB_CMP_FLT: result = (a->flt32.value < b->flt32.value); break;
+                        case TB_CMP_FLE: result = (a->flt32.value <= b->flt32.value); break;
+                        default: tb_todo();
+                    }
+
+                    n->type = TB_INTEGER_CONST;
+                    n->dt = TB_TYPE_BOOL;
+                    n->integer.num_words = 1;
+                    n->integer.single_word = result;
+                    return true;
+                } else if (n->type >= TB_FADD && n->type <= TB_FDIV) {
+                    float result = 0.0f;
+                    switch (n->type) {
+                        case TB_FADD: result = a->flt32.value + b->flt32.value; break;
+                        case TB_FSUB: result = a->flt32.value - b->flt32.value; break;
+                        case TB_FMUL: result = a->flt32.value * b->flt32.value; break;
+                        case TB_FDIV: result = a->flt32.value / b->flt32.value; break;
+                        default: tb_todo();
+                    }
+
+                    n->type = TB_FLOAT32_CONST;
+                    n->dt = TB_TYPE_F32;
+                    n->flt32.value = result;
+                    return true;
+                }
+            } else if (n->dt.type == TB_INT && b->type == TB_INTEGER_CONST) {
+                if (a->type == TB_INTEGER_CONST) {
+                    // fully fold
+                    int num_a_words = a->integer.num_words;
+                    BigInt_t* a_words = num_a_words == 1 ? &a->integer.single_word : a->integer.words;
+
+                    int num_b_words = b->integer.num_words;
+                    BigInt_t* b_words = num_b_words == 1 ? &b->integer.single_word : b->integer.words;
+                    assert(num_a_words == num_b_words);
+
+                    BigInt_t temp;
+                    BigInt_t* words = num_a_words == 1 ? &temp : tb_platform_heap_alloc(BigIntWordSize * num_a_words);
+
+                    switch (n->type) {
+                        case TB_ADD: BigInt_add(num_a_words, a_words, num_b_words, b_words, num_a_words, words); break;
+                        case TB_SUB: BigInt_sub(num_a_words, a_words, num_b_words, b_words, num_a_words, words); break;
+                        case TB_MUL: BigInt_mul(num_a_words, a_words, num_b_words, b_words, num_a_words, words); break;
+                        case TB_AND: BigInt_and(num_a_words, a_words, b_words, words); break;
+                        case TB_OR:  BigInt_or(num_a_words, a_words, b_words, words); break;
+                        case TB_XOR: BigInt_xor(num_a_words, a_words, b_words, words); break;
+                        default: goto fail;
+                    }
+
+                    // fixup the bits here
+                    uint64_t shift = (64 - (n->dt.data % 64)), mask = (~UINT64_C(0) >> shift) << shift;
+                    words[num_a_words-1] &= ~mask;
+
+                    n->type = TB_INTEGER_CONST;
+                    n->integer.num_words = num_a_words;
+                    if (num_a_words == 1) {
+                        n->integer.single_word = words[0];
+                    } else {
+                        n->integer.words = words;
+                    }
+
+                    // if we fail, delete our allocation, we probably should avoid failing in the future
+                    fail:
+                    if (num_a_words > 1) tb_platform_heap_free(words);
+                } else {
+                    // partial binary operations e.g.
+                    //   a * 0 = 0
+                    //   a + 0 = a
+                    int num_src_words = b->integer.num_words;
+                    BigInt_t* src_words = num_src_words == 1 ? &b->integer.single_word : b->integer.words;
+
+                    TB_Reg ar = n->i_arith.a;
+                    if (BigInt_is_zero(num_src_words, src_words)) {
+                        switch (n->type) {
+                            case TB_ADD: case TB_SUB:
+                            case TB_XOR: case TB_OR:
+                            case TB_SHL: case TB_SHR:
+                            case TB_SAR:
+                            n->type = TB_PASS;
+                            n->pass.value = ar;
+                            return true;
+
+                            case TB_MUL: case TB_AND:
+                            n->type = TB_INTEGER_CONST;
+                            n->integer.num_words = 1;
+                            n->integer.single_word = 0;
+                            return true;
+
+                            case TB_SDIV: case TB_UDIV:
+                            n->type = TB_POISON;
+                            return true;
+
+                            default: break;
+                        }
+                    } else if (BigInt_is_small_num(num_src_words, src_words, 1)) {
+                        switch (n->type) {
+                            case TB_MUL: case TB_SDIV: case TB_UDIV:
+                            n->type = TB_PASS;
+                            n->pass.value = ar;
+                            return true;
+
+                            default: break;
+                        }
+                    }
+
+                    TB_Reg r = n - f->nodes;
+                    TB_Label bb = tb_find_label_from_reg(f, ar);
+                    if (b->integer.num_words == 1) {
+                        if (n->type == TB_MUL) {
+                            // (a * b) => (a << log2(b)) where b is a power of two
+                            uint64_t log2 = tb_ffs(b->integer.single_word) - 1;
+                            if (b->integer.single_word == (UINT64_C(1) << log2)) {
+                                OPTIMIZER_LOG(r, "converted power-of-two multiply into left shift");
+
+                                // It's a power of two, swap in a left-shift
+                                // just slap it right after the label
+                                TB_Reg new_op = tb_function_insert_after(f, bb, ar);
+
+                                f->nodes[new_op].type = TB_INTEGER_CONST;
+                                f->nodes[new_op].dt = dt;
+                                f->nodes[new_op].integer.num_words = 1;
+                                f->nodes[new_op].integer.single_word = log2;
+
+                                n->type = TB_SHL;
+                                n->dt = dt;
+                                n->i_arith = (struct TB_NodeIArith) { .a = a - f->nodes, .b = new_op };
+                                return true;
+                            }
+                        } else if (n->type == TB_UMOD || n->type == TB_SMOD) {
+                            // (mod a N) => (and a N-1) where N is a power of two
+                            uint64_t mask = b->integer.single_word;
+                            if (tb_is_power_of_two(mask)) {
+                                OPTIMIZER_LOG(r, "converted modulo into AND with constant mask");
+
+                                // generate mask
+                                TB_Reg extra_reg = tb_function_insert_after(f, bb, ar);
+                                TB_Node* extra = &f->nodes[extra_reg];
+                                extra->type = TB_INTEGER_CONST;
+                                extra->dt = n->dt;
+                                extra->integer.num_words = 1;
+                                extra->integer.single_word = mask - 1;
+
+                                // new AND operation to replace old MOD
+                                n = &f->nodes[r];
+                                n->type = TB_AND;
+                                n->i_arith.b = extra_reg;
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            break;
         }
+
+        default:
+        break;
     }
 
+    // didn't change shit :(
     return false;
 }

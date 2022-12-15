@@ -28,5 +28,5 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Build TB
-        run: python3 build.py
+        run: python3 build.py x64 aarch64 wasm
         timeout-minutes: 10

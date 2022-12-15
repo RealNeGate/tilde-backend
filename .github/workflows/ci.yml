@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v1
       - name: Download LLVM
-        run sudo apt-get install llvm-11 clang-11
+        run: sudo apt-get install llvm-11 clang-11
 
       - name: Download Submodules
         run: git submodule update --init --recursive

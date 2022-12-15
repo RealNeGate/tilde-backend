@@ -110,7 +110,7 @@ static void import_archive(LinkerCtx* restrict ctx, TB_ArchiveFile* restrict ar)
             t->thunks = dyn_array_create(ImportThunk);
         }
 
-        __debugbreak();
+        tb_todo();
         // nl_strmap_put_cstr(ctx->import_nametable, import->name, import_index);
     }
 }

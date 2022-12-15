@@ -28,7 +28,5 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Build TB
-        run: |
-          call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat
-          py build.py
+        run: py build.py
         timeout-minutes: 10

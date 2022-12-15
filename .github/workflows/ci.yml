@@ -15,7 +15,7 @@ jobs:
         shell: cmd
         run: |
           call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat
-          py build.py
+          py build.py x64 aarch64 wasm
         timeout-minutes: 10
   build_linux:
     runs-on: ubuntu-latest

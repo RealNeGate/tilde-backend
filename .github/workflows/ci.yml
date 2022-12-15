@@ -1,0 +1,34 @@
+name: CI
+on: [pull_request, workflow_dispatch]
+
+jobs:
+  build_windows:
+    runs-on: windows-2019
+    steps:
+      - uses: actions/checkout@v1
+      - uses: seanmiddleditch/gha-setup-ninja@master
+
+      - name: Download Submodules
+        run: git submodule update --init --recursive
+
+      - name: Build TB
+        shell: cmd
+        run: |
+          call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat
+          py build.py
+        timeout-minutes: 10
+  build_linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v1
+      - name: Download LLVM
+        run sudo apt-get install llvm-11 clang-11
+
+      - name: Download Submodules
+        run: git submodule update --init --recursive
+
+      - name: Build TB
+        run: |
+          call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat
+          py build.py
+        timeout-minutes: 10

@@ -198,7 +198,7 @@ static void x64v2_resolve_local_patches(Ctx* restrict ctx, TB_Function* f) {
     }
 }
 
-static size_t x64v2_resolve_params(Ctx* restrict ctx, TB_Function* f, TB_Reg* active, GAD_VAL* values) {
+static size_t x64v2_resolve_params(Ctx* restrict ctx, TB_Function* f, GAD_VAL* values) {
     bool is_sysv = (f->super.module->target_abi == TB_ABI_SYSTEMV);
     size_t active_count = 0;
     const TB_FunctionPrototype* restrict proto = f->prototype;
@@ -229,14 +229,14 @@ static size_t x64v2_resolve_params(Ctx* restrict ctx, TB_Function* f, TB_Reg* ac
                     // gpr parameters
                     if (is_sysv) {
                         if (i < 6) {
-                            active[active_count++] = r;
+                            ctx->active[ctx->active_count++] = r;
                             values[r] = (GAD_VAL){
                                 .type = GAD_VAL_REGISTER + X64_REG_CLASS_GPR,
                                 .r = r, .dt = dt, .reg = SYSV_GPR_PARAMETERS[i],
                             };
                         }
                     } else if (i < 4) {
-                        active[active_count++] = r;
+                        ctx->active[ctx->active_count++] = r;
                         values[r] = (GAD_VAL){
                             .type = GAD_VAL_REGISTER + X64_REG_CLASS_GPR,
                             .r = r, .dt = dt, .reg = WIN64_GPR_PARAMETERS[i],
@@ -254,10 +254,6 @@ static size_t x64v2_resolve_params(Ctx* restrict ctx, TB_Function* f, TB_Reg* ac
                 if (param_count == 0) break;
             }
         }
-    }
-
-    if (proto->param_count) {
-        ctx->stack_usage += 16 + (proto->param_count * 8);
     }
 
     if (proto->has_varargs) {
@@ -293,6 +289,8 @@ static void x64v2_resolve_stack_slot(Ctx* restrict ctx, TB_Function* f, TB_Node*
             INST2(MOV, &dst, &ctx->values[r], TB_TYPE_I64);
             tb_todo();
         }
+
+        ctx->stack_usage += 8;
     } else if (n->type == TB_LOCAL) {
         TB_Reg r = n - f->nodes;
 
@@ -302,6 +300,7 @@ static void x64v2_resolve_stack_slot(Ctx* restrict ctx, TB_Function* f, TB_Node*
 }
 
 static void x64v2_initial_reg_alloc(Ctx* restrict ctx) {
+    ctx->stack_usage = 16;
     ctx->free_regs[0] = set_create(16);
     ctx->free_regs[1] = set_create(16);
 
@@ -351,6 +350,16 @@ static RegAllocAttempt x64v2_try_alloc_regs(Ctx* restrict ctx, TB_Function* f, T
         case TB_PHI2:
         case TB_PHIN:
         return (RegAllocAttempt){ .reg_class = X64_REG_CLASS_GPR, .count = 1, .can_recycle = true };
+
+        case TB_CMP_EQ:
+        case TB_CMP_NE:
+        case TB_CMP_SLT:
+        case TB_CMP_SLE:
+        case TB_CMP_ULT:
+        case TB_CMP_ULE:
+        case TB_CMP_FLT:
+        case TB_CMP_FLE:
+        return (RegAllocAttempt){ .reg_class = X64_REG_CLASS_GPR, .count = 0 };
 
         default:
         return (RegAllocAttempt){ .reg_class = X64_REG_CLASS_GPR, .count = 1 };
@@ -438,6 +447,14 @@ static void x64v2_branch_if(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_L
         if (fallthrough != if_false) {
             JMP(if_false);
         }
+    }
+}
+
+static void x64v2_spill(Ctx* restrict ctx, TB_Function* f, GAD_VAL* dst_val, GAD_VAL* src_val) {
+    // masking is unnecessary here due to type safety
+    if (!(src_val->type == GAD_VAL_REGISTER + X64_REG_CLASS_GPR && src_val->type == dst_val->type && src_val->reg == dst_val->reg)) {
+        LegalInt l = legalize_int(src_val->dt);
+        INST2(MOV, dst_val, src_val, l.dt);
     }
 }
 
@@ -894,9 +911,12 @@ static Val x64v2_eval(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
             GAD_VAL a = ctx->values[n->i_arith.a];
             GAD_VAL b = ctx->values[n->i_arith.b];
 
-            if (dst.type == a.type && dst.reg == a.reg) {
-                INST2(ops[type - TB_AND], &a, &b, n->dt);
-                return a;
+            if (dst.type == b.type && dst.reg == b.reg) {
+                INST2(ops[type - TB_AND], &dst, &a, n->dt);
+                return dst;
+            } else if (dst.type == a.type && dst.reg == a.reg) {
+                INST2(ops[type - TB_AND], &dst, &b, n->dt);
+                return dst;
             } else {
                 INST2(MOV, &dst, &a, n->dt);
                 INST2(ops[type - TB_AND], &dst, &b, n->dt);

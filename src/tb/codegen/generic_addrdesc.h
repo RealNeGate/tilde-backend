@@ -42,6 +42,9 @@ struct Ctx {
     TB_Predeccesors preds;
     TB_TemporaryStorage* tls;
 
+    TB_Reg* active;
+    size_t active_count;
+
     // some analysis
     int* intervals; // [reg] = last_use
     int* ordinal;   // [reg] = timeline position
@@ -71,6 +74,8 @@ struct Ctx {
     TB_Reg flags_bound;
     int flags_code;
 
+    size_t spill_count;
+    GAD_VAL* spills;
     GAD_VAL values[];
 };
 
@@ -119,6 +124,10 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
     tally += sizeof(Ctx) + (f->node_count * sizeof(GAD_VAL));
     tally = (tally + align_mask) & ~align_mask;
 
+    // spills
+    tally += f->node_count * sizeof(GAD_VAL);
+    tally = (tally + align_mask) & ~align_mask;
+
     // ordinal
     tally += f->node_count * sizeof(int);
     tally = (tally + align_mask) & ~align_mask;
@@ -156,15 +165,23 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
     };
 }
 
+// returns the number of registers we need allocated for this SSA value
+typedef struct {
+    int reg_class, count;
+    bool can_recycle;
+} RegAllocAttempt;
+
 // user-defined forward decls
+static RegAllocAttempt GAD_FN(try_alloc_regs)(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
 static size_t GAD_FN(resolve_stack_usage)(Ctx* restrict ctx, TB_Function* f, size_t stack_usage, size_t caller_usage);
 static void GAD_FN(resolve_local_patches)(Ctx* restrict ctx, TB_Function* f);
 static void GAD_FN(call)(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
 static void GAD_FN(store)(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
+static void GAD_FN(spill)(Ctx* restrict ctx, TB_Function* f, GAD_VAL* dst_val, GAD_VAL* src_val);
 static void GAD_FN(goto)(Ctx* restrict ctx, TB_Label l);
 static void GAD_FN(ret_jmp)(Ctx* restrict ctx);
 static void GAD_FN(initial_reg_alloc)(Ctx* restrict ctx);
-static size_t GAD_FN(resolve_params)(Ctx* restrict ctx, TB_Function* f, TB_Reg* active, GAD_VAL* values);
+static size_t GAD_FN(resolve_params)(Ctx* restrict ctx, TB_Function* f, GAD_VAL* values);
 static GAD_VAL GAD_FN(eval)(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
 static void GAD_FN(resolve_stack_slot)(Ctx* restrict ctx, TB_Function* f, TB_Node* restrict n);
 static void GAD_FN(return)(Ctx* restrict ctx, TB_Function* f, TB_Node* restrict n);
@@ -172,13 +189,7 @@ static void GAD_FN(move)(Ctx* restrict ctx, TB_Function* f, TB_Reg dst, TB_Reg s
 static void GAD_FN(branch_if)(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_Label if_true, TB_Label if_false, TB_Reg fallthrough);
 static GAD_VAL GAD_FN(cond_to_reg)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int cc);
 
-// returns the number of registers we need allocated for this SSA value
-typedef struct {
-    int reg_class, count;
-    bool can_recycle;
-} RegAllocAttempt;
-
-static RegAllocAttempt GAD_FN(try_alloc_regs)(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
+static void GAD_FN(regalloc_step)(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
 
 static void GAD_FN(get_data_type_size)(TB_DataType dt, TB_CharUnits* out_size, TB_CharUnits* out_align) {
     switch (dt.type) {
@@ -249,6 +260,11 @@ static void GAD_FN(eval_bb_edge)(Ctx* restrict ctx, TB_Function* f, TB_Label fro
             int count = tb_node_get_phi_width(f, r);
             TB_PhiInput* inputs = tb_node_get_phi_inputs(f, r);
 
+            // if the destination is not initialized, do that
+            if (ctx->values[r].type == 0) {
+                GAD_FN(regalloc_step)(ctx, f, r);
+            }
+
             FOREACH_N(j, 0, count) {
                 if (inputs[j].label == from) {
                     TB_Reg src = inputs[j].val;
@@ -258,6 +274,124 @@ static void GAD_FN(eval_bb_edge)(Ctx* restrict ctx, TB_Function* f, TB_Label fro
                     }
                 }
             }
+        }
+    }
+}
+
+typedef struct {
+    int start, end;
+} LiveInterval;
+
+static LiveInterval get_live_interval(Ctx* restrict ctx, TB_Reg r) {
+    LiveInterval li;
+    li.start = ctx->ordinal[r];
+    li.end = ctx->ordinal[ctx->intervals[r]];
+
+    if (li.start > li.end) {
+        tb_swap(int, li.start, li.end);
+    }
+    return li;
+}
+
+// done before running an instruction
+static void GAD_FN(regalloc_step)(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
+    if (ctx->intervals[r] == 0) return;
+    if (ctx->values[r].type != 0) return;
+
+    TB_DataType dt = f->nodes[r].dt;
+    RegAllocAttempt ra = x64v2_try_alloc_regs(ctx, f, r);
+    if (ra.count == 0) return;
+
+    LiveInterval r_li = get_live_interval(ctx, r);
+    printf("r%u (t=%d .. %d)\n", r, r_li.start, ctx->ordinal[ctx->intervals[r]]);
+
+    // expire old intervals
+    FOREACH_REVERSE_N(j, 0, ctx->active_count) {
+        TB_Reg k = ctx->active[j];
+        LiveInterval k_li = get_live_interval(ctx, k);
+        if (k_li.end >= r_li.start) {
+            break;
+        }
+
+        // remove from active
+        printf("  expired r%u\n", k);
+        if (j != ctx->active_count - 1) {
+            ctx->active[j] = ctx->active[ctx->active_count - 1];
+        }
+
+        // add back to register pool
+        if (ctx->values[k].type >= GAD_VAL_REGISTER && ctx->values[k].type < GAD_VAL_REGISTER + GAD_NUM_REG_FAMILIES) {
+            printf("  free %s\n", GPR_NAMES[ctx->values[k].reg]);
+            set_remove(&ctx->free_regs[ctx->values[k].type - GAD_VAL_REGISTER], ctx->values[k].reg);
+        }
+        ctx->active_count -= 1;
+    }
+
+    if (ctx->active_count == ctx->free_regs[ra.reg_class].capacity) {
+        bool success = false;
+        FOREACH_N(i, 0, ctx->active_count) {
+            TB_Reg spill_reg = ctx->active[i];
+            // LiveInterval spill_li = get_live_interval(ctx, spill_reg);
+
+            if (!(ctx->values[spill_reg].type == GAD_VAL_REGISTER + ra.reg_class)) {
+                // spill_li.end > r_li.end;
+                // it's not a register in the proper regclass and it's not outliving r
+                continue;
+            }
+
+            // replace spill with r
+            ctx->stack_usage = align_up(ctx->stack_usage + 8, 8);
+
+            GAD_VAL slot = GAD_MAKE_STACK_SLOT(ctx, f, r, -ctx->stack_usage);
+            slot.dt = f->nodes[r].dt;
+            ctx->values[r] = ctx->values[spill_reg];
+
+            // spill (we're saving the old value because we need to restore before leaving
+            // this basic block)
+            GAD_VAL* restore_val = &ctx->spills[ctx->spill_count++];
+            *restore_val = ctx->values[spill_reg];
+            ctx->values[spill_reg] = slot;
+
+            printf("  steal r%u for r%u\n", spill_reg, r);
+            printf("  spill r%u to [rbp - %d]\n", spill_reg, ctx->stack_usage);
+            GAD_FN(spill)(ctx, f, &slot, &ctx->values[r]);
+
+            // TODO(NeGate): sort by increasing end point
+            ctx->active[i] = r;
+            success = true;
+            break;
+        }
+
+        (void)success;
+        assert(success && "Could not find spillable values");
+    } else {
+        bool success = false;
+        if (ra.can_recycle && ctx->active_count > 0) {
+            TB_Reg last = ctx->active[ctx->active_count - 1];
+            LiveInterval last_li = get_live_interval(ctx, last);
+
+            if (last_li.end == r_li.start) {
+                printf("  recycle r%u for r%u\n", last, r);
+
+                ctx->values[r] = ctx->values[last];
+                ctx->active[ctx->active_count - 1] = r;
+                success = true;
+            }
+        }
+
+        if (!success) {
+            ptrdiff_t reg_num = set_pop_any(&ctx->free_regs[ra.reg_class]);
+            assert(reg_num >= 0);
+
+            printf("  assign to %s\n", GPR_NAMES[reg_num]);
+            ctx->values[r] = (GAD_VAL){
+                .type = GAD_VAL_REGISTER + ra.reg_class,
+                .r = r, .dt = dt, .reg = reg_num
+            };
+            set_put(&ctx->free_regs[ra.reg_class], reg_num);
+
+            // TODO(NeGate): sort by increasing end point
+            ctx->active[ctx->active_count++] = r;
         }
     }
 }
@@ -274,6 +408,7 @@ static void GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Label bb, TB_L
         // TB_DataType dt = n->dt;
 
         GAD_FN(kill_flags)(ctx, f);
+        GAD_FN(regalloc_step)(ctx, f, r);
 
         switch (reg_type) {
             case TB_NULL:
@@ -320,9 +455,22 @@ static void GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Label bb, TB_L
         }
     }
 
+    GAD_FN(regalloc_step)(ctx, f, bb_end);
+
     // Evaluate the terminator
     TB_Node* end = &f->nodes[bb_end];
     TB_NodeTypeEnum end_type = end->type;
+
+    FOREACH_N(i, 0, ctx->spill_count) {
+        GAD_VAL* restore_val = &ctx->spills[i];
+
+        // restore spilled regs
+        GAD_FN(spill)(ctx, f, restore_val, &ctx->values[restore_val->r]);
+
+        ctx->values[restore_val->r] = *restore_val;
+        *restore_val = (GAD_VAL){ 0 };
+    }
+    ctx->spill_count = 0;
 
     switch (end_type) {
         case TB_NULL: break;
@@ -374,21 +522,6 @@ static void GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Label bb, TB_L
     ctx->flags_bound = 0;
 }
 
-typedef struct {
-    int start, end;
-} LiveInterval;
-
-static LiveInterval get_live_interval(Ctx* restrict ctx, TB_Reg r) {
-    LiveInterval li;
-    li.start = ctx->ordinal[r];
-    li.end = ctx->ordinal[ctx->intervals[r]];
-
-    if (li.start > li.end) {
-        tb_swap(int, li.start, li.end);
-    }
-    return li;
-}
-
 static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t out_capacity, size_t local_thread_id) {
     s_local_thread_id = local_thread_id;
     TB_TemporaryStorage* tls = tb_tls_allocate();
@@ -397,24 +530,25 @@ static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const
     //bool is_ctx_heap_allocated = false;
     Ctx* restrict ctx = NULL;
     {
-        size_t ctx_size = sizeof(Ctx) + (f->node_count * sizeof(GAD_VAL));
+        size_t ctx_size = sizeof(Ctx) + (2 * f->node_count * sizeof(GAD_VAL));
         FunctionTallySimple tally = tally_memory_usage_simple(f);
 
         ctx = tb_tls_push(tls, ctx_size);
         *ctx = (Ctx){
-            .f             = f,
-            .tls           = tls,
+            .f = f,
+            .tls = tls,
             .emit = {
-                .f             = f,
-                .capacity      = out_capacity,
-                .data          = out,
-                .labels        = tb_tls_push(tls, f->bb_count * sizeof(uint32_t)),
+                .f = f,
+                .data = out,
+                .capacity = out_capacity,
+                .labels = tb_tls_push(tls, f->bb_count * sizeof(uint32_t)),
                 .label_patches = tb_tls_push(tls, tally.label_patch_count * sizeof(LabelPatch)),
-                .ret_patches   = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch)),
+                .ret_patches = tb_tls_push(tls, tally.return_count * sizeof(ReturnPatch)),
             },
-            .preds         = preds,
-            .ordinal       = tb_tls_push(tls, f->node_count * sizeof(int)),
-            .intervals     = tb_tls_push(tls, f->node_count * sizeof(int)),
+            .preds = preds,
+            .ordinal = tb_tls_push(tls, f->node_count * sizeof(int)),
+            .intervals = tb_tls_push(tls, f->node_count * sizeof(int)),
+            .spills = tb_tls_push(tls, f->node_count * sizeof(GAD_VAL))
         };
 
         f->line_count = 0;
@@ -464,96 +598,8 @@ static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const
         // Linear scan
         GAD_FN(initial_reg_alloc)(ctx);
 
-        TB_Reg* active = tb_platform_heap_alloc(f->node_count * sizeof(TB_Reg));
-        size_t active_count = GAD_FN(resolve_params)(ctx, f, active, ctx->values);
-
-        TB_FOR_BASIC_BLOCK(bb, f) {
-            TB_FOR_NODE(r, f, bb) {
-                if (ctx->intervals[r] == 0) continue;
-
-                TB_DataType dt = f->nodes[r].dt;
-                RegAllocAttempt ra = x64v2_try_alloc_regs(ctx, f, r);
-                if (ra.count == 0) continue;
-
-                LiveInterval r_li = get_live_interval(ctx, r);
-                printf("r%u (t=%d .. %d)\n", r, r_li.start, ctx->ordinal[ctx->intervals[r]]);
-
-                // expire old intervals
-                for (size_t j = active_count; j--;) {
-                    TB_Reg k = active[j];
-                    LiveInterval k_li = get_live_interval(ctx, k);
-                    if (k_li.end >= r_li.start) {
-                        break;
-                    }
-
-                    // remove from active
-                    printf("  expired r%u\n", k);
-                    if (j != active_count - 1) {
-                        active[j] = active[active_count - 1];
-                    }
-
-                    // add back to register pool
-                    if (ctx->values[k].type >= GAD_VAL_REGISTER && ctx->values[k].type < GAD_VAL_REGISTER + GAD_NUM_REG_FAMILIES) {
-                        printf("  free %s\n", GPR_NAMES[ctx->values[k].reg]);
-                        set_remove(&ctx->free_regs[ctx->values[k].type - GAD_VAL_REGISTER], ctx->values[k].reg);
-                    }
-                    active_count -= 1;
-                }
-
-                if (active_count == ctx->free_regs[ra.reg_class].capacity) {
-                    TB_Reg spill_reg = active[active_count - 1];
-                    LiveInterval spill_li = get_live_interval(ctx, spill_reg);
-
-                    if (spill_li.end > r_li.end) {
-                        // replace spill with r
-                        ctx->stack_usage = align_up(ctx->stack_usage + 8, 8);
-
-                        ctx->values[r] = ctx->values[spill_reg];
-                        ctx->values[spill_reg] = GAD_MAKE_STACK_SLOT(ctx, f, r, -ctx->stack_usage);
-
-                        printf("  steal r%u for r%u\n", spill_reg, r);
-                        printf("  spill r%u to [rbp - %d]\n", spill_reg, ctx->stack_usage);
-
-                        // TODO(NeGate): sort by increasing end point
-                        active[active_count - 1] = r;
-                    } else {
-                        ctx->stack_usage = align_up(ctx->stack_usage + 8, 8);
-                        ctx->values[r] = GAD_MAKE_STACK_SLOT(ctx, f, r, -ctx->stack_usage);
-
-                        printf("  spill r%u to [rbp - %d]\n", r, ctx->stack_usage);
-                    }
-                } else {
-                    bool success = false;
-                    if (ra.can_recycle) {
-                        TB_Reg last = active[active_count - 1];
-                        LiveInterval last_li = get_live_interval(ctx, last);
-
-                        if (last_li.end == r_li.start) {
-                            printf("  steal r%u for r%u\n", last, r);
-
-                            ctx->values[r] = ctx->values[last];
-                            active[active_count - 1] = r;
-                            success = true;
-                        }
-                    }
-
-                    if (!success) {
-                        ptrdiff_t reg_num = set_pop_any(&ctx->free_regs[ra.reg_class]);
-                        assert(reg_num >= 0);
-
-                        printf("  assign to %s\n", GPR_NAMES[reg_num]);
-                        ctx->values[r] = (GAD_VAL){
-                            .type = GAD_VAL_REGISTER + ra.reg_class,
-                            .r = r, .dt = dt, .reg = reg_num
-                        };
-                        set_put(&ctx->free_regs[ra.reg_class], reg_num);
-
-                        // TODO(NeGate): sort by increasing end point
-                        active[active_count++] = r;
-                    }
-                }
-            }
-        }
+        ctx->active = tb_platform_heap_alloc(f->node_count * sizeof(TB_Reg));
+        ctx->active_count = GAD_FN(resolve_params)(ctx, f, ctx->values);
     }
 
     size_t original_stack_usage = ctx->stack_usage;

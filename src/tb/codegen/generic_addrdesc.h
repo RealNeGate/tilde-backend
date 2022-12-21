@@ -181,7 +181,7 @@ static void GAD_FN(spill)(Ctx* restrict ctx, TB_Function* f, GAD_VAL* dst_val, G
 static void GAD_FN(goto)(Ctx* restrict ctx, TB_Label l);
 static void GAD_FN(ret_jmp)(Ctx* restrict ctx);
 static void GAD_FN(initial_reg_alloc)(Ctx* restrict ctx);
-static size_t GAD_FN(resolve_params)(Ctx* restrict ctx, TB_Function* f, GAD_VAL* values);
+static void GAD_FN(resolve_params)(Ctx* restrict ctx, TB_Function* f, GAD_VAL* values);
 static GAD_VAL GAD_FN(eval)(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
 static void GAD_FN(resolve_stack_slot)(Ctx* restrict ctx, TB_Function* f, TB_Node* restrict n);
 static void GAD_FN(return)(Ctx* restrict ctx, TB_Function* f, TB_Node* restrict n);
@@ -367,15 +367,19 @@ static void GAD_FN(regalloc_step)(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
     } else {
         bool success = false;
         if (ra.can_recycle && ctx->active_count > 0) {
-            TB_Reg last = ctx->active[ctx->active_count - 1];
-            LiveInterval last_li = get_live_interval(ctx, last);
+            printf("  try recycling r%u\n", r);
+            FOREACH_N(k, 0, ctx->active_count) {
+                TB_Reg other_r = ctx->active[k];
+                LiveInterval other_li = get_live_interval(ctx, other_r);
 
-            if (last_li.end == r_li.start) {
-                printf("  recycle r%u for r%u\n", last, r);
+                printf("    [%zu] = r%u\n", k, other_r);
+                if (other_li.end == r_li.start) {
+                    printf("  recycle r%u for r%u\n", other_r, r);
 
-                ctx->values[r] = ctx->values[last];
-                ctx->active[ctx->active_count - 1] = r;
-                success = true;
+                    ctx->values[r] = ctx->values[other_r];
+                    ctx->active[k] = r;
+                    success = true;
+                }
             }
         }
 
@@ -599,10 +603,8 @@ static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const
         GAD_FN(initial_reg_alloc)(ctx);
 
         ctx->active = tb_platform_heap_alloc(f->node_count * sizeof(TB_Reg));
-        ctx->active_count = GAD_FN(resolve_params)(ctx, f, ctx->values);
+        GAD_FN(resolve_params)(ctx, f, ctx->values);
     }
-
-    size_t original_stack_usage = ctx->stack_usage;
 
     // calculate the order of the nodes, it helps since node indices
     // don't actually tell us this especially once the optimizer has
@@ -651,10 +653,6 @@ static TB_FunctionOutput GAD_FN(compile_function)(TB_Function* restrict f, const
     // the top of the prologue not within the body
     if (f->line_count > 0) {
         f->lines[0].pos = 0;
-    }
-
-    if (ctx->stack_usage == original_stack_usage) {
-        ctx->stack_usage = 0;
     }
 
     // we're done, clean up

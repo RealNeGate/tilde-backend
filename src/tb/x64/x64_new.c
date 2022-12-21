@@ -175,7 +175,7 @@ static size_t x64v2_resolve_stack_usage(Ctx* restrict ctx, TB_Function* f, size_
     size_t usage = stack_usage + (caller_usage * 8);
 
     // Align stack usage to 16bytes and add 8 bytes for the return address
-    if (usage > 0) {
+    if (usage > 16) {
         usage = align_up(usage + 8, 16) + 8;
     } else {
         usage = 8;
@@ -198,9 +198,8 @@ static void x64v2_resolve_local_patches(Ctx* restrict ctx, TB_Function* f) {
     }
 }
 
-static size_t x64v2_resolve_params(Ctx* restrict ctx, TB_Function* f, GAD_VAL* values) {
+static void x64v2_resolve_params(Ctx* restrict ctx, TB_Function* f, GAD_VAL* values) {
     bool is_sysv = (f->super.module->target_abi == TB_ABI_SYSTEMV);
-    size_t active_count = 0;
     const TB_FunctionPrototype* restrict proto = f->prototype;
 
     size_t param_count = proto->param_count;
@@ -271,8 +270,6 @@ static size_t x64v2_resolve_params(Ctx* restrict ctx, TB_Function* f, GAD_VAL* v
             INST2(MOV, &dst, &src, TB_TYPE_I64);
         }
     }
-
-    return active_count;
 }
 
 static void x64v2_resolve_stack_slot(Ctx* restrict ctx, TB_Function* f, TB_Node* restrict n) {

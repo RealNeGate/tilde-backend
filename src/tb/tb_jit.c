@@ -5,6 +5,35 @@ size_t tb_helper_write_text_section(size_t write_pos, TB_Module* m, uint8_t* out
 size_t tb_helper_write_data_section(size_t write_pos, TB_Module* m, uint8_t* output, uint32_t pos);
 size_t tb_helper_write_rodata_section(size_t write_pos, TB_Module* m, uint8_t* output, uint32_t pos);
 
+typedef struct Slab Slab;
+typedef struct SlabEntry SlabEntry;
+
+struct SlabEntry {
+    Slab* next;
+};
+
+struct Slab {
+    Slab* next;
+    SlabEntry* free_list;
+    uint32_t start;
+    uint16_t size;
+};
+
+typedef struct {
+    // 4GB reserved block, bottom half is executable
+    char* block;
+} TB_JITHeap;
+
+TB_JITHeap tb_create_jit_heap(void) {
+    return (TB_JITHeap){
+        .block = tb_platform_valloc(2u << 30u)
+    };
+}
+
+void* tb_jitheap_alloc_region(TB_JITHeap* c, size_t s, bool is_code) {
+    return NULL;
+}
+
 // NOTE(NeGate): This only currently supports the text and rdata sections,
 // it puts the rdata on the next 4KB page after the text section all within
 // the same memory mapping, this is actually very bad because it means that

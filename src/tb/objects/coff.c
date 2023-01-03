@@ -30,8 +30,6 @@ struct TB_ModuleExporter {
 
     TB_SectionGroup debug_sections;
     COFF_SectionHeader* debug_section_headers;
-
-    uint8_t proepi_buffer[PROEPI_BUFFER];
 };
 
 #define WRITE(data, length_) write_data(e, output, length_, data)
@@ -712,8 +710,8 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
         }
     }
 
-    // TODO(NeGate): we have a lot of shit being freed... maybe we wanna think of smarter
-    // allocation schemes
+    // TODO(NeGate): we have a lot of shit being freed... maybe
+    // we wanna think of smarter allocation schemes
     tb_platform_heap_free(e->temporary_memory);
     tb_platform_heap_free(e->debug_section_headers);
     tb_platform_heap_free(e->string_table);

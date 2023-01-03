@@ -27,7 +27,7 @@ typedef struct {
 
 typedef struct {
 	MO_LoadCmd header;
-	char segname[16];
+    char segname[16];
     uint64_t vmaddr;
     uint64_t vmsize;
     uint64_t fileoff;
@@ -43,7 +43,7 @@ typedef struct {
     char segname[16];
     uint64_t addr;
     uint64_t size;
-    uint32_t offset;
+    uint32_t offset; // file offset
     uint32_t align;
     uint32_t reloff;
     uint32_t nreloc;

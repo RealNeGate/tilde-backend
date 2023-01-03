@@ -20,6 +20,7 @@ TB_API TB_Exports tb_exporter_write_output(TB_Module* m, TB_OutputFlavor flavor,
     static ExporterFn* const fn[TB_FLAVOR_EXECUTABLE + 1][TB_SYSTEM_MAX] = {
         [TB_FLAVOR_OBJECT] = {
             [TB_SYSTEM_WINDOWS] = tb_coff_write_output,
+            [TB_SYSTEM_MACOS]   = tb_macho_write_output,
             [TB_SYSTEM_LINUX]   = tb_elf64obj_write_output,
             [TB_SYSTEM_WEB]     = tb_wasm_write_output,
         },

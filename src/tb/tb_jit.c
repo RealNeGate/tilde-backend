@@ -5,41 +5,125 @@ size_t tb_helper_write_text_section(size_t write_pos, TB_Module* m, uint8_t* out
 size_t tb_helper_write_data_section(size_t write_pos, TB_Module* m, uint8_t* output, uint32_t pos);
 size_t tb_helper_write_rodata_section(size_t write_pos, TB_Module* m, uint8_t* output, uint32_t pos);
 
-typedef struct Slab Slab;
-typedef struct SlabEntry SlabEntry;
+enum {
+    SLAB_SIZE = 0x1000,
+    BITMAP_GRANULARITY = 16,
 
-struct SlabEntry {
-    Slab* next;
+    USED_BITMAP_COUNT = (SLAB_SIZE / BITMAP_GRANULARITY) / 8,
 };
 
-struct Slab {
-    Slab* next;
-    SlabEntry* free_list;
-    uint32_t start;
-    uint16_t size;
-};
+typedef struct Slab {
+    TB_MemProtect protect;
+    uint64_t used_bitmap[USED_BITMAP_COUNT];
+} Slab;
 
 typedef struct {
-    // 4GB reserved block, bottom half is executable
-    char* block;
+    size_t capacity;
+    uint8_t* block;
+
+    size_t slab_count;
+    Slab* slabs;
 } TB_JITHeap;
 
-TB_JITHeap tb_create_jit_heap(void) {
-    return (TB_JITHeap){
-        .block = tb_platform_valloc(2u << 30u)
-    };
+struct TB_JITContext {
+    TB_JITHeap heap;
+};
+
+static TB_JITHeap tb_jitheap_create(size_t size) {
+    assert(size == (uint32_t) size);
+
+    // align to page size
+    size = (size + SLAB_SIZE - 1) & ~(SLAB_SIZE - 1);
+    uint32_t slab_count = size / SLAB_SIZE;
+
+    TB_JITHeap h = { 0 };
+    h.capacity = size;
+    h.block = tb_platform_valloc(size);
+    h.slab_count = slab_count;
+    h.slabs = malloc(slab_count * sizeof(Slab));
+
+    FOREACH_N(i, 0, slab_count) {
+        h.slabs[i] = (Slab){ i * SLAB_SIZE };
+    }
+    return h;
 }
 
-void* tb_jitheap_alloc_region(TB_JITHeap* c, size_t s, bool is_code) {
+static void* tb_jitheap_alloc_region(TB_JITHeap* c, size_t s, TB_MemProtect protect) {
+    // align to alloc granularity
+    size_t block_count = (s + 15) / 16;
+    assert(block_count < 64 && "TODO: support bigger allocations");
+
+    FOREACH_N(i, 0, c->slab_count) {
+        if (c->slabs[i].protect != TB_PAGE_INVALID) {
+            if (c->slabs[i].protect != protect) continue;
+        } else {
+            c->slabs[i].protect = protect;
+
+            // virtual protect these new pages
+            tb_platform_vprotect(c->block + (i * SLAB_SIZE), SLAB_SIZE, protect);
+        }
+
+        // find first free slot
+        uint64_t* bitmap = c->slabs[i].used_bitmap;
+        size_t j = 0;
+        for (; j < USED_BITMAP_COUNT; j++) {
+            if (bitmap[j] != UINT64_MAX) break;
+        }
+
+        // find empty bit
+        assert(j != USED_BITMAP_COUNT);
+        uint64_t bits = bitmap[j];
+
+        size_t k = bits ? tb_ffs64(~bits) - 1 : 0;
+        if (k + block_count >= 64) {
+            // goes across uint64 chunks
+            __debugbreak();
+        } else {
+            uint64_t mask = ((1u << block_count) - 1) << k;
+            if ((bits & mask) == 0) {
+                // it's free
+                bitmap[j] |= mask;
+
+                printf("Allocated to [%zu][%zu]\n", i, j*64 + k);
+                return c->block + (i * SLAB_SIZE) + (j * 64 * BITMAP_GRANULARITY) + (k * BITMAP_GRANULARITY);
+            }
+        }
+    }
+
     return NULL;
 }
 
-// NOTE(NeGate): This only currently supports the text and rdata sections,
-// it puts the rdata on the next 4KB page after the text section all within
-// the same memory mapping, this is actually very bad because it means that
-// read-only data is executable.
-void tb_module_export_jit(TB_Module* m) {
-    ICodeGen* restrict codegen = tb__find_code_generator(m);
+void tb_jitheap_free_region(TB_JITHeap* c, void* ptr, size_t s) {
+    ptrdiff_t offset = ((uint8_t*) ptr) - c->block;
+    assert(offset >= 0 && offset < c->capacity);
+
+    size_t block_count = (s + 15) / 16;
+    assert(block_count < 64 && "TODO: bigger freeing operations");
+
+    size_t slab_id = (offset / SLAB_SIZE);
+    size_t bitmap_id = offset % USED_BITMAP_COUNT;
+    size_t bit_id = (offset / BITMAP_GRANULARITY) % 64;
+
+    uint64_t mask = ((1u << block_count) - 1) << bit_id;
+    c->slabs[slab_id].used_bitmap[bitmap_id] &= ~mask;
+}
+
+TB_API TB_JITContext* tb_module_begin_jit(TB_Module* m, size_t jit_heap_capacity) {
+    // ICodeGen* restrict codegen = tb__find_code_generator(m);
+
+    TB_JITContext* jit = tb_platform_heap_alloc(sizeof(TB_JITContext));
+    jit->heap = tb_jitheap_create(jit_heap_capacity);
+    return jit;
+
+    #if 0
+    /*TB_JITHeap heap = tb_jitheap_create(4*1024*1024);
+    tb_jitheap_alloc_region(&heap, 256, true);
+    void* a = tb_jitheap_alloc_region(&heap, 42, true);
+    tb_jitheap_alloc_region(&heap, 81, false);
+    tb_jitheap_alloc_region(&heap, 10, true);
+    tb_jitheap_free_region(&heap, a, 42);
+    tb_jitheap_alloc_region(&heap, 10, true);
+    __debugbreak();*/
 
     size_t page_size = 4096;
     size_t text_section_size = tb_helper_get_text_section_layout(m, 0);
@@ -144,4 +228,11 @@ void tb_module_export_jit(TB_Module* m) {
 
     m->jit_region_size = jit_region_size;
     m->jit_region = jit_region;
+    #endif
 }
+
+TB_API void tb_module_end_jit(TB_JITContext* jit) {
+    tb_platform_vfree(jit->heap.block, jit->heap.capacity);
+    tb_platform_heap_free(jit);
+}
+

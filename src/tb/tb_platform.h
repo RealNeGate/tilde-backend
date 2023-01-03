@@ -7,6 +7,8 @@
 // Virtual memory management
 ////////////////////////////////
 typedef enum {
+    TB_PAGE_INVALID,
+
     TB_PAGE_READONLY,
     TB_PAGE_READWRITE,
     TB_PAGE_READEXECUTE,

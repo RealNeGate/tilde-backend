@@ -835,7 +835,11 @@ extern "C" {
     ////////////////////////////////
     // JIT compilation
     ////////////////////////////////
-    TB_API void tb_module_export_jit(TB_Module* m);
+    typedef struct TB_JITContext TB_JITContext;
+
+    // passing 0 to jit_heap_capacity will default to 4MiB
+    TB_API TB_JITContext* tb_module_begin_jit(TB_Module* m, size_t jit_heap_capacity);
+    TB_API void tb_module_end_jit(TB_JITContext* jit);
 
     #define TB_FOR_FUNCTIONS(it, module) for (TB_Function* it = tb_first_function(module); it != NULL; it = tb_next_function(it))
     TB_API TB_Function* tb_first_function(TB_Module* m);

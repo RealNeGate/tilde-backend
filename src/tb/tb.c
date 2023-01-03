@@ -678,6 +678,25 @@ void tb_out_commit(TB_Emitter* o, size_t count) {
     o->count += count;
 }
 
+size_t tb_out_get_pos(TB_Emitter* o, void* p) {
+    return (uint8_t*)p - o->data;
+}
+
+void* tb_out_grab(TB_Emitter* o, size_t count) {
+    void* p = tb_out_reserve(o, count);
+    o->count += count;
+
+    return p;
+}
+
+size_t tb_out_grab_i(TB_Emitter* o, size_t count) {
+    tb_out_reserve(o, count);
+
+    size_t old = o->count;
+    o->count += count;
+    return old;
+}
+
 void tb_out1b_UNSAFE(TB_Emitter* o, uint8_t i) {
     assert(o->count + 1 < o->capacity);
 

@@ -11,12 +11,13 @@ static tb_atomic_int total_tid;
 ICodeGen* tb__find_code_generator(TB_Module* m) {
     switch (m->target_arch) {
         #if 0
+        // work in progress
         case TB_ARCH_X86_64: return &tb__x64v2_codegen;
         #else
         case TB_ARCH_X86_64: return &tb__x64_codegen;
         #endif
         // case TB_ARCH_AARCH64: return &tb__aarch64_codegen;
-        case TB_ARCH_WASM32: return &tb__wasm32_codegen;
+        // case TB_ARCH_WASM32: return &tb__wasm32_codegen;
         default: return NULL;
     }
 }
@@ -675,6 +676,25 @@ void* tb_out_reserve(TB_Emitter* o, size_t count) {
 void tb_out_commit(TB_Emitter* o, size_t count) {
     assert(o->count + count < o->capacity);
     o->count += count;
+}
+
+size_t tb_out_get_pos(TB_Emitter* o, void* p) {
+    return (uint8_t*)p - o->data;
+}
+
+void* tb_out_grab(TB_Emitter* o, size_t count) {
+    void* p = tb_out_reserve(o, count);
+    o->count += count;
+
+    return p;
+}
+
+size_t tb_out_grab_i(TB_Emitter* o, size_t count) {
+    tb_out_reserve(o, count);
+
+    size_t old = o->count;
+    o->count += count;
+    return old;
 }
 
 void tb_out1b_UNSAFE(TB_Emitter* o, uint8_t i) {

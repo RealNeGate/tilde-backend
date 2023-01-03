@@ -1,5 +1,6 @@
 #include <string.h>
 #include <assert.h>
+#include <limits.h>
 
 #include "BigInt.h"
 #define MaxBigIntWords 2
@@ -73,7 +74,7 @@ int BigInt_to_int(size_t NumWords, BigInt_t * BigInt)
 {
     int ret = 0;
 
-	/* Endianness issue if machine is not little-endian? */
+    /* Endianness issue if machine is not little-endian? */
     #if (BigIntWordSize == 1)
     ret += BigInt[0];
     ret += BigInt[1] << 8;
@@ -100,7 +101,7 @@ size_t BigInt_truncate(size_t NumWords, BigInt_t * BigInt)
 
 void BigInt_from_string(size_t NumWords, BigInt_t * BigInt, char * str)
 {
-	assert(NumWords <= MaxBigIntWords);
+    assert(NumWords <= MaxBigIntWords);
     BigInt_zero(NumWords, BigInt);
 
     BigInt_t temp[MaxBigIntWords];
@@ -211,12 +212,12 @@ void BigInt_inc(size_t NumWords, BigInt_t * BigInt)
 
 int BigInt_bextr(size_t NumWords, BigInt_t * BigInt, int Bit)
 {
-	size_t ElemIndex, ElemBit;
+    size_t ElemIndex, ElemBit;
 
-	ElemIndex = Bit / BigIntWordSize;
-	ElemBit = Bit % BigIntWordSize;
+    ElemIndex = Bit / (BigIntWordSize * CHAR_BIT);
+    ElemBit = Bit % (BigIntWordSize * CHAR_BIT);
 
-	return BigInt[ElemIndex] & (1u << ElemBit);
+    return BigInt[ElemIndex] & (1u << ElemBit);
 }
 
 void BigInt_add(size_t AWords, BigInt_t * A, size_t BWords, BigInt_t * B, size_t Out_NumWords, BigInt_t * Out)
@@ -357,7 +358,7 @@ void BigInt_sub(size_t AWords, BigInt_t * A, size_t BWords, BigInt_t * B, size_t
 
 void BigInt_mul_basic(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * Out)
 {
-	assert(NumWords <= MaxBigIntWords);
+    assert(NumWords <= MaxBigIntWords);
 
     BigInt_t row[MaxBigIntWords];
     BigInt_t tmp[MaxBigIntWords];
@@ -423,19 +424,19 @@ static void BigInt_Karatsuba_internal(size_t num1_NumWords, BigInt_t * num1, siz
     // z1 = karatsuba((low1 + high1), (low2 + high2))
     // z2 = karatsuba(high1, high2)
     size_t z0_NumWords = low1_NumWords + low2_NumWords;
-	assert(z0_NumWords <= MaxBigIntWords);
+    assert(z0_NumWords <= MaxBigIntWords);
     BigInt_t z0[MaxBigIntWords];
 
     size_t z1_NumWords = (MAX(low1_NumWords, high1_NumWords)+1) + (MAX(low2_NumWords, high2_NumWords)+1);
-	assert(z1_NumWords <= MaxBigIntWords);
+    assert(z1_NumWords <= MaxBigIntWords);
     BigInt_t z1[MaxBigIntWords];
 
     size_t z2_NumWords =  high1_NumWords + high2_NumWords;
     int use_out_as_z2 = (Out_NumWords >= z2_NumWords); /* Sometimes we can use Out to store z2, then we don't have to copy from z2 to out later (2X SPEEDUP!) */
     if (use_out_as_z2) {BigInt_zero(Out_NumWords-(z2_NumWords),Out+z2_NumWords);}/* The remaining part of Out must be ZERO'D */
 
-	assert(z2_NumWords <= MaxBigIntWords);
-	BigInt_t tmp[MaxBigIntWords];
+    assert(z2_NumWords <= MaxBigIntWords);
+    BigInt_t tmp[MaxBigIntWords];
     BigInt_t * z2 = (use_out_as_z2) ? Out : tmp;
 
     /* Make z0 and z2 */
@@ -446,7 +447,7 @@ static void BigInt_Karatsuba_internal(size_t num1_NumWords, BigInt_t * num1, siz
     {
         size_t low1high1_NumWords = MAX(low1_NumWords, high1_NumWords)+1;
         size_t low2high2_NumWords = MAX(low2_NumWords, high2_NumWords)+1;
-		assert(low1high1_NumWords <= MaxBigIntWords && low2high2_NumWords <= MaxBigIntWords);
+        assert(low1high1_NumWords <= MaxBigIntWords && low2high2_NumWords <= MaxBigIntWords);
         BigInt_t low1high1[MaxBigIntWords];
         BigInt_t low2high2[MaxBigIntWords];
         BigInt_add(low1_NumWords, low1, high1_NumWords, high1, low1high1_NumWords, low1high1);
@@ -471,10 +472,10 @@ void BigInt_mul(size_t ANumWords, BigInt_t * A, size_t BNumWords, BigInt_t * B, 
 
 void BigInt_div(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * Out)
 {
-	assert(NumWords <= MaxBigIntWords);
-	BigInt_t current[NumWords];
-	BigInt_t denom[NumWords];
-	BigInt_t tmp[NumWords];
+    assert(NumWords <= MaxBigIntWords);
+    BigInt_t current[NumWords];
+    BigInt_t denom[NumWords];
+    BigInt_t tmp[NumWords];
 
     BigInt_from_int(NumWords, current, 1); // int current = 1;
     BigInt_copy(NumWords, denom, B); // denom = B
@@ -550,14 +551,14 @@ void BigInt_rshift(size_t NumWords, BigInt_t * B, int nbits)
 void BigInt_mod(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * Out)
 {
     /* Take divmod and throw away div part */
-	assert(NumWords <= MaxBigIntWords);
+    assert(NumWords <= MaxBigIntWords);
     BigInt_t tmp[MaxBigIntWords];
     BigInt_divmod(NumWords, A, B, tmp, Out);
 }
 
 void BigInt_divmod(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * C, BigInt_t * D)
 {
-	assert(NumWords <= MaxBigIntWords);
+    assert(NumWords <= MaxBigIntWords);
     BigInt_t tmp[MaxBigIntWords];
 
     /* Out = (A / B) */
@@ -591,6 +592,13 @@ void BigInt_xor(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * Out)
     }
 }
 
+void BigInt_not(size_t NumWords, BigInt_t * A)
+{
+    for (size_t i = 0; i < NumWords; ++i) {
+        A[i] = ~A[i];
+    }
+}
+
 int BigInt_cmp(size_t NumWords, BigInt_t * A, BigInt_t * B)
 {
     size_t i = NumWords;
@@ -604,6 +612,19 @@ int BigInt_cmp(size_t NumWords, BigInt_t * A, BigInt_t * B)
     } while (i != 0);
 
     return EQUAL;
+}
+
+int  BigInt_is_small_num(size_t NumWords, BigInt_t * BigInt, BigInt_t Comparand)
+{
+    if (NumWords == 0 || BigInt[0] != Comparand) return 0;
+
+    for (size_t i = 1; i < NumWords; ++i) {
+        if (BigInt[i]) {
+            return 0;
+        }
+    }
+
+    return 1;
 }
 
 int BigInt_is_zero(size_t NumWords, BigInt_t * BigInt)
@@ -625,9 +646,9 @@ void BigInt_pow(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * Out)
         /* Return 1 when exponent is 0 -- BigInt^0 = 1 */
         BigInt_inc(NumWords, Out);
     } else {
-		assert(NumWords <= MaxBigIntWords);
+        assert(NumWords <= MaxBigIntWords);
         BigInt_t bcopy[MaxBigIntWords];
-		BigInt_t tmp[MaxBigIntWords];
+        BigInt_t tmp[MaxBigIntWords];
         BigInt_copy(NumWords, bcopy, B);
 
         /* Copy A -> tmp */
@@ -652,7 +673,7 @@ void BigInt_pow(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * Out)
 
 void BigInt_isqrt(size_t NumWords, BigInt_t * A, BigInt_t * B)
 {
-	assert(NumWords <= MaxBigIntWords);
+    assert(NumWords <= MaxBigIntWords);
     BigInt_t low[MaxBigIntWords];
     BigInt_t high[MaxBigIntWords];
     BigInt_t mid[MaxBigIntWords];

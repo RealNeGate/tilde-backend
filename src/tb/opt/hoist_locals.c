@@ -39,6 +39,7 @@ static bool hoist_locals(TB_Function* f) {
                 // move to the entry block
                 TB_Reg new_reg = tb_function_insert_after(f, 0, local_basepoint);
                 TB_Node* new_node = &f->nodes[new_reg];
+                n = &f->nodes[r];
 
                 TB_Reg new_reg_next = new_node->next;
                 memcpy(new_node, n, sizeof(TB_Node));

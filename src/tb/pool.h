@@ -40,7 +40,7 @@ inline static void* pool__alloc_slot(void** ptr, size_t type_size) {
         if (hdr->allocated[i] == UINT64_MAX) continue;
 
         // find some unallocated slot
-        int index = tb_ffs64(~hdr->allocated[i]) - 1;
+        int index = hdr->allocated[i] ? tb_ffs64(~hdr->allocated[i]) - 1 : 0;
 
         hdr->allocated[i] |= (1ull << index);
         hdr->used += 1;

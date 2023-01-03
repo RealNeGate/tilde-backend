@@ -86,4 +86,4 @@ ninja.write(f"build tildebackend{lib_ext}: lib {' '.join(objs)}\n")
 ninja.close()
 
 # run ninja
-subprocess.call(['ninja'])
+exit(subprocess.call(['ninja']))

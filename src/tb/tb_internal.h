@@ -571,6 +571,11 @@ ICodeGen* tb__find_code_generator(TB_Module* m);
 void* tb_out_reserve(TB_Emitter* o, size_t count);
 void tb_out_commit(TB_Emitter* o, size_t count);
 
+// reserves & commits
+void* tb_out_grab(TB_Emitter* o, size_t count);
+size_t tb_out_grab_i(TB_Emitter* o, size_t count);
+size_t tb_out_get_pos(TB_Emitter* o, void* p);
+
 // Adds null terminator onto the end and returns the starting position of the string
 size_t tb_outstr_nul_UNSAFE(TB_Emitter* o, const char* str);
 

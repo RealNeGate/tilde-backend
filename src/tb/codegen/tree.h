@@ -46,7 +46,7 @@ typedef struct {
 // for machine code gen, you can essentially walk from the first node which
 // is always a root node and schedule codegen based on simple peepholes and
 // tree walkers.
-TreeNode* tb_tree_generate(TreeNodeArena* arena, TB_Function* f, TB_Reg* use_count);
+TreeNode* tb_tree_generate(TreeNodeArena* arena, TB_Function* f, TB_Reg* use_count, TB_Label bb);
 void tb_tree_clear(TreeNodeArena* arena);
 void tb_tree_free(TreeNodeArena* arena);
 void tb_tree_print(TreeNode* node);

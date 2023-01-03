@@ -43,6 +43,8 @@ typedef struct {
     enum MIR_InstType {
         MIR_INST_NONE,
 
+        MIR_INST_LABEL,
+
         MIR_INST_RET,
         MIR_INST_DEF,
         MIR_INST_COPY_INTO,
@@ -50,9 +52,11 @@ typedef struct {
         MIR_INST_SIGN_EXT,
         MIR_INST_ZERO_EXT,
 
+        MIR_INST_ADD,
         MIR_INST_AND,
+        MIR_INST_MUL,
     } type;
-    MIR_Operand operands[2];
+    MIR_Operand operands[3];
 } MIR_Inst;
 
 typedef struct {
@@ -185,9 +189,16 @@ static void print_machine_operand(const MIR_Operand* operand) {
         case MIR_OPERAND_ADDRESS:
         case MIR_OPERAND_MEMORY: {
             if (operand->type == MIR_OPERAND_ADDRESS) printf("&");
-            printf("[%d:GPR + %d:GPR*%d + %d]",
-                operand->mem.base, operand->mem.index,
-                1 << operand->mem.scale, operand->mem.disp);
+
+            printf("[");
+            if (operand->mem.base) {
+                printf("%d:GPR + ", operand->mem.base);
+            }
+
+            if (operand->mem.index) {
+                printf("%d:GPR*%d + ", operand->mem.index, 1 << operand->mem.scale);
+            }
+            printf("%d]", operand->mem.disp);
             break;
         }
 
@@ -199,11 +210,43 @@ static void print_machine_insts(X64_ComplexCtx* restrict ctx) {
     FOREACH_N(i, 0, ctx->inst_count) {
         MIR_Inst* inst = &ctx->insts[i];
         switch (inst->type) {
+            case MIR_INST_LABEL: {
+                printf("LABEL:\n");
+                break;
+            }
             case MIR_INST_DEF: {
                 printf("  DEF ");
                 print_machine_operand(&inst->operands[0]);
                 printf(", ");
                 print_machine_operand(&inst->operands[1]);
+                printf("\n");
+                break;
+            }
+            case MIR_INST_AND: {
+                printf("  AND ");
+                print_machine_operand(&inst->operands[0]);
+                printf(", ");
+                print_machine_operand(&inst->operands[1]);
+                printf("\n");
+                break;
+            }
+            case MIR_INST_ADD: {
+                printf("  ADD ");
+                print_machine_operand(&inst->operands[0]);
+                printf(", ");
+                print_machine_operand(&inst->operands[1]);
+                printf(", ");
+                print_machine_operand(&inst->operands[2]);
+                printf("\n");
+                break;
+            }
+            case MIR_INST_MUL: {
+                printf("  MUL ");
+                print_machine_operand(&inst->operands[0]);
+                printf(", ");
+                print_machine_operand(&inst->operands[1]);
+                printf(", ");
+                print_machine_operand(&inst->operands[2]);
                 printf("\n");
                 break;
             }
@@ -311,12 +354,24 @@ static MIR_Operand complex_isel(X64_ComplexCtx* restrict ctx, TB_Function* f, Tr
             break;
         }
         case TB_TRUNCATE: {
-            LegalInt l = legalize_int(dt);
+            TreeVReg src = complex_collapse(ctx, f, complex_isel(ctx, f, tree_node->operands[0]));
+            TreeVReg dst_vreg = complex_alloc_vgpr(ctx);
+            assert(src.family == VREG_FAMILY_GPR);
 
-            complex_emit_inst(ctx, f, &(MIR_Inst) {
-                    MIR_INST_AND,
-                    { dst, { MIR_OPERAND_IMM, l.dt, .imm = l.mask } }
-                });
+            dst = (MIR_Operand) { MIR_OPERAND_GPR, dt, .gpr = dst_vreg.value };
+
+            LegalInt l = legalize_int(dt);
+            if (l.mask) {
+                complex_emit_inst(ctx, f, &(MIR_Inst) {
+                        MIR_INST_AND,
+                        { dst, { MIR_OPERAND_GPR, dt, .gpr = src.value }, { MIR_OPERAND_IMM, l.dt, .imm = l.mask } }
+                    });
+            } else {
+                complex_emit_inst(ctx, f, &(MIR_Inst) {
+                        MIR_INST_COPY_INTO,
+                        { dst, { MIR_OPERAND_GPR, dt, .gpr = src.value } }
+                    });
+            }
             break;
         }
         case TB_SIGN_EXT: {
@@ -359,6 +414,28 @@ static MIR_Operand complex_isel(X64_ComplexCtx* restrict ctx, TB_Function* f, Tr
             dst = address;
             dst.type = MIR_OPERAND_MEMORY;
             dst.dt = dt;
+            break;
+        }
+        case TB_ADD: {
+            MIR_Operand left = complex_isel(ctx, f, tree_node->operands[0]);
+            MIR_Operand right = complex_isel(ctx, f, tree_node->operands[1]);
+
+            TreeVReg dst_vreg = complex_alloc_vgpr(ctx);
+            dst = (MIR_Operand) { MIR_OPERAND_GPR, dt, .gpr = dst_vreg.value };
+            complex_emit_inst(ctx, f, &(MIR_Inst) {
+                    MIR_INST_ADD, { dst, left, right }
+                });
+            break;
+        }
+        case TB_MUL: {
+            MIR_Operand left = complex_isel(ctx, f, tree_node->operands[0]);
+            MIR_Operand right = complex_isel(ctx, f, tree_node->operands[1]);
+
+            TreeVReg dst_vreg = complex_alloc_vgpr(ctx);
+            dst = (MIR_Operand) { MIR_OPERAND_GPR, dt, .gpr = dst_vreg.value };
+            complex_emit_inst(ctx, f, &(MIR_Inst) {
+                    MIR_INST_MUL, { dst, left, right }
+                });
             break;
         }
         case TB_MEMBER_ACCESS: {
@@ -441,7 +518,7 @@ static MIR_Operand complex_isel(X64_ComplexCtx* restrict ctx, TB_Function* f, Tr
 
             if (should_use_lea_arith) {
                 // accumulate and collapse LEA operations to get an optimal multiply
-                FOREACH_N(steps, 0, 2) {
+                FOREACH_REVERSE_N(steps, 0, 2) {
                     if (multipliers[steps] == 0) break;
                     int shift = tb_ffs(multipliers[steps] & ~1u) - 1;
 
@@ -716,8 +793,8 @@ TB_FunctionOutput x64_complex_compile_function(TB_Function* restrict f, const TB
     TreeNodeArena tree = { 0 };
     TB_FOR_BASIC_BLOCK(bb, f) {
         // Generate expression tree
-        TreeNode* node = NULL;//tb_tree_generate(&tree, f, ctx->use_count, bb);
-        assert(0 && "TODO");
+        TreeNode* node = tb_tree_generate(&tree, f, ctx->use_count, bb);
+        complex_emit_inst(ctx, f, &(MIR_Inst) { MIR_INST_LABEL });
 
         // Instruction selection
         while (node) {

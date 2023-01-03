@@ -340,10 +340,10 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
 
         // TLS section
         {
+            assert(e->write_pos == sections[S_TLS].raw_data_pos);
             uint8_t* tls = &output[e->write_pos];
             e->write_pos += m->tls_region_size;
 
-            assert(e->write_pos == sections[S_TLS].raw_data_pos);
             FOREACH_N(i, 0, m->max_threads) {
                 pool_for(TB_Global, g, m->thread_info[i].globals) {
                     if (g->storage != TB_STORAGE_TLS) continue;

@@ -63,7 +63,7 @@ typedef struct {
     char kv_table[];
 } NL_MapHeader;
 
-#ifndef NL_STRING_MAP_INLINE
+#ifndef NL_HASH_MAP_INLINE
 NL_HASH_MAP_API NL_MapInsert nl_map__insert(void* map, size_t entry_size, size_t key_size, const void* key);
 NL_HASH_MAP_API ptrdiff_t nl_map__get(NL_MapHeader* restrict table, size_t entry_size, size_t key_size, const void* key);
 NL_HASH_MAP_API void nl_map__free(NL_MapHeader* restrict table);

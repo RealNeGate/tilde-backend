@@ -917,8 +917,8 @@ extern "C" {
     TB_API TB_DebugType* tb_debug_get_float(TB_Module* m, TB_FloatFormat fmt);
     TB_API TB_DebugType* tb_debug_create_ptr(TB_Module* m, TB_DebugType* base);
     TB_API TB_DebugType* tb_debug_create_array(TB_Module* m, TB_DebugType* base, size_t count);
-    TB_API TB_DebugType* tb_debug_create_struct(TB_Module* m);
-    TB_API TB_DebugType* tb_debug_create_union(TB_Module* m);
+    TB_API TB_DebugType* tb_debug_create_struct(TB_Module* m, const char* tag);
+    TB_API TB_DebugType* tb_debug_create_union(TB_Module* m, const char* tag);
     TB_API TB_DebugType* tb_debug_create_field(TB_Module* m, TB_DebugType* type, const char* name, TB_CharUnits offset);
     TB_API void tb_debug_complete_record(TB_DebugType* type, TB_DebugType** members, size_t count, TB_CharUnits size, TB_CharUnits align);
 

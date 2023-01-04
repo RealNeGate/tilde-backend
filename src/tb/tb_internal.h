@@ -242,6 +242,7 @@ struct TB_DebugType {
             TB_DebugType* type;
         } field;
         struct TB_DebugTypeRecord {
+            const char* tag;
             TB_CharUnits size, align;
 
             size_t count;

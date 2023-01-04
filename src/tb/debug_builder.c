@@ -58,12 +58,16 @@ TB_API TB_DebugType* tb_debug_create_array(TB_Module* m, TB_DebugType* base, siz
     return NEW(TB_DEBUG_TYPE_ARRAY, .array = { base, count });
 }
 
-TB_API TB_DebugType* tb_debug_create_struct(TB_Module* m) {
-    return NEW(TB_DEBUG_TYPE_STRUCT);
+TB_API TB_DebugType* tb_debug_create_struct(TB_Module* m, const char* tag) {
+    TB_DebugType* t = NEW(TB_DEBUG_TYPE_STRUCT);
+    t->record.tag = tag;
+    return t;
 }
 
-TB_API TB_DebugType* tb_debug_create_union(TB_Module* m) {
-    return NEW(TB_DEBUG_TYPE_UNION);
+TB_API TB_DebugType* tb_debug_create_union(TB_Module* m, const char* tag) {
+    TB_DebugType* t = NEW(TB_DEBUG_TYPE_UNION);
+    t->record.tag = tag;
+    return t;
 }
 
 TB_API TB_DebugType* tb_debug_create_field(TB_Module* m, TB_DebugType* type, const char* name, TB_CharUnits offset) {
@@ -72,6 +76,8 @@ TB_API TB_DebugType* tb_debug_create_field(TB_Module* m, TB_DebugType* type, con
 }
 
 TB_API void tb_debug_complete_record(TB_DebugType* type, TB_DebugType** members, size_t count, TB_CharUnits size, TB_CharUnits align) {
-    // hacky i know
-    type->record = (struct TB_DebugTypeRecord){ size, align, count, members };
+    type->record.size = size;
+    type->record.align = align;
+    type->record.count = count;
+    type->record.members = members;
 }

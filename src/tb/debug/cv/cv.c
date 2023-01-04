@@ -107,14 +107,15 @@ static uint16_t convert_to_codeview_type(CV_Builder* builder, TB_DebugType* type
                 return type->cv_type_id_fwd;
             }
 
-            // hash pointer for a simple name
-            char tag[10];
-            snprintf(tag, 10, "S%x", tb__crc32(0, sizeof(type), &type));
-
             // generate forward declaration
             // TODO(NeGate): we might wanna avoid generating a forward declaration here if we never use it
             CV_RecordType rec_type = type->tag == TB_DEBUG_TYPE_STRUCT ? LF_STRUCTURE : LF_UNION;
-            type->cv_type_id_fwd = tb_codeview_builder_add_incomplete_record(builder, rec_type, tag);
+            type->cv_type_id_fwd = tb_codeview_builder_add_incomplete_record(builder, rec_type, type->record.tag);
+
+            if (type->record.count == 0) {
+                // it's incomplete so it doesn't matter
+                return type->cv_type_id_fwd;
+            }
 
             TB_TemporaryStorage* tls = tb_tls_steal();
             CV_Field* list = tb_tls_push(tls, type->record.count * sizeof(CV_Field));
@@ -130,7 +131,7 @@ static uint16_t convert_to_codeview_type(CV_Builder* builder, TB_DebugType* type
             CV_TypeIndex field_list = tb_codeview_builder_add_field_list(builder, type->record.count, list);
             tb_tls_restore(tls, list);
 
-            return (type->cv_type_id = tb_codeview_builder_add_record(builder, rec_type, type->record.count, field_list, type->record.size, tag));
+            return (type->cv_type_id = tb_codeview_builder_add_record(builder, rec_type, type->record.count, field_list, type->record.size, type->record.tag));
         }
 
         default:

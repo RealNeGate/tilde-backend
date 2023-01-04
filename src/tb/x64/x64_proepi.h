@@ -98,7 +98,7 @@ size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
 
 size_t x64_emit_epilogue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
     // align the stack correctly
-    if (saved && (tb_popcount(saved & 0xFFFF) & 1) == 0) stack_usage += 8;
+    if ((tb_popcount(saved & 0xFFFF) & 1) == 0) stack_usage += 8;
 
     // if the stack isn't used then just return
     if (stack_usage == 8) {

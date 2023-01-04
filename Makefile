@@ -9,16 +9,26 @@ endif
 
 # C compiler
 CC = clang
-CFLAGS = -g -I include -I deps/luajit/src -msse4.2 -Wall -Werror -Wno-unused-function -D_CRT_SECURE_NO_WARNINGS
+CFLAGS = -g -I include -msse4.2 -Wall -Werror -Wno-unused-function -D_CRT_SECURE_NO_WARNINGS
 
 # linker
 LD = clang -fuse-ld=lld
 LDFLAGS = -g
 
-# utils
-RM = rm -f
+SOURCE_PATTERN :=       \
+	src/tb/*.c          \
+	src/tb/codegen/*.c  \
+	src/tb/bigint/*.c   \
+	src/tb/objects/*.c  \
+	src/tb/system/*.c   \
+	src/tb/debug/*.c    \
+	src/tb/debug/cv/*.c \
+	src/tb/opt/*.c      \
+	src/tb/x64/*.c      \
+	src/tb/aarch64/*.c  \
+	src/tb/wasm/*.c     \
 
-SOURCES  := src/tb/tb.c
+SOURCES  := $(wildcard $(SOURCE_PATTERN))
 OBJECTS  := $(SOURCES:%.c=%.o)
 
 # Convert into library
@@ -37,10 +47,5 @@ endif
 	$(CC) $(CFLAGS) $< -c -o $@
 
 .PHONY: clean
-ifeq ($(OS),Windows_NT)
 clean:
-	del /F /Q $(subst /,\,$(OBJECTS))
-else
-clean:
-	rm $(objects)
-endif
+	rm -f $(OBJECTS)

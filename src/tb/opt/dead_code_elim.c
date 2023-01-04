@@ -30,6 +30,7 @@ static bool dead_expr_elim(TB_Function* f) {
                         case TB_STORE:
                         case TB_SWITCH:
                         case TB_PARAM:
+                        case TB_PARAM_ADDR:
                         case TB_MEMSET:
                         case TB_MEMCPY:
                         case TB_DEBUGBREAK:
@@ -107,7 +108,7 @@ static bool dead_expr_elim(TB_Function* f) {
                         case TB_FSUB:
                         case TB_FMUL:
                         case TB_FDIV:
-                        case TB_PARAM_ADDR:
+                        // case TB_PARAM_ADDR:
                         case TB_CMP_EQ:
                         case TB_CMP_NE:
                         case TB_CMP_SLT:

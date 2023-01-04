@@ -33,7 +33,7 @@ void x64_emit_win64eh_unwind_info(TB_Emitter* e, TB_FunctionOutput* out_f, uint6
 
 size_t x64_emit_prologue(uint8_t* out, uint64_t saved, uint64_t stack_usage) {
     // align the stack correctly
-    if (saved && (tb_popcount(saved & 0xFFFF) & 1) == 0) stack_usage += 8;
+    if ((tb_popcount(saved & 0xFFFF) & 1) == 0) stack_usage += 8;
     // If the stack usage is zero we don't need a prologue
     if (stack_usage == 8) return 0;
 

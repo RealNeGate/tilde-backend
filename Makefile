@@ -1,17 +1,46 @@
-CC     = clang
-CFLAGS = -Wall -Werror -Wno-unused-function -I include -I deps/luajit/src
-LDLIBS =
+# file extensions
+ifeq ($(OS),Windows_NT)
+	O = .obj
+	X = .lib
+else
+	O = .o
+	X = .a
+endif
+
+# C compiler
+CC = clang
+CFLAGS = -g -I include -I deps/luajit/src -msse4.2 -Wall -Werror -Wno-unused-function -D_CRT_SECURE_NO_WARNINGS
+
+# linker
+LD = clang -fuse-ld=lld
+LDFLAGS = -g
+
+# utils
+RM = rm -f
 
 SOURCES  := src/tb/tb.c
-OBJECTS  := $(addprefix bin/, $(notdir $(SOURCES:%.c=%.o)))
-INCLUDES := include
+OBJECTS  := $(SOURCES:%.c=%.o)
 
 # Convert into library
-all: tildebackend.lib
+all: tildebackend$(X)
 
-tildebackend.lib: $(OBJECTS)
-	lib /nologo /out:$out $(inputs)
+ifeq ($(OS),Windows_NT)
+tildebackend$(X): $(OBJECTS)
+	lib /nologo /out:$@ $^
+else
+tildebackend$(X): $(OBJECTS)
+	ar -rcs $@ $^
+endif
 
 # C source code
 %.o: %.c
-	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $(@)
+	$(CC) $(CFLAGS) $< -c -o $@
+
+.PHONY: clean
+ifeq ($(OS),Windows_NT)
+clean:
+	del /F /Q $(subst /,\,$(OBJECTS))
+else
+clean:
+	rm $(objects)
+endif

@@ -60,13 +60,13 @@ TB_API TB_DebugType* tb_debug_create_array(TB_Module* m, TB_DebugType* base, siz
 
 TB_API TB_DebugType* tb_debug_create_struct(TB_Module* m, const char* tag) {
     TB_DebugType* t = NEW(TB_DEBUG_TYPE_STRUCT);
-    t->record.tag = tag;
+    t->record.tag = tag ? tag : "unknown_struct";
     return t;
 }
 
 TB_API TB_DebugType* tb_debug_create_union(TB_Module* m, const char* tag) {
     TB_DebugType* t = NEW(TB_DEBUG_TYPE_UNION);
-    t->record.tag = tag;
+    t->record.tag = tag ? tag : "unknown_union";
     return t;
 }
 

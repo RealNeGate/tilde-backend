@@ -1,15 +1,15 @@
+CC  = clang
+OPT ?= 0
+
 # file extensions
 ifeq ($(OS),Windows_NT)
-	O = .obj
 	X = .lib
 else
-	O = .o
 	X = .a
 endif
 
 # C compiler
-CC = clang
-CFLAGS = -g -I include -msse4.2 -Wall -Werror -Wno-unused-function -D_CRT_SECURE_NO_WARNINGS
+CFLAGS = -g -O$(OPT) -I include -msse4.2 -Wall -Werror -Wno-unused-function -D_CRT_SECURE_NO_WARNINGS
 
 # linker
 LD = clang -fuse-ld=lld
@@ -43,9 +43,14 @@ tildebackend$(X): $(OBJECTS)
 endif
 
 # C source code
-%.o: %.c
+%.o: %.c Makefile
 	$(CC) $(CFLAGS) $< -c -o $@
 
 .PHONY: clean
+ifeq ($(OS),Windows_NT)
 clean:
-	rm -f $(OBJECTS)
+	del /F /Q $(subst /,\,$(OBJECTS))
+else
+clean:
+	: rm -f $(OBJECTS)
+endif

@@ -6,8 +6,10 @@ jobs:
     runs-on: windows-2019
     steps:
       - uses: actions/checkout@v1
-      - uses: seanmiddleditch/gha-setup-ninja@master
-
+      
+      - name: Set up Cygwin
+        uses: egor-tensin/setup-cygwin@v4
+        
       - name: Download Submodules
         run: git submodule update --init --recursive
 
@@ -15,7 +17,7 @@ jobs:
         shell: cmd
         run: |
           call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat
-          py build.py x64 aarch64 wasm
+          make
         timeout-minutes: 10
   build_linux:
     runs-on: ubuntu-latest
@@ -29,5 +31,5 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Build TB
-        run: python3 build.py x64 aarch64 wasm
+        run: make
         timeout-minutes: 10

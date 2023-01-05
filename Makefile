@@ -49,10 +49,8 @@ endif
 .PHONY: clean
 ifeq ($(OS),Windows_NT)
 clean:
-	: del /F /Q $(subst /,\,$(OBJECTS)) tildebackend$(X)
-	: del /F /Q tb.tar.gz
+	rm -f $(subst /,\,$(OBJECTS)) tildebackend$(X)
 else
 clean:
-	: rm -f $(OBJECTS) tildebackend$(X)
-	: rm -f tb.tar.gz
+	rm -f $(OBJECTS) tildebackend$(X)
 endif

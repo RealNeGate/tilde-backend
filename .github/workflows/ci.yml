@@ -17,7 +17,7 @@ jobs:
         shell: cmd
         run: |
           call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat
-          make -j
+          make -j OPT=1
         timeout-minutes: 10
 
       - name: upload artifacts
@@ -39,7 +39,7 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Build TB
-        run: make -j
+        run: make -j OPT=1
         timeout-minutes: 10
 
       - name: upload artifacts
@@ -58,7 +58,7 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Build TB
-        run: make -j
+        run: make -j OPT=1
         timeout-minutes: 10
 
       - name: upload artifacts

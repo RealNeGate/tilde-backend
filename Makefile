@@ -1,5 +1,5 @@
 CC  = clang
-OPT = 0
+OPT ?= 0
 
 # file extensions
 ifeq ($(OS),Windows_NT)
@@ -50,7 +50,9 @@ endif
 ifeq ($(OS),Windows_NT)
 clean:
 	: del /F /Q $(subst /,\,$(OBJECTS)) tildebackend$(X)
+	: del /F /Q tb.tar.gz
 else
 clean:
 	: rm -f $(OBJECTS) tildebackend$(X)
+	: rm -f tb.tar.gz
 endif

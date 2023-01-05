@@ -19,11 +19,30 @@ jobs:
           call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat
           make -j
         timeout-minutes: 10
+  build_mac:
+    runs-on: macos-latest
+    strategy:
+      # Don't abort runners if a single one fails
+      fail-fast: false
+      matrix:
+        build_type: [Release, Debug]
+        llvm_version: [13, 14, 15]
+    steps:
+      - uses: actions/checkout@v1
+        run: |
+          brew update
+          brew install llvm@${{ matrix.llvm_version }} make
+          
+      - name: Download Submodules
+        run: git submodule update --init --recursive
+
+      - name: Build TB
+        run: make -j
+        timeout-minutes: 10
   build_linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v1
-      - uses: seanmiddleditch/gha-setup-ninja@master
       - name: Download LLVM
         run: sudo apt-get install llvm-11 clang-11
 

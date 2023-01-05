@@ -17,14 +17,14 @@ jobs:
         shell: cmd
         run: |
           call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat
-          make package -j
+          make -j
         timeout-minutes: 10
 
       - name: upload artifacts
         uses: actions/upload-artifact@v3
         with:
           name: tb-windows
-          path: tb.tar.gz
+          path: tildebackend.lib
   build_mac:
     runs-on: macos-latest
     steps:
@@ -39,14 +39,14 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Build TB
-        run: make package -j
+        run: make -j
         timeout-minutes: 10
 
       - name: upload artifacts
         uses: actions/upload-artifact@v3
         with:
           name: tb-macos
-          path: tb.tar.gz
+          path: tildebackend.a
   build_linux:
     runs-on: ubuntu-latest
     steps:
@@ -58,11 +58,11 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Build TB
-        run: make package -j
+        run: make -j
         timeout-minutes: 10
 
       - name: upload artifacts
         uses: actions/upload-artifact@v3
         with:
           name: tb-linux
-          path: tb.tar.gz
+          path: tildebackend.a

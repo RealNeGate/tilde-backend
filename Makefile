@@ -1,5 +1,5 @@
 CC  = clang
-OPT ?= 0
+OPT = 0
 
 # file extensions
 ifeq ($(OS),Windows_NT)
@@ -49,8 +49,8 @@ endif
 .PHONY: clean
 ifeq ($(OS),Windows_NT)
 clean:
-	del /F /Q $(subst /,\,$(OBJECTS))
+	: del /F /Q $(subst /,\,$(OBJECTS)) tildebackend$(X)
 else
 clean:
-	: rm -f $(OBJECTS)
+	: rm -f $(OBJECTS) tildebackend$(X)
 endif

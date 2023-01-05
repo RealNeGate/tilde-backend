@@ -77,7 +77,7 @@ static void* tb_jitheap_alloc_region(TB_JITHeap* c, size_t s, TB_MemProtect prot
         size_t k = bits ? tb_ffs64(~bits) - 1 : 0;
         if (k + block_count >= 64) {
             // goes across uint64 chunks
-            __debugbreak();
+            tb_todo();
         } else {
             uint64_t mask = ((1u << block_count) - 1) << k;
             if ((bits & mask) == 0) {

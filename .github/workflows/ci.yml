@@ -17,7 +17,7 @@ jobs:
         shell: cmd
         run: |
           call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat
-          make
+          make -j
         timeout-minutes: 10
   build_linux:
     runs-on: ubuntu-latest
@@ -31,5 +31,5 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Build TB
-        run: make
+        run: make -j
         timeout-minutes: 10

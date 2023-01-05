@@ -29,6 +29,8 @@ jobs:
         llvm_version: [13, 14, 15]
     steps:
       - uses: actions/checkout@v1
+      
+      - name: Download LLVM and Make
         run: |
           brew update
           brew install llvm@${{ matrix.llvm_version }} make

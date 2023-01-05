@@ -19,12 +19,6 @@ jobs:
           call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat
           make -j
         timeout-minutes: 10
-        
-      - name: upload artifacts
-        uses: actions/upload-artifact@v3
-        with:
-          name: c3-windows-${{ matrix.build_type }}
-          path: build\${{ matrix.build_type }}\c3c.exe
   build_mac:
     runs-on: macos-latest
     strategy:

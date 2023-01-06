@@ -35,7 +35,7 @@ if args.useluajit:
 	cflags += " -DTB_USE_LUAJIT"
 
 if args.opt:
-	cflags += " -O2 -DNDEBUG"
+	cflags += " -flto -O2 -DNDEBUG"
 
 os_name = platform.system()
 if os_name == "Windows":
@@ -85,5 +85,4 @@ for pattern in source_patterns:
 ninja.write(f"build tildebackend{lib_ext}: lib {' '.join(objs)}\n")
 ninja.close()
 
-# run ninja
 exit(subprocess.call(['ninja']))

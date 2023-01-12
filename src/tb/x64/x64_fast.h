@@ -128,6 +128,22 @@ static bool is_address_node(TB_Function* f, TB_Reg r) {
     }
 }
 
+static Cond swap_cond(Cond cc) {
+    switch (cc) {
+        case E:  return E;
+        case NE: return NE;
+        case L:  return G;
+        case LE: return GE;
+        case G:  return L;
+        case GE: return LE;
+        case B:  return A;
+        case BE: return NB;
+        case A:  return B;
+        case NB: return BE;
+        default: return tb_unreachable();
+    }
+}
+
 static bool fits_into_int32(TB_Node* n) {
     if (n->type == TB_INTEGER_CONST &&
         n->integer.num_words == 1) {
@@ -1252,7 +1268,11 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     Val tmp = val_gpr(l.dt, fast_alloc_gpr(ctx, f, TB_TEMP_REG));
 
                     fast_folded_op(ctx, f, MOV, &tmp, n->i_arith.b);
-                    INST1(IDIV, &tmp);
+                    if (is_signed) {
+                        INST1(IDIV, &tmp);
+                    } else {
+                        INST1(DIV, &tmp);
+                    }
 
                     fast_kill_temp_gpr(ctx, f, tmp.gpr);
                 }
@@ -1467,14 +1487,16 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
                     }
 
                     switch (reg_type) {
-                        case TB_CMP_EQ: cc = E; break;
-                        case TB_CMP_NE: cc = NE; break;
-                        case TB_CMP_SLT: cc = invert ? G : L; break;
-                        case TB_CMP_SLE: cc = invert ? GE : LE; break;
-                        case TB_CMP_ULT: cc = invert ? A : B; break;
-                        case TB_CMP_ULE: cc = invert ? NB : BE; break;
+                        case TB_CMP_EQ:  cc = E;  break;
+                        case TB_CMP_NE:  cc = NE; break;
+                        case TB_CMP_SLT: cc = L;  break;
+                        case TB_CMP_SLE: cc = LE; break;
+                        case TB_CMP_ULT: cc = B;  break;
+                        case TB_CMP_ULE: cc = BE; break;
                         default: tb_unreachable();
                     }
+
+                    if (invert) cc = swap_cond(cc);
                 }
 
                 if (!returns_flags) {
@@ -2634,9 +2656,10 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
 
             // flip the condition and the labels if
             // it allows for fallthrough
-            if (fallthrough_label == if_true) {
+            if (!has_fallthrough && fallthrough_label == if_true) {
                 tb_swap(TB_Label, if_true, if_false);
                 cc ^= 1;
+                // cc = swap_cond(cc);
 
                 has_fallthrough = true;
             }

@@ -92,16 +92,16 @@ static_assert(offsetof(Val, global.is_rvalue) == offsetof(Val, mem.is_rvalue), "
 typedef enum Inst2Type {
     // Integer data processing
     ADD, AND, OR, SUB, XOR, CMP, MOV,
-	// weird ones
-	TEST, LEA, IMUL, XCHG, XADD,
-	// casts
+    // weird ones
+    TEST, LEA, IMUL, XCHG, XADD,
+    // casts
     MOVSXB, MOVSXW, MOVSXD, MOVZXB, MOVZXW
 } Inst2Type;
 
 typedef enum Inst2FPType {
     FP_MOV, FP_ADD, FP_SUB, FP_MUL, FP_DIV, FP_CMP, FP_UCOMI,
     FP_SQRT, FP_RSQRT, FP_AND, FP_OR, FP_XOR,
-	FP_CVT, // cvtss2sd or cvtsd2ss
+    FP_CVT, // cvtss2sd or cvtsd2ss
 } Inst2FPType;
 
 typedef enum ExtMode {
@@ -134,6 +134,7 @@ typedef enum Inst1 {
     // 0xF7
     NOT  = 0xF702,
     NEG  = 0xF703,
+    DIV  = 0xF706,
     IDIV = 0xF707,
 
     // 0xFF
@@ -197,34 +198,34 @@ inline static Val val_imm(TB_DataType dt, int32_t imm) {
 
 inline static Val val_stack(TB_DataType dt, int s) {
     return (Val) {
-		.type = VAL_MEM,
+        .type = VAL_MEM,
         .dt = dt,
         .mem = { .base = RBP, .index = GPR_NONE, .scale = SCALE_X1, .disp = s }
-	};
+    };
 }
 
 inline static Val val_base_disp(TB_DataType dt, GPR b, int d) {
     return (Val) {
-		.type = VAL_MEM,
+        .type = VAL_MEM,
         .dt = dt,
         .mem = { .base = b, .index = GPR_NONE, .scale = SCALE_X1, .disp = d }
-	};
+    };
 }
 
 inline static Val val_base_index(TB_DataType dt, GPR b, GPR i, Scale s) {
     return (Val) {
-		.type = VAL_MEM,
-		.dt = dt,
-		.mem = { .base = b, .index = i, .scale = s }
-	};
+        .type = VAL_MEM,
+        .dt = dt,
+        .mem = { .base = b, .index = i, .scale = s }
+    };
 }
 
 inline static Val val_base_index_disp(TB_DataType dt, GPR b, GPR i, Scale s, int d) {
     return (Val) {
-		.type = VAL_MEM,
-		.dt = dt,
-		.mem = { .base = b, .index = i, .scale = s, .disp = d }
-	};
+        .type = VAL_MEM,
+        .dt = dt,
+        .mem = { .base = b, .index = i, .scale = s, .disp = d }
+    };
 }
 
 inline static bool is_value_mem(const Val* v) {

@@ -501,7 +501,7 @@ do {                     \
 #else
 #if TB_DEBUG_BUILD
 #define tb_todo()            __builtin_trap()
-#define tb_unreachable()     assert(0)
+#define tb_unreachable()     (assert(0), 0)
 #define tb_assume(condition) assert(condition)
 #else
 #define tb_todo()            __builtin_trap()
@@ -634,6 +634,8 @@ inline static uint64_t align_up(uint64_t a, uint64_t b) {
 inline static bool tb_is_power_of_two(uint64_t x) {
     return (x & (x - 1)) == 0;
 }
+
+uint64_t tb__sxt(uint64_t src, uint64_t src_bits, uint64_t dst_bits);
 
 // gets the next biggest number to 'v' in the sorted array
 // if 'v' is too big, then it'll return false, if not it's

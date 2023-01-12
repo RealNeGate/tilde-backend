@@ -2,7 +2,7 @@
 
 #define MASK_UPTO(pos) (~UINT64_C(0) >> (64 - pos))
 #define BEXTR(src,pos) (((src) >> (pos)) & 1)
-static uint64_t sxt(uint64_t src, uint64_t src_bits, uint64_t dst_bits) {
+uint64_t tb__sxt(uint64_t src, uint64_t src_bits, uint64_t dst_bits) {
     uint64_t sign_bit = BEXTR(src, src_bits-1);
     uint64_t mask = MASK_UPTO(dst_bits) & ~MASK_UPTO(src_bits);
 
@@ -361,7 +361,7 @@ static bool const_fold(TB_Function* f, TB_Node* n) {
                 BigInt_copy(dst_num_words, words, src_words);
 
                 // fixup the bits here
-                uint64_t shift = (64 - (src->dt.data % 64)), mask = (~UINT64_C(0) >> shift) << shift;
+                uint64_t shift = (64 - (dt.data % 64)), mask = (~UINT64_C(0) >> shift) << shift;
                 words[dst_num_words-1] &= ~mask;
 
                 n->type = TB_INTEGER_CONST;

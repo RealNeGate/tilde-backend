@@ -254,20 +254,25 @@ TB_API TB_Reg tb_inst_ptr2int(TB_Function* f, TB_Reg src, TB_DataType dt) {
 
 TB_API TB_Reg tb_inst_int2float(TB_Function* f, TB_Reg src, TB_DataType dt, bool is_signed) {
     tb_assume(dt.type == TB_FLOAT);
+    tb_assume(f->nodes[src].dt.type == TB_INT);
     tb_assume(f->nodes[src].dt.width == dt.width);
 
-    if (f->nodes[src].type == TB_INTEGER_CONST &&
-        f->nodes[src].integer.num_words == 1) {
+    if (f->nodes[src].type == TB_INTEGER_CONST && f->nodes[src].integer.num_words == 1) {
+        uint64_t y = f->nodes[src].integer.single_word;
+        if (is_signed) {
+            y = tb__sxt(y, f->nodes[src].dt.data, 64);
+        }
+
         if (dt.data == TB_FLT_32) {
             float x;
-            if (is_signed) x = (int64_t) f->nodes[src].integer.single_word;
-            else x = (uint64_t) f->nodes[src].integer.single_word;
+            if (is_signed) x = (int64_t) y;
+            else x = (uint64_t) y;
 
             return tb_inst_float32(f, x);
         } else if (dt.data == TB_FLT_64) {
             double x;
-            if (is_signed) x = (int64_t) f->nodes[src].integer.single_word;
-            else x = (uint64_t) f->nodes[src].integer.single_word;
+            if (is_signed) x = (int64_t) y;
+            else x = (uint64_t) y;
 
             return tb_inst_float64(f, x);
         }
@@ -358,11 +363,12 @@ TB_API TB_Reg tb_inst_poison(TB_Function* f) {
 
 TB_API void tb_inst_loc(TB_Function* f, TB_FileID file, int line) {
     tb_assume(line >= 0);
-    if (f->nodes[f->node_count - 1].type == TB_LINE_INFO) {
-        return;
+
+    TB_Reg r = f->node_count - 1;
+    if (f->nodes[r].type != TB_LINE_INFO) {
+        r = tb_make_reg(f, TB_LINE_INFO, TB_TYPE_VOID);
     }
 
-    TB_Reg r = tb_make_reg(f, TB_LINE_INFO, TB_TYPE_VOID);
     f->nodes[r].line_info.file = file;
     f->nodes[r].line_info.line = line;
 }

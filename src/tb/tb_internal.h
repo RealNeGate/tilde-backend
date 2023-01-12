@@ -495,7 +495,7 @@ do {                     \
 #define tb_assume(condition) assert(condition)
 #else
 #define tb_todo()            abort()
-#define tb_unreachable()     __assume(0)
+#define tb_unreachable()     (__assume(0), 0)
 #define tb_assume(condition) __assume(condition)
 #endif
 #else
@@ -505,7 +505,7 @@ do {                     \
 #define tb_assume(condition) assert(condition)
 #else
 #define tb_todo()            __builtin_trap()
-#define tb_unreachable()     __builtin_unreachable()
+#define tb_unreachable()     (__builtin_unreachable(), 0)
 #define tb_assume(condition) ((condition) ? 0 : (void) __builtin_unreachable())
 #endif
 #endif

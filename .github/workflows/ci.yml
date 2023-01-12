@@ -38,7 +38,7 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Build TB
-        run: py build.py --opt x64 aarch64 wasm
+        run: python build.py --opt x64 aarch64 wasm
         timeout-minutes: 10
 
       - name: upload artifacts
@@ -58,7 +58,7 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Build TB
-        run: py build.py --opt x64 aarch64 wasm
+        run: python build.py --opt x64 aarch64 wasm
         timeout-minutes: 10
 
       - name: upload artifacts

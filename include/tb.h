@@ -63,8 +63,8 @@ extern "C" {
     } TB_ABI;
 
     typedef enum TB_OutputFlavor {
-        TB_FLAVOR_ASSEMBLY,   // .s  .asm
         TB_FLAVOR_OBJECT,     // .o  .obj
+        TB_FLAVOR_ASSEMBLY,   // .s  .asm
         TB_FLAVOR_SHARED,     // .so .dll
         TB_FLAVOR_STATIC,     // .a  .lib
         TB_FLAVOR_EXECUTABLE, //     .exe
@@ -871,7 +871,7 @@ extern "C" {
     // function prototypes do not get freed individually and last for the entire run
     // of the backend, they can also be reused for multiple functions which have
     // matching signatures.
-    TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv conv, TB_DataType return_dt, int num_params, bool has_varargs);
+    TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv conv, TB_DataType return_dt, TB_DebugType* return_type, int num_params, bool has_varargs);
 
     // adds a parameter to the function prototype, TB doesn't support struct
     // parameters so the frontend must lower them to pointers or any other type

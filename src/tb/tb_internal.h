@@ -160,6 +160,7 @@ struct TB_FunctionPrototype {
     short param_count;
 
     TB_DataType return_dt;
+    TB_DebugType* return_type;
     bool has_varargs;
 
     // payload

@@ -469,6 +469,8 @@ enum {
 enum {
     T_VOID          = 0x0003,   // void
     T_BOOL08        = 0x0030,   // 8 bit boolean
+    T_CHAR          = 0x0010,   // 8 bit signed
+    T_UCHAR         = 0x0020,   // 8 bit unsigned
     T_INT1          = 0x0068,   // 8 bit signed int
     T_UINT1         = 0x0069,   // 8 bit unsigned int
     T_INT2          = 0x0072,   // 16 bit signed int

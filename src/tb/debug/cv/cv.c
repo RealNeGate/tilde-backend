@@ -80,7 +80,7 @@ static uint16_t convert_to_codeview_type(CV_Builder* builder, TB_DebugType* type
         case TB_DEBUG_TYPE_UINT: {
             bool is_signed = (type->tag == TB_DEBUG_TYPE_INT);
 
-            if (type->int_bits <= 8)  return is_signed ? T_INT1 : T_UINT1;
+            if (type->int_bits <= 8)  return is_signed ? T_CHAR : T_UCHAR;
             if (type->int_bits <= 16) return is_signed ? T_INT2 : T_UINT2;
             if (type->int_bits <= 32) return is_signed ? T_INT4 : T_UINT4;
             if (type->int_bits <= 64) return is_signed ? T_INT8 : T_UINT8;
@@ -429,7 +429,7 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
                 tb_tls_restore(tls, params);
 
                 // Create the procedure type
-                CV_TypeIndex return_type = get_codeview_type(proto->return_dt);
+                CV_TypeIndex return_type = proto->return_type ? convert_to_codeview_type(&builder, proto->return_type) : get_codeview_type(proto->return_dt);
                 CV_TypeIndex proc = tb_codeview_builder_add_procedure(&builder, return_type, arg_list, proto->param_count);
 
                 // Create the function ID type... which is somehow different from the procedure...

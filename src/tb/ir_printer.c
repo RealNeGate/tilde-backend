@@ -282,6 +282,15 @@ static void tb_print_node(TB_Function* f, TB_PrintCallback callback, void* user_
         tb_print_type(dt, callback, user_data);
         callback(user_data, " r%u", n->unary.src);
         break;
+        case TB_X86INTRIN_LDMXCSR:
+        callback(user_data, "  r%-8u = ldmxcsr.", i);
+        tb_print_type(dt, callback, user_data);
+        callback(user_data, " r%u", n->unary.src);
+        break;
+        case TB_X86INTRIN_STMXCSR:
+        callback(user_data, "  r%-8u = stmxcsr.", i);
+        tb_print_type(dt, callback, user_data);
+        break;
         case TB_LOCAL:
         callback(user_data, "  r%-8u = local %d (%d align)", i, n->local.size, n->local.alignment);
         break;

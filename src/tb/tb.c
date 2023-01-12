@@ -278,7 +278,7 @@ void tb_function_reserve_nodes(TB_Function* f, size_t extra) {
     }
 }
 
-TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv conv, TB_DataType return_dt, int num_params, bool has_varargs) {
+TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv conv, TB_DataType return_dt, TB_DebugType* return_type, int num_params, bool has_varargs) {
     assert(num_params == (uint32_t)num_params);
 
     size_t space_needed = (sizeof(TB_FunctionPrototype) + (sizeof(uint64_t) - 1)) / sizeof(uint64_t);
@@ -294,6 +294,7 @@ TB_API TB_FunctionPrototype* tb_prototype_create(TB_Module* m, TB_CallingConv co
     p->param_capacity = num_params;
     p->param_count = 0;
     p->return_dt = return_dt;
+    p->return_type = return_type;
     p->has_varargs = has_varargs;
     return p;
 }

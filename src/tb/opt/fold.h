@@ -105,7 +105,6 @@ static bool is_associative(TB_NodeTypeEnum type) {
     switch (type) {
         case TB_ADD: case TB_MUL:
         case TB_AND: case TB_XOR: case TB_OR:
-        case TB_CMP_NE: case TB_CMP_EQ:
         return true;
 
         default:

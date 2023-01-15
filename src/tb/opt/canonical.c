@@ -330,13 +330,21 @@ static bool inst_combine(TB_Function* f) {
                 TB_Node* a = &f->nodes[n->cmp.a];
                 TB_Node* b = &f->nodes[n->cmp.b];
 
-                // (cmpeq (cmpeq a 0) 0) => a
                 if (n->type == TB_CMP_EQ && tb_node_is_constant_zero(f, n->cmp.b) &&
                     a->type == TB_CMP_EQ && tb_node_is_constant_zero(f, a->cmp.b)) {
+                    // (cmpeq (cmpeq a 0) 0) => (cmpeq a 0)
                     OPTIMIZER_LOG(r, "removed redundant comparisons");
 
                     n->type = TB_PASS;
                     n->pass.value = a->cmp.a;
+                } else if (n->type == TB_CMP_NE && tb_node_is_constant_zero(f, n->cmp.b) &&
+                    a->type == TB_CMP_EQ && tb_node_is_constant_zero(f, a->cmp.b)) {
+                    // (cmpeq (cmpeq a 0) 0) => (cmpne a 0)
+                    OPTIMIZER_LOG(r, "removed redundant comparisons");
+
+                    n->type = TB_PASS;
+                    n->pass.value = a->cmp.a;
+                    a->type = TB_CMP_NE;
                 } else {
                     // Sometimes we promote some types up when we don't need to
                     // (cmp (sxt/zxt A) (int B))

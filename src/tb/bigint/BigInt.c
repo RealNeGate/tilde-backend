@@ -1,23 +1,12 @@
 #include <string.h>
+#include <stdlib.h>
 #include <assert.h>
 #include <limits.h>
 
 #include "BigInt.h"
-#define MaxBigIntWords 2
 
-/* Printing format strings */
-#ifndef BigIntWordSize
-#error Must define BigIntWordSize to be 1, 2, 4
-#elif (BigIntWordSize == 1)
-/* Max value of integer type */
-#define MAX_VAL ((BigInt_tmp_t)0xFF)
-#elif (BigIntWordSize == 2)
-#define MAX_VAL ((BigInt_tmp_t)0xFFFF)
-#elif (BigIntWordSize == 4)
-#define MAX_VAL ((BigInt_tmp_t)0xFFFFFFFF)
-#elif (BigIntWordSize == 8)
-#define MAX_VAL ((BigInt_tmp_t)0xFFFFFFFFFFFFFFFF)
-#endif
+#define MaxBigIntWords 2
+#define MAX_VAL UINT64_MAX
 
 /* Bad macros */
 #define MIN(A,B) (((A)<(B))?(A):(B))
@@ -29,33 +18,6 @@ static void _rshift_one_bit(size_t NumWords, BigInt_t * A);
 static void _lshift_word(size_t NumWords, BigInt_t * A, int nwords);
 static void _rshift_word(size_t NumWords, BigInt_t * A, int nwords);
 
-/* Endianness issue if machine is not little-endian? */
-#ifdef BigIntWordSize
-#if (BigIntWordSize == 1)
-#define BigInt_FROM_INT(BigInt, Integer) { \
-    ((BigInt_t *)(void *)BigInt)[0] = (((BigInt_tmp_t)Integer) & 0x000000ff); \
-    ((BigInt_t *)(void *)BigInt)[1] = (((BigInt_tmp_t)Integer) & 0x0000ff00) >> 8; \
-    ((BigInt_t *)(void *)BigInt)[2] = (((BigInt_tmp_t)Integer) & 0x00ff0000) >> 16; \
-    ((BigInt_t *)(void *)BigInt)[3] = (((BigInt_tmp_t)Integer) & 0xff000000) >> 24; \
-}
-#elif (BigIntWordSize == 2)
-#define BigInt_FROM_INT(BigInt, Integer) { \
-    ((BigInt_t *)(void *)BigInt)[0] = (((BigInt_tmp_t)Integer) & 0x0000ffff); \
-    ((BigInt_t *)(void *)BigInt)[1] = (((BigInt_tmp_t)Integer) & 0xffff0000) >> 16; \
-}
-#elif (BigIntWordSize == 4)
-#define BigInt_FROM_INT(BigInt, Integer) { \
-    ((BigInt_t *)(void *)BigInt)[0] = ((BigInt_tmp_t)Integer); \
-    ((BigInt_t *)(void *)BigInt)[1] = ((BigInt_tmp_t)Integer) >> ((BigInt_tmp_t)32); \
-}
-#elif (BigIntWordSize == 8)
-#define BigInt_FROM_INT(BigInt, Integer) { \
-    ((BigInt_t *)(void *)BigInt)[0] = ((BigInt_tmp_t)Integer); \
-    ((BigInt_t *)(void *)BigInt)[1] = ((BigInt_tmp_t)Integer) >> ((BigInt_tmp_t)64); \
-}
-#endif
-#endif
-
 /* Public / Exported functions. */
 void BigInt_zero(size_t NumWords, BigInt_t * BigInt)
 {
@@ -64,10 +26,12 @@ void BigInt_zero(size_t NumWords, BigInt_t * BigInt)
     }
 }
 
-void BigInt_from_int(size_t NumWords, BigInt_t * BigInt, BigInt_tmp_t Integer)
+void BigInt_from_int(size_t NumWords, BigInt_t * BigInt, size_t SrcNumWords, BigInt_t * src)
 {
     BigInt_zero(NumWords, BigInt);
-    BigInt_FROM_INT(BigInt, Integer);
+
+    for (size_t i = 0; i < SrcNumWords; ++i)
+        BigInt[i] = src[i];
 }
 
 int BigInt_to_int(size_t NumWords, BigInt_t * BigInt)
@@ -97,28 +61,6 @@ size_t BigInt_truncate(size_t NumWords, BigInt_t * BigInt)
     --NumWords;
     while (BigInt[NumWords] == 0 && NumWords > 0) --NumWords;
     return ++NumWords;
-}
-
-void BigInt_from_string(size_t NumWords, BigInt_t * BigInt, char * str)
-{
-    assert(NumWords <= MaxBigIntWords);
-    BigInt_zero(NumWords, BigInt);
-
-    BigInt_t temp[MaxBigIntWords];
-    BigInt_t digit;
-    BigInt_t ten = 10;
-
-    while (*str != 0)
-    {
-        BigInt_mul(NumWords, BigInt, 1, &ten, NumWords, temp);
-
-        digit = (*(str++)-'0');
-
-        if (digit != 0)
-            BigInt_add(NumWords, temp, 1, &digit, NumWords, BigInt);
-        else
-            BigInt_copy(NumWords, BigInt, temp);
-    }
 }
 
 static BigInt_t hex_to_word(char * Text, int Length)
@@ -180,7 +122,7 @@ void BigInt_to_hex_string(size_t NumWords, BigInt_t * BigInt, char * Str)
 
 void BigInt_dec(size_t NumWords, BigInt_t * BigInt)
 {
-    BigInt_t tmp; /* copy of BigInt */
+    /*BigInt_t tmp; // copy of BigInt
     BigInt_t res;
 
     for (size_t i = 0; i < NumWords; ++i) {
@@ -191,20 +133,20 @@ void BigInt_dec(size_t NumWords, BigInt_t * BigInt)
         if (!(res > tmp)) {
             break;
         }
-    }
+    }*/
+    abort();
 }
 
 void BigInt_inc(size_t NumWords, BigInt_t * BigInt)
 {
-    BigInt_t res;
-    BigInt_tmp_t tmp; /* copy of BigInt */
+    BigInt_t carry = 0;
 
     for (size_t i = 0; i < NumWords; ++i) {
-        tmp = BigInt[i];
-        res = tmp + 1;
-        BigInt[i] = res;
+        BigInt_t r = BigInt[i] + 1;
+        carry = (r > BigInt[i]);
+        BigInt[i] = r;
 
-        if (res > tmp) {
+        if (carry == 0) {
             break;
         }
     }
@@ -255,23 +197,22 @@ void BigInt_add(size_t AWords, BigInt_t * A, size_t BWords, BigInt_t * B, size_t
     }
 
     int carry = 0;
-    BigInt_tmp_t tmp;
     size_t i;
 
     for (i = 0; i < loop1; ++i)
     {
-        tmp = (BigInt_tmp_t)A[i] + B[i] + carry;
-        carry = (tmp > MAX_VAL);
-        Out[i] = (tmp & MAX_VAL);
+        BigInt_t r = A[i] + B[i] + carry;
+        carry = (r > A[i]);
+        Out[i] = r;
     }
 
     if (loop_to == 1) return;
 
     for (; i < loop2; ++i)
     {
-        tmp = (BigInt_tmp_t)B[i] + 0 + carry;
-        carry = (tmp > MAX_VAL);
-        Out[i] = (tmp & MAX_VAL);
+        BigInt_t r = B[i] + carry;
+        carry = (r < B[i]);
+        Out[i] = r;
     }
 
     if (loop_to == 2) return;
@@ -306,20 +247,12 @@ void BigInt_sub(size_t AWords, BigInt_t * A, size_t BWords, BigInt_t * B, size_t
         loop3 = Out_NumWords;
     }
 
-    BigInt_tmp_t res;
-    BigInt_tmp_t tmp1;
-    BigInt_tmp_t tmp2;
     int borrow = 0;
     size_t i;
-
     for (i = 0; i < loop1; ++i) {
-        tmp1 = (BigInt_tmp_t)A[i] + (MAX_VAL + 1); /* + number_base */
-        tmp2 = (BigInt_tmp_t)B[i] + borrow;
-        ;
-        res = (tmp1 - tmp2);
-        Out[i] = (BigInt_t)(res & MAX_VAL); /* "modulo number_base" == "%
-            (number_base - 1)" if number_base is 2^N */
-        borrow = (res <= MAX_VAL);
+        BigInt_t res = A[i] - B[i];
+        Out[i] = res;
+        borrow = res > A[i];
     }
 
     if (loop_to == 1) return;
@@ -327,33 +260,74 @@ void BigInt_sub(size_t AWords, BigInt_t * A, size_t BWords, BigInt_t * B, size_t
     if (AWords > BWords)
     {
         for (; i < loop2; ++i) {
-            tmp1 = (BigInt_tmp_t)A[i] + (MAX_VAL + 1);
-            tmp2 =  borrow;
-            res = (tmp1 - tmp2);
-            Out[i] = (BigInt_t)(res & MAX_VAL);
-            borrow = (res <= MAX_VAL);
+            BigInt_t res = A[i] - borrow;
+            Out[i] = res;
+            borrow = res > A[i];
         }
     }
     else
     {
         for (; i < loop2; ++i) {
-            tmp1 = (BigInt_tmp_t)MAX_VAL + 1;
-            tmp2 = (BigInt_tmp_t)B[i] + borrow;
-            res = (tmp1 - tmp2);
-            Out[i] = (BigInt_t)(res & MAX_VAL);
-            borrow = (res <= MAX_VAL);
+            BigInt_t res = B[i] - borrow;
+            Out[i] = res;
+            borrow = res > B[i];
         }
     }
 
     if (loop_to == 2) return;
 
     for (; i < loop3; ++i) {
-        tmp1 = (BigInt_tmp_t)0 + (MAX_VAL + 1);
-        tmp2 = (BigInt_tmp_t)0 + borrow;
-        res = (tmp1 - tmp2);
-        Out[i] = (BigInt_t)(res & MAX_VAL);
-        borrow = (res <= MAX_VAL);
+        BigInt_t res = (0 - borrow);
+        Out[i] = res;
+        borrow = (res > borrow);
     }
+}
+
+static uint64_t BigInt__mul64x128(uint64_t lhs, uint64_t rhs, uint64_t *high)
+{
+    /*
+     * GCC and Clang usually provide __uint128_t on 64-bit targets,
+     * although Clang also defines it on WASM despite having to use
+     * builtins for most purposes - including multiplication.
+     */
+    #if defined(__SIZEOF_INT128__) && !defined(__wasm__)
+    __uint128_t product = (__uint128_t)lhs * (__uint128_t)rhs;
+    *high = (uint64_t)(product >> 64);
+    return (uint64_t)(product & 0xFFFFFFFFFFFFFFFF);
+
+    /* Use the _umul128 intrinsic on MSVC x64 to hint for mulq. */
+    #elif defined(_MSC_VER) && defined(_M_IX64)
+    #   pragma intrinsic(_umul128)
+    /* This intentionally has the same signature. */
+    return _umul128(lhs, rhs, high);
+
+    #else
+    /*
+     * Fast yet simple grade school multiply that avoids
+     * 64-bit carries with the properties of multiplying by 11
+     * and takes advantage of UMAAL on ARMv6 to only need 4
+     * calculations.
+     */
+
+    /* First calculate all of the cross products. */
+    uint64_t lo_lo = (lhs & 0xFFFFFFFF) * (rhs & 0xFFFFFFFF);
+    uint64_t hi_lo = (lhs >> 32)        * (rhs & 0xFFFFFFFF);
+    uint64_t lo_hi = (lhs & 0xFFFFFFFF) * (rhs >> 32);
+    uint64_t hi_hi = (lhs >> 32)        * (rhs >> 32);
+
+    /* Now add the products together. These will never overflow. */
+    uint64_t cross = (lo_lo >> 32) + (hi_lo & 0xFFFFFFFF) + lo_hi;
+    uint64_t upper = (hi_lo >> 32) + (cross >> 32)        + hi_hi;
+
+    *high = upper;
+    return (cross << 32) | (lo_lo & 0xFFFFFFFF);
+    #endif /* portable */
+}
+
+static void BigInt__mul128(uint64_t lhs[2], uint64_t rhs[2], uint64_t res[2])
+{
+    res[0] = BigInt__mul64x128(lhs[0], rhs[0], &res[1]);
+    res[1] += (lhs[1] * rhs[0]) + (lhs[0] * rhs[1]);
 }
 
 void BigInt_mul_basic(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * Out)
@@ -372,102 +346,17 @@ void BigInt_mul_basic(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * Ou
         for (j = 0; j < NumWords; ++j) {
             if (i + j < NumWords) {
                 BigInt_zero(NumWords, tmp);
-                BigInt_tmp_t intermediate = ((BigInt_tmp_t)A[i] * (BigInt_tmp_t)B[j]);
-                BigInt_from_int(NumWords, tmp, intermediate);
+
+                BigInt_t intermediate[2];
+                intermediate[0] = BigInt__mul64x128(A[i], B[j], &intermediate[1]);
+                BigInt_from_int(NumWords, tmp, 2, intermediate);
+
                 _lshift_word(NumWords, tmp, i + j);
                 BigInt_add(NumWords, tmp, NumWords, row, NumWords, row);
             }
         }
         BigInt_add(NumWords, Out, NumWords, row, NumWords, Out);
     }
-}
-
-/* Cool USSR algorithm for fast multiplication (THERE IS NOT A SINGLE 100% CORRECT PSEUDO CODE ONLINE) */
-static void BigInt_Karatsuba_internal(size_t num1_NumWords, BigInt_t * num1, size_t num2_NumWords, BigInt_t * num2, size_t Out_NumWords, BigInt_t * Out, int rlevel) /* Out should be XWords + YWords in size to always avoid overflow */
-{
-    /* Optimise the size, to avoid any waste any resources */
-    num1_NumWords = BigInt_truncate(num1_NumWords, num1);
-    num2_NumWords = BigInt_truncate(num2_NumWords, num2);
-
-    if (num1_NumWords == 0 || num2_NumWords == 0)
-    {
-        BigInt_zero(Out_NumWords, Out);
-        return;
-    }
-    if (num1_NumWords == 1 && num2_NumWords == 1)
-    {
-        BigInt_tmp_t result = ((BigInt_tmp_t)(*num1)) * ((BigInt_tmp_t)(*num2));
-        if (Out_NumWords == 2) { BigInt_FROM_INT(Out, result); }
-        else BigInt_from_int(Out_NumWords, Out, result);
-        return;
-    }
-
-    size_t m = MIN(num2_NumWords, num1_NumWords);
-    size_t m2 = m / 2;
-    /* do A round up, this is what stops infinite recursion when the inputs are size 1 and 2 */
-    if ((m % 2) == 1) ++m2;
-
-    /* low 1 */
-    size_t low1_NumWords = m2;
-    BigInt_t * low1 = num1;
-    /* high 1 */
-    size_t high1_NumWords = num1_NumWords - m2;
-    BigInt_t * high1 = num1 + m2;
-    /* low 2 */
-    size_t low2_NumWords = m2;
-    BigInt_t * low2 = num2;
-    /* high 2 */
-    size_t high2_NumWords = num2_NumWords - m2;
-    BigInt_t * high2 = num2 + m2;
-
-    // z0 = karatsuba(low1, low2)
-    // z1 = karatsuba((low1 + high1), (low2 + high2))
-    // z2 = karatsuba(high1, high2)
-    size_t z0_NumWords = low1_NumWords + low2_NumWords;
-    assert(z0_NumWords <= MaxBigIntWords);
-    BigInt_t z0[MaxBigIntWords];
-
-    size_t z1_NumWords = (MAX(low1_NumWords, high1_NumWords)+1) + (MAX(low2_NumWords, high2_NumWords)+1);
-    assert(z1_NumWords <= MaxBigIntWords);
-    BigInt_t z1[MaxBigIntWords];
-
-    size_t z2_NumWords =  high1_NumWords + high2_NumWords;
-    int use_out_as_z2 = (Out_NumWords >= z2_NumWords); /* Sometimes we can use Out to store z2, then we don't have to copy from z2 to out later (2X SPEEDUP!) */
-    if (use_out_as_z2) {BigInt_zero(Out_NumWords-(z2_NumWords),Out+z2_NumWords);}/* The remaining part of Out must be ZERO'D */
-
-    assert(z2_NumWords <= MaxBigIntWords);
-    BigInt_t tmp[MaxBigIntWords];
-    BigInt_t * z2 = (use_out_as_z2) ? Out : tmp;
-
-    /* Make z0 and z2 */
-    BigInt_Karatsuba_internal(low1_NumWords, low1, low2_NumWords, low2, z0_NumWords, z0, rlevel+1);
-    BigInt_Karatsuba_internal(high1_NumWords, high1, high2_NumWords, high2, z2_NumWords, z2, rlevel+1);
-
-    /* make z1 */
-    {
-        size_t low1high1_NumWords = MAX(low1_NumWords, high1_NumWords)+1;
-        size_t low2high2_NumWords = MAX(low2_NumWords, high2_NumWords)+1;
-        assert(low1high1_NumWords <= MaxBigIntWords && low2high2_NumWords <= MaxBigIntWords);
-        BigInt_t low1high1[MaxBigIntWords];
-        BigInt_t low2high2[MaxBigIntWords];
-        BigInt_add(low1_NumWords, low1, high1_NumWords, high1, low1high1_NumWords, low1high1);
-        BigInt_add(low2_NumWords, low2, high2_NumWords, high2, low2high2_NumWords, low2high2);
-        BigInt_Karatsuba_internal(low1high1_NumWords, low1high1, low2high2_NumWords, low2high2, z1_NumWords, z1, rlevel+1);
-    }
-
-    // return (z2 * 10 ^ (m2 * 2)) + ((z1 - z2 - z0) * 10 ^ m2) + z0
-    BigInt_sub(z1_NumWords, z1, z2_NumWords, z2, z1_NumWords, z1);
-    BigInt_sub(z1_NumWords, z1, z0_NumWords, z0, z1_NumWords, z1);
-    if (!use_out_as_z2) BigInt_copy_dif(Out_NumWords, Out, z2_NumWords, z2);
-    _lshift_word(Out_NumWords, Out, m2);
-    BigInt_add(z1_NumWords, z1, Out_NumWords, Out, Out_NumWords, Out);
-    _lshift_word(Out_NumWords, Out, m2);
-    BigInt_add(Out_NumWords, Out, z0_NumWords, z0, Out_NumWords, Out);
-}
-
-void BigInt_mul(size_t ANumWords, BigInt_t * A, size_t BNumWords, BigInt_t * B, size_t OutNumWords, BigInt_t * Out)
-{
-    BigInt_Karatsuba_internal(ANumWords, A, BNumWords, B, OutNumWords, Out, 0);
 }
 
 void BigInt_div(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * Out)
@@ -477,11 +366,11 @@ void BigInt_div(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * Out)
     BigInt_t denom[NumWords];
     BigInt_t tmp[NumWords];
 
-    BigInt_from_int(NumWords, current, 1); // int current = 1;
+    BigInt_from_int(NumWords, current, 1, &(BigInt_t){ 1 }); // int current = 1;
     BigInt_copy(NumWords, denom, B); // denom = B
     BigInt_copy(NumWords, tmp, A); // tmp   = A
 
-    const BigInt_tmp_t half_max = 1 + (BigInt_tmp_t)(MAX_VAL / 2);
+    BigInt_t half_max = 1 + (MAX_VAL / 2);
     int overflow = 0;
     while (BigInt_cmp(NumWords, denom, A) != LARGER) // while (denom <= A) {
     {
@@ -565,7 +454,7 @@ void BigInt_divmod(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * C, Bi
     BigInt_div(NumWords, A, B, C);
 
     /* tmp = (Out * B) */
-    BigInt_mul(NumWords, C, NumWords, B, NumWords, tmp);
+    BigInt_mul_basic(NumWords, C, B, tmp);
 
     /* Out = A - tmp */
     BigInt_sub(NumWords, A, NumWords, tmp, NumWords, D);
@@ -636,69 +525,6 @@ int BigInt_is_zero(size_t NumWords, BigInt_t * BigInt)
     }
 
     return 1;
-}
-
-void BigInt_pow(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * Out)
-{
-    BigInt_zero(NumWords, Out);
-
-    if (BigInt_cmp(NumWords, B, Out) == EQUAL) {
-        /* Return 1 when exponent is 0 -- BigInt^0 = 1 */
-        BigInt_inc(NumWords, Out);
-    } else {
-        assert(NumWords <= MaxBigIntWords);
-        BigInt_t bcopy[MaxBigIntWords];
-        BigInt_t tmp[MaxBigIntWords];
-        BigInt_copy(NumWords, bcopy, B);
-
-        /* Copy A -> tmp */
-        BigInt_copy(NumWords, tmp, A);
-
-        BigInt_dec(NumWords, bcopy);
-
-        /* Begin summing products: */
-        while (!BigInt_is_zero(NumWords, bcopy)) {
-            /* Out = tmp * tmp */
-            BigInt_mul(NumWords, tmp, NumWords, A, NumWords, Out);
-            /* Decrement B by one */
-            BigInt_dec(NumWords, bcopy);
-
-            BigInt_copy(NumWords, tmp, Out);
-        }
-
-        /* Out = tmp */
-        BigInt_copy(NumWords, Out, tmp);
-    }
-}
-
-void BigInt_isqrt(size_t NumWords, BigInt_t * A, BigInt_t * B)
-{
-    assert(NumWords <= MaxBigIntWords);
-    BigInt_t low[MaxBigIntWords];
-    BigInt_t high[MaxBigIntWords];
-    BigInt_t mid[MaxBigIntWords];
-    BigInt_t tmp[MaxBigIntWords];
-
-    BigInt_zero(NumWords, low);
-    BigInt_copy(NumWords, high, A);
-    BigInt_copy(NumWords, mid, high);
-    BigInt_rshift(NumWords, mid, 1);
-    BigInt_inc(NumWords, mid);
-
-    while (BigInt_cmp(NumWords, high, low) > 0) {
-        BigInt_mul(NumWords, mid, NumWords, mid, NumWords, tmp);
-        if (BigInt_cmp(NumWords, tmp, A) > 0) {
-            BigInt_copy(NumWords, high, mid);
-            BigInt_dec(NumWords, high);
-        } else {
-            BigInt_copy(NumWords, low, mid);
-        }
-        BigInt_sub(NumWords, high, NumWords, low, NumWords, mid);
-        _rshift_one_bit(NumWords, mid);
-        BigInt_add(NumWords, low, NumWords, mid, NumWords, mid);
-        BigInt_inc(NumWords, mid);
-    }
-    BigInt_copy(NumWords, B, low);
 }
 
 void BigInt_copy(size_t NumWords, BigInt_t * Dst, BigInt_t * Src)

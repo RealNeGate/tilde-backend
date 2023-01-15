@@ -454,7 +454,7 @@ static bool const_fold(TB_Function* f, TB_Node* n) {
                     switch (n->type) {
                         case TB_ADD: BigInt_add(num_a_words, a_words, num_b_words, b_words, num_a_words, words); break;
                         case TB_SUB: BigInt_sub(num_a_words, a_words, num_b_words, b_words, num_a_words, words); break;
-                        case TB_MUL: BigInt_mul(num_a_words, a_words, num_b_words, b_words, num_a_words, words); break;
+                        case TB_MUL: BigInt_mul_basic(num_a_words, a_words, b_words, words); break;
                         case TB_AND: BigInt_and(num_a_words, a_words, b_words, words); break;
                         case TB_OR:  BigInt_or(num_a_words, a_words, b_words, words); break;
                         case TB_XOR: BigInt_xor(num_a_words, a_words, b_words, words); break;

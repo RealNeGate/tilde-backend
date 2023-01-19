@@ -27,9 +27,8 @@ TildeBackend (Tilde or TB for short)
     now) and Make.
 
     ```
-      git clone https://github.com/RealNeGate/tilde-backend.git
+      git clone --recurse-submodules -j8 https://github.com/RealNeGate/tilde-backend.git
       cd tilde-backend
-      git submodule update --init --recursive
       make -j
     ```
 

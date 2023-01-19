@@ -35,7 +35,10 @@ if args.useluajit:
 	cflags += " -DTB_USE_LUAJIT"
 
 if args.opt:
-	cflags += " -flto -O2 -DNDEBUG"
+	cflags += " -O2 -DNDEBUG"
+
+if True:
+	cflags += " -finstrument-functions"
 
 os_name = platform.system()
 if os_name == "Windows":

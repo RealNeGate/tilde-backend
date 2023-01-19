@@ -165,14 +165,7 @@ static FunctionTallySimple tally_memory_usage_simple(TB_Function* restrict f) {
     };
 }
 
-// returns the number of registers we need allocated for this SSA value
-typedef struct {
-    int reg_class, count;
-    bool can_recycle;
-} RegAllocAttempt;
-
 // user-defined forward decls
-static RegAllocAttempt GAD_FN(try_alloc_regs)(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
 static size_t GAD_FN(resolve_stack_usage)(Ctx* restrict ctx, TB_Function* f, size_t stack_usage, size_t caller_usage);
 static void GAD_FN(resolve_local_patches)(Ctx* restrict ctx, TB_Function* f);
 static void GAD_FN(call)(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
@@ -189,7 +182,7 @@ static void GAD_FN(move)(Ctx* restrict ctx, TB_Function* f, TB_Reg dst, TB_Reg s
 static void GAD_FN(branch_if)(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_Label if_true, TB_Label if_false, TB_Reg fallthrough);
 static GAD_VAL GAD_FN(cond_to_reg)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int cc);
 
-static void GAD_FN(regalloc_step)(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
+static GAD_VAL GAD_FN(regalloc)(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
 
 static void GAD_FN(get_data_type_size)(TB_DataType dt, TB_CharUnits* out_size, TB_CharUnits* out_align) {
     switch (dt.type) {
@@ -254,30 +247,6 @@ static void GAD_FN(kill_flags)(Ctx* restrict ctx, TB_Function* f) {
     }
 }
 
-static void GAD_FN(eval_bb_edge)(Ctx* restrict ctx, TB_Function* f, TB_Label from, TB_Label to) {
-    TB_FOR_NODE(r, f, to) {
-        if (tb_node_is_phi_node(f, r)) {
-            int count = tb_node_get_phi_width(f, r);
-            TB_PhiInput* inputs = tb_node_get_phi_inputs(f, r);
-
-            // if the destination is not initialized, do that
-            if (ctx->values[r].type == 0) {
-                GAD_FN(regalloc_step)(ctx, f, r);
-            }
-
-            FOREACH_N(j, 0, count) {
-                if (inputs[j].label == from) {
-                    TB_Reg src = inputs[j].val;
-
-                    if (src != TB_NULL_REG) {
-                        GAD_FN(move)(ctx, f, r, src);
-                    }
-                }
-            }
-        }
-    }
-}
-
 typedef struct {
     int start, end;
 } LiveInterval;
@@ -293,39 +262,15 @@ static LiveInterval get_live_interval(Ctx* restrict ctx, TB_Reg r) {
     return li;
 }
 
-// done before running an instruction
-static void GAD_FN(regalloc_step)(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
-    if (ctx->intervals[r] == 0) return;
-    if (ctx->values[r].type != 0) return;
+static GAD_VAL GAD_FN(regalloc)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int reg_class, int reg_num) {
 
+}
+
+static GAD_VAL GAD_FN(regalloc)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int reg_class) {
     TB_DataType dt = f->nodes[r].dt;
-    RegAllocAttempt ra = x64v2_try_alloc_regs(ctx, f, r);
-    if (ra.count == 0) return;
 
     LiveInterval r_li = get_live_interval(ctx, r);
     printf("r%u (t=%d .. %d)\n", r, r_li.start, ctx->ordinal[ctx->intervals[r]]);
-
-    // expire old intervals
-    FOREACH_REVERSE_N(j, 0, ctx->active_count) {
-        TB_Reg k = ctx->active[j];
-        LiveInterval k_li = get_live_interval(ctx, k);
-        if (k_li.end >= r_li.start) {
-            break;
-        }
-
-        // remove from active
-        printf("  expired r%u\n", k);
-        if (j != ctx->active_count - 1) {
-            ctx->active[j] = ctx->active[ctx->active_count - 1];
-        }
-
-        // add back to register pool
-        if (ctx->values[k].type >= GAD_VAL_REGISTER && ctx->values[k].type < GAD_VAL_REGISTER + GAD_NUM_REG_FAMILIES) {
-            printf("  free %s\n", GPR_NAMES[ctx->values[k].reg]);
-            set_remove(&ctx->free_regs[ctx->values[k].type - GAD_VAL_REGISTER], ctx->values[k].reg);
-        }
-        ctx->active_count -= 1;
-    }
 
     if (ctx->active_count == ctx->free_regs[ra.reg_class].capacity) {
         bool success = false;
@@ -398,6 +343,64 @@ static void GAD_FN(regalloc_step)(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
             ctx->active[ctx->active_count++] = r;
         }
     }
+
+    return ctx->values[r];
+}
+
+// done before running an instruction
+static void GAD_FN(regalloc_step)(Ctx* restrict ctx, TB_Function* f) {
+    TB_DataType dt = f->nodes[r].dt;
+    RegAllocAttempt ra = x64v2_try_alloc_regs(ctx, f, r);
+    if (ra.count == 0) return;
+
+    LiveInterval r_li = get_live_interval(ctx, r);
+    printf("r%u (t=%d .. %d)\n", r, r_li.start, r_li.end);
+
+    // expire old intervals
+    FOREACH_REVERSE_N(j, 0, ctx->active_count) {
+        TB_Reg k = ctx->active[j];
+        LiveInterval k_li = get_live_interval(ctx, k);
+        if (k_li.end >= r_li.start) {
+            break;
+        }
+
+        // remove from active
+        printf("  expired r%u\n", k);
+        if (j != ctx->active_count - 1) {
+            ctx->active[j] = ctx->active[ctx->active_count - 1];
+        }
+
+        // add back to register pool
+        if (ctx->values[k].type >= GAD_VAL_REGISTER && ctx->values[k].type < GAD_VAL_REGISTER + GAD_NUM_REG_FAMILIES) {
+            printf("  free %s\n", GPR_NAMES[ctx->values[k].reg]);
+            set_remove(&ctx->free_regs[ctx->values[k].type - GAD_VAL_REGISTER], ctx->values[k].reg);
+        }
+        ctx->active_count -= 1;
+    }
+}
+
+static void GAD_FN(eval_bb_edge)(Ctx* restrict ctx, TB_Function* f, TB_Label from, TB_Label to) {
+    TB_FOR_NODE(r, f, to) {
+        if (tb_node_is_phi_node(f, r)) {
+            int count = tb_node_get_phi_width(f, r);
+            TB_PhiInput* inputs = tb_node_get_phi_inputs(f, r);
+
+            // if the destination is not initialized, do that
+            if (ctx->values[r].type == 0) {
+                GAD_FN(regalloc_step)(ctx, f);
+            }
+
+            FOREACH_N(j, 0, count) {
+                if (inputs[j].label == from) {
+                    TB_Reg src = inputs[j].val;
+
+                    if (src != TB_NULL_REG) {
+                        GAD_FN(move)(ctx, f, r, src);
+                    }
+                }
+            }
+        }
+    }
 }
 
 // returns the register for the next basic block
@@ -412,7 +415,7 @@ static void GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Label bb, TB_L
         // TB_DataType dt = n->dt;
 
         GAD_FN(kill_flags)(ctx, f);
-        GAD_FN(regalloc_step)(ctx, f, r);
+        GAD_FN(regalloc_step)(ctx, f);
 
         switch (reg_type) {
             case TB_NULL:

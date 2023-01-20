@@ -246,6 +246,7 @@ static void x64v2_resolve_params(Ctx* restrict ctx, TB_Function* f, GAD_VAL* val
                     }
 
                     printf("  assign to %s\n", GPR_NAMES[values[r].reg]);
+                    set_put(&ctx->free_regs[X64_REG_CLASS_GPR], values[r].reg);
                 }
 
                 // short circuit
@@ -499,14 +500,13 @@ static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
                 INST2(MOV, &dst, &src, param_dt);
             }*/
         } else {
-            Val dst;
             if (i < params->gpr_count) {
-                dst = val_gpr(param_dt, params->gprs[i]);
+                GAD_VAL dst = GAD_FN(steal)(ctx, f, param_reg, X64_REG_CLASS_GPR, params->gprs[i]);
                 // caller_saved &= ~(1u << dst.gpr);
 
                 x64v2_mov_to_explicit_gpr(ctx, f, dst.gpr, param_reg);
             } else {
-                dst = val_base_disp(param_dt, RSP, 8 * i);
+                GAD_VAL dst = val_base_disp(param_dt, RSP, 8 * i);
                 INST2(MOV, &dst, &ctx->values[param_reg], param_dt);
             }
         }
@@ -562,14 +562,8 @@ static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
         tb_todo();
     } else {
         if (dt.type == TB_PTR || (dt.type == TB_INT && dt.data > 0)) {
-            if (ctx->values[r].type != GAD_VAL_REGISTER + X64_REG_CLASS_GPR && ctx->values[r].reg != RAX) {
-                GAD_VAL rax = {
-                    .type = GAD_VAL_REGISTER + X64_REG_CLASS_GPR,
-                    .dt = dt, .r = r, .reg = RAX
-                };
-
-                INST2(MOV, &ctx->values[r], &rax, TB_TYPE_I64);
-            }
+            GAD_VAL rax = GAD_FN(steal)(ctx, f, r, X64_REG_CLASS_GPR, RAX);
+            INST2(MOV, &ctx->values[r], &rax, TB_TYPE_I64);
         }
     }
 }

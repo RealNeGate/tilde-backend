@@ -182,8 +182,6 @@ static void GAD_FN(move)(Ctx* restrict ctx, TB_Function* f, TB_Reg dst, TB_Reg s
 static void GAD_FN(branch_if)(Ctx* restrict ctx, TB_Function* f, TB_Reg cond, TB_Label if_true, TB_Label if_false, TB_Reg fallthrough);
 static GAD_VAL GAD_FN(cond_to_reg)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int cc);
 
-static GAD_VAL GAD_FN(regalloc)(Ctx* restrict ctx, TB_Function* f, TB_Reg r);
-
 static void GAD_FN(get_data_type_size)(TB_DataType dt, TB_CharUnits* out_size, TB_CharUnits* out_align) {
     switch (dt.type) {
         case TB_INT: {
@@ -262,56 +260,71 @@ static LiveInterval get_live_interval(Ctx* restrict ctx, TB_Reg r) {
     return li;
 }
 
-static GAD_VAL GAD_FN(regalloc)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int reg_class, int reg_num) {
+static void GAD_FN(explicit_steal)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, TB_Reg spill_reg, ptrdiff_t active_i) {
+    // replace spill with r
+    ctx->stack_usage = align_up(ctx->stack_usage + 8, 8);
 
+    GAD_VAL slot = GAD_MAKE_STACK_SLOT(ctx, f, r, -ctx->stack_usage);
+    slot.dt = f->nodes[r].dt;
+    ctx->values[r] = ctx->values[spill_reg];
+
+    // spill (we're saving the old value because we need to restore before leaving
+    // this basic block)
+    GAD_VAL* restore_val = &ctx->spills[ctx->spill_count++];
+    *restore_val = ctx->values[spill_reg];
+    ctx->values[spill_reg] = slot;
+
+    printf("  steal r%u for r%u\n", spill_reg, r);
+    printf("  spill r%u to [rbp - %d]\n", spill_reg, ctx->stack_usage);
+    GAD_FN(spill)(ctx, f, &slot, &ctx->values[r]);
+
+    // TODO(NeGate): sort by increasing end point
+    ctx->active[active_i] = r;
+}
+
+static GAD_VAL GAD_FN(steal)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int reg_class, int reg_num) {
+    LiveInterval r_li = get_live_interval(ctx, r);
+    printf("r%u (t=%d .. %d)\n", r, r_li.start, r_li.end);
+
+    FOREACH_N(i, 0, ctx->active_count) {
+        TB_Reg spill_reg = ctx->active[i];
+        // LiveInterval spill_li = get_live_interval(ctx, spill_reg);
+
+        if (ctx->values[spill_reg].type == GAD_VAL_REGISTER + reg_class && ctx->values[spill_reg].reg == reg_num) {
+            // spill_li.end > r_li.end;
+            // it's not a register in the proper regclass and it's not outliving r
+            GAD_FN(explicit_steal)(ctx, f, r, spill_reg, i);
+            return ctx->values[r];
+        }
+    }
+
+    tb_panic("steal");
 }
 
 static GAD_VAL GAD_FN(regalloc)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int reg_class) {
     TB_DataType dt = f->nodes[r].dt;
 
     LiveInterval r_li = get_live_interval(ctx, r);
-    printf("r%u (t=%d .. %d)\n", r, r_li.start, ctx->ordinal[ctx->intervals[r]]);
+    printf("r%u (t=%d .. %d)\n", r, r_li.start, r_li.end);
 
-    if (ctx->active_count == ctx->free_regs[ra.reg_class].capacity) {
+    if (ctx->active_count == ctx->free_regs[reg_class].capacity) {
         bool success = false;
         FOREACH_N(i, 0, ctx->active_count) {
             TB_Reg spill_reg = ctx->active[i];
             // LiveInterval spill_li = get_live_interval(ctx, spill_reg);
 
-            if (!(ctx->values[spill_reg].type == GAD_VAL_REGISTER + ra.reg_class)) {
-                // spill_li.end > r_li.end;
-                // it's not a register in the proper regclass and it's not outliving r
-                continue;
+            if (ctx->values[spill_reg].type == GAD_VAL_REGISTER + reg_class) {
+                GAD_FN(explicit_steal)(ctx, f, r, spill_reg, i);
+                success = true;
+                break;
             }
-
-            // replace spill with r
-            ctx->stack_usage = align_up(ctx->stack_usage + 8, 8);
-
-            GAD_VAL slot = GAD_MAKE_STACK_SLOT(ctx, f, r, -ctx->stack_usage);
-            slot.dt = f->nodes[r].dt;
-            ctx->values[r] = ctx->values[spill_reg];
-
-            // spill (we're saving the old value because we need to restore before leaving
-            // this basic block)
-            GAD_VAL* restore_val = &ctx->spills[ctx->spill_count++];
-            *restore_val = ctx->values[spill_reg];
-            ctx->values[spill_reg] = slot;
-
-            printf("  steal r%u for r%u\n", spill_reg, r);
-            printf("  spill r%u to [rbp - %d]\n", spill_reg, ctx->stack_usage);
-            GAD_FN(spill)(ctx, f, &slot, &ctx->values[r]);
-
-            // TODO(NeGate): sort by increasing end point
-            ctx->active[i] = r;
-            success = true;
-            break;
         }
 
         (void)success;
         assert(success && "Could not find spillable values");
     } else {
         bool success = false;
-        if (ra.can_recycle && ctx->active_count > 0) {
+        if (0 /* can_recycle */ && ctx->active_count > 0) {
             printf("  try recycling r%u\n", r);
             FOREACH_N(k, 0, ctx->active_count) {
                 TB_Reg other_r = ctx->active[k];
@@ -329,15 +342,15 @@ static GAD_VAL GAD_FN(regalloc)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int
         }
 
         if (!success) {
-            ptrdiff_t reg_num = set_pop_any(&ctx->free_regs[ra.reg_class]);
+            ptrdiff_t reg_num = set_pop_any(&ctx->free_regs[reg_class]);
             assert(reg_num >= 0);
 
             printf("  assign to %s\n", GPR_NAMES[reg_num]);
             ctx->values[r] = (GAD_VAL){
-                .type = GAD_VAL_REGISTER + ra.reg_class,
+                .type = GAD_VAL_REGISTER + reg_class,
                 .r = r, .dt = dt, .reg = reg_num
             };
-            set_put(&ctx->free_regs[ra.reg_class], reg_num);
+            set_put(&ctx->free_regs[reg_class], reg_num);
 
             // TODO(NeGate): sort by increasing end point
             ctx->active[ctx->active_count++] = r;
@@ -348,13 +361,8 @@ static GAD_VAL GAD_FN(regalloc)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int
 }
 
 // done before running an instruction
-static void GAD_FN(regalloc_step)(Ctx* restrict ctx, TB_Function* f) {
-    TB_DataType dt = f->nodes[r].dt;
-    RegAllocAttempt ra = x64v2_try_alloc_regs(ctx, f, r);
-    if (ra.count == 0) return;
-
+static void GAD_FN(regalloc_step)(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
     LiveInterval r_li = get_live_interval(ctx, r);
-    printf("r%u (t=%d .. %d)\n", r, r_li.start, r_li.end);
 
     // expire old intervals
     FOREACH_REVERSE_N(j, 0, ctx->active_count) {
@@ -387,7 +395,7 @@ static void GAD_FN(eval_bb_edge)(Ctx* restrict ctx, TB_Function* f, TB_Label fro
 
             // if the destination is not initialized, do that
             if (ctx->values[r].type == 0) {
-                GAD_FN(regalloc_step)(ctx, f);
+                GAD_FN(regalloc_step)(ctx, f, r);
             }
 
             FOREACH_N(j, 0, count) {
@@ -415,7 +423,7 @@ static void GAD_FN(eval_bb)(Ctx* restrict ctx, TB_Function* f, TB_Label bb, TB_L
         // TB_DataType dt = n->dt;
 
         GAD_FN(kill_flags)(ctx, f);
-        GAD_FN(regalloc_step)(ctx, f);
+        GAD_FN(regalloc_step)(ctx, f, r);
 
         switch (reg_type) {
             case TB_NULL:

@@ -9,6 +9,7 @@ parser.add_argument('targets', metavar='N', type=str, nargs='+', help='decide wh
 parser.add_argument('--useluajit', action='store_true', help='enable using luajit for TB passes')
 parser.add_argument('--opt', action='store_true', help='runs optimize on compiled source')
 parser.add_argument('--asan', action='store_true', help='compile with ASAN')
+parser.add_argument('--autospall', action='store_true', help='instrument code with SpallAuto')
 
 args = parser.parse_args()
 source_patterns = [
@@ -37,7 +38,7 @@ if args.useluajit:
 if args.opt:
 	cflags += " -O2 -DNDEBUG"
 
-if True:
+if args.autospall:
 	cflags += " -finstrument-functions"
 
 os_name = platform.system()

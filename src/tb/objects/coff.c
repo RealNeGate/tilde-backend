@@ -15,9 +15,6 @@ struct TB_ModuleExporter {
     const ICodeGen* code_gen;
     size_t write_pos;
 
-    size_t temporary_memory_capacity;
-    void* temporary_memory;
-
     // String table array, stores the strings which will be put
     // into the string table
     uint32_t string_table_length;
@@ -36,19 +33,6 @@ struct TB_ModuleExporter {
 static void write_data(TB_ModuleExporter* e, uint8_t* output, size_t length, const void* data) {
     memcpy(output + e->write_pos, data, length);
     e->write_pos += length;
-}
-
-static void* get_temporary_storage(TB_ModuleExporter* e, size_t request_size) {
-    if (e->temporary_memory_capacity < request_size) {
-        e->temporary_memory_capacity = tb_next_pow2(request_size);
-        if (e->temporary_memory_capacity < (4*1024*1024)) {
-            e->temporary_memory_capacity = (4*1024*1024);
-        }
-
-        e->temporary_memory = tb_platform_heap_realloc(e->temporary_memory, e->temporary_memory_capacity);
-    }
-
-    return e->temporary_memory;
 }
 
 static COFF_Symbol section_sym(const char* name, int num, int sc) {
@@ -543,27 +527,32 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
                 capacity += e->debug_sections.data[i].relocation_count;
             }
 
-            COFF_ImageReloc* relocs = get_temporary_storage(e, capacity * sizeof(COFF_ImageReloc));
+            TB_FIXED_ARRAY(COFF_ImageReloc) relocs = {
+                .cap = capacity / sizeof(COFF_ImageReloc),
+                .elems = (COFF_ImageReloc*) &output[e->write_pos]
+            };
             assert(e->write_pos == e->debug_section_headers[0].pointer_to_reloc);
+
             FOREACH_N(i, 0, e->debug_sections.length) {
                 FOREACH_N(j, 0, e->debug_sections.data[i].relocation_count) {
                     TB_ObjectReloc* in_reloc = &e->debug_sections.data[i].relocations[j];
 
-                    relocs[count++] = (COFF_ImageReloc){
+                    COFF_ImageReloc r = {
                         .SymbolTableIndex = in_reloc->symbol_index,
                         .VirtualAddress = in_reloc->virtual_address
                     };
 
                     switch (in_reloc->type) {
-                        case TB_OBJECT_RELOC_SECREL: relocs[j].Type = IMAGE_REL_AMD64_SECREL; break;
-                        case TB_OBJECT_RELOC_SECTION: relocs[j].Type = IMAGE_REL_AMD64_SECTION; break;
+                        case TB_OBJECT_RELOC_SECREL:  r.Type = IMAGE_REL_AMD64_SECREL; break;
+                        case TB_OBJECT_RELOC_SECTION: r.Type = IMAGE_REL_AMD64_SECTION; break;
                         default: tb_todo();
                     }
+                    TB_FIXED_ARRAY_APPEND(relocs, r);
                 }
             }
 
             assert(count == capacity);
-            WRITE(relocs, count * sizeof(COFF_ImageReloc));
+            e->write_pos += relocs.count * sizeof(COFF_ImageReloc);
         }
 
         // Emit section symbols
@@ -572,7 +561,7 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
             assert(e->write_pos == header.symbol_table);
 
             size_t count = 0, capacity = header.symbol_count;
-            COFF_SymbolUnion* symbols = get_temporary_storage(e, capacity * sizeof(COFF_SymbolUnion));
+            COFF_SymbolUnion* symbols = (COFF_SymbolUnion*) &output[e->write_pos];
 
             count = append_section_sym(symbols, count, &sections[S_TEXT],  ".text",  IMAGE_SYM_CLASS_STATIC);
             count = append_section_sym(symbols, count, &sections[S_RDATA], ".rdata", IMAGE_SYM_CLASS_STATIC);
@@ -686,14 +675,15 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
                 }
             }
 
-            WRITE(symbols, count * sizeof(COFF_Symbol));
+            assert(count == capacity);
+            e->write_pos += count * sizeof(COFF_Symbol);
         }
 
         // Emit string table
         {
             assert(e->write_pos == e->string_table_pos);
 
-            char *start = get_temporary_storage(e, e->string_table_mark), *buffer = start;
+            char *start = (char*) &output[e->write_pos], *buffer = start;
             memcpy(buffer, &e->string_table_mark, sizeof(uint32_t));
             buffer += 4;
 
@@ -706,13 +696,12 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
             }
 
             assert((buffer - start) == e->string_table_mark);
-            WRITE(start, e->string_table_mark);
+            e->write_pos += e->string_table_mark;
         }
     }
 
     // TODO(NeGate): we have a lot of shit being freed... maybe
     // we wanna think of smarter allocation schemes
-    tb_platform_heap_free(e->temporary_memory);
     tb_platform_heap_free(e->debug_section_headers);
     tb_platform_heap_free(e->string_table);
     tb_platform_heap_free(xdata.data);

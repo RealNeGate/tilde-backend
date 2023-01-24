@@ -555,7 +555,7 @@ bool mem2reg(TB_Function* f) {
     ////////////////////////////////
     DynArray(TB_Reg)* stack = tb_tls_push(tls, c.to_promote_count * sizeof(DynArray(TB_Reg)));
     FOREACH_N(var, 0, c.to_promote_count) {
-        stack[var] = dyn_array_create_with_initial_cap(TB_Reg, 16);
+        stack[var] = dyn_array_create(TB_Reg, 16);
     }
 
     ssa_rename(&c, f, 0, stack);

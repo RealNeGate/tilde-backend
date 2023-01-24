@@ -833,6 +833,24 @@ extern "C" {
     TB_API bool tb_exporter_write_files(TB_Module* m, TB_OutputFlavor flavor, TB_DebugFormat debug_fmt, size_t path_count, const char* paths[]);
 
     ////////////////////////////////
+    // Linker exporter
+    ////////////////////////////////
+    // This is used to export shared objects or executables
+    typedef struct TB_Linker TB_Linker;
+
+    TB_API TB_Linker* tb_linker_create(void);
+    TB_API TB_Exports tb_linker_export(TB_Linker* l);
+    TB_API void tb_linker_destroy(TB_Linker* l);
+
+    // Links compiled module into output
+    TB_API void tb_linker_append_module(TB_Linker* l, TB_Module* m);
+
+    // Adds static library to output
+    //   this can include imports (wrappers for DLL symbols) along with
+    //   normal sections.
+    TB_API void tb_linker_append_library(TB_Linker* l, TB_ArchiveFile* f);
+
+    ////////////////////////////////
     // JIT compilation
     ////////////////////////////////
     typedef struct TB_JITContext TB_JITContext;

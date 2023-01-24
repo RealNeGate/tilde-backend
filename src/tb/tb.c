@@ -112,8 +112,8 @@ TB_API TB_Module* tb_module_create(TB_Arch arch, TB_System sys, const TB_Feature
     m->files.data[0] = (TB_File) { 0 };
 
     FOREACH_N(i, 0, TB_MAX_THREADS) {
-        m->thread_info[i].const_patches  = dyn_array_create(TB_ConstPoolPatch);
-        m->thread_info[i].symbol_patches = dyn_array_create(TB_SymbolPatch);
+        m->thread_info[i].const_patches  = dyn_array_create(TB_ConstPoolPatch, 4096);
+        m->thread_info[i].symbol_patches = dyn_array_create(TB_SymbolPatch, 4096);
     }
 
     // we start a little off the start just because

@@ -2538,7 +2538,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
 
     // Just the splitting point between parameters
     // and locals in the stack.
-    DynArray(TB_StackSlot) stack_slots = dyn_array_create_with_initial_cap(TB_StackSlot, 16);
+    DynArray(TB_StackSlot) stack_slots = dyn_array_create(TB_StackSlot, 16);
     TB_FOR_BASIC_BLOCK(bb, f) {
         TB_FOR_NODE(r, f, bb) {
             TB_Node* n = &f->nodes[r];
@@ -2778,7 +2778,7 @@ TB_FunctionOutput x64_fast_compile_function(TB_Function* restrict f, const TB_Fe
                     //   similar to clang we use relative jumps since this avoids
                     //   passing unnecessary absolute relocations to the linker/loader
                     if (jump_table_patches == NULL) {
-                        jump_table_patches = dyn_array_create_with_initial_cap(JumpTablePatch, tb_next_pow2(max - min));
+                        jump_table_patches = dyn_array_create(JumpTablePatch, tb_next_pow2(max - min));
                     }
 
                     size_t jump_table_bytes = ((max+1) - min) * 4;

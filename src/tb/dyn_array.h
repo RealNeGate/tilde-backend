@@ -3,8 +3,9 @@
 #include <stdlib.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <assert.h>
 
-#define INITIAL_CAP 4096
+#define INITIAL_CAP 64
 
 typedef struct DynArrayHeader {
     // honestly storing the type size is kinda weird
@@ -29,8 +30,11 @@ static void dyn_array_internal_destroy(void* ptr) {
 }
 
 static void* dyn_array_internal_reserve(void* ptr, size_t type_size, size_t extra) {
-    DynArrayHeader* header = ((DynArrayHeader*)ptr) - 1;
+    if (ptr == NULL) {
+        return dyn_array_internal_create(type_size, INITIAL_CAP);
+    }
 
+    DynArrayHeader* header = ((DynArrayHeader*)ptr) - 1;
     if (header->size + extra >= header->capacity) {
         header->capacity = (header->size + extra) * 2;
         DynArrayHeader* new_ptr = realloc(header, sizeof(DynArrayHeader) + (type_size * header->capacity));
@@ -55,9 +59,9 @@ static void* dyn_array_internal_trim(void* ptr, size_t type_size) {
 }
 
 #define DynArray(T) T*
-#define dyn_array_create(T) dyn_array_internal_create(sizeof(T), INITIAL_CAP)
-#define dyn_array_create_with_initial_cap(T, cap) dyn_array_internal_create(sizeof(T), cap)
+#define dyn_array_create(T, cap) dyn_array_internal_create(sizeof(T), cap)
 #define dyn_array_destroy(arr) (dyn_array_internal_destroy(arr), (arr) = NULL)
+#define dyn_array_pop(arr) ((arr)[(((DynArrayHeader*)(arr)) - 1)->size -= 1])
 
 #define dyn_array_put(arr, ...)                             \
 do {                                                        \

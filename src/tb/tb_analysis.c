@@ -273,7 +273,7 @@ TB_API bool tb_is_dominated_by(TB_Label* doms, TB_Label expected_dom, TB_Label b
 
 TB_API TB_LoopInfo tb_get_loop_info(TB_Function* f, TB_Predeccesors preds, TB_Label* doms) {
     // Find loops
-    DynArray(TB_Loop) loops = dyn_array_create(TB_Loop);
+    DynArray(TB_Loop) loops = dyn_array_create(TB_Loop, 64);
     FOREACH_N(bb, 0, f->bb_count) {
         TB_Label backedge = 0;
         FOREACH_N(j, 0, preds.count[bb]) {

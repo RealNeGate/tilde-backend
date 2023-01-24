@@ -63,6 +63,178 @@ const static uint8_t dos_stub[] = {
     0x6d,0x6f,0x64,0x65,0x2e,0x24,0x00,0x00
 };
 
+// we use a linked list to store these because i couldn't be bothered to allocate
+// one giant sequential region for the entire linker.
+typedef struct TB_LinkerSectionPiece TB_LinkerSectionPiece;
+struct TB_LinkerSectionPiece {
+    TB_LinkerSectionPiece* next;
+
+    size_t offset, size;
+    const uint8_t* data;
+
+    // if data is NULL (and there's a size), we have to assume
+    // there's a special writer for it, in this case we have a
+    // few options: sections in a TB module
+    enum {
+        PIECE_NORMAL, PIECE_TEXT, PIECE_DATA
+    } piece_type;
+    TB_Module* module;
+};
+
+typedef struct {
+    size_t total_size;
+    TB_LinkerSectionPiece *first, *last;
+} TB_LinkerSection;
+
+typedef struct {
+    size_t address;
+} TB_LinkerSymbol;
+
+typedef struct TB_Linker {
+    NL_Strmap(TB_LinkerSection) sections;
+    DynArray(TB_LinkerSymbol) symbols;
+
+    // symbol name -> imports
+    NL_Strmap(int) import_nametable;
+    DynArray(ImportTable) imports;
+} TB_Linker;
+
+static size_t layout_text_section(TB_Module* m, TB_ModuleExporter* restrict e);
+
+static size_t pad_file(uint8_t* output, size_t write_pos, char pad, size_t align) {
+    size_t align_mask = align - 1;
+
+    size_t i = e->write_pos;
+    size_t end = (i + align_mask) & ~align_mask;
+    if (i != end) {
+        memset(output + e->write_pos, 0, end - i);
+        write_pos = end;
+    }
+    return write_pos;
+}
+
+static TB_LinkerSectionPiece* append_piece(TB_Linker* linker, const char* name, size_t size, const void* data) {
+    // allocate new section if one doesn't exist already
+    ptrdiff_t search = nl_strmap_get_cstr(linker->sections, name);
+    if (search < 0) {
+        search = nl_strmap_puti_cstr(linker->sections, name);
+        linker->sections[search] = (TB_LinkerSection){ 0 };
+    }
+
+    // allocate some space for it, we might wanna make the total_size increment atomic
+    TB_LinkerSection* section = &linker->sections[search];
+    TB_LinkerSectionPiece* piece = tb_platform_heap_alloc(sizeof(TB_LinkerSectionPiece));
+    *piece = (TB_LinkerSectionPiece){
+        .offset = section->total_size,
+        .size   = size,
+        .data   = data,
+    };
+    section->total_size += size;
+
+    if (section->last == NULL) {
+        section->first = section->last = piece;
+    } else {
+        section->last->next = piece;
+        section->last = piece;
+    }
+    return piece;
+}
+
+TB_API TB_Linker* tb_linker_create(void) {
+    TB_Linker* l = tb_platform_heap_alloc(sizeof(TB_Linker));
+    memset(l, 0, sizeof(TB_Linker));
+    return l;
+}
+
+TB_API void tb_linker_destroy(TB_Linker* l) {
+    tb_platform_heap_free(l);
+}
+
+TB_API void tb_linker_append_library(TB_Linker* l, TB_ArchiveFile* ar) {
+    FOREACH_N(i, 0, ar->import_count) {
+        TB_ArchiveImport* restrict import = &ar->imports[i];
+        TB_Slice libname = { strlen(import->libname), (uint8_t*) import->libname };
+
+        ptrdiff_t import_index = -1;
+        dyn_array_for(j, l->imports) {
+            ImportTable* table = &l->imports[j];
+
+            if (table->libpath.length == libname.length &&
+                memcmp(table->libpath.data, libname.data, libname.length) == 0) {
+                import_index = j;
+                break;
+            }
+        }
+
+        if (import_index < 0) {
+            // we haven't used this DLL yet, make an import table for it
+            import_index = dyn_array_length(l->imports);
+
+            ImportTable t = {
+                .libpath = libname,
+                .thunks = dyn_array_create(ImportThunk, 4096)
+            };
+            dyn_array_put(l->imports, t);
+            printf("DLL %s:\n", import->libname);
+        }
+
+        printf("  %s\n", import->name);
+        nl_strmap_put_cstr(l->import_nametable, import->name, import_index);
+    }
+}
+
+TB_API void tb_linker_append_module(TB_Linker* l, TB_Module* m) {
+    // Convert module into sections which we can then append to the output
+    TB_LinkerSectionPiece* text = append_piece(l, ".text", layout_text_section(m, e), NULL);
+    text->piece_type = PIECE_TEXT;
+    text->module = m;
+}
+
+TB_API TB_Exports tb_linker_export(TB_Linker* l) {
+    size_t size_of_headers =
+        sizeof(dos_stub)
+        + sizeof(PE_Header)
+        + sizeof(PE_OptionalHeader64)
+        + (l->sections->load * sizeof(PE_SectionHeader));
+
+    size_t section_content_size = 0;
+    FOREACH_N(i, 0, l->sections->load) {
+        section_content_size = align_up(section_content_size + l->sections[i].total_size, 4096);
+    }
+
+    size_t output_size = align_up(size_of_headers, 512) + section_content_size;
+    PE_Header header = {
+        .magic = 0x00004550,
+        .machine = 0x8664,
+        .section_count = SECTION_COUNT,
+        .timestamp = time(NULL),
+        .symbol_table = 0,
+        .symbol_count = 0,
+        .size_of_optional_header = sizeof(PE_OptionalHeader64),
+        .characteristics = 2 /* executable */
+    };
+
+    size_t write_pos = 0;
+    uint8_t* restrict output = tb_platform_heap_alloc(output_size);
+    WRITE(dos_stub, sizeof(dos_stub));
+    WRITE(&e->header, sizeof(PE_Header));
+    WRITE(&e->opt_header, sizeof(PE_OptionalHeader64));
+    FOREACH_N(i, 0, l->sections->load) {
+        PE_SectionHeader sec_header = {
+            .virtual_size = text_section_size,
+            .virtual_address = e->text_base,
+            .size_of_raw_data = text_section_size,
+            .characteristics = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_CNT_CODE,
+        };
+        strncpy(sec_header.name, l->sections[i].name, 8);
+
+        section_content_size = align_up(section_content_size + l->sections[i].total_size, 4096);
+    }
+    write_pos = pad_file(e, output, 0x00, 0x200);
+
+    return (TB_Exports){ .count = 1, .files = { { output_size, output } } };
+}
+
 #define WRITE(data, length_) write_data(e, output, length_, data)
 static void write_data(TB_ModuleExporter* e, uint8_t* output, size_t length, const void* data) {
     memcpy(output + e->write_pos, data, length);
@@ -112,17 +284,6 @@ static FILE* locate_file(TB_ModuleExporter* restrict e, const char* path) {
     return NULL;
 }
 
-static void pad_file(TB_ModuleExporter* restrict e, uint8_t* output, char pad, size_t align) {
-    size_t align_mask = align - 1;
-
-    size_t i = e->write_pos;
-    size_t end = (i + align_mask) & ~align_mask;
-    if (i != end) {
-        memset(output + e->write_pos, 0, end - i);
-        e->write_pos = end;
-    }
-}
-
 static void import_archive(TB_ModuleExporter* restrict e, TB_ArchiveFile* restrict ar) {
     FOREACH_N(i, 0, ar->import_count) {
         TB_ArchiveImport* restrict import = &ar->imports[i];
@@ -147,7 +308,7 @@ static void import_archive(TB_ModuleExporter* restrict e, TB_ArchiveFile* restri
 
             ImportTable* t = &e->imports[import_index];
             t->libpath = libname;
-            t->thunks = dyn_array_create(ImportThunk);
+            t->thunks = dyn_array_create(ImportThunk, 4096);
         }
 
         printf("  %s\n", import->name);
@@ -167,7 +328,7 @@ static void gen_imports(TB_Module* restrict m, TB_ModuleExporter* restrict e) {
     int errors = 0;
 
     // Generate import lookup table
-    e->imports = dyn_array_create(ImportTable);
+    e->imports = dyn_array_create(ImportTable, 4096);
 
     // Enumerate all extra archive and object files for DLL imports
     FOREACH_N(i, 0, e->inputs->input_count) {

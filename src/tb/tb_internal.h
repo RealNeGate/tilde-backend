@@ -407,6 +407,12 @@ struct TB_Module {
         TB_File* data;
     } files;
 
+    // Linker
+    struct {
+        TB_LinkerSectionPiece *text, *data, *rdata;
+    } linker;
+
+    // JIT
     void* jit_region;
     size_t jit_region_size;
 

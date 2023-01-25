@@ -837,10 +837,15 @@ extern "C" {
     ////////////////////////////////
     // This is used to export shared objects or executables
     typedef struct TB_Linker TB_Linker;
+    typedef struct TB_LinkerSection TB_LinkerSection;
+    typedef struct TB_LinkerSectionPiece TB_LinkerSectionPiece;
 
     TB_API TB_Linker* tb_linker_create(void);
     TB_API TB_Exports tb_linker_export(TB_Linker* l);
     TB_API void tb_linker_destroy(TB_Linker* l);
+
+    // tb_linker_export except it outputs to files
+    TB_API bool tb_linker_export_files(TB_Linker* l, size_t path_count, const char* paths[]);
 
     // Links compiled module into output
     TB_API void tb_linker_append_module(TB_Linker* l, TB_Module* m);

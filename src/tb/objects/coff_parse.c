@@ -1,5 +1,17 @@
 #include "coff.h"
 
+typedef struct {
+    TB_Slice file;
+    size_t pos;
+} FileReader;
+
+typedef struct {
+    const char* name;
+    int date;
+    int mode;
+    int size;
+} ArchiveEntry;
+
 // section related crap likes to be sorted in lexical order :p
 static int compare_sections(const void* a, const void* b) {
     const TB_ObjectSection* sec_a = (const TB_ObjectSection*)a;

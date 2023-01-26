@@ -78,21 +78,6 @@
 #define MD5_HASHBYTES 16
 
 typedef struct {
-    char name[16];
-    char date[12];
-
-    // Microsoft tools don't actually do anything with this
-    char user_id[6];
-    char group_id[6];
-
-    char mode[8];
-    char size[10];
-
-    uint8_t newline[2];
-    uint8_t contents[];
-} COFF_ArchiveMemberHeader;
-
-typedef struct {
     uint16_t sig1;
     uint16_t sig2;
     uint16_t version;

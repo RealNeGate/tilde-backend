@@ -50,12 +50,13 @@ struct TB_LinkerSectionPiece {
     } kind;
 
     TB_Module* module;
-    size_t offset, size;
+    // vsize is the virtual size
+    size_t offset, vsize, size;
     const uint8_t* data;
 };
 
 struct TB_LinkerSection {
-    const char* name;
+    NL_Slice name;
 
     // probably memory characteristics like EXECUTE (output format specific)
     uint32_t flags;
@@ -124,12 +125,28 @@ static TB_LinkerSection* find_or_create_section(TB_Linker* linker, const char* n
     ptrdiff_t search = nl_strmap_get_cstr(linker->sections, name);
     if (search < 0) {
         TB_LinkerSection* s = tb_platform_heap_alloc(sizeof(TB_LinkerSection));
-        *s = (TB_LinkerSection){ .name = name, .flags = flags };
+        *s = (TB_LinkerSection){ .name = { strlen(name), (const uint8_t*) name }, .flags = flags };
 
         nl_strmap_put_cstr(linker->sections, name, s);
         return s;
     } else {
-        assert(linker->sections[search]->flags == flags);
+        // assert(linker->sections[search]->flags == flags);
+        return linker->sections[search];
+    }
+}
+
+static TB_LinkerSection* find_or_create_section2(TB_Linker* linker, size_t name_len, const uint8_t* name_str, uint32_t flags) {
+    // allocate new section if one doesn't exist already
+    NL_Slice name = { name_len, name_str };
+    ptrdiff_t search = nl_strmap_get(linker->sections, name);
+    if (search < 0) {
+        TB_LinkerSection* s = tb_platform_heap_alloc(sizeof(TB_LinkerSection));
+        *s = (TB_LinkerSection){ .name = name, .flags = flags };
+
+        nl_strmap_put(linker->sections, name, s);
+        return s;
+    } else {
+        // assert(linker->sections[search]->flags == flags);
         return linker->sections[search];
     }
 }
@@ -141,6 +158,7 @@ static TB_LinkerSectionPiece* append_piece(TB_LinkerSection* section, int kind, 
         .kind   = kind,
         .offset = section->total_size,
         .size   = size,
+        .vsize  = size,
         .data   = data,
         .module = mod
     };
@@ -164,6 +182,37 @@ TB_API TB_Linker* tb_linker_create(void) {
 
 TB_API void tb_linker_destroy(TB_Linker* l) {
     tb_platform_heap_free(l);
+}
+
+// section related crap likes to be sorted in lexical order :p
+static int compare_sections(const void* a, const void* b) {
+    const TB_ObjectSection* sec_a = (const TB_ObjectSection*)a;
+    const TB_ObjectSection* sec_b = (const TB_ObjectSection*)b;
+
+    size_t shortest_len = sec_a->name.length < sec_b->name.length ? sec_a->name.length : sec_b->name.length;
+    return memcmp(sec_a->name.data, sec_b->name.data, shortest_len);
+}
+
+TB_API void tb_linker_append_object(TB_Linker* l, TB_ObjectFile* obj) {
+    qsort(obj->sections, obj->section_count, sizeof(TB_ObjectSection), compare_sections);
+
+    FOREACH_N(i, 0, obj->section_count) {
+        TB_ObjectSection* s = &obj->sections[i];
+        if (s->name.length && s->name.data[0] == '_') continue;
+        if (s->name.length >= 8) continue;
+
+        // trim the dollar sign (if applies)
+        FOREACH_N(j, 0, s->name.length) {
+            if (s->name.data[j] == '$') {
+                s->name.length = j;
+                break;
+            }
+        }
+
+        TB_LinkerSection* ls = find_or_create_section2(l, s->name.length, s->name.data, s->flags);
+        TB_LinkerSectionPiece* p = append_piece(ls, PIECE_NORMAL, s->raw_data.length, s->raw_data.data, NULL);
+        p->vsize = s->virtual_size;
+    }
 }
 
 TB_API void tb_linker_append_library(TB_Linker* l, TB_ArchiveFile* ar) {
@@ -198,13 +247,8 @@ TB_API void tb_linker_append_library(TB_Linker* l, TB_ArchiveFile* ar) {
         nl_strmap_put_cstr(l->import_nametable, import->name, import_index);
     }
 
-    if (ar->object_file_count > 0) {
-        printf("LIBRARY\n");
-        FOREACH_N(i, 0, ar->object_file_count) {
-            printf("  %s\n", ar->object_file_names[i]);
-        }
-
-        tb_todo();
+    FOREACH_N(i, 0, ar->object_file_count) {
+        tb_linker_append_object(l, ar->object_files[i].obj);
     }
 }
 
@@ -497,13 +541,10 @@ TB_API TB_Exports tb_linker_export(TB_Linker* l) {
         header->name += rdata->address;
 
         uint64_t *ilt = imp->ilt, *iat = imp->iat;
-
         uint64_t iat_rva = header->import_address_table;
         uint64_t trampoline_rva = text->address + l->trampoline_pos;
 
         dyn_array_for(j, imp->thunks) {
-            assert(iat[j] == ilt[j]);
-
             if (iat[j] != 0) {
                 iat[j] += rdata->address;
                 ilt[j] += rdata->address;
@@ -590,7 +631,11 @@ TB_API TB_Exports tb_linker_export(TB_Linker* l) {
             .size_of_raw_data = s->total_size,
             .characteristics = s->flags,
         };
-        strncpy(sec_header.name, s->name, 8);
+
+        assert(s->name.length < 8);
+        memcpy(sec_header.name, s->name.data, s->name.length);
+        sec_header.name[s->name.length] = 0;
+
         WRITE(&sec_header, sizeof(sec_header));
     }
     write_pos = pad_file(output, write_pos, 0x00, 0x200);

@@ -657,6 +657,7 @@ extern "C" {
 
     typedef struct {
         TB_Slice name;
+        uint32_t flags;
 
         size_t virtual_address;
         size_t virtual_size;
@@ -712,8 +713,10 @@ extern "C" {
         TB_ArchiveImport* imports;
 
         // Name table maps to the object files directly
-        char**   object_file_names;
-        TB_Slice object_files[];
+        struct TB_NamedObjectPair {
+            TB_Slice name;
+            TB_ObjectFile* obj;
+        }* object_files;
     } TB_ArchiveFile;
 
     typedef struct {

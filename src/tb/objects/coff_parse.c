@@ -12,6 +12,21 @@ typedef struct {
     int size;
 } ArchiveEntry;
 
+typedef struct {
+    char name[16];
+    char date[12];
+
+    // Microsoft tools don't actually do anything with this
+    char user_id[6];
+    char group_id[6];
+
+    char mode[8];
+    char size[10];
+
+    uint8_t newline[2];
+    uint8_t contents[];
+} COFF_ArchiveMemberHeader;
+
 // section related crap likes to be sorted in lexical order :p
 static int compare_sections(const void* a, const void* b) {
     const TB_ObjectSection* sec_a = (const TB_ObjectSection*)a;
@@ -50,7 +65,9 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
 
     size_t symbol_count = 0;
     uint32_t* symbols = NULL;
-    //TB_Slice string_table = { 0 };
+    TB_Slice strtbl = { 0 };
+
+    DynArray(struct TB_NamedObjectPair) objs = dyn_array_create(struct TB_NamedObjectPair, 256);
 
     // Process first, second and long name members
     size_t file_offset = 8;
@@ -95,6 +112,7 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
         COFF_ArchiveMemberHeader* longnames = (COFF_ArchiveMemberHeader*) &file.data[file_offset];
         if (memcmp(longnames->name, (char[16]) { "//              " }, 16) == 0) {
             size_t longname_content_length = parse_decimal_int(sizeof(second->size), second->size);
+            strtbl = (TB_Slice){ longname_content_length, longnames->contents };
 
             // Advance
             file_offset += sizeof(COFF_ArchiveMemberHeader) + longname_content_length;
@@ -102,16 +120,23 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
         }
     }
 
-    TB_ArchiveFile* archive = malloc(sizeof(TB_ArchiveFile) + (symbol_count * sizeof(TB_Slice)));
+    TB_ArchiveFile* archive = tb_platform_heap_alloc(sizeof(TB_ArchiveFile));
     *archive = (TB_ArchiveFile){ 0 };
 
     // dynamic array of imports
     size_t import_capacity = 256, import_count = 0;
-    TB_ArchiveImport* imports = malloc(import_capacity * sizeof(TB_ArchiveImport));
+    TB_ArchiveImport* imports = tb_platform_heap_alloc(import_capacity * sizeof(TB_ArchiveImport));
 
     for (size_t i = 0; i < symbol_count; i++) {
-        COFF_ArchiveMemberHeader* sym = (COFF_ArchiveMemberHeader*) &file.data[read32be((uint8_t*) &symbols[i])];
-        uint32_t len = parse_decimal_int(sizeof(sym->size), sym->size);
+        size_t sym_i = read32be((uint8_t*) &symbols[i]);
+        COFF_ArchiveMemberHeader* sym = (COFF_ArchiveMemberHeader*) &file.data[sym_i];
+        size_t len = parse_decimal_int(sizeof(sym->size), sym->size);
+
+        TB_Slice sym_name = { strchr(sym->name, ' ') - sym->name, (uint8_t*) sym->name };
+        if (sym_name.data[0] == '/') {
+            size_t num = parse_decimal_int(sym_name.length - 1, (char*)sym_name.data + 1);
+            sym_name = (TB_Slice){ strlen((const char*) &strtbl.data[num]), &strtbl.data[num] };
+        }
 
         uint32_t short_form_header = *(uint32_t*)sym->contents;
         if (short_form_header == 0xFFFF0000) {
@@ -141,7 +166,7 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
                 .libname = dll_path, .name = imported_symbol
             };
             //printf("%s : %s\n", dll_path, imported_symbol);
-        } else if (0) {
+        } else if (1) {
             TB_ObjectFile* long_mode = tb_object_parse_coff((TB_Slice){ len, sym->contents });
 
             // Sort by lexical order
@@ -203,17 +228,22 @@ TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file) {
                         }
                     }
                 }*/
-            }
 
-            tb_object_free(long_mode);
-            //archive->object_files[archive->object_file_count++] =
+                tb_object_free(long_mode);
+            } else {
+                //printf(" %.*s (%zu bytes)\n", (int)sym_name.length, sym_name.data, len);
+
+                struct TB_NamedObjectPair o = { sym_name, long_mode };
+                dyn_array_put(objs, o);
+            }
         }
     }
 
+    archive->object_file_count = dyn_array_length(objs);
+    archive->object_files = objs;
+
     archive->import_count = import_count;
     archive->imports = imports;
-
-    archive = realloc(archive, sizeof(TB_ArchiveFile) + (archive->object_file_count * sizeof(TB_Slice)));
     return archive;
 }
 
@@ -283,7 +313,7 @@ TB_ObjectFile* tb_object_parse_coff(const TB_Slice file) {
         COFF_SectionHeader* sec = (COFF_SectionHeader*) &file.data[section_offset];
 
         TB_ObjectSection* restrict out_sec = &obj_file->sections[i];
-        *out_sec = (TB_ObjectSection) { 0 };
+        *out_sec = (TB_ObjectSection) { .flags = sec->characteristics };
 
         // Parse string table name stuff
         uint32_t long_name[2];

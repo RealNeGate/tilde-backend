@@ -396,43 +396,45 @@ TB_API TB_Exports tb_elf64obj_write_output(TB_Module* m, const IDebugFormat* dbg
                         uint64_t addend;
                         memcpy(&addend, &data[actual_pos], sizeof(addend));
 
-                        switch (init->objects[k].type) {
-                            case TB_INIT_OBJ_RELOC_GLOBAL: {
-                                const TB_Global* g = init->objects[k].reloc_global;
+                        if (init->objects[k].type == TB_INIT_OBJ_RELOC) {
+                            const TB_Symbol* s = init->objects[k].reloc;
 
-                                Elf64_Rela rela = {
-                                    .r_offset = actual_pos,
-                                    .r_info   = ELF64_R_INFO(g->super.symbol_id, R_X86_64_64),
-                                    .r_addend = addend,
-                                };
-                                TB_FIXED_ARRAY_APPEND(relocs, rela);
-                                break;
+                            switch (s->tag) {
+                                case TB_SYMBOL_GLOBAL: {
+                                    const TB_Global* g = (const TB_Global*) s;
+
+                                    Elf64_Rela rela = {
+                                        .r_offset = actual_pos,
+                                        .r_info   = ELF64_R_INFO(g->super.symbol_id, R_X86_64_64),
+                                        .r_addend = addend,
+                                    };
+                                    TB_FIXED_ARRAY_APPEND(relocs, rela);
+                                    break;
+                                }
+                                case TB_SYMBOL_EXTERNAL: {
+                                    const TB_External* e = (const TB_External*) s;
+
+                                    Elf64_Rela rela = {
+                                        .r_offset = actual_pos,
+                                        .r_info   = ELF64_R_INFO(e->super.address, R_X86_64_64),
+                                        .r_addend = addend,
+                                    };
+                                    TB_FIXED_ARRAY_APPEND(relocs, rela);
+                                    break;
+                                }
+                                case TB_SYMBOL_FUNCTION: {
+                                    const TB_Function* f = (const TB_Function*) s;
+
+                                    Elf64_Rela rela = {
+                                        .r_offset = actual_pos,
+                                        .r_info   = ELF64_R_INFO(f->compiled_symbol_id, R_X86_64_64),
+                                        .r_addend = addend,
+                                    };
+                                    TB_FIXED_ARRAY_APPEND(relocs, rela);
+                                    break;
+                                }
+                                default: break;
                             }
-
-                            case TB_INIT_OBJ_RELOC_EXTERN: {
-                                const TB_External* ext = init->objects[k].reloc_extern;
-                                int id = (uintptr_t) ext->super.address;
-
-                                Elf64_Rela rela = {
-                                    .r_offset = actual_pos,
-                                    .r_info   = ELF64_R_INFO(id, R_X86_64_64),
-                                    .r_addend = addend,
-                                };
-                                TB_FIXED_ARRAY_APPEND(relocs, rela);
-                                break;
-                            }
-
-                            case TB_INIT_OBJ_RELOC_FUNCTION: {
-                                Elf64_Rela rela = {
-                                    .r_offset = actual_pos,
-                                    .r_info   = ELF64_R_INFO(init->objects[k].reloc_function->compiled_symbol_id, R_X86_64_64),
-                                    .r_addend = addend,
-                                };
-                                TB_FIXED_ARRAY_APPEND(relocs, rela);
-                                break;
-                            }
-
-                            default: break;
                         }
                     }
                 }

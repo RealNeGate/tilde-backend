@@ -441,44 +441,16 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
                     FOREACH_N(k, 0, init->obj_count) {
                         size_t actual_pos = g->pos + init->objects[k].offset;
 
-                        switch (init->objects[k].type) {
-                            case TB_INIT_OBJ_RELOC_GLOBAL: {
-                                const TB_Global* g = init->objects[k].reloc_global;
+                        if (init->objects[k].type == TB_INIT_OBJ_RELOC) {
+                            const TB_Symbol* s = init->objects[k].reloc;
 
-                                COFF_ImageReloc r = {
-                                    .Type = IMAGE_REL_AMD64_ADDR64,
-                                    .SymbolTableIndex = g->super.symbol_id,
-                                    .VirtualAddress = actual_pos
-                                };
-                                TB_FIXED_ARRAY_APPEND(relocs, r);
-                                break;
-                            }
-
-                            case TB_INIT_OBJ_RELOC_EXTERN: {
-                                const TB_External* e = init->objects[k].reloc_extern;
-
-                                COFF_ImageReloc r = {
-                                    .Type = IMAGE_REL_AMD64_ADDR64,
-                                    .SymbolTableIndex = e->super.symbol_id,
-                                    .VirtualAddress = actual_pos
-                                };
-                                TB_FIXED_ARRAY_APPEND(relocs, r);
-                                break;
-                            }
-
-                            case TB_INIT_OBJ_RELOC_FUNCTION: {
-                                size_t symbol_id = init->objects[k].reloc_function->super.symbol_id;
-
-                                COFF_ImageReloc r = {
-                                    .Type = IMAGE_REL_AMD64_ADDR64,
-                                    .SymbolTableIndex = symbol_id,
-                                    .VirtualAddress = actual_pos
-                                };
-                                TB_FIXED_ARRAY_APPEND(relocs, r);
-                                break;
-                            }
-
-                            default: break;
+                            COFF_ImageReloc r = {
+                                .Type = IMAGE_REL_AMD64_ADDR64,
+                                .SymbolTableIndex = s->symbol_id,
+                                .VirtualAddress = actual_pos
+                            };
+                            TB_FIXED_ARRAY_APPEND(relocs, r);
+                            break;
                         }
                     }
                 }

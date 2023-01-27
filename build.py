@@ -85,4 +85,4 @@ for pattern in source_patterns:
 ninja.write(f"build tildebackend{lib_ext}: lib {' '.join(objs)}\n")
 ninja.close()
 
-exit(subprocess.call(['ninja']))
+exit(subprocess.call(['ninja', '-j3']))

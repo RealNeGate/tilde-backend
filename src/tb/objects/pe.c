@@ -1,4 +1,5 @@
 #include "coff.h"
+#include "lib_parse.h"
 
 #define NL_STRING_MAP_IMPL
 #define NL_STRING_MAP_INLINE
@@ -177,20 +178,12 @@ TB_API TB_Linker* tb_linker_create(void) {
     TB_Linker* l = tb_platform_heap_alloc(sizeof(TB_Linker));
     memset(l, 0, sizeof(TB_Linker));
     l->entrypoint = -1;
+    l->import_nametable = nl_strmap_alloc(int, 65536);
     return l;
 }
 
 TB_API void tb_linker_destroy(TB_Linker* l) {
     tb_platform_heap_free(l);
-}
-
-// section related crap likes to be sorted in lexical order :p
-static int compare_sections(const void* a, const void* b) {
-    const TB_ObjectSection* sec_a = (const TB_ObjectSection*)a;
-    const TB_ObjectSection* sec_b = (const TB_ObjectSection*)b;
-
-    size_t shortest_len = sec_a->name.length < sec_b->name.length ? sec_a->name.length : sec_b->name.length;
-    return memcmp(sec_a->name.data, sec_b->name.data, shortest_len);
 }
 
 TB_API void tb_linker_append_object(TB_Linker* l, TB_ObjectFile* obj) {
@@ -215,41 +208,50 @@ TB_API void tb_linker_append_object(TB_Linker* l, TB_ObjectFile* obj) {
     }
 }
 
-TB_API void tb_linker_append_library(TB_Linker* l, TB_ArchiveFile* ar) {
-    FOREACH_N(i, 0, ar->import_count) {
-        TB_ArchiveImport* restrict import = &ar->imports[i];
-        TB_Slice libname = { strlen(import->libname), (uint8_t*) import->libname };
+TB_API void tb_linker_append_library(TB_Linker* l, TB_Slice ar_file) {
+    TB_ArchiveFileParser ar_parser = { 0 };
+    if (!tb_archive_parse(ar_file, &ar_parser)) {
+        return;
+    }
 
-        ptrdiff_t import_index = -1;
-        dyn_array_for(j, l->imports) {
-            ImportTable* table = &l->imports[j];
+    TB_ArchiveEntry* restrict entries = tb_platform_heap_alloc(ar_parser.symbol_count * sizeof(TB_ArchiveEntry));
+    size_t new_count = tb_archive_parse_entries(&ar_parser, 0, ar_parser.symbol_count, entries);
 
-            if (table->libpath.length == libname.length &&
-                memcmp(table->libpath.data, libname.data, libname.length) == 0) {
-                import_index = j;
-                break;
+    FOREACH_N(i, 0, new_count) {
+        TB_ArchiveEntry* restrict e = &entries[i];
+
+        if (e->import_name) {
+            // import from DLL
+            TB_Slice libname = e->name;
+            ptrdiff_t import_index = -1;
+            dyn_array_for(j, l->imports) {
+                ImportTable* table = &l->imports[j];
+
+                if (table->libpath.length == libname.length &&
+                    memcmp(table->libpath.data, libname.data, libname.length) == 0) {
+                    import_index = j;
+                    break;
+                }
             }
+
+            if (import_index < 0) {
+                // we haven't used this DLL yet, make an import table for it
+                import_index = dyn_array_length(l->imports);
+
+                ImportTable t = {
+                    .libpath = libname,
+                    .thunks = dyn_array_create(ImportThunk, 4096)
+                };
+                dyn_array_put(l->imports, t);
+            }
+
+            CUIK_TIMED_BLOCK("nl_strmap_put_cstr") nl_strmap_put_cstr(l->import_nametable, e->import_name, import_index);
+        } else {
+            tb_linker_append_object(l, e->obj);
         }
-
-        if (import_index < 0) {
-            // we haven't used this DLL yet, make an import table for it
-            import_index = dyn_array_length(l->imports);
-
-            ImportTable t = {
-                .libpath = libname,
-                .thunks = dyn_array_create(ImportThunk, 4096)
-            };
-            dyn_array_put(l->imports, t);
-            // printf("DLL %s:\n", import->libname);
-        }
-
-        // printf("  %s\n", import->name);
-        nl_strmap_put_cstr(l->import_nametable, import->name, import_index);
     }
 
-    FOREACH_N(i, 0, ar->object_file_count) {
-        tb_linker_append_object(l, ar->object_files[i].obj);
-    }
+    tb_platform_heap_free(entries);
 }
 
 TB_API void tb_linker_append_module(TB_Linker* l, TB_Module* m) {
@@ -320,12 +322,17 @@ static void apply_external_relocs(TB_Linker* l, TB_Module* m, uint8_t* output) {
                 TB_Global* global = (TB_Global*) patch->target;
                 (void)global;
                 assert(global->super.tag == TB_SYMBOL_GLOBAL);
-                assert(global->storage == TB_STORAGE_DATA);
 
-                int32_t p = data_piece_rva - actual_pos;
                 int32_t* dst = (int32_t*) &output[text_piece_file + out_f->code_pos + out_f->prologue_length + patch->pos];
+                if (global->storage == TB_STORAGE_DATA) {
+                    int32_t p = data_piece_rva - actual_pos;
 
-                (*dst) += p;
+                    (*dst) += p;
+                } else if (global->storage == TB_STORAGE_TLS) {
+                    (*dst) += (data_piece_rva + global->pos);
+                } else {
+                    tb_todo();
+                }
             } else {
                 tb_todo();
             }
@@ -384,7 +391,7 @@ static COFF_ImportDirectory* gen_imports(TB_Linker* l, PE_ImageDataDirectory* im
     }
 
     if (errors > 0) {
-        tb_panic("Failed to link with errors!\n");
+        // tb_panic("Failed to link with errors!\n");
     }
 
     // cull any import directory
@@ -686,7 +693,7 @@ TB_API TB_Exports tb_linker_export(TB_Linker* l) {
                                         init->objects[k].region.size
                                     );
                                 } else {
-                                    tb_todo();
+                                    // tb_todo();
                                 }
                             }
                         }

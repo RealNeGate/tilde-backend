@@ -429,30 +429,12 @@ TB_API void* tb_initializer_add_region(TB_Module* m, TB_Initializer* init, size_
     return ptr;
 }
 
-TB_API void tb_initializer_add_global(TB_Module* m, TB_Initializer* init, size_t offset, const TB_Global* global) {
+TB_API void tb_initializer_add_symbol_reloc(TB_Module* m, TB_Initializer* init, size_t offset, const TB_Symbol* symbol) {
     assert(offset == (uint32_t)offset);
     assert(init->obj_count + 1 <= init->obj_capacity);
-    assert(global != NULL);
+    assert(symbol != NULL);
 
-    init->objects[init->obj_count++] = (TB_InitObj) { .type = TB_INIT_OBJ_RELOC_GLOBAL, .offset = offset, .reloc_global = global };
-}
-
-TB_API void tb_initializer_add_function(TB_Module* m, TB_Initializer* init, size_t offset, const TB_Function* func) {
-    assert(offset == (uint32_t)offset);
-    assert(init->obj_count + 1 <= init->obj_capacity);
-    assert(func != NULL);
-
-    init->objects[init->obj_count++] = (TB_InitObj) {  .type = TB_INIT_OBJ_RELOC_FUNCTION, .offset = offset, .reloc_function = func };
-}
-
-TB_API void tb_initializer_add_extern(TB_Module* m, TB_Initializer* init, size_t offset, const TB_External* external) {
-    assert(offset == (uint32_t)offset);
-    assert(init->obj_count + 1 <= init->obj_capacity);
-    assert(external != NULL);
-
-    init->objects[init->obj_count++] = (TB_InitObj) {
-        .type = TB_INIT_OBJ_RELOC_EXTERN, .offset = offset, .reloc_extern = external
-    };
+    init->objects[init->obj_count++] = (TB_InitObj) { .type = TB_INIT_OBJ_RELOC, .offset = offset, .reloc = symbol };
 }
 
 TB_API TB_Global* tb_global_create(TB_Module* m, const char* name, TB_StorageClass storage, TB_DebugType* dbg_type, TB_Linkage linkage) {

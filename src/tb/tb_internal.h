@@ -170,11 +170,7 @@ struct TB_FunctionPrototype {
 typedef struct TB_InitObj {
     enum {
         TB_INIT_OBJ_REGION,
-
-        // relocations
-        TB_INIT_OBJ_RELOC_EXTERN,
-        TB_INIT_OBJ_RELOC_FUNCTION,
-        TB_INIT_OBJ_RELOC_GLOBAL
+        TB_INIT_OBJ_RELOC,
     } type;
     TB_CharUnits offset;
     union {
@@ -183,9 +179,7 @@ typedef struct TB_InitObj {
             const void* ptr;
         } region;
 
-        const TB_External* reloc_extern;
-        const TB_Function* reloc_function;
-        const TB_Global* reloc_global;
+        const TB_Symbol* reloc;
     };
 } TB_InitObj;
 
@@ -682,6 +676,15 @@ do {                                                 \
 #endif
 
 #define CALL_NODE_PARAM_COUNT(n) (n->call.param_end - n->call.param_start)
+
+#if 1
+uint64_t cuik_time_in_nanos(void);
+void cuikperf_region_start(uint64_t now, const char* fmt, const char* extra);
+void cuikperf_region_end(void);
+
+#define CUIK_TIMED_BLOCK(label) for (uint64_t __i = (cuikperf_region_start(cuik_time_in_nanos(), label, NULL), 0); __i < 1; __i++, cuikperf_region_end())
+#define CUIK_TIMED_BLOCK_ARGS(label, extra) for (uint64_t __i = (cuikperf_region_start(cuik_time_in_nanos(), label, extra), 0); __i < 1; __i++, cuikperf_region_end())
+#endif
 
 ////////////////////////////////
 // EXPORTER HELPER

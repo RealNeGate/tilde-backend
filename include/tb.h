@@ -334,7 +334,7 @@ extern "C" {
     // just represents some region of bytes, usually in file parsing crap
     typedef struct {
         size_t length;
-        uint8_t* data;
+        const uint8_t* data;
     } TB_Slice;
 
     // represents byte counts
@@ -701,23 +701,22 @@ extern "C" {
     } TB_ObjectFile;
 
     typedef struct {
-        const char* libname;
-        const char* name;
-    } TB_ArchiveImport;
+        TB_Slice name;
+
+        // if import_name is NULL, we're dealing with an object file
+        const char* import_name;
+        TB_ObjectFile* obj;
+    } TB_ArchiveEntry;
 
     typedef struct {
-        size_t  object_file_count;
+        TB_Slice file;
+        size_t pos;
 
-        // import table
-        size_t import_count;
-        TB_ArchiveImport* imports;
+        size_t symbol_count;
+        uint32_t* symbols;
 
-        // Name table maps to the object files directly
-        struct TB_NamedObjectPair {
-            TB_Slice name;
-            TB_ObjectFile* obj;
-        }* object_files;
-    } TB_ArchiveFile;
+        TB_Slice strtbl;
+    } TB_ArchiveFileParser;
 
     typedef struct {
         // list of the object/archive files
@@ -856,7 +855,7 @@ extern "C" {
     // Adds static library to output
     //   this can include imports (wrappers for DLL symbols) along with
     //   normal sections.
-    TB_API void tb_linker_append_library(TB_Linker* l, TB_ArchiveFile* f);
+    TB_API void tb_linker_append_library(TB_Linker* l, TB_Slice ar_file);
 
     ////////////////////////////////
     // JIT compilation
@@ -918,9 +917,7 @@ extern "C" {
 
     // places a relocation for a global at offset, the size of the relocation
     // depends on the pointer size
-    TB_API void tb_initializer_add_global(TB_Module* m, TB_Initializer* id, size_t offset, const TB_Global* global);
-    TB_API void tb_initializer_add_function(TB_Module* m, TB_Initializer* id, size_t offset, const TB_Function* func);
-    TB_API void tb_initializer_add_extern(TB_Module* m, TB_Initializer* id, size_t offset, const TB_External* external);
+    TB_API void tb_initializer_add_symbol_reloc(TB_Module* m, TB_Initializer* init, size_t offset, const TB_Symbol* symbol);
 
     ////////////////////////////////
     // Constant Initializers
@@ -1335,8 +1332,10 @@ extern "C" {
     ////////////////////////////////
     // Format parsing
     ////////////////////////////////
-    TB_ArchiveFile* tb_archive_parse_lib(const TB_Slice file);
-    void tb_archive_free(TB_ArchiveFile* archive);
+    // We do this to parse the header
+    bool tb_archive_parse(TB_Slice file, TB_ArchiveFileParser* restrict out_parser);
+    // After that we can enumerate any symbol entries to resolve imports
+    size_t tb_archive_parse_entries(TB_ArchiveFileParser* restrict parser, size_t i, size_t count, TB_ArchiveEntry* out_entry);
 
     TB_ObjectFile* tb_object_parse_coff(const TB_Slice file);
     void tb_object_free(TB_ObjectFile* obj);

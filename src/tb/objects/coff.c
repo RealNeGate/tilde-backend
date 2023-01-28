@@ -450,7 +450,6 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
                                 .VirtualAddress = actual_pos
                             };
                             TB_FIXED_ARRAY_APPEND(relocs, r);
-                            break;
                         }
                     }
                 }

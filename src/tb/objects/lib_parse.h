@@ -39,6 +39,10 @@ static long long parse_decimal_int(size_t n, const char* str) {
     return result;
 }
 
+static uint16_t read16be(uint8_t* ptr) {
+    return (ptr[0] << 8u) | (ptr[1]);
+}
+
 static uint32_t read32be(uint8_t* ptr) {
     return (ptr[0] << 24u) | (ptr[1] << 16u) | (ptr[2] << 8u) | (ptr[3]);
 }
@@ -60,12 +64,6 @@ bool tb_archive_parse(TB_Slice file, TB_ArchiveFileParser* restrict out_parser) 
     }
     size_t first_content_length = parse_decimal_int(sizeof(first->size), first->size);
 
-    // Extract number of symbols
-    if (first_content_length >= 8) {
-        out_parser->symbol_count = read32be(&first->contents[0]);
-        out_parser->symbols = (uint32_t*) &first->contents[4];
-    }
-
     file_offset += sizeof(COFF_ArchiveMemberHeader) + first_content_length;
     file_offset = (file_offset + 1u) & ~1u;
 
@@ -76,6 +74,15 @@ bool tb_archive_parse(TB_Slice file, TB_ArchiveFileParser* restrict out_parser) 
         return false;
     }
     size_t second_content_length = parse_decimal_int(sizeof(second->size), second->size);
+
+    // Extract number of symbols
+    if (second_content_length >= 8) {
+        memcpy(&out_parser->member_count, &second->contents[0], sizeof(uint32_t));
+        out_parser->members = (uint32_t*) &second->contents[4];
+
+        memcpy(&out_parser->symbol_count, &second->contents[4 + out_parser->member_count*sizeof(uint32_t)], sizeof(uint32_t));
+        out_parser->symbols = (uint16_t*) &second->contents[8 + out_parser->member_count*sizeof(uint32_t)];
+    }
 
     // Advance
     file_offset += sizeof(COFF_ArchiveMemberHeader) + second_content_length;
@@ -96,15 +103,13 @@ bool tb_archive_parse(TB_Slice file, TB_ArchiveFileParser* restrict out_parser) 
     return true;
 }
 
-size_t tb_archive_parse_entries(TB_ArchiveFileParser* restrict parser, size_t i, size_t count, TB_ArchiveEntry* out_entry) {
+size_t tb_archive_parse_entries(TB_ArchiveFileParser* restrict parser, size_t start, size_t count, TB_ArchiveEntry* out_entry) {
     TB_Slice file = parser->file;
     TB_Slice strtbl = parser->strtbl;
     size_t entry_count = 0;
 
-    FOREACH_N(i, 0, count) {
-        size_t sym_i = read32be((uint8_t*) &parser->symbols[i]);
-
-        COFF_ArchiveMemberHeader* restrict sym = (COFF_ArchiveMemberHeader*) &file.data[sym_i];
+    FOREACH_N(i, start, count) {
+        COFF_ArchiveMemberHeader* restrict sym = (COFF_ArchiveMemberHeader*) &file.data[parser->members[i]];
         size_t len = parse_decimal_int(sizeof(sym->size), sym->size);
 
         TB_Slice sym_name = { strchr(sym->name, ' ') - sym->name, (uint8_t*) sym->name };
@@ -139,8 +144,8 @@ size_t tb_archive_parse_entries(TB_ArchiveFileParser* restrict parser, size_t i,
                 imported_symbol = newstr;
             }
 
-            //printf("%s : %s\n", dll_path, imported_symbol);
-            out_entry[entry_count++] = (TB_ArchiveEntry){ { strlen(dll_path), (const uint8_t*) dll_path }, .import_name = imported_symbol };
+            // printf("%s : %s : %d\n", dll_path, imported_symbol, import->name_type);
+            out_entry[entry_count++] = (TB_ArchiveEntry){ { strlen(dll_path), (const uint8_t*) dll_path }, .import_name = imported_symbol, .ordinal = import->ordinal_hint };
         } else {
             TB_ObjectFile* long_mode = tb_object_parse_coff((TB_Slice){ len, sym->contents });
 

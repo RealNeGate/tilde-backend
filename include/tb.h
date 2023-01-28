@@ -705,6 +705,8 @@ extern "C" {
 
         // if import_name is NULL, we're dealing with an object file
         const char* import_name;
+        uint16_t ordinal;
+
         TB_ObjectFile* obj;
     } TB_ArchiveEntry;
 
@@ -712,21 +714,14 @@ extern "C" {
         TB_Slice file;
         size_t pos;
 
+        size_t member_count;
+        uint32_t* members;
+
         size_t symbol_count;
-        uint32_t* symbols;
+        uint16_t* symbols;
 
         TB_Slice strtbl;
     } TB_ArchiveFileParser;
-
-    typedef struct {
-        // list of the object/archive files
-        size_t input_count;
-        const char** inputs;
-
-        // list of the linker search paths
-        size_t search_dir_count;
-        const char** search_dirs;
-    } TB_LinkerInput;
 
     typedef struct {
         enum {

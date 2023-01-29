@@ -314,6 +314,7 @@ extern "C" {
         TB_VA_START,
 
         // x86 intrinsics
+        TB_X86INTRIN_RDTSC,
         TB_X86INTRIN_LDMXCSR,
         TB_X86INTRIN_STMXCSR,
         TB_X86INTRIN_SQRT,
@@ -1184,6 +1185,7 @@ extern "C" {
     TB_API TB_Reg tb_inst_va_start(TB_Function* f, TB_Reg a);
 
     // x86 Intrinsics
+    TB_API TB_Reg tb_inst_x86_rdtsc(TB_Function* f);
     TB_API TB_Reg tb_inst_x86_ldmxcsr(TB_Function* f, TB_Reg a);
     TB_API TB_Reg tb_inst_x86_stmxcsr(TB_Function* f);
     TB_API TB_Reg tb_inst_x86_sqrt(TB_Function* f, TB_Reg a);

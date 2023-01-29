@@ -49,6 +49,7 @@ static bool dead_expr_elim(TB_Function* f) {
                         case TB_X86INTRIN_RSQRT:
                         case TB_X86INTRIN_LDMXCSR:
                         case TB_X86INTRIN_STMXCSR:
+                        case TB_X86INTRIN_RDTSC:
                         break;
 
                         case TB_CALL:

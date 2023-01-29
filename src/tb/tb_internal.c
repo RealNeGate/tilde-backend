@@ -51,6 +51,7 @@ void tb_function_find_replace_reg(TB_Function* f, TB_Reg find, TB_Reg replace) {
                 case TB_GOTO:
                 case TB_LINE_INFO:
                 case TB_GET_SYMBOL_ADDRESS:
+                case TB_X86INTRIN_RDTSC:
                 case TB_X86INTRIN_STMXCSR:
                 case TB_UNREACHABLE:
                 case TB_DEBUGBREAK:

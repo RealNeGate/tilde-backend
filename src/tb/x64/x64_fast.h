@@ -2236,6 +2236,33 @@ static void fast_eval_basic_block(X64_FastCtx* restrict ctx, TB_Function* f, TB_
             }
             case TB_ATOMIC_CMPXCHG2: break;
 
+            case TB_X86INTRIN_RDTSC: {
+                // we'll be using this bad boy
+                fast_evict_gpr(ctx, f, RAX);
+                fast_evict_gpr(ctx, f, RDX);
+                ctx->gpr_allocator[RAX] = TB_TEMP_REG;
+                ctx->gpr_available -= 1;
+
+                // rdtsc
+                //   outputs to EDX:EAX
+                EMIT1(&ctx->emit, 0x0F);
+                EMIT1(&ctx->emit, 0x31);
+
+                // shl rdx, 32
+                EMIT1(&ctx->emit, 0x48), EMIT1(&ctx->emit, 0xC1);
+                EMIT1(&ctx->emit, 0xE2), EMIT1(&ctx->emit, 0x20);
+
+                Val rdx = val_gpr(dt, RDX);
+                Val rax = val_gpr(dt, RAX);
+                INST2(OR, &rax, &rdx, dt);
+
+                fast_def_gpr(ctx, f, r, RAX, TB_TYPE_I64);
+
+                // free up RDX
+                ctx->gpr_allocator[RDX] = TB_NULL_REG;
+                ctx->gpr_available += 1;
+                break;
+            }
             case TB_X86INTRIN_LDMXCSR: {
                 LegalInt l = legalize_int(dt);
 

@@ -857,6 +857,10 @@ TB_API TB_Reg tb_inst_x86_ldmxcsr(TB_Function* f, TB_Reg a) {
     return r;
 }
 
+TB_API TB_Reg tb_inst_x86_rdtsc(TB_Function* f) {
+    return tb_make_reg(f, TB_X86INTRIN_RDTSC, TB_TYPE_I64);
+}
+
 TB_API TB_Reg tb_inst_x86_stmxcsr(TB_Function* f) {
     return tb_make_reg(f, TB_X86INTRIN_STMXCSR, TB_TYPE_I32);
 }

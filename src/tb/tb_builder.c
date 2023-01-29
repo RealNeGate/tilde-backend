@@ -444,6 +444,9 @@ TB_API TB_Reg tb_inst_uint(TB_Function* f, TB_DataType dt, uint64_t imm) {
     TB_Reg r = tb_make_reg(f, TB_INTEGER_CONST, dt);
     f->nodes[r].integer.num_words = 1;
     f->nodes[r].integer.single_word = imm;
+
+    uint64_t mask = ~UINT64_C(0) >> (64 - dt.data);
+    f->nodes[r].integer.single_word &= mask;
     return r;
 }
 

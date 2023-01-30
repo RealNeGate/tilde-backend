@@ -287,7 +287,7 @@ TB_API TB_LoopInfo tb_get_loop_info(TB_Function* f, TB_Predeccesors preds, TB_La
             printf("L%zu is a loop (backedge: L%d)\n    ", bb, backedge);
 
             TB_Loop l = { .parent_loop = -1, .header = bb, .backedge = backedge };
-            l.body = malloc(f->bb_count * sizeof(TB_Label));
+            l.body = tb_platform_heap_alloc(f->bb_count * sizeof(TB_Label));
 
             FOREACH_N(j, 0, f->bb_count) {
                 if (tb_is_dominated_by(doms, bb, j)) {
@@ -297,7 +297,7 @@ TB_API TB_LoopInfo tb_get_loop_info(TB_Function* f, TB_Predeccesors preds, TB_La
                 }
             }
 
-            l.body = realloc(l.body, l.body_count * sizeof(TB_Label));
+            l.body = tb_platform_heap_realloc(l.body, l.body_count * sizeof(TB_Label));
 
             // check if we have a parent...
             FOREACH_REVERSE_N(o, 0, dyn_array_length(loops)) {

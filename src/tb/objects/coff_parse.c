@@ -5,7 +5,7 @@
 TB_ObjectFile* tb_object_parse_coff(const TB_Slice file) {
     COFF_FileHeader* header = (COFF_FileHeader*) &file.data[0];
 
-    TB_ObjectFile* obj_file = malloc(sizeof(TB_ObjectFile) + (header->num_sections * sizeof(TB_ObjectSection)));
+    TB_ObjectFile* obj_file = tb_platform_heap_alloc(sizeof(TB_ObjectFile) + (header->num_sections * sizeof(TB_ObjectSection)));
 
     // not using calloc since i only really wanna clear the header
     memset(obj_file, 0, sizeof(TB_ObjectFile));
@@ -25,7 +25,7 @@ TB_ObjectFile* tb_object_parse_coff(const TB_Slice file) {
         .data   = &file.data[string_table_pos]
     };
 
-    obj_file->symbols = malloc(header->symbol_count * sizeof(TB_ObjectSymbol));
+    obj_file->symbols = tb_platform_heap_alloc(header->symbol_count * sizeof(TB_ObjectSymbol));
     obj_file->symbol_count = 0;
 
     size_t sym_id = 0;
@@ -85,7 +85,7 @@ TB_ObjectFile* tb_object_parse_coff(const TB_Slice file) {
             out_sec->relocation_count = sec->num_reloc;
             COFF_ImageReloc* src_relocs = (COFF_ImageReloc*) &file.data[sec->pointer_to_reloc];
 
-            TB_ObjectReloc* dst_relocs = malloc(sec->num_reloc * sizeof(TB_ObjectReloc));
+            TB_ObjectReloc* dst_relocs = tb_platform_heap_alloc(sec->num_reloc * sizeof(TB_ObjectReloc));
             FOREACH_N(j, 0, sec->num_reloc) {
                 dst_relocs[j] = (TB_ObjectReloc){ 0 };
                 switch (src_relocs[j].Type) {

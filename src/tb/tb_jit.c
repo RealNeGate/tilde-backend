@@ -40,7 +40,7 @@ static TB_JITHeap tb_jitheap_create(size_t size) {
     h.capacity = size;
     h.block = tb_platform_valloc(size);
     h.slab_count = slab_count;
-    h.slabs = malloc(slab_count * sizeof(Slab));
+    h.slabs = tb_platform_heap_alloc(slab_count * sizeof(Slab));
 
     FOREACH_N(i, 0, slab_count) {
         h.slabs[i] = (Slab){ i * SLAB_SIZE };

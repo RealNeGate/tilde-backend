@@ -28,23 +28,6 @@ bool tb_platform_vprotect(void* ptr, size_t size, TB_MemProtect prot) {
     return VirtualProtect(ptr, size, protect, &old_protect);
 }
 
-void* tb_platform_heap_alloc(size_t size) {
-    void* ptr = malloc(size);
-    if (ptr == NULL) {
-        tb_panic("tb_platform_heap_alloc: out of memory!");
-    }
-
-    return ptr;
-}
-
-void* tb_platform_heap_realloc(void* ptr, size_t size) {
-    return realloc(ptr, size);
-}
-
-void tb_platform_heap_free(void* ptr) {
-    free(ptr);
-}
-
 static char*  string_buffer;
 static size_t string_head;
 

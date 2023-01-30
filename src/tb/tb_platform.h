@@ -3,6 +3,18 @@
 #pragma once
 #include <setjmp.h>
 
+#ifdef TB_USE_MIMALLOC
+#include <mimalloc.h>
+
+#define tb_platform_heap_alloc(size) mi_malloc(size)
+#define tb_platform_heap_realloc(ptr, size) mi_realloc(ptr, size)
+#define tb_platform_heap_free(ptr) mi_free(ptr)
+#else
+#define tb_platform_heap_alloc(size)        malloc(size)
+#define tb_platform_heap_free(ptr)          free(ptr)
+#define tb_platform_heap_realloc(ptr, size) realloc(ptr, size)
+#endif
+
 ////////////////////////////////
 // Virtual memory management
 ////////////////////////////////

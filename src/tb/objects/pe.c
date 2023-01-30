@@ -259,11 +259,10 @@ static uint32_t murmur(const void* key, size_t len) {
 
 static TB_LinkerSymbol* find_symbol(TB_SymbolTable* restrict symtab, TB_Slice name) {
     uint32_t mask = (1u << symtab->exp) - 1;
-    uint64_t hash = murmur(name.data, name.length);
-
+    uint32_t hash = murmur(name.data, name.length);
     for (size_t i = hash;;) {
         // hash table lookup
-        uint32_t step = (hash >> (64 - symtab->exp)) | 1;
+        uint32_t step = (hash >> (32 - symtab->exp)) | 1;
         i = (i + step) & mask;
 
         if (symtab->ht[i].name.length == 0) {
@@ -279,11 +278,10 @@ static bool append_symbol(TB_SymbolTable* restrict symtab, const TB_LinkerSymbol
     TB_Slice name = sym->name;
 
     uint32_t mask = (1u << symtab->exp) - 1;
-    uint64_t hash = murmur(name.data, name.length);
-
+    uint32_t hash = murmur(name.data, name.length);
     for (size_t i = hash;;) {
         // hash table lookup
-        uint32_t step = (hash >> (64 - symtab->exp)) | 1;
+        uint32_t step = (hash >> (32 - symtab->exp)) | 1;
         i = (i + step) & mask;
 
         if (symtab->ht[i].name.length == 0) {
@@ -470,6 +468,23 @@ TB_API void tb_linker_append_module(TB_Linker* l, TB_Module* m) {
         if (reloc_size > 0) {
             TB_LinkerSection* reloc = find_or_create_section(l, ".reloc", IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_INITIALIZED_DATA);
             append_piece(reloc, PIECE_RELOC, reloc_size, NULL, m);
+        }
+    }
+
+    CUIK_TIMED_BLOCK("apply symbols") {
+        static const enum TB_SymbolTag tags[] = { TB_SYMBOL_FUNCTION, TB_SYMBOL_GLOBAL };
+
+        FOREACH_N(i, 0, COUNTOF(tags)) {
+            enum TB_SymbolTag tag = tags[i];
+
+            for (TB_Symbol* sym = m->first_symbol_of_tag[tag]; sym != NULL; sym = sym->next) {
+                TB_LinkerSymbol ls = {
+                    .name = { strlen(sym->name), (const uint8_t*) sym->name },
+                    .tag = TB_LINKER_SYMBOL_TB,
+                    .sym = sym
+                };
+                append_symbol(&l->symtab, &ls);
+            }
         }
     }
 

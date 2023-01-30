@@ -171,8 +171,7 @@ static TB_SectionGroup codeview_generate_debug_info(TB_Module* m, TB_TemporarySt
     // debug$S does quite a few relocations :P, namely saying that
     // certain things point to specific areas of .text section
     sections[0].relocations = tb_platform_heap_alloc(
-        (2 * global_count) +
-        (4 * m->compiled_function_count * sizeof(TB_ObjectReloc))
+        ((2 * global_count) + (4 * m->compiled_function_count)) * sizeof(TB_ObjectReloc)
     );
 
     // Write type table

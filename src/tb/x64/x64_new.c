@@ -246,6 +246,7 @@ static void x64v2_resolve_params(Ctx* restrict ctx, TB_Function* f, GAD_VAL* val
                     }
 
                     printf("  assign to %s\n", GPR_NAMES[values[r].reg]);
+                    set_put(&ctx->free_regs[X64_REG_CLASS_GPR], values[r].reg);
                 }
 
                 // short circuit
@@ -313,54 +314,6 @@ static GAD_VAL x64v2_cond_to_reg(Ctx* restrict ctx, TB_Function* f, TB_Reg r, in
     EMIT1(&ctx->emit, 0x90 + cc);
     EMIT1(&ctx->emit, mod_rx_rm(MOD_DIRECT, 0, dst->gpr));
     return *dst;
-}
-
-static RegAllocAttempt x64v2_try_alloc_regs(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
-    TB_Node* n = &f->nodes[r];
-
-    switch (n->type) {
-        case TB_IF:
-        case TB_PARAM:
-        case TB_PARAM_ADDR:
-        return (RegAllocAttempt){ .reg_class = X64_REG_CLASS_GPR, .count = 0 };
-
-        case TB_INTEGER_CONST:
-        if (n->integer.num_words == 1 && fits_into_int32(n->integer.single_word)) {
-            LegalInt l = legalize_int(n->dt);
-            uint64_t imm = n->integer.single_word;
-            if (l.mask) {
-                imm &= l.mask;
-            }
-
-            ctx->values[r] = val_imm(n->dt, imm);
-            return (RegAllocAttempt){ .reg_class = X64_REG_CLASS_GPR, .count = 0 };
-        } else {
-            return (RegAllocAttempt){ .reg_class = X64_REG_CLASS_GPR, .count = 1 };
-        }
-
-        case TB_ADD:
-        case TB_SUB:
-        case TB_MUL:
-        case TB_SDIV:
-        case TB_UDIV:
-        case TB_PHI1:
-        case TB_PHI2:
-        case TB_PHIN:
-        return (RegAllocAttempt){ .reg_class = X64_REG_CLASS_GPR, .count = 1, .can_recycle = true };
-
-        case TB_CMP_EQ:
-        case TB_CMP_NE:
-        case TB_CMP_SLT:
-        case TB_CMP_SLE:
-        case TB_CMP_ULT:
-        case TB_CMP_ULE:
-        case TB_CMP_FLT:
-        case TB_CMP_FLE:
-        return (RegAllocAttempt){ .reg_class = X64_REG_CLASS_GPR, .count = 0 };
-
-        default:
-        return (RegAllocAttempt){ .reg_class = X64_REG_CLASS_GPR, .count = 1 };
-    }
 }
 
 static void x64v2_mov_to_explicit_gpr(Ctx* restrict ctx, TB_Function* f, GPR dst_gpr, TB_Reg r) {
@@ -547,14 +500,13 @@ static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
                 INST2(MOV, &dst, &src, param_dt);
             }*/
         } else {
-            Val dst;
             if (i < params->gpr_count) {
-                dst = val_gpr(param_dt, params->gprs[i]);
+                GAD_VAL dst = GAD_FN(steal)(ctx, f, param_reg, X64_REG_CLASS_GPR, params->gprs[i]);
                 // caller_saved &= ~(1u << dst.gpr);
 
                 x64v2_mov_to_explicit_gpr(ctx, f, dst.gpr, param_reg);
             } else {
-                dst = val_base_disp(param_dt, RSP, 8 * i);
+                GAD_VAL dst = val_base_disp(param_dt, RSP, 8 * i);
                 INST2(MOV, &dst, &ctx->values[param_reg], param_dt);
             }
         }
@@ -610,14 +562,8 @@ static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
         tb_todo();
     } else {
         if (dt.type == TB_PTR || (dt.type == TB_INT && dt.data > 0)) {
-            if (ctx->values[r].type != GAD_VAL_REGISTER + X64_REG_CLASS_GPR && ctx->values[r].reg != RAX) {
-                GAD_VAL rax = {
-                    .type = GAD_VAL_REGISTER + X64_REG_CLASS_GPR,
-                    .dt = dt, .r = r, .reg = RAX
-                };
-
-                INST2(MOV, &ctx->values[r], &rax, TB_TYPE_I64);
-            }
+            GAD_VAL rax = GAD_FN(steal)(ctx, f, r, X64_REG_CLASS_GPR, RAX);
+            INST2(MOV, &ctx->values[r], &rax, TB_TYPE_I64);
         }
     }
 }
@@ -635,10 +581,10 @@ static Val x64v2_eval(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
                     imm &= l.mask;
                 }
 
-                return val_imm(n->dt, imm);
+                return (ctx->values[r] = val_imm(n->dt, imm));
             } else {
                 assert(n->integer.num_words == 1);
-                GAD_VAL dst = ctx->values[r];
+                GAD_VAL dst = GAD_FN(regalloc)(ctx, f, r, X64_REG_CLASS_GPR);
 
                 // MOVABS REX.W B8+r imm64
                 EMIT1(&ctx->emit, dst.gpr >= 8 ? 0x49 : 0x48);
@@ -651,7 +597,7 @@ static Val x64v2_eval(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
             const char* str = n->string.data;
             size_t len = n->string.length;
 
-            GAD_VAL dst = ctx->values[r];
+            GAD_VAL dst = GAD_FN(regalloc)(ctx, f, r, X64_REG_CLASS_GPR);
             EMIT1(&ctx->emit, rex(true, dst.gpr, RBP, 0));
             EMIT1(&ctx->emit, 0x8D);
             EMIT1(&ctx->emit, mod_rx_rm(MOD_INDIRECT, dst.gpr, RBP));
@@ -672,8 +618,8 @@ static Val x64v2_eval(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
             //     va_start(args, fmt); // args = ((char*) &fmt) + 8;
             //     ...
             // }
+            GAD_VAL dst = GAD_FN(regalloc)(ctx, f, r, X64_REG_CLASS_GPR);
             GAD_VAL addr = ctx->values[n->member_access.base];
-            GAD_VAL dst = ctx->values[r];
 
             if (addr.type == VAL_MEM && !addr.mem.is_rvalue) {
                 addr.mem.disp += 8;
@@ -701,7 +647,7 @@ static Val x64v2_eval(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
 
                     // since t0 dies before dst is allocated we just recycle it
                     // mov t0, dword    [_tls_index]
-                    GAD_VAL dst = ctx->values[r];
+                    GAD_VAL dst = GAD_FN(regalloc)(ctx, f, r, X64_REG_CLASS_GPR);
 
                     if (dst.gpr >= 8) EMIT1(&ctx->emit, 0x41);
                     EMIT1(&ctx->emit, 0x8B), EMIT1(&ctx->emit, ((dst.gpr & 7) << 3) | RBP), EMIT4(&ctx->emit, 0x00);
@@ -764,8 +710,8 @@ static Val x64v2_eval(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
                 default: op = MOV; break;
             }
 
+            GAD_VAL dst = GAD_FN(regalloc)(ctx, f, r, X64_REG_CLASS_GPR);
             GAD_VAL src = ctx->values[n->unary.src];
-            GAD_VAL dst = ctx->values[r];
 
             INST2(op, &dst, &src, l.dt);
             if (op == MOV && l.mask != 0) {
@@ -790,8 +736,8 @@ static Val x64v2_eval(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
             if (TB_IS_FLOAT_TYPE(n->dt)) {
                 tb_todo();
             } else {
+                GAD_VAL dst = GAD_FN(regalloc)(ctx, f, r, X64_REG_CLASS_GPR);
                 GAD_VAL src = ctx->values[n->unary.src];
-                GAD_VAL dst = ctx->values[r];
 
                 LegalInt l = legalize_int(n->dt);
                 INST2(MOV, &dst, &src, l.dt);
@@ -805,8 +751,8 @@ static Val x64v2_eval(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
             LegalInt l = legalize_int(n->dt);
 
             // convert entry into memory slot
+            GAD_VAL dst = GAD_FN(regalloc)(ctx, f, r, X64_REG_CLASS_GPR);
             GAD_VAL src = ctx->values[n->load.address];
-            GAD_VAL dst = ctx->values[r];
 
             if (src.is_spill) {
                 // restore from spill
@@ -823,8 +769,8 @@ static Val x64v2_eval(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
         }
 
         case TB_MEMBER_ACCESS: {
+            GAD_VAL dst = GAD_FN(regalloc)(ctx, f, r, X64_REG_CLASS_GPR);
             GAD_VAL src = ctx->values[n->member_access.base];
-            GAD_VAL dst = ctx->values[r];
 
             GAD_VAL addr = val_base_disp(TB_TYPE_PTR, src.gpr, n->member_access.offset);
             INST2(LEA, &dst, &addr, TB_TYPE_PTR);
@@ -840,7 +786,7 @@ static Val x64v2_eval(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
             // do think of it however
             uint8_t stride_as_shift = 0;
 
-            GAD_VAL dst = ctx->values[r];
+            GAD_VAL dst = GAD_FN(regalloc)(ctx, f, r, X64_REG_CLASS_GPR);
             bool written_to_dst = false;
 
             if (tb_is_power_of_two(stride)) {
@@ -904,7 +850,7 @@ static Val x64v2_eval(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
         case TB_MUL: {
             const static Inst2Type ops[] = { AND, OR, XOR, ADD, SUB, IMUL };
 
-            GAD_VAL dst = ctx->values[r];
+            GAD_VAL dst = GAD_FN(regalloc)(ctx, f, r, X64_REG_CLASS_GPR);
             GAD_VAL a = ctx->values[n->i_arith.a];
             GAD_VAL b = ctx->values[n->i_arith.b];
 
@@ -923,7 +869,7 @@ static Val x64v2_eval(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
 
         case TB_NOT:
         case TB_NEG: {
-            GAD_VAL dst = ctx->values[r];
+            GAD_VAL dst = GAD_FN(regalloc)(ctx, f, r, X64_REG_CLASS_GPR);
             GAD_VAL src = ctx->values[n->unary.src];
 
             INST2(MOV, &dst, &src, n->dt);
@@ -937,7 +883,7 @@ static Val x64v2_eval(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
             LegalInt l = legalize_int(n->dt);
             int bits_in_type = l.dt.type == TB_PTR ? 64 : l.dt.data;
 
-            GAD_VAL dst = ctx->values[r];
+            GAD_VAL dst = GAD_FN(regalloc)(ctx, f, r, X64_REG_CLASS_GPR);
             if (f->nodes[n->i_arith.b].type == TB_INTEGER_CONST &&
                 f->nodes[n->i_arith.b].integer.num_words == 1) {
                 uint64_t imm = f->nodes[n->i_arith.b].integer.single_word;

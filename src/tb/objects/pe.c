@@ -226,13 +226,13 @@ static TB_LinkerSectionPiece* append_piece(TB_LinkerSection* section, int kind, 
 
 // murmur3 32-bit without UB unaligned accesses
 // https://github.com/demetri/scribbles/blob/master/hashing/ub_aware_hash_functions.c
-static uint64_t murmur(const void* key, size_t len) {
+static uint32_t murmur(const void* key, size_t len) {
     uint32_t h = 0;
 
     // main body, work on 32-bit blocks at a time
     for (size_t i=0;i<len/4;i++) {
         uint32_t k;
-        memcpy(&k, &key[i * 4], sizeof(k));
+        memcpy(&k, &((char*) key)[i * 4], sizeof(k));
 
         k *= 0xcc9e2d51;
         k = ((k << 15) | (k >> 17))*0x1b873593;
@@ -558,7 +558,7 @@ static uint64_t compute_rva(TB_Linker* l, TB_Module* m, const TB_Symbol* s) {
         return text->address + m->linker.text->offset + f->output->code_pos;
     }
 
-    __debugbreak();
+    tb_todo();
     return 0;
 }
 
@@ -1010,7 +1010,7 @@ TB_API TB_Exports tb_linker_export(TB_Linker* l) {
                         }
                         break;
                     }
-                    default: __debugbreak();
+                    default: tb_todo();
                 }
 
                 write_pos += p->size;

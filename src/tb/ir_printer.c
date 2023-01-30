@@ -49,8 +49,7 @@ static void print_string(TB_PrintCallback callback, void* user_data, const uint8
             switch (data[i]) {
                 case '\r': callback(user_data, "\\r"); break;
                 case '\n': callback(user_data, "\\n"); break;
-                case '\e': callback(user_data, "\\e"); break;
-                default: callback(user_data, "\\%02x", data[i]); break;
+                default: callback(user_data, "\\x%02x", data[i]); break;
             }
             last = i + 1;
         }

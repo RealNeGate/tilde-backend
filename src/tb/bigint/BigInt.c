@@ -59,7 +59,7 @@ int BigInt_to_int(size_t NumWords, BigInt_t * BigInt)
 size_t BigInt_truncate(size_t NumWords, BigInt_t * BigInt)
 {
     --NumWords;
-    while (BigInt[NumWords] == 0 && NumWords > 0) --NumWords;
+    while (BigInt[MaxBigIntWords] == 0 && NumWords > 0) --NumWords;
     return ++NumWords;
 }
 
@@ -362,9 +362,9 @@ void BigInt_mul_basic(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * Ou
 void BigInt_div(size_t NumWords, BigInt_t * A, BigInt_t * B, BigInt_t * Out)
 {
     assert(NumWords <= MaxBigIntWords);
-    BigInt_t current[NumWords];
-    BigInt_t denom[NumWords];
-    BigInt_t tmp[NumWords];
+    BigInt_t current[MaxBigIntWords];
+    BigInt_t denom[MaxBigIntWords];
+    BigInt_t tmp[MaxBigIntWords];
 
     BigInt_from_int(NumWords, current, 1, &(BigInt_t){ 1 }); // int current = 1;
     BigInt_copy(NumWords, denom, B); // denom = B

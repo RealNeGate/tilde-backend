@@ -531,8 +531,9 @@ TB_API TB_Exports tb_coff_write_output(TB_Module* m, const IDebugFormat* dbg) {
             // COFF_AuxSectionSymbol is the same size as COFF_Symbol
             assert(e->write_pos == header.symbol_table);
 
-            size_t count = 0;
+            size_t count = 0, capacity = header.symbol_count;
             COFF_SymbolUnion* symbols = (COFF_SymbolUnion*) &output[e->write_pos];
+            (void)capacity;
 
             count = append_section_sym(symbols, count, &sections[S_TEXT],  ".text",  IMAGE_SYM_CLASS_STATIC);
             count = append_section_sym(symbols, count, &sections[S_RDATA], ".rdata", IMAGE_SYM_CLASS_STATIC);

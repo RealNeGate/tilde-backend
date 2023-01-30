@@ -142,7 +142,8 @@ CV_TypeIndex tb_codeview_builder_add_pointer(CV_Builder* builder, CV_TypeIndex p
 }
 
 CV_TypeIndex tb_codeview_builder_add_arg_list(CV_Builder* builder, size_t count, const CV_TypeIndex* args, bool has_varargs) {
-    uint8_t tmp[8 + (16 * count)];
+    enum { SMALL_ARR_CAP = 8 + (16 * 8) };
+    uint8_t tmp[SMALL_ARR_CAP];
 
     // this is what the arglist is like
     #pragma pack(push,1)
@@ -157,7 +158,7 @@ CV_TypeIndex tb_codeview_builder_add_arg_list(CV_Builder* builder, size_t count,
     // use allocated space if we couldn't fit
     Arglist* data = (Arglist*) tmp;
     size_t length = sizeof(Arglist) + ((count + has_varargs) * sizeof(CV_TypeIndex));
-    if (length >= sizeof(tmp)) data = malloc(length);
+    if (length >= SMALL_ARR_CAP) data = malloc(length);
 
     data->len = length - 2;
     data->type = LF_ARGLIST;
@@ -170,7 +171,7 @@ CV_TypeIndex tb_codeview_builder_add_arg_list(CV_Builder* builder, size_t count,
     }
 
     CV_TypeIndex type = find_or_make_cv_type(builder, length, data);
-    if (length >= sizeof(tmp)) free(data);
+    if (length >= SMALL_ARR_CAP) free(data);
 
     return type;
 }

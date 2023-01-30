@@ -14,6 +14,7 @@
 #if defined(_MSC_VER) && !defined(__clang__)
 #include <immintrin.h>
 #define thread_local __declspec(thread)
+#define alignas(x) __declspec(align(x))
 #else
 #define thread_local _Thread_local
 #endif
@@ -84,7 +85,7 @@ typedef struct TB_Emitter {
 struct { size_t cap, count; T* elems; }
 
 #define TB_FIXED_ARRAY_APPEND(arr, elem) \
-(((arr).count + 1 <= (arr).cap) ? ((arr).elems[(arr).count++] = (elem)) : (void) assert(!"out of bounds"))
+(((arr).count + 1 <= (arr).cap) ? (void) ((arr).elems[(arr).count++] = (elem)) : (void) assert(!"out of bounds"))
 
 #define TB_DATA_TYPE_EQUALS(a, b) ((a).raw == (b).raw)
 #define TB_DT_EQUALS(a, b) ((a).raw == (b).raw)
@@ -451,8 +452,8 @@ typedef struct {
     // NULLable if doesn't apply
     void (*emit_win64eh_unwind_info)(TB_Emitter* e, TB_FunctionOutput* out_f, uint64_t saved, uint64_t stack_usage);
 
-    TB_FunctionOutput (*fast_path)(TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t out_capacity, size_t local_thread_id);
-    TB_FunctionOutput (*complex_path)(TB_Function* f, const TB_FeatureSet* features, uint8_t* out, size_t out_capacity, size_t local_thread_id);
+    TB_FunctionOutput (*fast_path)(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t out_capacity, size_t local_thread_id);
+    TB_FunctionOutput (*complex_path)(TB_Function* restrict f, const TB_FeatureSet* features, uint8_t* out, size_t out_capacity, size_t local_thread_id);
 } ICodeGen;
 
 // All debug formats i know of boil down to adding some extra sections to the object file
@@ -491,7 +492,7 @@ do {                     \
 #if defined(_MSC_VER) && !defined(__clang__)
 #if TB_DEBUG_BUILD
 #define tb_todo()            (assert(0 && "TODO"), __assume(0))
-#define tb_unreachable()     (assert(0), __assume(0))
+#define tb_unreachable()     (assert(0), __assume(0), 0)
 #define tb_assume(condition) assert(condition)
 #else
 #define tb_todo()            abort()

@@ -12,7 +12,9 @@ static void ret_jmp(TB_CGEmitter* restrict e);
 }
 
 #if 1
-#define GAD_EXTRA_CTX {}
+#define GAD_EXTRA_CTX {   \
+    int unused;           \
+}
 #else
 #define GAD_EXTRA_CTX {   \
     struct X64_Tile {     \
@@ -468,7 +470,7 @@ static void x64v2_call(Ctx* restrict ctx, TB_Function* f, TB_Reg r) {
         GPR gprs[6];
     } param_descs[] = {
         // win64
-        { 4, 4, 16, WIN64_ABI_CALLER_SAVED,  { RCX, RDX, R8, R9 } },
+        { 4, 4, 16, WIN64_ABI_CALLER_SAVED,  { RCX, RDX, R8, R9,   0,  0 } },
         // system v
         { 6, 4, 5, SYSV_ABI_CALLER_SAVED,    { RDI, RSI, RDX, RCX, R8, R9 } },
         // syscall

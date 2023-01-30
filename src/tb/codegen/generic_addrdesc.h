@@ -299,6 +299,7 @@ static GAD_VAL GAD_FN(steal)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int re
     }
 
     tb_panic("steal");
+    return (GAD_VAL){ 0 };
 }
 
 static GAD_VAL GAD_FN(regalloc)(Ctx* restrict ctx, TB_Function* f, TB_Reg r, int reg_class) {

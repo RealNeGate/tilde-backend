@@ -58,7 +58,7 @@ TB_API void tb_function_free_postorder(TB_PostorderWalk* walk) {
 
 TB_API void tb_function_get_postorder_explicit(TB_Function* f, TB_PostorderWalk* walk) {
     memset(walk->visited, 0, f->bb_count * sizeof(bool));
-    return postorder(f, walk, 0);
+    postorder(f, walk, 0);
 }
 
 static int find_traversal_index(DomContext* ctx, TB_Label l) {

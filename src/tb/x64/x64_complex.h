@@ -452,9 +452,7 @@ static MIR_Operand complex_isel(X64_ComplexCtx* restrict ctx, TB_Function* f, Tr
             TreeVReg base_vgpr = complex_collapse(ctx, f, base);
             assert(base_vgpr.family == VREG_FAMILY_GPR);
 
-            dst = (MIR_Operand){ MIR_OPERAND_ADDRESS, TB_TYPE_PTR, .mem = { } };
-            dst.mem.base = base_vgpr.value;
-            dst.mem.disp = offset;
+            dst = (MIR_Operand){ MIR_OPERAND_ADDRESS, TB_TYPE_PTR, .mem = { .base = base_vgpr.value, .disp = offset } };
             break;
         }
         case TB_ARRAY_ACCESS: {
@@ -513,9 +511,7 @@ static MIR_Operand complex_isel(X64_ComplexCtx* restrict ctx, TB_Function* f, Tr
             // by the end of this we'll have a resolved base, index and scale
             // but the base doesn't account for the real base vreg so if we have
             // a base here it means we have to collapse.
-            dst = (MIR_Operand){ MIR_OPERAND_ADDRESS, TB_TYPE_PTR, .mem = { } };
-            dst.mem.index = index_vgpr.value;
-
+            dst = (MIR_Operand){ MIR_OPERAND_ADDRESS, TB_TYPE_PTR, .mem = { .index = index_vgpr.value } };
             if (should_use_lea_arith) {
                 // accumulate and collapse LEA operations to get an optimal multiply
                 FOREACH_REVERSE_N(steps, 0, 2) {
@@ -528,8 +524,7 @@ static MIR_Operand complex_isel(X64_ComplexCtx* restrict ctx, TB_Function* f, Tr
                         TreeVReg new_addr = complex_collapse(ctx, f, dst);
                         assert(new_addr.family == VREG_FAMILY_GPR);
 
-                        dst = (MIR_Operand){ MIR_OPERAND_ADDRESS, TB_TYPE_PTR, .mem = { } };
-                        dst.mem.index = new_addr.value;
+                        dst = (MIR_Operand){ MIR_OPERAND_ADDRESS, TB_TYPE_PTR, .mem = { .index = new_addr.value } };
                     }
                     dst.mem.scale = shift;
 
@@ -539,8 +534,7 @@ static MIR_Operand complex_isel(X64_ComplexCtx* restrict ctx, TB_Function* f, Tr
                             TreeVReg new_addr = complex_collapse(ctx, f, dst);
                             assert(new_addr.family == VREG_FAMILY_GPR);
 
-                            dst = (MIR_Operand){ MIR_OPERAND_ADDRESS, TB_TYPE_PTR, .mem = { } };
-                            dst.mem.index = new_addr.value;
+                            dst = (MIR_Operand){ MIR_OPERAND_ADDRESS, TB_TYPE_PTR, .mem = { .index = new_addr.value } };
                         }
 
                         dst.mem.base = dst.mem.index;
@@ -558,8 +552,7 @@ static MIR_Operand complex_isel(X64_ComplexCtx* restrict ctx, TB_Function* f, Tr
                 TreeVReg new_addr = complex_collapse(ctx, f, dst);
                 assert(new_addr.family == VREG_FAMILY_GPR);
 
-                dst = (MIR_Operand){ MIR_OPERAND_ADDRESS, TB_TYPE_PTR, .mem = { } };
-                dst.mem.index = new_addr.value;
+                dst = (MIR_Operand){ MIR_OPERAND_ADDRESS, TB_TYPE_PTR, .mem = { .index = new_addr.value } };
             }
 
             dst.mem.base = base_vgpr.value;

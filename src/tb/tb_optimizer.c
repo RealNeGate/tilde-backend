@@ -244,7 +244,8 @@ static bool schedule_module_level_opt(TB_Module* m, const TB_Pass* pass) {
         lua_pushlightuserdata(L, m);
         return end_lua_pass(L, 1);
         #else
-        tb_panic("Not compiled with luajit support");
+        fprintf(stderr, "Not compiled with luajit support");
+        return false;
         #endif
     } else {
         return pass->mod_run(m);

@@ -23,8 +23,7 @@ TildeBackend (Tilde or TB for short)
 
   # Compiling
 
-    You'll need to install Clang or GCC (MSVC build script isn't available right
-    now) and Make.
+    You'll need to install a C compiler, Ninja and Python3.
 
     ```
       git clone --recurse-submodules -j8 https://github.com/RealNeGate/tilde-backend.git

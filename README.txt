@@ -31,7 +31,8 @@ TildeBackend (Tilde or TB for short)
       py build.py
     ```
 
-    If you wish to compile with optimizations add OPT=2 to the args.
+    If you wish to compile with optimizations add `-opt` to the args.
+    By default the C compiler will be clang, if you want to change that use `-cc=your-compiler`
 
   # Getting Started
 
